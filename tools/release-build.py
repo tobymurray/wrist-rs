@@ -100,17 +100,31 @@ def validate_image(loader, app, image):
     return f'{zlib.crc32(image):08X}'
 
 
+# The header's flags, as the SDK's app_merging.py packs them: the type in the low bits, then
+# autostart (0x08) and the withdrawn glance bit (0x20).
+UAPP_TYPE_UTILITY = 0x01
+
+
 def validate_uapp(data, version):
+    """The installer's .uapp: a utility app with launcher icons, a service and a GUI, and no flag
+    that lets anything but the launcher start it."""
     require(len(data) >= 52, 'truncated uapp')
     require(zlib.crc32(data[:-4]) == struct.unpack_from('<I', data, len(data)-4)[0], 'uapp CRC mismatch')
     appid, ver, abi, service, flags, name, large, small = struct.unpack_from('<QIIII16sII', data)
     major, minor, patch = map(int, version.split('-')[0].split('.'))
     require(appid == 0x854CD3EFBD7BA411 and ver == major << 16 | minor << 8 | patch,
             'uapp identity/version mismatch')
-    require(abi == 3 and flags == 0x22 and name.rstrip(b'\0') == b'Install', 'uapp ABI/type mismatch')
-    require(large == 3600 and small == 900 and len(data) == 48 + large + small + service + 4,
-            'uapp payload/header mismatch')
-    return {'libc_abi': '0.0.3', 'crc32': f'{zlib.crc32(data[:-4]):08X}'}
+    require(abi == 3 and flags == UAPP_TYPE_UTILITY and name.rstrip(b'\0') == b'Install',
+            'uapp ABI/type mismatch')
+    require(large == 3600 and small == 900, 'uapp icon sizes mismatch')
+    require(any(data[48:48 + large]) and any(data[48 + large:48 + large + small]), 'uapp without icons')
+    # Each process is packed by the SDK's app_packer.py, whose image starts with this magic.
+    first = 48 + large + small
+    gui = len(data) - 4 - first - service
+    require(service > 0 and gui > 0 and data[first:first + 4] == b'UAPP'
+            and data[first + service:first + service + 4] == b'UAPP', 'uapp payload/header mismatch')
+    return {'type': 'Utility', 'libc_abi': '0.0.3', 'service_bytes': service, 'gui_bytes': gui,
+            'crc32': f'{zlib.crc32(data[:-4]):08X}'}
 
 
 def validate_elf(path, address, limit):
@@ -153,13 +167,25 @@ def audit_commit(elf):
     return dis, sorted(seen)
 
 
+def audit_gui(elf):
+    """The GUI only shows the service's verdict and sends the confirm: no flash code in it."""
+    with elf.open('rb') as f:
+        symbols = ELFFile(f).get_section_by_name('.symtab')
+        require(symbols is not None, 'GUI ELF has no symbol table')
+        flash = sorted({s.name for s in symbols.iter_symbols() if s.name.startswith('wrist_flash')})
+    require(not flash, 'flash code in the GUI: ' + ', '.join(flash))
+
+
 def copy(src, dest):
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dest)
 
 
-# What the installer links from the SDK, besides UNA's own code: coreJSON and libstdc++.
-SDK_LICENSES = ['LICENSE', 'THIRD-PARTY-LICENSES.md', 'ThirdParty/coreJSON/LICENSE']
+# What the installer links from the SDK, besides UNA's own code: coreJSON, libstdc++, and in
+# its GUI LVGL with LVGL's own allocator and printf.
+SDK_LICENSES = ['LICENSE', 'THIRD-PARTY-LICENSES.md', 'ThirdParty/coreJSON/LICENSE',
+                'ThirdParty/lvgl/LICENCE.txt', 'ThirdParty/lvgl/src/stdlib/builtin/LICENSE_TLSF.txt',
+                'ThirdParty/lvgl/src/stdlib/builtin/LICENSE_SPRINTF.txt']
 
 
 # The docs in release/ as the zip holds them, under these names; the tools beside them.
@@ -246,7 +272,7 @@ def verify_archive(path, debug=False):
         names = z.namelist()
         require(len(names) == len(set(names)), 'duplicate ZIP entries')
         require(all(not n.startswith('/') and '..' not in Path(n).parts for n in names), 'unsafe ZIP path')
-        require(not any(Path(n).name == 'ARM_INSTALL' or n.endswith('.ota') for n in names), 'armed/vendor package')
+        require(not any(Path(n).name == 'ARM_INSTALL' or n.endswith('.ota') for n in names), 'arm file/vendor package')
         manifest = json.loads(z.read('manifest.json'))
         prefix = 'debug/' if debug else 'package/'
         expected = {name[len(prefix):] for name in manifest['files'] if name.startswith(prefix)}
@@ -259,7 +285,8 @@ def verify_archive(path, debug=False):
             digest, name = line.split('  ', 1)
             require(hashlib.sha256(z.read(name)).hexdigest() == digest, 'archive checksum mismatch')
         if debug:
-            for name in ['app.elf', 'loader.elf', 'app.map', 'loader.map', 'ImageInstallerService.elf', 'installer-disassembly.txt']:
+            for name in ['app.elf', 'loader.elf', 'app.map', 'loader.map', 'ImageInstallerService.elf',
+                         'ImageInstallerGUI.elf', 'installer-disassembly.txt']:
                 require(name in names, 'missing debug asset: ' + name)
         else:
             first = 'first-install/Apps/ImageInstaller/'
@@ -295,6 +322,12 @@ def main():
     require(a.allow_dirty or not dirty, 'release requires clean source tree')
     require(output('git', 'rev-parse', 'HEAD', cwd=a.sdk) == CONFIG['sdk_commit'], 'wrong SDK revision')
     require(not output('git', 'status', '--porcelain', cwd=a.sdk), 'dirty SDK')
+    # The installer's GUI is built on LVGL, a submodule of the SDK, at the commit the SDK records.
+    # `git submodule status` marks one not checked out with -, at another commit with +, and in
+    # conflict with U.
+    lvgl = output('git', 'submodule', 'status', 'ThirdParty/lvgl', cwd=a.sdk)
+    require(lvgl and lvgl[0] not in '-+U' and (a.sdk/'ThirdParty/lvgl/lvgl.h').is_file(),
+            'SDK ThirdParty/lvgl not checked out at its recorded commit')
     tags = output('git', 'tag', '--points-at', 'HEAD').splitlines()
     release = not a.allow_dirty and a.version != '0.0.0-candidate.' + commit[:12]
     if release:
@@ -346,13 +379,15 @@ def main():
     uapp = firmware_build.build_installer(execute, env, a.sdk, a.version, CONFIG['nightly'], a.out / 'installer-build')
     abi = validate_uapp(uapp.read_bytes(), a.version)
     copy(uapp, first/uapp.name)
-    copy(appdir/'build/ImageInstallerService.elf', debug/'ImageInstallerService.elf')
-    copy(appdir.parent/'Output/ImageInstallerService.elf.elf.map', debug/'ImageInstallerService.map')
+    for process in ['Service', 'GUI']:
+        copy(appdir/f'build/ImageInstaller{process}.elf', debug/f'ImageInstaller{process}.elf')
+        copy(appdir.parent/f'Output/ImageInstaller{process}.elf.elf.map', debug/f'ImageInstaller{process}.map')
     # Keep build paths out of the published maps.
     for map_file in debug.glob('*.map'):
         map_file.write_text(normalize_paths(map_file.read_text(), replacements))
     require((debug/'ImageInstallerService.elf').exists(), 'missing installer ELF')
     dis, commit_functions = audit_commit(debug/'ImageInstallerService.elf')
+    audit_gui(debug/'ImageInstallerGUI.elf')
     (debug/'installer-disassembly.txt').write_text(normalize_paths(dis, replacements))
     for name in PACKAGED_TOOLS:
         copy(ROOT/'tools'/name, user/'tools'/name)
@@ -384,7 +419,7 @@ def main():
             for p in (doc/'licenses').rglob('*'):
                 if p.is_file():
                     copy(p, licenses/'rust-toolchain'/compiler/'licenses'/p.relative_to(doc/'licenses'))
-    require(not list(first.rglob('ARM_INSTALL')), 'armed package')
+    require(not list(first.rglob('ARM_INSTALL')), 'arm file in package')
     gate = json.loads((ROOT/'release/gate.json').read_text())
     blockers = gate_open(gate, crc)
     for reason in blockers:

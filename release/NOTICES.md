@@ -17,6 +17,13 @@ Known bundled material:
   contain it. MIT covers UNA's own code only; its `THIRD-PARTY-LICENSES.md` excludes its
   third-party components. Of those, the installer links coreJSON (MIT) and no TouchGFX
   (SLA0048), which is restricted to ST processors and must not be relicensed.
+- **LVGL**, the SDK's submodule `ThirdParty/lvgl`, which the installer's GUI is built on:
+  MIT, with its built-in allocator (TLSF) and printf (MIT); the three files are in
+  `licenses/sdk/ThirdParty/lvgl/`, TLSF's saying only that it is under the BSD licence.
+  The GUI draws in LVGL's built-in Montserrat 14, 28 and 48, which LVGL converts from the
+  Montserrat typeface (SIL Open Font License 1.1) with FontAwesome symbols; LVGL ships
+  them under its MIT licence and carries no OFL text. Open item: whether the package
+  should carry the OFL as well.
 - **libstdc++**: the installer links objects from the SDK's `libstdc++.a`, which is
   byte-identical to the one in GNU Tools for STM32 13.3.rel1.20240926-1715 (GCC 13.3.1),
   the compiler the release recipe uses. It is GPL-3.0-or-later with the GCC Runtime

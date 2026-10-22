@@ -96,23 +96,29 @@ The watch runs an earlier wrist-rs.
 
 13. Back to that stock version, as in INSTALL.md ("Back to stock"). Stock starts and
     reports it.
-14. The dry run: INSTALL.md steps 1 to 4, with every check there passing.
-15. Arm and install: INSTALL.md steps 5 to 7. Note how long the tile stays frozen. The
+14. The dry run: INSTALL.md steps 1 to 4, with every check there passing. The launcher
+    lists **Install**, and the screen shows `INSTALL-CRC.txt`'s digits.
+15. The confirm's refusals, each from a passing dry run: a click of Select; Select held for
+    about two seconds and let go; Select held with Back pressed during the countdown; and
+    Select held from the launcher, through `Checking`, until the ready screen appears.
+    None of them installs: the screen goes back to the CRC and "Hold Select to install", and
+    the watch stays on stock. Note anything else a 3 s hold of Select brings up.
+16. Install: INSTALL.md steps 5 to 7. Note how long `Installing` stays on screen. The
     watch comes up in wrist-rs: `cmd "boot;version"` says `state boot` and the build.
     Set the time, and repeat steps 5 and 6.
-16. Back to stock again (step 13), then a dry run with no `ARM_INSTALL`: `install.log`
-    shows the last install's outcome record for this CRC in the witness page, the right
-    first page and count, and the staging area as the recovery left it.
-17. Arm the same candidate again and install: wrist-rs, `state boot`, the build.
+17. Back to stock again (step 13), then a dry run: `install.log` shows the last install's
+    outcome record for this CRC in the witness page, the right first page and count, and
+    the staging area as the recovery left it.
+18. Install the same candidate again, as in step 16: wrist-rs, `state boot`, the build.
 
 ### Record
 
-18. Write each install into the validation records, with its output; failures too.
-19. On `main`, add anything learned to HARDWARE.md.
-20. In [`gate.json`](gate.json): the install numbers, `stock_version` as the version steps 13 to 17
+19. Write each install into the validation records, with its output; failures too.
+20. On `main`, add anything learned to HARDWARE.md.
+21. In [`gate.json`](gate.json): the install numbers, `stock_version` as the version steps 13 to 18
     used, `image_crc32` as step 1 noted it, and `round_trip_validated` true only if steps 4
-    to 17 all passed.
-21. In [NOTES.md](NOTES.md): what this release was checked to do, and on which stock
+    to 18 all passed.
+22. In [NOTES.md](NOTES.md): what this release was checked to do, and on which stock
     version.
 
 ## Owner decisions

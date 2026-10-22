@@ -22,7 +22,9 @@ DOCKERFILE_LABEL = 'io.github.tobymurray.wrist-rs.dockerfile-sha256'
 # Inside the container. CARGO_HOME is a fresh, throwaway one in every run.
 ENVIRONMENT = {'HOME': '/tmp', 'CARGO_HOME': '/tmp/wrist-rs-cargo'}
 SCRIPT = ('umask 022; git config --global --add safe.directory /src; '
-          'git config --global --add safe.directory /sdk; exec python3 tools/release-build.py "$@"')
+          'git config --global --add safe.directory /sdk; '
+          'git config --global --add safe.directory /sdk/ThirdParty/lvgl; '
+          'exec python3 tools/release-build.py "$@"')
 
 
 def pinned_image(config):

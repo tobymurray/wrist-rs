@@ -303,7 +303,10 @@ firmware image.
 | A write to `FLASH_NSCR` while `LOCK` is set is discarded with no flag and no fault, so `hw.rs` reads `NSCR` back after each command | CONFIRMED by test |
 | `PNB` is `NSCR[10:3]` and `BKER` is bit 11, so a page number of 256 or more silently selects the other bank; `hw.rs` sets `BKER` itself and checks it | CONFIRMED |
 | With the instruction cache on, data reads of flash are cached too (RM0456 8.7.1), and embassy-stm32's U5 flash driver does not invalidate it after an erase or a program, so the image invalidates it before reading flash it has written | MEASURED |
-| The stock kernel starts every glance service at once when the carousel opens, so the installer arms from a file rather than from being shown; glances, unlike utility apps, are not limited by the launcher's app slots | CONFIRMED by test |
+| The stock kernel starts every glance service at once when the carousel opens, so nothing destructive can sit behind a glance being shown | CONFIRMED by test |
+| The installer is a utility app: its service starts when it is opened from the launcher, before its GUI, and the glances screen starts only apps of type Glance once the header's glance bit (0x20) is clear, which SDK 1.5 and later never set (`Docs/service-lifecycle.md`, sections 2, 3 and 10, at the pinned SDK). The service acts only once its GUI is up, and the recipe refuses a header with that bit or autostart | From the SDK's documentation; not yet tested |
+| A utility app's service runs privileged with the MPU and TrustZone off, as a glance's does, so it can write flash as the installer's glance form does | MEASURED on stock 1.5.0 by a utility app: `CONTROL` = `0x6`, `MPU_CTRL` = 0, `FLASH_OPTR` = `0x1FEFF8AA`; the SDK links and packs every app type's service alike. A flash write from a utility app on 1.6 is not yet recorded here; the installer's dry run tests one on a scratch page and offers the confirm only if it passes |
+| The stock 1.0.2 launcher shows two utility apps at most, while every glance is reachable from the carousel; on stock 1.6 and later it is reported to show 32 or more | CONFIRMED by test on 1.0.2; REPORTED for 1.6, not in UNA's documentation or release notes |
 
 ## DMA channels the image uses
 
