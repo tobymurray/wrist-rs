@@ -1,12 +1,13 @@
 //! The face's status, what was last drawn, and the console's `page`.
 
 use core::cell::RefCell;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Instant, Timer};
+use wrist_glass::dump::{self, MAX_ROW_CODE, MAX_ROW_HEX};
 use wrist_glass::pages::{Clock, Date, Status};
 use wrist_glass::text::Glass;
 
@@ -29,6 +30,7 @@ static LAGS: Mutex<CriticalSectionRawMutex, RefCell<[(u32, u32); 8]>> = Mutex::n
 static LAG_UNTIL_MS: AtomicU32 = AtomicU32::new(0);
 static LAG_PROBED_US: AtomicU32 = AtomicU32::new(0);
 static LAG_ARM: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+static DUMP_WANTED: AtomicBool = AtomicBool::new(false);
 pub const LAG_BOOT_S: u32 = 60;
 const LAG_MAX_S: u32 = 3600;
 
@@ -106,6 +108,11 @@ pub fn command(args: &[u8], uart: Uart) {
             }
             None => uart.write_line("[glass] usage: page vcom [auto|low|high]"),
         },
+        "dump" => {
+            DUMP_WANTED.store(true, Ordering::Relaxed);
+            crate::wake_display();
+            uart.write_line("[glass] frame dump requested; the display task writes it between frames");
+        }
         "light on" => {
             crate::backlight(true);
             uart.write_line("[glass] front light on (BACKLIGHT_ON driven); VCOM follows in auto");
@@ -114,8 +121,79 @@ pub fn command(args: &[u8], uart: Uart) {
             crate::backlight(false);
             uart.write_line("[glass] front light off");
         }
-        _ => uart.write_line("[glass] usage: page [lag [seconds] | vcom [auto|low|high] | light on|off]"),
+        _ => uart.write_line("[glass] usage: page [lag [seconds] | vcom [auto|low|high] | light on|off | dump]"),
     }
+}
+
+/// Whether `page dump` asked for a dump since the last call.
+pub fn dump_wanted() -> bool {
+    DUMP_WANTED.swap(false, Ordering::Relaxed)
+}
+
+/// `fb`, the frame last drawn, to the console only: a `begin` line, one line per row of
+/// run-length pairs in hex (`wrist_glass::dump`), and an `end` line with the frame's CRC-32.
+/// A row at a time, yielding after each. `tools/wrist-frame.py` reads it.
+pub async fn dump(fb: &[u8]) {
+    let uart = Uart::best_effort();
+    let t = Instant::now();
+    let mut line = [0u8; 16 + MAX_ROW_HEX];
+    let mut code = [0u8; MAX_ROW_CODE];
+    let mut longest_us = 0;
+    let mut crc = 0xFFFF_FFFF;
+    let mut n = 0;
+    put(&mut line, &mut n, b"[frame] begin 240 240 abgr2222 frame ");
+    put_u32(&mut line, &mut n, FRAMES.load(Ordering::Relaxed));
+    put(&mut line, &mut n, b"\r\n");
+    let mut sent = crate::console::write_whole(&line[..n]).await;
+    for (y, row) in fb.chunks(crate::lcd::WIDTH as usize).enumerate() {
+        if !sent {
+            break;
+        }
+        let step = Instant::now();
+        crc = wrist_flash::plan::crc32_continue(crc, row);
+        n = 0;
+        put(&mut line, &mut n, b"[frame] ");
+        put_u32(&mut line, &mut n, u32::try_from(y).unwrap_or(0));
+        put(&mut line, &mut n, b" ");
+        let used = dump::encode_row(row, &mut code).unwrap_or(0);
+        n += dump::hex(&code[..used], &mut line[n..]).unwrap_or(0);
+        put(&mut line, &mut n, b"\r\n");
+        longest_us = longest_us.max(crate::elapsed_us(step));
+        sent = crate::console::write_whole(&line[..n]).await;
+        embassy_futures::yield_now().await;
+    }
+    if !sent {
+        uart.write_line("[frame] abandoned: the console closed or stayed full");
+        return;
+    }
+    n = 0;
+    put(&mut line, &mut n, b"[frame] end crc32 ");
+    line[n..n + 8].copy_from_slice(&hex32(!crc));
+    n += 8;
+    put(&mut line, &mut n, b" ms ");
+    put_u32(&mut line, &mut n, u32::try_from(t.elapsed().as_millis()).unwrap_or(u32::MAX));
+    put(&mut line, &mut n, b" longest step us ");
+    put_u32(&mut line, &mut n, longest_us);
+    put(&mut line, &mut n, b"\r\n");
+    let _ = crate::console::write_whole(&line[..n]).await;
+}
+
+fn put(line: &mut [u8], n: &mut usize, s: &[u8]) {
+    if let Some(dst) = line.get_mut(*n..*n + s.len()) {
+        dst.copy_from_slice(s);
+        *n += s.len();
+    }
+}
+
+fn put_u32(line: &mut [u8], n: &mut usize, v: u32) {
+    let mut buf = [0u8; 11];
+    put(line, n, wrist_glass::text::fmt_u32(&mut buf, v).as_bytes());
+}
+
+fn hex32(v: u32) -> [u8; 8] {
+    let mut out = [0u8; 8];
+    let _ = dump::hex(&v.to_be_bytes(), &mut out);
+    out
 }
 
 fn arm_lag_command(uart: Uart, seconds: u32) {

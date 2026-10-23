@@ -80,6 +80,19 @@ Stop anything else holding the port first. After an update, wait until `boot` sa
 image. The UNA Dev Tool hears the image's UART as well, under the conditions in
 [HARDWARE.md](HARDWARE.md#debug-and-boot).
 
+Two commands test the watch without touching it. `press <up|down|back|select> [long]` hands
+the button task a debounced press, as a released button does. It cannot stand in for a hold,
+so the 3 s and 16 s holds still need a hand, and `power` counts these presses apart from real
+ones. `page dump` writes the frame the face last drew, one run-length row a line, and
+[`tools/wrist-frame.py`](tools/wrist-frame.py) makes it a PNG:
+
+```sh
+.venv/bin/python tools/wrist-cmd.py "press select"
+.venv/bin/python tools/wrist-frame.py face.png --raw-out face.raw
+cargo run -p wrist-glass --example face -- 09:11 2026-10-23 100 host.raw
+.venv/bin/python tools/wrist-frame.py --raw face.raw --compare host.raw face.png
+```
+
 ## Working on InscribedDisc
 
 The face is drawn with [InscribedDisc](https://crates.io/crates/inscribed-disc), developed
