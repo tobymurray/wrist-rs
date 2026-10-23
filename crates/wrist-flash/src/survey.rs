@@ -1,6 +1,7 @@
 //! What `flash survey` reports, decoded on the host: the page map, the regions, the flash
 //! registers, and which ECC errors the NMI may return from.
 
+use crate::layout::{bank1, bank2};
 use crate::plan::PAGE_SIZE;
 
 /// Pages in each bank.
@@ -94,18 +95,18 @@ const fn region(area: Area, pages: core::ops::Range<u16>, name: &'static str) ->
     Region { area, pages, name }
 }
 
-/// Every region the survey reports, in the order it reads them (`apps/wrist-loader/LAYOUT.md`).
+/// Every region the survey reports, in the order it reads them, as [`crate::layout`] names them.
 pub const REGIONS: [Region; 10] = [
-    region(Area::Bank1, 48..52, "loader"),
-    region(Area::Bank1, 52..116, "active"),
-    region(Area::Bank1, 116..181, "dfu"),
-    region(Area::Bank1, 181..182, "state"),
-    region(Area::Bank1, 182..256, "unused"),
-    region(Area::Bank2, 0..24, "stock spill"),
-    region(Area::Bank2, 48..116, "reserve"),
-    region(Area::Bank2, 116..128, "settings"),
-    region(Area::Bank2, 128..196, "staging"),
-    region(Area::Bank2, 196..256, "glyph store"),
+    region(Area::Bank1, bank1::LOADER, "loader"),
+    region(Area::Bank1, bank1::ACTIVE, "active"),
+    region(Area::Bank1, bank1::DFU, "dfu"),
+    region(Area::Bank1, bank1::STATE..bank1::STATE + 1, "state"),
+    region(Area::Bank1, bank1::UNUSED, "unused"),
+    region(Area::Bank2, bank2::STOCK_SPILL, "stock spill"),
+    region(Area::Bank2, bank2::RESERVE, "reserve"),
+    region(Area::Bank2, bank2::SETTINGS, "settings"),
+    region(Area::Bank2, bank2::STAGING, "staging"),
+    region(Area::Bank2, bank2::GLYPH_STORE, "glyph store"),
 ];
 
 /// The index in [`REGIONS`] of the region `page` of `area` lies in.
@@ -368,7 +369,7 @@ mod tests {
             assert!(r.area != Area::System, "{r:?}");
             assert!(r.pages.start < r.pages.end && usize::from(r.pages.end) <= PAGES_PER_BANK, "{r:?}");
         }
-        assert!(REGIONS[0].pages.start >= 48, "the vendor bootloader's pages are never read");
+        assert!(REGIONS[0].pages.start >= bank1::BOOTLOADER.end, "the vendor bootloader's pages are never read");
         for w in REGIONS.windows(2) {
             let ordered = w[0].area == w[1].area && w[0].pages.end <= w[1].pages.start;
             assert!(ordered || (w[0].area, w[1].area) == (Area::Bank1, Area::Bank2), "{w:?}");
