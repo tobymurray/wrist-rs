@@ -32,6 +32,7 @@ extern "C" int32_t  wrist_flash_stage_page(size_t len, uint32_t index, const uin
                                            size_t chunkLen);
 extern "C" uint32_t wrist_flash_staged_crc(size_t len);
 extern "C" uint32_t wrist_flash_staging_used();
+extern "C" uint32_t wrist_flash_store_used();
 
 extern "C" int32_t wrist_flash_install(uint32_t target, size_t len, uint32_t crc);
 
@@ -124,6 +125,7 @@ void Service::install()
     const int32_t selftest = wrist_flash_unlock_selftest();
 
     const uint32_t stagingUsed = wrist_flash_staging_used();
+    const uint32_t storeUsed   = wrist_flash_store_used();
 
     const char* armText = "no (dry run)";
     switch (arm) {
@@ -145,6 +147,7 @@ void Service::install()
         "padded len : %lu\n"
         "quadwords  : %lu\n"
         "staging    : bank 2 pages %u-%u, %lu of %u not blank now\n"
+        "store      : bank 2 pages %u-%u, %lu of %u not blank\n"
         "%s       : %s\n"
         "arm names  : %08lX\n"
         "unlock test: %ld %s\n"
@@ -160,6 +163,9 @@ void Service::install()
         static_cast<unsigned>(kStagingFirstPage),
         static_cast<unsigned>(kStagingFirstPage + kStagingPages - 1u),
         static_cast<unsigned long>(stagingUsed), static_cast<unsigned>(kStagingPages),
+        static_cast<unsigned>(kStoreFirstPage),
+        static_cast<unsigned>(kStoreFirstPage + kStorePages - 1u),
+        static_cast<unsigned long>(storeUsed), static_cast<unsigned>(kStorePages),
         kArmFile, armText,
         static_cast<unsigned long>(armCrc),
         static_cast<long>(selftest),

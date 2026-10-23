@@ -60,6 +60,9 @@ private:
     /// Kept in step with crates/wrist-flash/src/plan.rs (`STAGING_FIRST_PAGE`, `MAX_PAGES`).
     static constexpr unsigned kStagingFirstPage = 128u;
     static constexpr unsigned kStagingPages     = 68u;
+    /// Kept in step with crates/wrist-flash/src/layout.rs (`bank2::GLYPH_STORE`).
+    static constexpr unsigned kStoreFirstPage = 196u;
+    static constexpr unsigned kStorePages     = 60u;
 
     /// RM0456 Rev 7, 7.9, non-secure alias.
     static constexpr uint32_t kFlashBase = 0x40022000u;
