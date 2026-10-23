@@ -6,7 +6,7 @@ use wrist_glass::pages::{compose, compose_battery, Battery, Clock, Date, Status}
 
 fn days_in(year: u16, month: u8) -> u8 {
     match month {
-        2 if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) => 29,
+        2 if year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400)) => 29,
         2 => 28,
         4 | 6 | 9 | 11 => 30,
         _ => 31,
