@@ -2,7 +2,7 @@
 
 use inscribed_disc::audit::off_glass;
 use inscribed_disc::{Abgr2222, Clip, Surface};
-use wrist_glass::pages::{compose, render, Clock, Date, Status};
+use wrist_glass::pages::{compose, compose_about, compose_battery, render, About, Battery, Clock, Date, Short, Status};
 use wrist_glass::text::Glass;
 use wrist_glass::{ring, HEIGHT, MARGIN, RING_INSET, RING_STROKE, WIDTH};
 
@@ -43,6 +43,29 @@ fn typical() -> Status {
     }
 }
 
+/// Every page at its extremes: the face's cases, then the battery and about pages'.
+fn every_page() -> Vec<(String, (Glass, Short))> {
+    let mut all: Vec<_> = cases().into_iter().map(|(name, s)| (format!("face-{name}"), compose(&s))).collect();
+    let batteries = [
+        ("max", Battery { soc_pct: Some(u8::MAX), cell_mv: Some(65_535), external: Some(false) }),
+        ("min", Battery { soc_pct: Some(0), cell_mv: Some(0), external: Some(true) }),
+        ("none", Battery::default()),
+    ];
+    for (name, b) in batteries {
+        all.push((format!("battery-{name}"), compose_battery(&b)));
+    }
+    let abouts = [
+        ("release", About { version: "0.1.0", build: "5784ec72019b" }),
+        ("dirty", About { version: "0.1.0", build: "5784ec72019b-dirty" }),
+        ("named", About { version: "10.10.10", build: "gate-test" }),
+        ("long", About { version: "100.100.100", build: "a-name-longer-than-two-lines" }),
+    ];
+    for (name, a) in abouts {
+        all.push((format!("about-{name}"), compose_about(&a)));
+    }
+    all
+}
+
 fn text_frame(glass: &Glass, clip: Clip) -> Vec<u8> {
     let mut fb = vec![BLACK; W * H];
     let mut surface = match clip {
@@ -60,16 +83,14 @@ fn texts(glass: &Glass) -> Vec<String> {
 
 #[test]
 fn no_line_is_cut_short_at_any_extreme() {
-    for (name, s) in cases() {
-        let (glass, short) = compose(&s);
+    for (name, (glass, short)) in every_page().into_iter().filter(|(n, _)| n != "about-long") {
         assert_eq!(short, 0, "{name}: lines {short:#010b} did not fit: {:?}", texts(&glass));
     }
 }
 
 #[test]
 fn lines_do_not_overlap() {
-    for (name, s) in cases() {
-        let (glass, _) = compose(&s);
+    for (name, (glass, _)) in every_page() {
         let mut bands: Vec<_> = glass.lines().iter().map(|l| (l.top, l.top + 7 * l.scale as i32)).collect();
         bands.sort_unstable();
         for pair in bands.windows(2) {
@@ -91,8 +112,7 @@ fn the_face_is_centred() {
 fn unclipped_text_is_inside_the_ring() {
     let inside_ring = RING_INSET + i32::try_from(RING_STROKE).unwrap();
     assert!(MARGIN >= inside_ring);
-    for (name, s) in cases() {
-        let (glass, _) = compose(&s);
+    for (name, (glass, _)) in every_page() {
         let fb = text_frame(&glass, Clip::Rect);
         let off: Vec<_> = off_glass(&fb, WI, HI, inside_ring, BLACK).collect();
         assert!(off.is_empty(), "{name}: {} glyph pixels under the ring or off the glass, first at {:?}", off.len(), off[0]);
@@ -101,8 +121,7 @@ fn unclipped_text_is_inside_the_ring() {
 
 #[test]
 fn the_disc_clip_drops_no_glyph_pixel() {
-    for (name, s) in cases() {
-        let (glass, _) = compose(&s);
+    for (name, (glass, _)) in every_page() {
         let fb = text_frame(&glass, Clip::Disc);
         let lit = u32::try_from(fb.iter().filter(|&&b| b != BLACK).count()).unwrap();
         assert_eq!(lit, glass.lit_pixels(), "{name}: glyph pixels lost to the clip");
@@ -122,8 +141,7 @@ fn the_ring_is_on_the_glass() {
 fn the_stepwise_render_is_the_same_frame() {
     let mut bg = vec![BLACK; W * H];
     assert!(wrist_glass::pages::background(&mut bg));
-    for (name, s) in cases() {
-        let (glass, _) = compose(&s);
+    for (name, (glass, _)) in every_page() {
         let mut whole = vec![BLACK; W * H];
         assert!(render(&mut whole, &glass));
         let mut steps = bg.clone();
@@ -152,6 +170,27 @@ fn the_face_reads_right() {
 }
 
 #[test]
+fn the_pages_read_right() {
+    let (glass, _) = compose_battery(&Battery { soc_pct: Some(87), cell_mv: Some(4012), external: Some(false) });
+    assert_eq!(texts(&glass), ["BATTERY", "87 %", "4012 mV", "input cell"]);
+    let (glass, _) = compose_battery(&Battery::default());
+    assert_eq!(texts(&glass), ["BATTERY", "-- %", "-- mV", "input ?"]);
+    let (glass, _) = compose_about(&About { version: "0.1.0", build: "5784ec72019b" });
+    assert_eq!(texts(&glass), ["ABOUT", "wrist-rs", "0.1.0", "5784EC72019B"]);
+    let (glass, _) = compose_about(&About { version: "0.1.0", build: "5784ec72019b-dirty" });
+    assert_eq!(texts(&glass), ["ABOUT", "wrist-rs", "0.1.0", "5784EC72019B", "DIRTY"]);
+    let (glass, _) = compose_about(&About { version: "0.1.0", build: "gate-test" });
+    assert_eq!(texts(&glass), ["ABOUT", "wrist-rs", "0.1.0", "GATE-TEST"]);
+}
+
+#[test]
+fn a_build_name_too_long_is_cut_and_says_so() {
+    let (glass, short) = compose_about(&About { version: "0.1.0", build: "a-name-longer-than-two-lines" });
+    assert_eq!(texts(&glass)[3..], ["A-NAME-LONGE", "R-THAN-TWO-L"]);
+    assert_ne!(short, 0);
+}
+
+#[test]
 fn weekdays() {
     let wd = |year, month, day| Date { year, month, day }.weekday();
     assert_eq!(wd(2026, 10, 17), 5);
@@ -167,12 +206,11 @@ fn previews() {
     let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("wrist-glass");
     std::fs::create_dir_all(&dir).unwrap();
     let opts = Options { scale: 2, bezel: Bezel::Fill([40, 40, 40]) };
-    for (name, s) in cases() {
-        let (glass, _) = compose(&s);
+    for (name, (glass, _)) in every_page() {
         let mut fb = vec![BLACK; W * H];
         assert!(render(&mut fb, &glass));
         let rgba = to_rgba(&fb, WIDTH, HEIGHT, opts);
-        write_png(dir.join(format!("face-{name}.png")), &rgba, WIDTH * 2, HEIGHT * 2).unwrap();
+        write_png(dir.join(format!("{name}.png")), &rgba, WIDTH * 2, HEIGHT * 2).unwrap();
     }
     eprintln!("previews in {}", dir.display());
 }

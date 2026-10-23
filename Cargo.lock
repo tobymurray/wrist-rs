@@ -193,6 +193,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "wrist-pages"
+version = "0.0.0"
+
+[[package]]
 name = "wrist-power"
 version = "0.0.0"
 

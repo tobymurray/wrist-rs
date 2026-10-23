@@ -218,6 +218,14 @@ fn write_us_as_ms(uart: Uart, label: &str, us: u32) {
 }
 
 fn write_page(uart: Uart) {
+    let (page, back) = crate::nav_now();
+    uart.write_str("[glass] page ");
+    uart.write_str(page.name());
+    if let Some(at) = back {
+        let ms = at.saturating_duration_since(Instant::now()).as_millis();
+        write_ms(uart, ", back to the face in ", u32::try_from(ms).unwrap_or(u32::MAX));
+    }
+    uart.write_line("");
     match SHOWN.lock(|s| *s.borrow()) {
         None => uart.write_line("[glass] nothing sent to the panel yet"),
         Some(glass) => {
