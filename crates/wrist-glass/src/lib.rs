@@ -5,6 +5,7 @@
 pub mod dump;
 pub mod font;
 pub mod pages;
+pub mod strings;
 pub mod text;
 
 use embedded_graphics::prelude::*;
