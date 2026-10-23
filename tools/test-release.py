@@ -136,6 +136,8 @@ class Packaging(unittest.TestCase):
         text = ('[notes](NOTES.md) [guide](INSTALL.md#the-tools) [t](../tools/wrist-time.py) '
                 '![x](images/logo.svg) [l](../LICENSE) [h](../HARDWARE.md#stop-modes) '
                 '[s](../tools/extract_pinmap.py) [w](https://example.org/a.md) [a](#updating)')
+        self.assertEqual(r.packaged_images(['![a](images/a.svg) <img src="images/b.svg" width="9">', 'x']),
+                         ['images/a.svg', 'images/b.svg'])
         self.assertEqual(r.package_links(text, 'abc'),
                          '[notes](RELEASE-NOTES.md) [guide](START-HERE.md#the-tools) [t](tools/wrist-time.py) '
                          '![x](images/logo.svg) [l](LICENSE) '
@@ -143,11 +145,14 @@ class Packaging(unittest.TestCase):
                          '[s](https://github.com/tobymurray/wrist-rs/blob/abc/tools/extract_pinmap.py) '
                          '[w](https://example.org/a.md) [a](#updating)')
         root = Path(__file__).resolve().parent.parent
-        packaged = set(r.PACKAGED_DOCS.values()) | {'LICENSE'} | {'tools/' + t for t in r.PACKAGED_TOOLS} \
-            | {'images/' + i.name for i in (root/'release/images').glob('*.svg')}
-        for src in r.PACKAGED_DOCS:
-            text = r.package_links((root/'release'/src).read_text(), 'abc')
-            for link in r.re.findall(r'\]\(([^)#\s]+)', text):
+        texts = [r.package_links((root/'release'/src).read_text(), 'abc') for src in r.PACKAGED_DOCS]
+        images = r.packaged_images(texts)
+        self.assertEqual(images, ['images/stock-to-wrist-rs.svg', 'images/wrist-rs-to-stock.svg'])
+        for image in images:
+            self.assertTrue((root/'release'/image).is_file(), image)
+        packaged = set(r.PACKAGED_DOCS.values()) | {'LICENSE'} | {'tools/' + t for t in r.PACKAGED_TOOLS} | set(images)
+        for src, text in zip(r.PACKAGED_DOCS, texts):
+            for link in r.re.findall(r'(?:\]\(|src=")([^)"#\s]+)', text):
                 if not r.re.match(r'[a-z]+:', link):
                     self.assertIn(link, packaged, f'{src}: {link}')
 

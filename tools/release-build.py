@@ -191,6 +191,11 @@ def package_links(text, commit):
     return re.sub(r'(!?\[[^\]]*\])\(([^)\s]+)\)', target, text)
 
 
+def packaged_images(texts):
+    """The `images/` files the packaged docs show, by Markdown link or `<img src>`; only these ship."""
+    return sorted({m for t in texts for m in re.findall(r'(?:\]\(|src=")(images/[^)"#\s]+)', t)})
+
+
 def collect_licenses(dest, sdk, rust_licenses, gcc):
     for name in SDK_LICENSES:
         require((sdk/name).is_file(), 'missing SDK licence: ' + name)
@@ -353,8 +358,9 @@ def main():
         copy(ROOT/'tools'/name, user/'tools'/name)
     for src, dst in PACKAGED_DOCS.items():
         (user/dst).write_text(package_links((ROOT/'release'/src).read_text(), commit))
-    for image in sorted((ROOT/'release/images').glob('*.svg')):
-        copy(image, user/'images'/image.name)
+    for image in packaged_images((user/dst).read_text() for dst in PACKAGED_DOCS.values()):
+        require((ROOT/'release'/image).is_file(), 'missing image: release/' + image)
+        copy(ROOT/'release'/image, user/image)
     copy(ROOT/'LICENSE', user/'LICENSE')
     licenses = user/'licenses'
     for label, cwd in [('root', ROOT), ('app', ROOT/'apps/standalone-boot'), ('loader', ROOT/'apps/wrist-loader')]:
