@@ -173,8 +173,12 @@ impl Handler for LinkWatcher {
 
 static OUT: Pipe<CriticalSectionRawMutex, 8192> = Pipe::new();
 
+/// What fits of `bytes`; a write stops at the ring's end, so the rest is tried again.
 pub fn tee(bytes: &[u8]) {
-    let _ = OUT.try_write(bytes);
+    let mut rest = bytes;
+    while let Ok(n @ 1..) = OUT.try_write(rest) {
+        rest = &rest[n..];
+    }
 }
 
 /// Wait, boundedly, for the pipe to be half empty, so long output written in
