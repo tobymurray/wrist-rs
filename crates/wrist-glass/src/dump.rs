@@ -28,7 +28,7 @@ pub fn encode_row(row: &[u8], out: &mut [u8]) -> Option<usize> {
 /// `bytes` as upper-case hex into `out`; the bytes used, or `None` when `out` is too short.
 #[must_use]
 pub fn hex(bytes: &[u8], out: &mut [u8]) -> Option<usize> {
-    const DIGITS: &[u8; 16] = b"0123456789ABCDEF";
+    const DIGITS: &[u8; 16] = b"0123456789ABCDEF"; // verbatim: hex, for the console
     let out = out.get_mut(..2 * bytes.len())?;
     for (pair, &b) in out.as_chunks_mut::<2>().0.iter_mut().zip(bytes) {
         pair[0] = DIGITS[usize::from(b >> 4)];
