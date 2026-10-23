@@ -991,6 +991,7 @@ dependencies = [
  "wrist-eeprom",
  "wrist-flash",
  "wrist-glass",
+ "wrist-pages",
  "wrist-power",
  "wrist-time",
  "wrist-vcom",
@@ -1240,6 +1241,10 @@ dependencies = [
  "embedded-graphics",
  "inscribed-disc",
 ]
+
+[[package]]
+name = "wrist-pages"
+version = "0.0.0"
 
 [[package]]
 name = "wrist-power"

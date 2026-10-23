@@ -20,6 +20,7 @@ mod usblog;
 mod version;
 mod watchdog;
 
+use core::cell::Cell;
 use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -37,10 +38,12 @@ use embassy_time::{Duration, Instant, Timer};
 use static_cell::{ConstStaticCell, StaticCell};
 use embassy_futures::select::{select3, select4, Either3};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::channel::Channel;
 use embassy_sync::signal::Signal;
 use wrist_glass::pages;
 use wrist_glass::text::Glass;
+use wrist_pages::{Button, Nav, Page, Press};
 
 use crate::mmio::{
     enable_clock, modify32, read32, write32, DBGMCU_IDCODE, FLASH_ACR, FLASH_OPTR, GPIOA_BASE,
@@ -613,14 +616,6 @@ static PRESS_EDGES: AtomicU32 = AtomicU32::new(0);
 /// Presses from the console's `press`, counted apart so a battery stretch's figures are real.
 static INJECTED: AtomicU32 = AtomicU32::new(0);
 
-/// A debounced press: the button's index in [`BUTTONS`], and whether it was held past a
-/// short press (but never as long as the hold that resets).
-#[derive(Clone, Copy)]
-pub struct Press {
-    pub button: usize,
-    pub long: bool,
-}
-
 static PRESS_IN: Channel<CriticalSectionRawMutex, Press, 4> = Channel::new();
 
 /// Hand the button task a press, as if released after debouncing; false while four wait.
@@ -628,11 +623,26 @@ pub fn inject_press(press: Press) -> bool {
     PRESS_IN.try_send(press).is_ok()
 }
 
-/// The index in [`BUTTONS`] for `up`, `down`, `back` or `select`.
-#[must_use]
-pub fn button_named(name: &str) -> Option<usize> {
-    ["up", "down", "back", "select"].iter().position(|&n| n == name)
+/// Where the wearer is among the pages.
+static NAV: Mutex<CriticalSectionRawMutex, Cell<Nav>> = Mutex::new(Cell::new(Nav::new()));
+
+fn now_ms() -> u64 {
+    Instant::now().as_millis()
 }
+
+/// The page to draw now, back on the face once a page's timeout has passed; and when that
+/// timeout falls, if a page other than the face is up.
+pub fn nav_now() -> (Page, Option<Instant>) {
+    NAV.lock(|n| {
+        let mut nav = n.get();
+        nav.tick(now_ms());
+        n.set(nav);
+        (nav.page(), nav.deadline_ms().map(Instant::from_millis))
+    })
+}
+
+/// The index in [`BUTTONS`] for each of `wrist_pages`' buttons.
+const _: () = assert!(BUTTONS.len() == Button::ALL.len());
 
 /// The `[button]` line of `power`: a battery stretch's wake rate depends on how often the
 /// face was lit.
@@ -668,11 +678,13 @@ async fn button_watch(mut lines: ButtonLines) -> ! {
         let deliberate = down & seen_up;
         if was_down & !down != 0 && held_for < SHORT_SAMPLES {
             PRESSES.fetch_add(1, Ordering::Relaxed);
-            let button = (was_down & !down).trailing_zeros() as usize;
-            on_press(uart, Press { button, long: false }, false, &mut light_until);
+            if let Some(button) = Button::from_index((was_down & !down).trailing_zeros() as usize) {
+                on_press(uart, Press { button, long: false }, false, &mut light_until);
+            }
         } else if was_down & !down != 0 {
-            let button = (was_down & !down).trailing_zeros() as usize;
-            on_press(uart, Press { button, long: true }, false, &mut light_until);
+            if let Some(button) = Button::from_index((was_down & !down).trailing_zeros() as usize) {
+                on_press(uart, Press { button, long: true }, false, &mut light_until);
+            }
         }
         // Injected presses never touch the hold count, so they cannot reach the reset.
         while let Ok(press) = PRESS_IN.try_receive() {
@@ -719,14 +731,14 @@ async fn button_watch(mut lines: ButtonLines) -> ! {
 }
 
 /// What a debounced press does: a short one lights the face for 3 s, or turns off a light the
-/// console switched on; a long one does nothing yet.
+/// console switched on, on every page; then the pages' model moves where it says.
 fn on_press(uart: Uart, press: Press, injected: bool, light_until: &mut Option<Instant>) {
     const LIT_FOR: Duration = Duration::from_secs(3);
     uart.write_str(if injected { "[button] injected " } else { "[button] " });
     uart.write_str(if press.long { "long press " } else { "short press " });
-    uart.write_str(BUTTONS.get(press.button).map_or("?", |b| b.3));
+    uart.write_str(BUTTONS[Button::ALL.iter().position(|&b| b == press.button).unwrap_or(0)].3);
     if press.long {
-        uart.write_line(": no action");
+        uart.write_line(": no light");
     } else if light_until.is_none() && lcd::light_on() {
         backlight(false);
         uart.write_line(": the console's light off");
@@ -734,6 +746,17 @@ fn on_press(uart: Uart, press: Press, injected: bool, light_until: &mut Option<I
         backlight(true);
         *light_until = Some(Instant::now() + LIT_FOR);
         uart.write_line(": face lit for 3 s");
+    }
+    let (moved, page) = NAV.lock(|n| {
+        let mut nav = n.get();
+        let moved = nav.press(press, now_ms());
+        n.set(nav);
+        (moved, nav.page())
+    });
+    if moved {
+        uart.write_str("[page] ");
+        uart.write_line(page.name());
+        wake_display();
     }
 }
 
@@ -758,6 +781,7 @@ async fn display(mut bus: pmic::AsyncBus, mut pwr_int: ExtiInput<'static, Async>
     let mut n: u32 = 0;
     let mut next_reading = Instant::now();
     let mut soc_pct = None;
+    let mut cell_mv = None;
     let mut last_minute = None;
     // `None` forces the next frame.
     let mut drawn: Option<Glass> = None;
@@ -797,11 +821,11 @@ async fn display(mut bus: pmic::AsyncBus, mut pwr_int: ExtiInput<'static, Async>
         if reading_due {
             next_reading = Instant::now() + READING;
             n = n.wrapping_add(1);
-            soc_pct = read_power(uart, &mut bus, n).await;
+            (soc_pct, cell_mv) = read_power(uart, &mut bus, n).await;
         }
         if let Some(panel) = panel.as_mut() {
             let t0 = Instant::now();
-            let (composed, short) = pages::compose(&glass::status(soc_pct));
+            let (composed, short) = compose_page(nav_now().0, soc_pct, cell_mv);
             glass::note_max(&glass::MAX_COMPOSE_US, elapsed_us(t0));
             show(panel, (fb, bg), uart, &mut drawn, (composed, short)).await;
         }
@@ -814,6 +838,9 @@ async fn display(mut bus: pmic::AsyncBus, mut pwr_int: ExtiInput<'static, Async>
         // Asleep until the minute turns, unless USB, the input line or a request needs it sooner.
         let line_low = pwr_int.is_low();
         let mut due = Instant::now() + until_next_minute();
+        if let (_, Some(back_to_face)) = nav_now() {
+            due = due.min(back_to_face);
+        }
         if !power::on_battery() {
             due = due.min(next_reading);
         }
@@ -828,6 +855,21 @@ async fn display(mut bus: pmic::AsyncBus, mut pwr_int: ExtiInput<'static, Async>
             }
         };
         select3(Timer::at(due), DISPLAY_WAKE.wait(), input_changed).await;
+    }
+}
+
+fn compose_page(page: Page, soc_pct: Option<u8>, cell_mv: Option<u32>) -> (Glass, pages::Short) {
+    match page {
+        Page::Face => pages::compose(&glass::status(soc_pct)),
+        Page::Battery => pages::compose_battery(&pages::Battery {
+            soc_pct,
+            cell_mv,
+            external: power::external_input(),
+        }),
+        Page::About => pages::compose_about(&pages::About {
+            version: version::VERSION,
+            build: version::BUILD_ID,
+        }),
     }
 }
 
@@ -890,15 +932,15 @@ fn minute_now() -> u32 {
     )
 }
 
-/// The charge in percent, for the face.
-async fn read_power(uart: Uart, bus: &mut pmic::AsyncBus, n: u32) -> Option<u8> {
+/// The charge in percent and the cell's voltage, for the face and the battery page.
+async fn read_power(uart: Uart, bus: &mut pmic::AsyncBus, n: u32) -> (Option<u8>, Option<u32>) {
     let s = pmic::snapshot(bus).await;
     if n.is_multiple_of(6) {
         pmic::write_report(uart, &s);
     }
     pmic::write_summary(uart, &s);
     power::note_reading(&s);
-    s.soc_raw.map(pmic::soc_percent)
+    (s.soc_raw.map(pmic::soc_percent), s.vcell_raw.map(pmic::vcell_mv))
 }
 
 static DISPLAY_WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
