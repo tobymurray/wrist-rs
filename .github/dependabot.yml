@@ -47,6 +47,8 @@ updates:
       prefix: build
       include: scope
 
+  # The build image's base. Merging a bump takes a published image and its digest
+  # pinned in release/toolchain.json (release/README.md, "Moving the image forward").
   - package-ecosystem: docker
     directory: /release
     schedule:

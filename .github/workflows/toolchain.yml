@@ -1,0 +1,104 @@
+name: Build image
+# Publishes release/Dockerfile as ghcr.io/OWNER/wrist-rs-build, for release/toolchain.json
+# to pin by the digest this prints (release/README.md, "Moving the image forward"). Every
+# version a tag's toolchain.json names stays published.
+on:
+  # Any branch, so a branch that changes the Dockerfile can pin its own image; never a tag.
+  push:
+    branches: ['**']
+    paths:
+      - release/Dockerfile
+      - .github/workflows/toolchain.yml
+  workflow_dispatch:
+    inputs:
+      mirror_base:
+        description: "Instead, copy the Dockerfile's base image by digest to ghcr.io/OWNER/stm32cubeide"
+        type: boolean
+        default: false
+permissions:
+  contents: read
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/wrist-rs-build
+jobs:
+  publish:
+    if: ${{ !inputs.mirror_base }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # tools/release-docker.py refuses a build_image whose label is not this file's hash.
+      - name: Hash the Dockerfile
+        id: dockerfile
+        run: echo "sha256=$(sha256sum release/Dockerfile | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        id: build
+        with:
+          context: release
+          file: release/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.IMAGE }}:${{ github.sha }}
+          labels: io.github.tobymurray.wrist-rs.dockerfile-sha256=${{ steps.dockerfile.outputs.sha256 }}
+          # Off, so the digest is the image's own manifest and not an index around it.
+          provenance: false
+          sbom: false
+      - name: Check the tools, and print the digest to pin
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          image="$IMAGE@$DIGEST"
+          docker run --rm --user "$(id -u):$(id -g)" --env HOME=/tmp "$image" bash -c \
+            'set -e; rustup toolchain list; rustc -V; arm-none-eabi-gcc --version | head -1; cmake --version | head -1; python3 -c "import elftools, PIL"'
+          echo "build_image: $image"
+          {
+            echo "### Build image published"
+            echo
+            echo "Pin it as \`build_image\` in \`release/toolchain.json\`:"
+            echo
+            echo "\`$image\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Keeps the base fetchable if Docker Hub loses it. The copy keeps its digest, so
+  # switching release/Dockerfile's FROM to it changes no byte of the image.
+  mirror:
+    if: ${{ inputs.mirror_base }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    env:
+      UPSTREAM: docker.io/xanderhendriks/stm32cubeide
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Copy the base by digest
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          from=$(sed -n 's/^FROM \([^ ]*\)$/\1/p' release/Dockerfile)
+          digest=${from#*@}
+          tag=${from%@*}; tag=${tag##*:}
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::FROM is not pinned by digest: $from"; exit 1; }
+          mirror="ghcr.io/$OWNER/stm32cubeide"
+          echo "$TOKEN" | skopeo login ghcr.io --username "$ACTOR" --password-stdin
+          skopeo copy --all --preserve-digests "docker://$UPSTREAM@$digest" "docker://$mirror:$tag"
+          copied="sha256:$(skopeo inspect --raw "docker://$mirror:$tag" | sha256sum | cut -d' ' -f1)"
+          [ "$copied" = "$digest" ] || { echo "::error::$mirror:$tag is $copied, not $digest"; exit 1; }
+          echo "FROM $mirror:$tag@$digest" | tee -a "$GITHUB_STEP_SUMMARY"
