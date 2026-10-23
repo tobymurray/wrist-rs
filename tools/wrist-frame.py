@@ -66,8 +66,8 @@ def read_console(port, seconds):
     buf, end = b'', time.time() + seconds
     while time.time() < end:
         buf += s.read(65536)
-        if b'[frame] end' in buf and buf.rstrip().endswith(b'\n') or b'[frame] abandoned' in buf:
-            buf += s.read(4096)
+        end = max(buf.find(b'[frame] end'), buf.find(b'[frame] abandoned'))
+        if end >= 0 and b'\n' in buf[end:]:
             break
     return buf.decode('utf-8', 'replace')
 
