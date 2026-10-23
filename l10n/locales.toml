@@ -1,0 +1,17 @@
+# The locales the image carries. `id` is stable and never reused; `tag` is the
+# CLDR locale whose dates, times and plural rules the generator takes from
+# ICU4X; `catalogue` is the Fluent file of its messages.
+#
+# `plural` is the locale's CLDR cardinal rules (common/supplemental/plurals.xml),
+# category then condition; `other` is implied. The generator turns them into a
+# function and a test checks it against ICU4X for every n from 0 to 10,000.
+
+[[locale]]
+id = 0
+tag = "en-GB"
+catalogue = "en.ftl"
+plural = { one = "i = 1 and v = 0" }
+# CLDR's en-GB has "Sept". The face keeps "Sep", the abbreviation it has always
+# drawn, which also keeps "Wed 30 Sep" inside its ten-glyph slot. The owner's
+# question: follow CLDR (and widen the slot), or keep this.
+month_overrides = { "9" = "Sep" }

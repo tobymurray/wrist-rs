@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/wrist-board", "crates/wrist-eeprom", "crates/wrist-flash", "crates/wrist-glass", "crates/wrist-pages", "crates/wrist-time", "crates/wrist-power", "crates/wrist-vcom"]
+members = ["crates/wrist-board", "crates/wrist-eeprom", "crates/wrist-flash", "crates/wrist-glass", "crates/wrist-l10n", "crates/wrist-l10n-gen", "crates/wrist-pages", "crates/wrist-time", "crates/wrist-power", "crates/wrist-vcom"]
 
 [profile.release]
 opt-level = "s"

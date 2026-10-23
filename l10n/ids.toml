@@ -1,0 +1,18 @@
+# Every message's stable number. Append only; never renumber or reuse one,
+# since a language pack built for an older catalogue still names messages by
+# these numbers.
+
+[messages]
+face-set-time = 0
+face-time-unset = 1
+face-date-invalid = 2
+charge-percent = 3
+charge-unset = 4
+battery-title = 5
+battery-cell-mv = 6
+battery-cell-unset = 7
+battery-input-usb = 8
+battery-input-cell = 9
+battery-input-unknown = 10
+about-title = 11
+about-product = 12

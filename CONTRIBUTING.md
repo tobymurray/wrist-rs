@@ -40,6 +40,7 @@ changes and `actionlint` when a workflow does.
 | [`apps/wrist-loader`](apps/wrist-loader) | The A/B loader in front of it |
 | [`apps/image-installer`](apps/image-installer) | The stock-firmware app that installs both the first time |
 | `crates/` | Host-tested logic |
+| [`l10n/`](l10n) | Every word the watch shows, and the locales it carries |
 | `vendor/` | Embassy's STM32 HAL and USB driver, with our patches |
 | `tools/` | Host tools, and the release recipe with its tests |
 | `release/` | The release zip's documents, and the gate before a release |

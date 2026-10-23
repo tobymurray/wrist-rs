@@ -59,6 +59,9 @@ cargo clippy --release
 `cargo test -p wrist-glass --features preview` renders the face to PNGs under
 `target/tmp/wrist-glass/`.
 
+After editing [`l10n/`](l10n), `cargo run -p wrist-l10n-gen` regenerates the messages
+and locale tables; `cargo test --workspace` fails until it has been run.
+
 [`tools/extract_pinmap.py`](tools/extract_pinmap.py), which needs `pdftotext`, regenerates
 [`crates/wrist-board/src/pins.rs`](crates/wrist-board/src/pins.rs) from the UNAcore schematic.
 

@@ -1,0 +1,10 @@
+[package]
+name = "wrist-l10n"
+version = "0.0.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "The watch's messages, dates, times and plurals per locale, compiled from l10n/"
+publish = false
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }

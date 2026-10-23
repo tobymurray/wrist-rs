@@ -1,6 +1,6 @@
-//! No user-visible text outside `src/strings.rs`: every string or byte-string literal in the
-//! crate's other sources is either an assertion's message, inside a `#[cfg(test)]` module, or
-//! on a line that says `// verbatim` (data such as hex digits, never words).
+//! No user-visible text in this crate: words come from `wrist-l10n`'s catalogue. Every string
+//! or byte-string literal in `src` is either an assertion's message, inside a `#[cfg(test)]`
+//! module, or on a line that says `// verbatim` (data such as hex digits, never words).
 
 use std::fs;
 use std::path::Path;
@@ -83,19 +83,19 @@ fn literals(source: &str) -> Vec<(usize, String)> {
 }
 
 #[test]
-fn no_text_outside_the_strings_module() {
+fn no_text_outside_the_catalogue() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut stray = Vec::new();
     for entry in fs::read_dir(&dir).unwrap() {
         let path = entry.unwrap().path();
-        if path.extension().is_none_or(|e| e != "rs") || path.ends_with("strings.rs") {
+        if path.extension().is_none_or(|e| e != "rs") {
             continue;
         }
         for (n, lit) in literals(&fs::read_to_string(&path).unwrap()) {
             stray.push(format!("{}:{n}: {lit}", path.file_name().unwrap().to_string_lossy()));
         }
     }
-    assert!(stray.is_empty(), "literals outside strings.rs (move them, or mark data `// verbatim`):\n{}", stray.join("\n"));
+    assert!(stray.is_empty(), "literals in wrist-glass (put words in l10n/en.ftl, or mark data `// verbatim`):\n{}", stray.join("\n"));
 }
 
 #[test]
