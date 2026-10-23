@@ -5,6 +5,7 @@
 
 mod console;
 mod crash;
+mod flash;
 mod glass;
 mod lcd;
 mod mmio;
@@ -78,6 +79,7 @@ pub enum Report {
     Full,
     UsbLog,
     Staging(usize),
+    FlashSurvey,
 }
 
 pub static REPORT: Signal<CriticalSectionRawMutex, Report> = Signal::new();
@@ -1019,6 +1021,7 @@ async fn report(handoff: RccSnapshot, measured_hz: u32, watchdog: watchdog::Star
             Report::Full => full_report(uart, &handoff, measured_hz, watchdog, "asked for").await,
             Report::UsbLog => usblog::dump(uart).await,
             Report::Staging(len) => update::staging_crcs(uart, len).await,
+            Report::FlashSurvey => flash::survey(uart).await,
         }
     }
 }
