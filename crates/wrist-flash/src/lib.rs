@@ -3,6 +3,7 @@
 //! The installer app's C interface: stage an image, put it over the kernel, reset into it.
 
 pub mod plan;
+pub mod survey;
 pub mod vectors;
 
 #[cfg(target_arch = "arm")]
