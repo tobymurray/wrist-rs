@@ -70,6 +70,10 @@ pub mod offset {
     pub const WRP: [u32; 4] = [0x58, 0x5C, 0x68, 0x6C];
 }
 
+/// `ADDR_OP` and `ADDR_ECC`: 21 bits on this part, an offset within the bank up to `0x1FFFF0`
+/// (RM0456 7.9.11, 7.9.12; 20 bits only on the 2 Mbyte parts).
+pub const ADDR_MASK: u32 = 0x1F_FFFF;
+
 /// An operation `OPSR` says a reset interrupted: `CODE_OP`, the bank and the offset in it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Interrupted {
@@ -166,7 +170,7 @@ impl Registers {
             code,
             bank2: self.opsr & (1 << 21) != 0,
             system_flash: self.opsr & (1 << 22) != 0,
-            offset: self.opsr & 0xF_FFFF,
+            offset: self.opsr & ADDR_MASK,
         })
     }
 
@@ -181,7 +185,7 @@ impl Registers {
             corrected,
             double,
             bank2: self.eccr & (1 << 21) != 0,
-            offset: self.eccr & 0xF_FFFF,
+            offset: self.eccr & ADDR_MASK,
         })
     }
 
@@ -291,6 +295,13 @@ mod tests {
         assert_eq!(op.name(), "page erase");
         assert!(op.bank2 && !op.system_flash);
         assert_eq!(op.page(), 0x1_8800 / 8192);
+    }
+
+    #[test]
+    fn addresses_reach_the_top_of_a_bank() {
+        let r = Registers { opsr: (3 << 29) | (1 << 21) | 0x1F_E010, eccr: (1 << 31) | (1 << 21) | 0x1F_FFF0, ..reset() };
+        assert_eq!(r.interrupted().unwrap().page(), 255);
+        assert_eq!(r.ecc().unwrap().offset, 0x1F_FFF0);
     }
 
     #[test]
