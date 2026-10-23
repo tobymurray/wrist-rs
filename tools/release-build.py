@@ -182,10 +182,13 @@ def copy(src, dest):
 
 
 # What the installer links from the SDK, besides UNA's own code: coreJSON, libstdc++, and in
-# its GUI LVGL with LVGL's own allocator and printf.
+# its GUI LVGL with LVGL's own allocator and printf, and LVGL's built-in fonts, converted
+# from Montserrat and Font Awesome 5 Free, both under the SIL OFL 1.1, whose texts LVGL keeps.
+LVGL_FONT_LICENSES = 'ThirdParty/lvgl/scripts/built_in_font/font_license/'
 SDK_LICENSES = ['LICENSE', 'THIRD-PARTY-LICENSES.md', 'ThirdParty/coreJSON/LICENSE',
                 'ThirdParty/lvgl/LICENCE.txt', 'ThirdParty/lvgl/src/stdlib/builtin/LICENSE_TLSF.txt',
-                'ThirdParty/lvgl/src/stdlib/builtin/LICENSE_SPRINTF.txt']
+                'ThirdParty/lvgl/src/stdlib/builtin/LICENSE_SPRINTF.txt',
+                LVGL_FONT_LICENSES + 'Montserrat/OFL.txt', LVGL_FONT_LICENSES + 'FontAwesome5/LICENSE.txt']
 
 
 # The docs in release/ as the zip holds them, under these names; the tools beside them.
@@ -297,7 +300,9 @@ def verify_archive(path, debug=False):
                          'tools/wrist-update.py', 'tools/wrist-cmd.py', 'tools/wrist-time.py', 'tools/wrist-crash.py',
                          'tools/wrist_port.py', 'tools/60-wrist-rs.rules', 'licenses/wrist-glass-font/LICENSE',
                          'licenses/sdk/libstdc++/GPL-3.0-or-later.txt', 'licenses/sdk/libstdc++/GCC-exception-3.1.txt',
-                         'licenses/gnu-arm-toolchain/license.txt']:
+                         'licenses/gnu-arm-toolchain/license.txt',
+                         'licenses/sdk/' + LVGL_FONT_LICENSES + 'Montserrat/OFL.txt',
+                         'licenses/sdk/' + LVGL_FONT_LICENSES + 'FontAwesome5/LICENSE.txt']:
                 require(name in names, 'missing user asset: ' + name)
 
 

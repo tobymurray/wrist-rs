@@ -20,10 +20,15 @@ Known bundled material:
 - **LVGL**, the SDK's submodule `ThirdParty/lvgl`, which the installer's GUI is built on:
   MIT, with its built-in allocator (TLSF) and printf (MIT); the three files are in
   `licenses/sdk/ThirdParty/lvgl/`, TLSF's saying only that it is under the BSD licence.
-  The GUI draws in LVGL's built-in Montserrat 14, 28 and 48, which LVGL converts from the
-  Montserrat typeface (SIL Open Font License 1.1) with FontAwesome symbols; LVGL ships
-  them under its MIT licence and carries no OFL text. Open item: whether the package
-  should carry the OFL as well.
+  The GUI draws in LVGL's built-in Montserrat 14, 28 and 48. LVGL converts them from the
+  Montserrat typeface (Copyright 2011 The Montserrat Project Authors) with symbols from
+  Font Awesome 5 Free (Copyright (c) 2022 Fonticons, Inc., Reserved Font Name "Font
+  Awesome"). Both are under the SIL Open Font License 1.1. Converted fonts are Modified
+  Versions of the Font Software, so the OFL's notice and licence come with them: the texts
+  LVGL keeps for the two typefaces are in
+  `licenses/sdk/ThirdParty/lvgl/scripts/built_in_font/font_license/`. LVGL names the
+  converted fonts after Montserrat, which reserves no name; nothing here is named Font
+  Awesome.
 - **libstdc++**: the installer links objects from the SDK's `libstdc++.a`, which is
   byte-identical to the one in GNU Tools for STM32 13.3.rel1.20240926-1715 (GCC 13.3.1),
   the compiler the release recipe uses. It is GPL-3.0-or-later with the GCC Runtime

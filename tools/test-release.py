@@ -86,8 +86,8 @@ class Packaging(unittest.TestCase):
 
     def test_workflow_builds_with_the_pinned_sdk(self):
         workflow = (r.ROOT/'.github/workflows/firmware.yml').read_text()
-        block = workflow[workflow.index('repository: UNAWatch/una-sdk'):].split('path: sdk')[0]
-        self.assertIn('ref: ' + r.CONFIG['sdk_commit'], block)
+        block = workflow[workflow.index('repository: ${{ steps.pins.outputs.sdk_repository }}'):].split('path: sdk')[0]
+        self.assertIn('ref: ${{ steps.pins.outputs.sdk_commit }}', block)
         self.assertIn('submodules: true', block)
 
     def test_combine_refuses_missing_empty_and_oversize(self):
@@ -130,6 +130,8 @@ class Packaging(unittest.TestCase):
             self.assertEqual(sorted(p.relative_to(d/'out').as_posix() for p in (d/'out').rglob('*') if p.is_file()), [
                 'gnu-arm-toolchain/license.txt', 'sdk/LICENSE', 'sdk/THIRD-PARTY-LICENSES.md',
                 'sdk/ThirdParty/coreJSON/LICENSE', 'sdk/ThirdParty/lvgl/LICENCE.txt',
+                'sdk/ThirdParty/lvgl/scripts/built_in_font/font_license/FontAwesome5/LICENSE.txt',
+                'sdk/ThirdParty/lvgl/scripts/built_in_font/font_license/Montserrat/OFL.txt',
                 'sdk/ThirdParty/lvgl/src/stdlib/builtin/LICENSE_SPRINTF.txt',
                 'sdk/ThirdParty/lvgl/src/stdlib/builtin/LICENSE_TLSF.txt',
                 'sdk/libstdc++/GCC-exception-3.1.txt',
