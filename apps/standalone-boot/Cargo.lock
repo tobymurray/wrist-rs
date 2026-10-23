@@ -1240,7 +1240,12 @@ version = "0.0.0"
 dependencies = [
  "embedded-graphics",
  "inscribed-disc",
+ "wrist-l10n",
 ]
+
+[[package]]
+name = "wrist-l10n"
+version = "0.0.0"
 
 [[package]]
 name = "wrist-pages"

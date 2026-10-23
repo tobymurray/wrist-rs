@@ -13,6 +13,7 @@ preview = ["inscribed-disc/preview"]
 [dependencies]
 inscribed-disc = { version = "0.2.1", default-features = false, features = ["embedded-graphics", "abgr2222"] }
 embedded-graphics = { version = "0.8", default-features = false }
+wrist-l10n = { path = "../wrist-l10n" }
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }

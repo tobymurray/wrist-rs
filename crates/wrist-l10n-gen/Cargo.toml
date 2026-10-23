@@ -1,0 +1,20 @@
+[package]
+name = "wrist-l10n-gen"
+version = "0.0.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "Compiles l10n/ and CLDR's data into wrist-l10n's generated module, and checks it"
+publish = false
+
+[dependencies]
+fluent-syntax = "0.12"
+icu = "2.4"
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+writeable = "0.6"
+
+[dev-dependencies]
+wrist-l10n = { path = "../wrist-l10n" }
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }

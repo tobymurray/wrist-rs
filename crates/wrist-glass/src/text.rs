@@ -157,6 +157,22 @@ pub fn fmt_i32(buf: &mut [u8; 11], value: i32) -> &str {
     core::str::from_utf8(&buf[i..]).unwrap_or("?") // verbatim: never taken, the digits are ASCII
 }
 
+impl<const N: usize> wrist_l10n::Sink for Line<N> {
+    type Error = Overflow;
+
+    fn text(&mut self, s: &str) -> Result<(), Overflow> {
+        self.push(s)
+    }
+
+    fn number(&mut self, n: u32) -> Result<(), Overflow> {
+        self.push_u32(n)
+    }
+
+    fn two_digits(&mut self, n: u8) -> Result<(), Overflow> {
+        self.push_two_digits(n)
+    }
+}
+
 pub const MAX_LINES: usize = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
