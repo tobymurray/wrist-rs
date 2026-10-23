@@ -553,6 +553,25 @@ pub unsafe extern "C" fn wrist_flash_staging_used() -> u32 {
     used
 }
 
+/// How many of the glyph store's pages (`layout::bank2::GLYPH_STORE`) hold anything, for the
+/// dry run's log: every return to stock should leave none.
+///
+/// # Safety
+/// Reads flash only.
+#[no_mangle]
+pub unsafe extern "C" fn wrist_flash_store_used() -> u32 {
+    invalidate_icache();
+    let mut used = 0;
+    for page in crate::layout::bank2::GLYPH_STORE {
+        let base = bank2_page_address(page as u8);
+        let words = plan::PAGE_SIZE_U32 / 4;
+        if (0..words).any(|w| read32(base + w * 4) != 0xFFFF_FFFF) {
+            used += 1;
+        }
+    }
+    used
+}
+
 /// Returns a negative code only if nothing in bank 1 was touched; otherwise it resets.
 ///
 /// # Safety

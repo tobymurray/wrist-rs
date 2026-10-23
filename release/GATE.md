@@ -102,7 +102,8 @@ The watch runs an earlier wrist-rs.
     Set the time, and repeat steps 5 and 6.
 16. Back to stock again (step 13), then a dry run with no `ARM_INSTALL`: `install.log`
     shows the last install's outcome record for this CRC in the witness page, the right
-    first page and count, and the staging area as the recovery left it.
+    first page and count, the staging area as the recovery left it, and `store` at `0 of
+    60` not blank: the recovery erased the glyph store.
 17. Arm the same candidate again and install: wrist-rs, `state boot`, the build.
 
 ### Record
