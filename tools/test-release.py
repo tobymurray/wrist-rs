@@ -24,9 +24,11 @@ def raw(addr, size=64):
     return struct.pack('<II', 0x2026FFE0, addr + 9) + bytes(size - 8)
 
 
-def uapp(version=0x010203):
-    b = struct.pack('<QIIII16sII', 0x854CD3EFBD7BA411, version, 3, 8, 0x22,
-                    b'Install', 3600, 900) + bytes(4508)
+def uapp(version=0x010203, flags=0x01, icons=b'\x41', gui=16):
+    """A utility .uapp: header, 60x60 and 30x30 icons, an 8-byte service, then the GUI."""
+    b = struct.pack('<QIIII16sII', 0x854CD3EFBD7BA411, version, 3, 8, flags,
+                    b'Install', 3600, 900) + icons * 3600 + icons * 900 + b'UAPP' + bytes(4) \
+        + (b'UAPP' + bytes(gui - 4) if gui else b'')
     return b + struct.pack('<I', zlib.crc32(b))
 
 
@@ -58,6 +60,7 @@ class Packaging(unittest.TestCase):
 
     def test_uapp_identity_crc_header_and_abi(self):
         self.assertEqual(r.validate_uapp(uapp(), '1.2.3')['libc_abi'], '0.0.3')
+        self.assertEqual(r.validate_uapp(uapp(), '1.2.3')['gui_bytes'], 16)
         for bad in [b'', uapp()[:-1], uapp()[:-4]+bytes(4), uapp(0x010204)]:
             with self.assertRaises(ValueError):
                 r.validate_uapp(bad, '1.2.3')
@@ -65,6 +68,27 @@ class Packaging(unittest.TestCase):
             b = bytearray(uapp()[:-4]); b[offset] ^= 1
             with self.assertRaises(ValueError):
                 r.validate_uapp(bytes(b)+struct.pack('<I', zlib.crc32(b)), '1.2.3')
+
+    def test_uapp_is_a_utility_only_the_launcher_starts(self):
+        # A glance (0x02), the withdrawn glance bit (0x20) that let the glances screen start
+        # other types, autostart (0x08), and the other types are all refused.
+        for flags in [0x02, 0x22, 0x21, 0x09, 0x00, 0x03]:
+            with self.assertRaises(ValueError, msg=hex(flags)):
+                r.validate_uapp(uapp(flags=flags), '1.2.3')
+        # A utility app needs its GUI and its launcher icons.
+        for bad in [uapp(gui=0), uapp(icons=b'\0')]:
+            with self.assertRaises(ValueError):
+                r.validate_uapp(bad, '1.2.3')
+        # The service's size has to land on the GUI's magic.
+        b = bytearray(uapp()[:-4]); b[-16] ^= 1
+        with self.assertRaises(ValueError):
+            r.validate_uapp(bytes(b) + struct.pack('<I', zlib.crc32(b)), '1.2.3')
+
+    def test_workflow_builds_with_the_pinned_sdk(self):
+        workflow = (r.ROOT/'.github/workflows/firmware.yml').read_text()
+        block = workflow[workflow.index('repository: ${{ steps.pins.outputs.sdk_repository }}'):].split('path: sdk')[0]
+        self.assertIn('ref: ${{ steps.pins.outputs.sdk_commit }}', block)
+        self.assertIn('submodules: true', block)
 
     def test_combine_refuses_missing_empty_and_oversize(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -105,7 +129,12 @@ class Packaging(unittest.TestCase):
             r.collect_licenses(d/'out', d/'sdk', [d/'missing', d/'rust'], str(gcc))
             self.assertEqual(sorted(p.relative_to(d/'out').as_posix() for p in (d/'out').rglob('*') if p.is_file()), [
                 'gnu-arm-toolchain/license.txt', 'sdk/LICENSE', 'sdk/THIRD-PARTY-LICENSES.md',
-                'sdk/ThirdParty/coreJSON/LICENSE', 'sdk/libstdc++/GCC-exception-3.1.txt',
+                'sdk/ThirdParty/coreJSON/LICENSE', 'sdk/ThirdParty/lvgl/LICENCE.txt',
+                'sdk/ThirdParty/lvgl/scripts/built_in_font/font_license/FontAwesome5/LICENSE.txt',
+                'sdk/ThirdParty/lvgl/scripts/built_in_font/font_license/Montserrat/OFL.txt',
+                'sdk/ThirdParty/lvgl/src/stdlib/builtin/LICENSE_SPRINTF.txt',
+                'sdk/ThirdParty/lvgl/src/stdlib/builtin/LICENSE_TLSF.txt',
+                'sdk/libstdc++/GCC-exception-3.1.txt',
                 'sdk/libstdc++/GPL-3.0-or-later.txt', 'wrist-glass-font/LICENSE'])
             for args in [(d/'sdk', [d/'missing'], str(gcc)), (d/'sdk', [d/'rust'], None),
                          (d/'sdk', [d/'rust'], str(d/'rust/MIT.txt')), (d/'rust', [d/'rust'], str(gcc))]:

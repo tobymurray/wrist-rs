@@ -36,6 +36,8 @@ jobs:
         with:
           repository: ${{ steps.pins.outputs.sdk_repository }}
           ref: ${{ steps.pins.outputs.sdk_commit }}
+          # LVGL, which the installer's GUI is built on.
+          submodules: true
           persist-credentials: false
           path: sdk
       - uses: actions/cache@v6

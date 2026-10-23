@@ -4,6 +4,6 @@
   "target": "thumbv8m.main-none-eabihf",
   "build_image": "ghcr.io/tobymurray/wrist-rs-build@sha256:a3f6c34301d187dc6ba630b36955dff43fadc054d6dc57057fd0915b2badb2e1",
   "sdk_url": "https://github.com/UNAWatch/una-sdk",
-  "sdk_tag": "sdk-v1.3.0",
-  "sdk_commit": "7a556a3e8538c0b1b495d45fe21a53b00a60a594"
+  "sdk_tag": "sdk-v1.6.1",
+  "sdk_commit": "d71d0dc3bad7d47282fcf5a4c53a3f0f2031afb1"
 }

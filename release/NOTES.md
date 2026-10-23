@@ -19,7 +19,8 @@ build's version and source commit.
 - Updates over USB with [`tools/wrist-update.py`](../tools/wrist-update.py), into a second
   slot, with rollback.
 - Everything the face does not use turned off at start, and deep sleep on battery.
-- The first install from stock firmware 1.6.1 with the `Install` glance, and the way back
+- The first install from stock firmware 1.6.1 with the `Install` app and a confirm on its
+  screen, and the way back
   through UNA's own recovery, both in the [install guide](INSTALL.md).
 
 ## Checked on the watch
