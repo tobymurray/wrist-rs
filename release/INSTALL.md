@@ -37,7 +37,7 @@ tobymurray/wrist-rs` shows which workflow and commit built it.
 
 ## Stock to wrist-rs
 
-<img src="images/stock-to-wrist-rs.svg" width="480" alt="From the stock firmware to wrist-rs">
+<img src="images/stock-to-wrist-rs.svg" width="720" alt="From the stock firmware to wrist-rs: open Install, its dry run reads Checking, then the image CRC; hold Select 3 s; Installing; wrist-rs">
 
 1. Connect the data cable. Stock firmware shows the watch's storage as a USB drive (not
    `UNA BOOT`, which is the recovery's drive).
@@ -133,7 +133,7 @@ report.
 
 ## Back to stock, and out of any failure
 
-<img src="images/wrist-rs-to-stock.svg" width="480" alt="From wrist-rs back to the stock firmware">
+<img src="images/wrist-rs-to-stock.svg" width="600" alt="From wrist-rs back to the stock firmware: hold Select 16 s, copy the .ota to UNA BOOT, unplug and choose Continue">
 
 1. Have the checked `.ota` and your backup ready. Hold **Select** for about 16 seconds,
    which resets the watch's power, and keep holding until the bootloader's USB screen.
