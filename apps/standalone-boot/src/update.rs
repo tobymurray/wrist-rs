@@ -30,8 +30,6 @@ pub type FlashMutex = Mutex<NoopRawMutex, RefCell<Bank1Region<'static, Blocking>
 
 static FLASH: StaticCell<FlashMutex> = StaticCell::new();
 
-pub const BUILD_ID: &str = env!("WRIST_BUILD_ID");
-
 pub fn init(flash: Peri<'static, FLASH>) -> &'static FlashMutex {
     let layout = Flash::new_blocking(flash).into_blocking_regions();
     FLASH.init(Mutex::new(RefCell::new(layout.bank1_region)))

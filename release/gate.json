@@ -4,5 +4,6 @@
   "round_trip_validated": true,
   "license_distribution_approved": true,
   "notices_reviewed": true,
-  "github_candidate_run_verified": true
+  "github_candidate_run_verified": true,
+  "image_crc32": ""
 }

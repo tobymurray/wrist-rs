@@ -74,8 +74,8 @@ tobymurray/wrist-rs` shows which workflow and commit built it.
    (below).
 7. Plug the cable back in. wrist-rs is a serial console, not a USB drive. Set up the tools
    (next), run `.venv/bin/python tools/wrist-cmd.py "boot;version"` until `boot` says
-   **`state boot`**, check that the build is the first 12 digits of `manifest.json`'s
-   `source_commit`, and set the time.
+   **`state boot`**, check that the build is `manifest.json`'s `build_id`, and set the
+   time.
 
 ## The tools
 

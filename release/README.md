@@ -15,6 +15,13 @@ The version is a clean `vA.B.C[-suffix]` tag on HEAD; other builds are
 The tag's `A.B.C` is the apps' Cargo version, bumped in both [`Cargo.toml`](../Cargo.toml) files before
 tagging.
 
+The image carries a build ID, which the console's `version` prints and `manifest.json`
+records as `build_id` beside `source_commit`: a hash of the files that go into the
+binaries, listed in [`build-inputs.txt`](build-inputs.txt), so that a commit of only the
+gate's record, docs, the site or host tools rebuilds the same bytes
+([GATE.md](GATE.md#publishing)). [`tools/firmware_build.py`](../tools/firmware_build.py)
+holds the part of the recipe that shapes the binaries, and computes the ID.
+
 ## Build locally
 
 With Docker, on Linux. On Apple silicon, `export DOCKER_DEFAULT_PLATFORM=linux/amd64`

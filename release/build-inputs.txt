@@ -1,0 +1,39 @@
+# The inputs of the firmware hash, the build ID that `version` prints and manifest.json
+# records as `build_id`: one git pathspec per line, from the repository's root. The ID is
+# the first 12 hex digits of `git hash-object` over `git ls-files -s -z` of these paths,
+# so it names the blobs that build app.bin, loader.bin, image.bin and the installer's
+# .uapp, and a commit that touches nothing here keeps it. `-dirty` follows it when any of
+# these paths has an uncommitted change or an untracked file.
+# tools/firmware_build.py and apps/standalone-boot/build.rs both compute it from this list.
+#
+# Left out, because none of it reaches a binary: gate.json and the other release/ docs,
+# site/, the workflows (firmware.yml's SDK revision is toolchain.json's, which the recipe
+# enforces), the host tools and their tests, and the packaging half of
+# tools/release-build.py. This list itself is left out too: what it selects is hashed.
+
+# The image: its source, build script, linker script, target and lock file.
+apps/standalone-boot
+# The loader, the first 32 KiB of image.bin.
+apps/wrist-loader
+# The installer's service and its CMake build, in the .uapp.
+apps/image-installer
+# The image links every crate here; the installer links wrist-flash.
+crates
+# Embassy's STM32 HAL and USB driver, with our patches.
+vendor
+# The root workspace, where the installer's wrist-flash builds: its profile and lock file.
+Cargo.toml
+Cargo.lock
+# The stable compiler and target, for the image, the loader and wrist-flash.
+rust-toolchain.toml
+# The nightly that builds the installer's wrist-flash, and the UNA SDK's commit.
+release/toolchain.json
+# The compiler image: the GNU Arm toolchain and CMake.
+release/Dockerfile
+# How the recipe compiles and combines: environment, flags, commands.
+tools/firmware_build.py
+tools/combine-image.py
+
+# Documentation, and the crates' host-only integration tests.
+:(exclude,glob)**/*.md
+:(exclude,glob)crates/*/tests/**

@@ -103,6 +103,7 @@ jobs:
           g = json.load(open('release/gate.json'))
           assert g['hardware_install_numbers'], 'the round trip has no numbered hardware evidence'
           assert g['stock_version'], 'no stock version validated for the installer'
+          assert g['image_crc32'], 'no gated image CRC'
           for k in ['round_trip_validated', 'license_distribution_approved', 'notices_reviewed', 'github_candidate_run_verified']:
               assert g[k] is True, f'release gate open: {k}'
           PY
@@ -121,12 +122,17 @@ jobs:
           (cd assets && sha256sum -c SHA256SUMS)
           python3 - <<'PY'
           import json, os, pathlib, zipfile
-          for path in pathlib.Path('assets').glob('*.zip'):
+          gated = json.load(open('release/gate.json'))['image_crc32']
+          zips = list(pathlib.Path('assets').glob('*.zip'))
+          assert zips, 'no release archives'
+          for path in zips:
               with zipfile.ZipFile(path) as z:
                   m = json.loads(z.read('manifest.json'))
               assert m['release_ready'] is True and not m['checks_skipped'] and not m['dirty']
               assert m['source_commit'] == os.environ['SOURCE_SHA']
               assert 'v' + m['version'] == os.environ['RELEASE_TAG']
+              # The image the gate installed, which the build ID carries through the gate's commit.
+              assert gated and m['image_crc32'] == gated, f"{path.name}: image {m['image_crc32']} is not the gated {gated}"
           PY
           # List first: authentication/network failures fail closed, not "not found".
           gh api --paginate "repos/$GH_REPO/releases" --jq '.[].tag_name' > /tmp/release-tags

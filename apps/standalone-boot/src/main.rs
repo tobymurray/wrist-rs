@@ -17,6 +17,7 @@ mod sleep;
 mod uart;
 mod update;
 mod usblog;
+mod version;
 mod watchdog;
 
 use core::panic::PanicInfo;
@@ -356,7 +357,7 @@ fn main() -> ! {
     uart.write_str("[12] flash shared; loader state ");
     uart.write_str(update::state_name(flash));
     uart.write_str("; build ");
-    uart.write_line(update::BUILD_ID);
+    uart.write_line(version::BUILD_ID);
     uart.flush();
 
     let parked = park::Pins {
@@ -974,7 +975,7 @@ async fn full_report(
     uart.write_str("[step] wdog  : ");
     uart.write_line(watchdog.as_str());
     uart.write_str("[step] build : ");
-    uart.write_line(update::BUILD_ID);
+    uart.write_line(version::BUILD_ID);
     make_room().await;
 
     uart.write_line("[step] rtc   :");

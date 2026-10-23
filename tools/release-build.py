@@ -15,12 +15,30 @@ import sys
 import zipfile
 import zlib
 
+import firmware_build
+
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = json.loads((ROOT / 'release/toolchain.json').read_text())
 TARGET = CONFIG['target']
 # firmware.yml's publish job checks the same list.
 GATE_FLAGS = ['round_trip_validated', 'license_distribution_approved', 'notices_reviewed',
               'github_candidate_run_verified']
+
+
+def gate_open(gate, crc):
+    """Why `gate` does not release the image whose CRC is `crc`; empty when it does. The gate
+    tested one image, and the build ID makes a later commit of anything else rebuild it
+    byte for byte, so the CRC must be the gate's."""
+    reasons = [f'release gate open: {k}' for k in GATE_FLAGS if gate.get(k) is not True]
+    if not gate.get('hardware_install_numbers'):
+        reasons.append('the round trip has no numbered hardware evidence')
+    if not gate.get('stock_version'):
+        reasons.append('no stock version validated for the installer')
+    if not gate.get('image_crc32'):
+        reasons.append('no gated image CRC')
+    elif gate['image_crc32'] != crc:
+        reasons.append(f'image CRC {crc} is not the gated {gate["image_crc32"]}')
+    return reasons
 
 
 def run(*args, cwd=ROOT, env=None):
@@ -273,22 +291,16 @@ def main():
     require(output('git', 'rev-parse', 'HEAD', cwd=a.sdk) == CONFIG['sdk_commit'], 'wrong SDK revision')
     require(not output('git', 'status', '--porcelain', cwd=a.sdk), 'dirty SDK')
     tags = output('git', 'tag', '--points-at', 'HEAD').splitlines()
-    if not a.allow_dirty and a.version != '0.0.0-candidate.' + commit[:12]:
+    release = not a.allow_dirty and a.version != '0.0.0-candidate.' + commit[:12]
+    if release:
         require('v' + a.version in tags, 'version must match a tag on HEAD')
         require_app_versions(a.version)
-    env = os.environ.copy()
-    env.pop('CARGO_TARGET_DIR', None)
-    env.pop('RUSTC_WRAPPER', None)
-    env.pop('CARGO_ENCODED_RUSTFLAGS', None)
-    env['UNA_SDK'] = str(a.sdk)
-    env['SOURCE_DATE_EPOCH'] = output('git', 'show', '-s', '--format=%ct', 'HEAD')
-    env['WRIST_RELEASE_BUILD_ID'] = commit[:12]
-    env['RUSTFLAGS'] = f'--remap-path-prefix={ROOT}=/src --remap-path-prefix={Path.home()}=/builder'
-    env['TZ'] = 'UTC'
+    build_id = firmware_build.build_id()
+    env = firmware_build.environment(os.environ, a.sdk, build_id)
     commands = []
     map_dir = Path('/tmp/wrist-rs-release-maps')
     map_dir.mkdir(exist_ok=True)
-    # A fixed map path, because RUSTFLAGS enter Cargo's fingerprints; builds sharing it take turns.
+    # A fixed map path (firmware_build.with_map); builds sharing it take turns.
     map_lock = (map_dir / 'build.lock').open('w')
     fcntl.flock(map_lock, fcntl.LOCK_EX)
     replacements = path_replacements(
@@ -297,7 +309,7 @@ def main():
         (os.environ.get('RUSTUP_HOME'), '$RUSTUP_HOME'),
         (Path.home(), '$HOME'), (sys.executable, 'python3'))
 
-    def execute(*args, cwd=ROOT):
+    def execute(*args, cwd=ROOT, env=env):
         commands.append(normalize_paths(
             {'cwd': str(cwd.relative_to(ROOT)), 'argv': list(map(str, args))}, replacements))
         run(*args, cwd=cwd, env=env)
@@ -311,34 +323,22 @@ def main():
         execute(sys.executable, ROOT/'tools/test-release.py')
         execute('cargo', 'test', '--locked', '--workspace')
         execute('cargo', 'clippy', '--locked', '--workspace', '--all-targets', '--', '-D', 'warnings')
-    for app, bin_name in [('wrist-loader', 'loader'), ('standalone-boot', 'app')]:
-        cwd = ROOT / 'apps' / app
+    for app, bin_name in firmware_build.APPS:
         map_path = map_dir / (bin_name + '.map')
-        env['RUSTFLAGS'] += f' -C link-arg=-Map={map_path}'
-        execute('cargo', 'build', '--locked', '--release', cwd=cwd)
+        app_env = firmware_build.with_map(env, map_path)
+        elf = firmware_build.build_app(execute, app_env, app, user / (bin_name + '.bin'), target=TARGET)
         if not a.skip_checks:
-            execute('cargo', 'clippy', '--locked', '--release', '--', '-D', 'warnings', cwd=cwd)
-        elf = cwd / 'target' / TARGET / 'release' / app
-        execute('arm-none-eabi-objcopy', '-O', 'binary', elf, user / (bin_name + '.bin'))
+            execute('cargo', 'clippy', '--locked', '--release', '--', '-D', 'warnings', cwd=ROOT/'apps'/app, env=app_env)
         validate_elf(elf, *(layout()[0] if bin_name == 'loader' else layout()[1]))
         copy(elf, debug / (bin_name + '.elf'))
         copy(map_path, debug / (bin_name + '.map'))
-        env['RUSTFLAGS'] = env['RUSTFLAGS'].split(' -C link-arg=-Map=')[0]
     first = user / 'first-install/Apps/ImageInstaller'
     first.mkdir(parents=True)
-    execute(sys.executable, ROOT / 'tools/combine-image.py', user / 'loader.bin', user / 'app.bin', first / 'image.bin')
+    firmware_build.combine(execute, env, user / 'loader.bin', user / 'app.bin', first / 'image.bin')
     crc = validate_image((user/'loader.bin').read_bytes(), (user/'app.bin').read_bytes(), (first/'image.bin').read_bytes())
     (user/'INSTALL-CRC.txt').write_text(crc + '\n')
     appdir = ROOT / 'apps/image-installer/App'
-    build = a.out / 'installer-build'
-    (appdir.parent / 'Output').mkdir(exist_ok=True)
-    flags = f'-fmacro-prefix-map={ROOT}=/src -fmacro-prefix-map={a.sdk}=/sdk'
-    execute('cmake', '-S', appdir, '-B', build, '-G', 'Unix Makefiles',
-            f'-DBUILD_VERSION={a.version}', f'-DWRIST_NIGHTLY={CONFIG["nightly"]}',
-            f'-DCMAKE_C_FLAGS={flags}', f'-DCMAKE_CXX_FLAGS={flags}',
-            f'-DWRIST_RUSTFLAGS=-C relocation-model=pic {env["RUSTFLAGS"]}')
-    execute('cmake', '--build', build, '--parallel', '2')
-    uapp = build / f'Install_{a.version}.uapp'
+    uapp = firmware_build.build_installer(execute, env, a.sdk, a.version, CONFIG['nightly'], a.out / 'installer-build')
     abi = validate_uapp(uapp.read_bytes(), a.version)
     copy(uapp, first/uapp.name)
     copy(appdir/'build/ImageInstallerService.elf', debug/'ImageInstallerService.elf')
@@ -380,12 +380,14 @@ def main():
                     copy(p, licenses/'rust-toolchain'/compiler/'licenses'/p.relative_to(doc/'licenses'))
     require(not list(first.rglob('ARM_INSTALL')), 'armed package')
     gate = json.loads((ROOT/'release/gate.json').read_text())
-    ready = (bool(gate['hardware_install_numbers']) and bool(gate['stock_version'])
-             and all(gate[k] is True for k in GATE_FLAGS))
-    manifest = {'schema': 1, 'version': a.version, 'source_commit': commit, 'tags': tags, 'dirty': dirty,
-                'release_ready': ready and not dirty and not a.skip_checks, 'release_gate': gate, 'configuration': 'default features; UNAcore + LS012 + original modules',
+    blockers = gate_open(gate, crc)
+    for reason in blockers:
+        print('Not releasable:', reason)
+    require(not release or not blockers, f'v{a.version} is not the gated build: ' + '; '.join(blockers))
+    manifest = {'schema': 1, 'version': a.version, 'build_id': build_id, 'source_commit': commit, 'tags': tags, 'dirty': dirty,
+                'release_ready': not blockers and not dirty and not a.skip_checks, 'release_gate': gate, 'configuration': 'default features; UNAcore + LS012 + original modules',
                 'toolchain': CONFIG, 'features': {'standalone-boot': [], 'wrist-loader': [], 'wrist-flash': ['panic-handler']}, 'container_id': a.container_id, 'checks_skipped': a.skip_checks,
-                'tracked_diff_and_recipe_sha256': hashlib.sha256(subprocess.check_output(['git', 'diff', '--binary', 'HEAD']) + (ROOT/'tools/release-build.py').read_bytes() + (ROOT/'release/toolchain.json').read_bytes()).hexdigest(),
+                'tracked_diff_and_recipe_sha256': hashlib.sha256(subprocess.check_output(['git', 'diff', '--binary', 'HEAD']) + (ROOT/'tools/release-build.py').read_bytes() + (ROOT/'tools/firmware_build.py').read_bytes() + (ROOT/'release/toolchain.json').read_bytes()).hexdigest(),
                 'tools': {t: output(*cmd) for t, cmd in {
                     'rustc': ['rustc', '-Vv'], 'nightly': ['rustc', '+'+CONFIG['nightly'], '-Vv'],
                     'cargo': ['cargo', '--version'], 'objcopy': ['arm-none-eabi-objcopy', '--version'],

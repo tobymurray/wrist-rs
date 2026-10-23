@@ -22,6 +22,13 @@ rustup component add llvm-tools
 `cargo build --release --features usb-log` also keeps `embassy-usb`'s own log of the link,
 which the console's `usblog` prints.
 
+The console's `version` prints the image's build ID: 12 hex digits hashing the tracked
+files that go into the binaries, listed in [release/build-inputs.txt](release/build-inputs.txt),
+with `-dirty` when one of them has an uncommitted change. A commit that touches none of
+them, such as a docs change, keeps the ID and the image's bytes. `python3
+tools/firmware_build.py` prints the ID of the checkout, and `WRIST_RELEASE_BUILD_ID=<name>
+cargo build --release` names a build instead.
+
 ## The loader
 
 ```sh

@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """Package safety checks without firmware compilation or hardware."""
 import importlib.util
+import json
+import os
 from pathlib import Path
+import re
 import struct
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 import zlib
 import zipfile
@@ -150,6 +154,120 @@ class Packaging(unittest.TestCase):
     def test_maximum_layout(self):
         l, a = raw(0x08060000, 32768), raw(0x08068000, 524288)
         r.validate_image(l, a, l+a)
+
+
+def git(d, *args, when=None):
+    env = dict(os.environ, GIT_AUTHOR_DATE=f'@{when} +0000', GIT_COMMITTER_DATE=f'@{when} +0000') if when else None
+    subprocess.run(['git', '-c', 'user.name=t', '-c', 'user.email=t@example.org', '-c', 'commit.gpgsign=false',
+                    *args], cwd=d, env=env, check=True, capture_output=True)
+
+
+class BuildId(unittest.TestCase):
+    """The build ID names the binaries' inputs, so the gate's commit rebuilds the gated bytes."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.d = Path(self.tmp.name)
+        files = {'release/build-inputs.txt': (r.ROOT/'release/build-inputs.txt').read_text(),
+                 'apps/standalone-boot/src/main.rs': 'fn main() {}\n', 'apps/wrist-loader/LAYOUT.md': 'map\n',
+                 'crates/wrist-glass/src/lib.rs': '\n', 'crates/wrist-glass/tests/face.rs': '\n',
+                 'rust-toolchain.toml': '[toolchain]\n', 'release/gate.json': '{}\n', 'release/GATE.md': 'gate\n',
+                 'README.md': 'readme\n', 'site/index.html': '<p>\n', '.github/workflows/firmware.yml': 'on: push\n',
+                 'tools/release-build.py': '\n', 'tools/firmware_build.py': '\n'}
+        for name, text in files.items():
+            (self.d/name).parent.mkdir(parents=True, exist_ok=True)
+            (self.d/name).write_text(text)
+        git(self.d, 'init', '-q')
+        git(self.d, 'add', '.')
+        git(self.d, 'commit', '-qm', 'base', when=1000)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def commit(self, name, text, when):
+        (self.d/name).write_text(text)
+        git(self.d, 'commit', '-qam', name, when=when)
+
+    def epoch(self):
+        return r.firmware_build.environment({}, '/sdk', '', self.d)['SOURCE_DATE_EPOCH']
+
+    def test_other_commits_keep_it(self):
+        base = r.firmware_build.build_id(self.d)
+        self.assertRegex(base, r'^[0-9a-f]{12}$')
+        for when, name in enumerate(['release/gate.json', 'release/GATE.md', 'README.md', 'site/index.html',
+                                     'apps/wrist-loader/LAYOUT.md', 'crates/wrist-glass/tests/face.rs',
+                                     '.github/workflows/firmware.yml', 'tools/release-build.py'], 2000):
+            self.commit(name, 'changed\n', when)
+            self.assertEqual(r.firmware_build.build_id(self.d), base, name)
+        self.assertEqual(self.epoch(), '1000')
+
+    def test_inputs_change_it(self):
+        seen = {r.firmware_build.build_id(self.d)}
+        for when, name in enumerate(['apps/standalone-boot/src/main.rs', 'crates/wrist-glass/src/lib.rs',
+                                     'rust-toolchain.toml', 'tools/firmware_build.py'], 2000):
+            self.commit(name, 'changed\n', when)
+            seen.add(r.firmware_build.build_id(self.d))
+            self.assertEqual(self.epoch(), str(when))
+        self.assertEqual(len(seen), 5)
+
+    def test_uncommitted_inputs_are_dirty(self):
+        base = r.firmware_build.build_id(self.d)
+        (self.d/'README.md').write_text('edited\n')
+        (self.d/'site/new.html').write_text('\n')
+        self.assertEqual(r.firmware_build.build_id(self.d), base)
+        (self.d/'crates/wrist-glass/src/new.rs').write_text('\n')
+        self.assertEqual(r.firmware_build.build_id(self.d), base + '-dirty')
+        (self.d/'crates/wrist-glass/src/new.rs').unlink()
+        (self.d/'apps/standalone-boot/src/main.rs').write_text('fn main() { loop {} }\n')
+        self.assertEqual(r.firmware_build.build_id(self.d), base + '-dirty')
+
+    def test_matches_git_alone(self):
+        """The computation build.rs repeats, with git alone."""
+        specs = r.firmware_build.inputs(self.d)
+        listing = subprocess.check_output(['git', 'ls-files', '-s', '-z', '--', *specs], cwd=self.d)
+        digest = subprocess.check_output(['git', 'hash-object', '--stdin'], cwd=self.d, input=listing).decode()
+        self.assertEqual(r.firmware_build.build_id(self.d), digest[:12])
+
+
+GATE = {'stock_version': '1.6.1', 'hardware_install_numbers': [1], 'round_trip_validated': True,
+        'license_distribution_approved': True, 'notices_reviewed': True, 'github_candidate_run_verified': True,
+        'image_crc32': '0A1B2C3D'}
+
+
+class GatedImage(unittest.TestCase):
+    """A release is the image the gate installed: its CRC is gate.json's."""
+
+    def test_recipe(self):
+        self.assertEqual(r.gate_open(GATE, '0A1B2C3D'), [])
+        self.assertEqual(r.gate_open(GATE, '0A1B2C3E'), ['image CRC 0A1B2C3E is not the gated 0A1B2C3D'])
+        for crc in ['', None]:
+            self.assertEqual(r.gate_open(dict(GATE, image_crc32=crc), '0A1B2C3D'), ['no gated image CRC'])
+        self.assertTrue(r.gate_open(dict(GATE, notices_reviewed=False), '0A1B2C3D'))
+        self.assertIn('image_crc32', json.loads((r.ROOT/'release/gate.json').read_text()))
+
+    def publish(self, gate, crc):
+        """Run firmware.yml's publish checks on one archive built with `crc`; True when they pass."""
+        workflow = (r.ROOT/'.github/workflows/firmware.yml').read_text()
+        job = workflow[workflow.index('\n  publish:'):]
+        scripts = re.findall(r"python3 - <<'PY'\n(.*?)\n *PY\n", job, re.S)
+        self.assertEqual(len(scripts), 2)
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d/'release').mkdir(); (d/'assets').mkdir()
+            (d/'release/gate.json').write_text(json.dumps(gate))
+            manifest = {'release_ready': True, 'checks_skipped': False, 'dirty': False, 'source_commit': 'abc',
+                        'version': '1.2.3', 'image_crc32': crc}
+            with zipfile.ZipFile(d/'assets/wrist-rs-1.2.3.zip', 'w') as z:
+                z.writestr('manifest.json', json.dumps(manifest))
+            env = dict(os.environ, SOURCE_SHA='abc', RELEASE_TAG='v1.2.3')
+            return all(subprocess.run([sys.executable, '-c', textwrap.dedent(s)], cwd=d, env=env,
+                                      capture_output=True).returncode == 0 for s in scripts)
+
+    def test_publish_job(self):
+        self.assertTrue(self.publish(GATE, '0A1B2C3D'))
+        self.assertFalse(self.publish(GATE, '0A1B2C3E'))
+        self.assertFalse(self.publish(dict(GATE, image_crc32=''), '0A1B2C3D'))
+        self.assertFalse(self.publish(dict(GATE, image_crc32=''), ''))
 
 
 if __name__ == '__main__':

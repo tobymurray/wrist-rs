@@ -19,10 +19,11 @@ that writes flash is a numbered install in the validation records, failures incl
 ### Prepare
 
 1. Beside the zips, `sha256sum -c SHA256SUMS` (macOS: `shasum -a 256 -c SHA256SUMS`).
-   Note `source_commit` and `image_crc32` from `manifest.json`.
+   Note `build_id` and `image_crc32` from `manifest.json`.
 2. Download the stock `.ota` of the version the release notes name and check it as
    INSTALL.md says. Charge the watch above 50 %.
-3. Build a second copy of the image that names itself, for step 12:
+3. Build a second copy of the image that names itself `gate-test` in place of the build
+   ID, for step 12:
 
    ```sh
    cd apps/standalone-boot
@@ -38,7 +39,7 @@ The watch runs an earlier wrist-rs.
    `.venv/bin/python tools/wrist-update.py first-install/Apps/ImageInstaller/image.bin` each
    exit at once with one line and send nothing. Then `.venv/bin/python tools/wrist-update.py
    app.bin`. Expect `[update] ok`, a restart and `state boot`. `cmd "boot;version"`:
-   `state boot`, and the build is the first 12 digits of `source_commit`. Once more, pulling
+   `state boot`, and the build is `build_id`. Once more, pulling
    the cable at about half way and plugging it back in: the next `update` is accepted. Once
    more, killing the tool half way: about 5 s later the console prints `[update] error: no
    data for 5 s; transfer abandoned`, answers `version`, and the next `update` is accepted.
@@ -88,7 +89,7 @@ The watch runs an earlier wrist-rs.
     Back until the watch restarts: the loader swaps `gate-test` in, and it starts on
     battery with no computer to keep it. Once the face is back, wait 30 s, then hold Back
     until it restarts again: the loader puts the previous image back. Plug in. `cmd
-    version` shows `source_commit`'s 12 digits, not `gate-test`, and `boot` shows
+    version` shows `build_id`, not `gate-test`, and `boot` shows
     `state boot`.
 
 ### D. Stock and back: the full-size installer's round trip
@@ -109,7 +110,8 @@ The watch runs an earlier wrist-rs.
 18. Write each install into the validation records, with its output; failures too.
 19. On `main`, add anything learned to HARDWARE.md.
 20. In [`gate.json`](gate.json): the install numbers, `stock_version` as the version steps 13 to 17
-    used, and `round_trip_validated` true only if steps 4 to 17 all passed.
+    used, `image_crc32` as step 1 noted it, and `round_trip_validated` true only if steps 4
+    to 17 all passed.
 21. In [NOTES.md](NOTES.md): what this release was checked to do, and on which stock
     version.
 
@@ -125,6 +127,14 @@ The watch runs an earlier wrist-rs.
 
 Commit [`gate.json`](gate.json), tag that commit `vA.B.C` and push the tag. Review the tag's CI run,
 then run the firmware workflow on the tag with `publish` set.
+
+The tag's image is the gated one byte for byte: the build ID hashes only what goes into the
+binaries ([`build-inputs.txt`](build-inputs.txt)), and `gate.json`, the docs and the
+release notes are not among it, so the tag's commit rebuilds the same `loader.bin`,
+`app.bin` and `image.bin`, with the same CRC; the installer's `.uapp` also carries the
+version it is built as. The recipe and the publish job refuse a release whose `image_crc32`
+is not `gate.json`'s. A commit after the gate that changes an input changes the image, and
+the gate runs again on the new candidate.
 
 A loader change is validated on its own, recovery included: the loader has no second
 slot.
