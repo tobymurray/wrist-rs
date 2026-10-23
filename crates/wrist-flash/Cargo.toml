@@ -1,0 +1,14 @@
+[package]
+name = "wrist-flash"
+version = "0.0.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "Writes a standalone image into the kernel partition, behind a C interface for the installer app"
+publish = false
+
+[features]
+# For the installer's static library, which must supply the panic handler.
+panic-handler = []
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }

@@ -1,0 +1,13 @@
+[package]
+name = "wrist-eeprom"
+version = "0.0.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "Reader for the N24S64B EEPROM on each UNA Watch module"
+publish = false
+
+[dependencies]
+embedded-hal = "1"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }

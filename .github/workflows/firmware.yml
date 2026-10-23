@@ -1,0 +1,149 @@
+name: Firmware candidates and releases
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish a new versioned release (run on an existing vA.B.C tag only)'
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          path: source
+      - uses: actions/checkout@v7
+        with:
+          repository: UNAWatch/una-sdk
+          ref: 7a556a3e8538c0b1b495d45fe21a53b00a60a594
+          persist-credentials: false
+          path: sdk
+      - uses: actions/cache@v6
+        with:
+          path: source/target
+          key: firmware-root-${{ runner.os }}-${{ hashFiles('source/Cargo.lock', 'source/release/Dockerfile', 'source/release/toolchain.json') }}-${{ github.sha }}
+          restore-keys: |
+            firmware-root-${{ runner.os }}-${{ hashFiles('source/Cargo.lock', 'source/release/Dockerfile', 'source/release/toolchain.json') }}-
+      - uses: actions/cache@v6
+        with:
+          path: source/apps/standalone-boot/target
+          key: firmware-app-${{ runner.os }}-${{ hashFiles('source/apps/standalone-boot/Cargo.lock', 'source/release/Dockerfile', 'source/release/toolchain.json') }}-${{ github.sha }}
+          restore-keys: |
+            firmware-app-${{ runner.os }}-${{ hashFiles('source/apps/standalone-boot/Cargo.lock', 'source/release/Dockerfile', 'source/release/toolchain.json') }}-
+      - uses: actions/cache@v6
+        with:
+          path: source/apps/wrist-loader/target
+          key: firmware-loader-${{ runner.os }}-${{ hashFiles('source/apps/wrist-loader/Cargo.lock', 'source/release/Dockerfile', 'source/release/toolchain.json') }}-${{ github.sha }}
+          restore-keys: |
+            firmware-loader-${{ runner.os }}-${{ hashFiles('source/apps/wrist-loader/Cargo.lock', 'source/release/Dockerfile', 'source/release/toolchain.json') }}-
+      - name: Build compiler image without registry authentication
+        working-directory: source
+        run: docker build -t wrist-rs-build -f release/Dockerfile .
+      - name: Build, lint, test and package
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          commit=$(git -C source rev-parse HEAD)
+          version="0.0.0-candidate.${commit:0:12}"
+          if [ "$REF_TYPE" = tag ]; then version="${REF_NAME#v}"; fi
+          image=$(docker image inspect wrist-rs-build --format '{{.Id}}')
+          # The runner's user, so actions/cache can read the bind-mounted target directories.
+          docker run --rm --user "$(id -u):$(id -g)" \
+            --env HOME=/tmp --env CARGO_HOME=/tmp/wrist-rs-cargo \
+            --entrypoint bash \
+            -v "$PWD/source:/src" -v "$PWD/sdk:/sdk:ro" -v "$RUNNER_TEMP:/stage" \
+            wrist-rs-build -c 'git config --global --add safe.directory /src; git config --global --add safe.directory /sdk; exec python3 tools/release-build.py "$@"' \
+            -- --sdk /sdk --out /stage/firmware --version "$version" --container-id "$image"
+      # Every candidate is attested, so the gate can check the zips it installs; publish
+      # releases these same zips.
+      - uses: actions/attest-build-provenance@v4
+        if: github.event_name != 'pull_request'
+        with:
+          subject-path: '${{ runner.temp }}/firmware/*.zip'
+      - uses: actions/upload-artifact@v7
+        with:
+          name: firmware-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/firmware/*.zip
+            ${{ runner.temp }}/firmware/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
+  publish:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish && github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Require documented owner decisions and hardware evidence
+        run: |
+          python3 - <<'PY'
+          import json
+          g = json.load(open('release/gate.json'))
+          assert g['hardware_install_numbers'], 'the round trip has no numbered hardware evidence'
+          assert g['stock_version'], 'no stock version validated for the installer'
+          for k in ['round_trip_validated', 'license_distribution_approved', 'notices_reviewed', 'github_candidate_run_verified']:
+              assert g[k] is True, f'release gate open: {k}'
+          PY
+      - uses: actions/download-artifact@v8
+        with:
+          name: firmware-${{ github.sha }}
+          path: assets
+      - name: Check asset integrity and refuse replacement
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          (cd assets && sha256sum -c SHA256SUMS)
+          python3 - <<'PY'
+          import json, os, pathlib, zipfile
+          for path in pathlib.Path('assets').glob('*.zip'):
+              with zipfile.ZipFile(path) as z:
+                  m = json.loads(z.read('manifest.json'))
+              assert m['release_ready'] is True and not m['checks_skipped'] and not m['dirty']
+              assert m['source_commit'] == os.environ['SOURCE_SHA']
+              assert 'v' + m['version'] == os.environ['RELEASE_TAG']
+          PY
+          # List first: authentication/network failures fail closed, not "not found".
+          gh api --paginate "repos/$GH_REPO/releases" --jq '.[].tag_name' > /tmp/release-tags
+          if grep -Fxq -- "$RELEASE_TAG" /tmp/release-tags; then
+            echo 'Refusing to replace an existing release'; exit 1
+          fi
+      - name: Create a new durable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" assets/*.zip assets/SHA256SUMS \
+            --verify-tag --title "$RELEASE_TAG" --notes-file release/NOTES.md
+      - name: Redeploy the download page with this release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        # GitHub docs, "Triggering a workflow from a workflow".
+        run: gh workflow run pages.yml --ref main

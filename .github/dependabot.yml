@@ -1,0 +1,71 @@
+# No rust-toolchain entry: rust-toolchain.toml, release/toolchain.json and
+# release/Dockerfile pin the compiler together. No loader entry: it has no second
+# slot, so it changes only on purpose.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    groups:
+      crates:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: build
+      include: scope
+
+  - package-ecosystem: cargo
+    directory: /apps/standalone-boot
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    # Its own dependencies only: Embassy's move with the patched HAL in
+    # vendor/embassy-stm32, and the crates' with the root.
+    allow:
+      - dependency-name: cortex-m
+      - dependency-name: cortex-m-rt
+      - dependency-name: critical-section
+      - dependency-name: static_cell
+      - dependency-name: log
+    groups:
+      firmware:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: build
+      include: scope
+
+  - package-ecosystem: pip
+    directory: /tools
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: build
+      include: scope
+
+  - package-ecosystem: docker
+    directory: /release
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: build
+      include: scope
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci
+      include: scope

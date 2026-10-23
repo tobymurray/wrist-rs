@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = ["crates/wrist-board", "crates/wrist-eeprom", "crates/wrist-flash", "crates/wrist-glass", "crates/wrist-time", "crates/wrist-power", "crates/wrist-vcom"]
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+
+# Uncomment to build against a watch-apps checkout beside this repository.
+# [patch.crates-io]
+# inscribed-disc = { path = "../watch-apps/InscribedDisc" }

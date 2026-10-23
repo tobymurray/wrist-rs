@@ -1,0 +1,11 @@
+/target
+/apps/standalone-boot/target
+/apps/wrist-loader/target
+/apps/image-installer/App/build/
+/apps/image-installer/Output/
+*.bin
+*.ota
+/dumps
+/.venv/
+/_site/
+__pycache__/

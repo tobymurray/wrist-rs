@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="wrist-rs">
+  <g stroke="#4A4F57" stroke-width="4">
+    <rect x="168" y="48" width="176" height="14" rx="7" fill="#8C9199"/>
+    <rect x="168" y="450" width="176" height="14" rx="7" fill="#8C9199"/>
+  </g>
+  <g fill="#2B2E33" stroke="#4A4F57" stroke-width="4">
+    <rect x="132" y="30" width="62" height="140" rx="16" transform="rotate(-6 163 100)"/>
+    <rect x="318" y="30" width="62" height="140" rx="16" transform="rotate(6 349 100)"/>
+    <rect x="132" y="342" width="62" height="140" rx="16" transform="rotate(6 163 412)"/>
+    <rect x="318" y="342" width="62" height="140" rx="16" transform="rotate(-6 349 412)"/>
+    <rect x="48" y="226" width="44" height="60" rx="10" transform="rotate(38 256 256)"/>
+    <rect x="48" y="226" width="44" height="60" rx="10" transform="rotate(-38 256 256)"/>
+    <rect x="420" y="226" width="44" height="60" rx="10" transform="rotate(-38 256 256)"/>
+    <rect x="420" y="226" width="44" height="60" rx="10" transform="rotate(38 256 256)"/>
+    <circle cx="256" cy="256" r="186"/>
+  </g>
+  <circle cx="256" cy="256" r="164" fill="#1A1C1F"/>
+  <circle cx="256" cy="256" r="150" fill="#0F1012"/>
+  <polyline points="178,200 244,256 178,312" fill="none" stroke="#F2EFE9" stroke-width="28" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="262" y="292" width="74" height="24" rx="4" fill="#E8652B"/>
+</svg>

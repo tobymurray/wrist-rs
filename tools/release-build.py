@@ -1,0 +1,414 @@
+#!/usr/bin/env python3
+"""Build, check and package a release, natively or in release/Dockerfile; it never flashes or publishes."""
+import argparse
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+from elftools.elf.elffile import ELFFile
+import re
+import shutil
+import struct
+import subprocess
+import sys
+import zipfile
+import zlib
+
+ROOT = Path(__file__).resolve().parents[1]
+CONFIG = json.loads((ROOT / 'release/toolchain.json').read_text())
+TARGET = CONFIG['target']
+# firmware.yml's publish job checks the same list.
+GATE_FLAGS = ['round_trip_validated', 'license_distribution_approved', 'notices_reviewed',
+              'github_candidate_run_verified']
+
+
+def run(*args, cwd=ROOT, env=None):
+    print('+', *map(str, args), flush=True)
+    subprocess.run(list(map(str, args)), cwd=cwd, env=env, check=True)
+
+
+def output(*args, cwd=ROOT):
+    return subprocess.check_output(args, cwd=cwd, text=True).strip()
+
+
+def require(condition, message):
+    if not condition:
+        raise ValueError(message)
+
+
+def app_version(manifest):
+    m = re.search(r'(?m)^\[package\]\n(?:(?!\[).*\n)*?version\s*=\s*"([^"]*)"', manifest)
+    require(m, 'no [package] version')
+    return m[1]
+
+
+def require_app_versions(version, root=ROOT):
+    """The tag's A.B.C is both apps' Cargo version, which the firmware's version command prints."""
+    for app in ['standalone-boot', 'wrist-loader']:
+        found = app_version((root/'apps'/app/'Cargo.toml').read_text())
+        require(found == version.split('-')[0], f'apps/{app} is version {found}, not {version}')
+
+
+def layout():
+    """((loader address, size), (app address, size)) from the linker scripts, checked against MAX_PAGES."""
+    text = (ROOT / 'apps/wrist-loader/memory.x').read_text()
+    regions = {n: (int(a, 16), int(k) * 1024) for n, a, k in
+               re.findall(r'(FLASH|ACTIVE)\s*:\s*ORIGIN = (0x[0-9A-Fa-f]+), LENGTH = (\d+)K', text)}
+    loader, app = regions['FLASH'], regions['ACTIVE']
+    plan = (ROOT / 'crates/wrist-flash/src/plan.rs').read_text()
+    pages = int(re.search(r'pub const MAX_PAGES: \w+ = (\d+)', plan)[1])
+    require(loader[0] + loader[1] == app[0], 'noncontiguous linker layout')
+    require(loader[1] + app[1] == pages * 8192, 'installer/linker size mismatch')
+    app_text = (ROOT / 'apps/standalone-boot/memory.x').read_text()
+    require(f'0x{app[0]:08X}' in app_text and f'LENGTH = {app[1] // 1024}K' in app_text,
+            'application linker mismatch')
+    return loader, app
+
+
+def validate_raw(data, address, limit):
+    require(8 <= len(data) <= limit, f'invalid firmware size {len(data)} (limit {limit})')
+    sp, reset = struct.unpack_from('<II', data)
+    require(0x20000000 <= sp <= 0x20270000 - 16 and sp % 8 == 0, 'invalid stack vector')
+    require(reset & 1 and address <= reset - 1 < address + len(data), 'invalid reset/load address')
+
+
+def validate_image(loader, app, image):
+    lreg, areg = layout()
+    validate_raw(loader, *lreg)
+    validate_raw(app, *areg)
+    expected = loader + b'\xff' * (lreg[1] - len(loader)) + app
+    require(image == expected, 'combined image/padding/components mismatch')
+    return f'{zlib.crc32(image):08X}'
+
+
+def validate_uapp(data, version):
+    require(len(data) >= 52, 'truncated uapp')
+    require(zlib.crc32(data[:-4]) == struct.unpack_from('<I', data, len(data)-4)[0], 'uapp CRC mismatch')
+    appid, ver, abi, service, flags, name, large, small = struct.unpack_from('<QIIII16sII', data)
+    major, minor, patch = map(int, version.split('-')[0].split('.'))
+    require(appid == 0x854CD3EFBD7BA411 and ver == major << 16 | minor << 8 | patch,
+            'uapp identity/version mismatch')
+    require(abi == 3 and flags == 0x22 and name.rstrip(b'\0') == b'Install', 'uapp ABI/type mismatch')
+    require(large == 3600 and small == 900 and len(data) == 48 + large + small + service + 4,
+            'uapp payload/header mismatch')
+    return {'libc_abi': '0.0.3', 'crc32': f'{zlib.crc32(data[:-4]):08X}'}
+
+
+def validate_elf(path, address, limit):
+    with path.open('rb') as f:
+        elf = ELFFile(f)
+        require(elf['e_machine'] == 'EM_ARM', 'not an ARM ELF')
+        vectors = elf.get_section_by_name('.vector_table')
+        require(vectors is not None and vectors['sh_addr'] == address, 'ELF vector address mismatch')
+        require(address <= elf['e_entry'] - 1 < address + limit, 'ELF entry address mismatch')
+        flash = [seg for seg in elf.iter_segments() if seg['p_type'] == 'PT_LOAD'
+                 and seg['p_filesz'] and address <= seg['p_paddr'] < address + limit]
+        require(flash and min(seg['p_paddr'] for seg in flash) == address, 'ELF load base mismatch')
+        require(all(seg['p_paddr'] + seg['p_filesz'] <= address + limit for seg in flash), 'ELF load overflow')
+
+
+def audit_commit(elf):
+    dis = output('arm-none-eabi-objdump', '-d', str(elf))
+    functions = re.split(r'(?m)^[0-9a-f]+ <([^>]+)>:\n', dis)
+    bodies = dict(zip(functions[1::2], functions[2::2]))
+    require('wrist_flash_install' in bodies, 'missing RAM commit symbol')
+    pending = ['wrist_flash_install']
+    seen = set()
+    while pending:
+        name = pending.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        require(name in bodies, 'unresolved commit branch: ' + name)
+        for line in bodies[name].splitlines():
+            # bx lr is the return.
+            m = re.search(r'\s(bx|blx)\s+(\w+)', line)
+            if m and not re.fullmatch(r'[0-9a-f]+', m[2]):
+                require(m[1] == 'bx' and m[2] == 'lr', 'indirect commit branch: ' + line)
+            target = re.search(r'\s(?:b(?:[a-z]{2})?|bl|blx)(?:\.[nw])?\s+([0-9a-f]+) <([^>]+)>', line)
+            if target:
+                require(0x20000000 <= int(target[1], 16) < 0x20270000, 'commit branch outside RAM: ' + line)
+                child = target[2].split('+')[0]
+                if child != name:
+                    pending.append(child)
+    return dis, sorted(seen)
+
+
+def copy(src, dest):
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dest)
+
+
+# What the installer links from the SDK, besides UNA's own code: coreJSON and libstdc++.
+SDK_LICENSES = ['LICENSE', 'THIRD-PARTY-LICENSES.md', 'ThirdParty/coreJSON/LICENSE']
+
+
+# The docs in release/ as the zip holds them, under these names; the tools beside them.
+PACKAGED_DOCS = {'INSTALL.md': 'START-HERE.md', 'NOTES.md': 'RELEASE-NOTES.md', 'NOTICES.md': 'NOTICES.md'}
+PACKAGED_TOOLS = ['wrist-update.py', 'wrist-cmd.py', 'wrist-time.py', 'wrist-crash.py', 'wrist_port.py',
+                  '60-wrist-rs.rules', 'requirements.txt']
+REPOSITORY = 'https://github.com/tobymurray/wrist-rs'
+
+
+def package_links(text, commit):
+    """A release/ doc's relative links as the zip resolves them: to the packaged docs, tools,
+    images and licence, or else to the source at `commit`."""
+    def target(m):
+        link, _, anchor = m[2].partition('#')
+        if re.match(r'[a-z]+:', link) or not link:
+            return m[0]
+        path = os.path.normpath('release/' + link)
+        if path.startswith('release/') and path[len('release/'):] in PACKAGED_DOCS:
+            new = PACKAGED_DOCS[path[len('release/'):]]
+        elif path.startswith('tools/') and path[len('tools/'):] in PACKAGED_TOOLS:
+            new = path
+        elif path.startswith('release/images/'):
+            new = path[len('release/'):]
+        elif path == 'LICENSE':
+            new = path
+        else:
+            new = f'{REPOSITORY}/blob/{commit}/{path}'
+        return f'{m[1]}({new}{"#" + anchor if anchor else ""})'
+    return re.sub(r'(!?\[[^\]]*\])\(([^)\s]+)\)', target, text)
+
+
+def collect_licenses(dest, sdk, rust_licenses, gcc):
+    for name in SDK_LICENSES:
+        require((sdk/name).is_file(), 'missing SDK licence: ' + name)
+        copy(sdk/name, dest/'sdk'/name)
+    for name in ['GPL-3.0-or-later.txt', 'GCC-exception-3.1.txt']:
+        found = [d/name for d in rust_licenses if (d/name).is_file()]
+        require(found, 'missing libstdc++ licence: ' + name)
+        copy(found[0], dest/'sdk/libstdc++'/name)
+    require(gcc, 'missing arm-none-eabi-gcc')
+    toolchain = Path(gcc).resolve().parents[1]/'share/doc/gcc-arm-none-eabi/license.txt'
+    require(toolchain.is_file(), 'missing GNU Arm toolchain licence: ' + str(toolchain))
+    copy(toolchain, dest/'gnu-arm-toolchain/license.txt')
+    copy(ROOT/'crates/wrist-glass/LICENSE-FONT', dest/'wrist-glass-font/LICENSE')
+
+
+def path_replacements(*paths):
+    return sorted(((str(Path(path).resolve()), token) for path, token in paths if path),
+                  key=lambda pair: len(pair[0]), reverse=True)
+
+
+def normalize_paths(value, replacements):
+    if isinstance(value, str):
+        for path, token in replacements:
+            value = value.replace(path, token)
+        return value
+    if isinstance(value, list):
+        return [normalize_paths(item, replacements) for item in value]
+    if isinstance(value, dict):
+        return {key: normalize_paths(item, replacements) for key, item in value.items()}
+    return value
+
+
+def sha(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def archive(tree, dest):
+    with zipfile.ZipFile(dest, 'w', zipfile.ZIP_DEFLATED) as z:
+        for p in sorted(tree.rglob('*')):
+            if p.is_file():
+                info = zipfile.ZipInfo(p.relative_to(tree).as_posix(), (2026, 1, 1, 0, 0, 0))
+                info.external_attr = 0o100644 << 16
+                z.writestr(info, p.read_bytes(), compress_type=zipfile.ZIP_DEFLATED)
+
+
+def verify_archive(path, debug=False):
+    with zipfile.ZipFile(path) as z:
+        names = z.namelist()
+        require(len(names) == len(set(names)), 'duplicate ZIP entries')
+        require(all(not n.startswith('/') and '..' not in Path(n).parts for n in names), 'unsafe ZIP path')
+        require(not any(Path(n).name == 'ARM_INSTALL' or n.endswith('.ota') for n in names), 'armed/vendor package')
+        manifest = json.loads(z.read('manifest.json'))
+        prefix = 'debug/' if debug else 'package/'
+        expected = {name[len(prefix):] for name in manifest['files'] if name.startswith(prefix)}
+        require(set(names) == expected | {'manifest.json', 'SHA256SUMS'}, 'unexpected or missing archive files')
+        for name, entry in manifest['files'].items():
+            if name.startswith(prefix):
+                data = z.read(name[len(prefix):])
+                require(len(data) == entry['bytes'] and hashlib.sha256(data).hexdigest() == entry['sha256'], 'archive/manifest mismatch: ' + name)
+        for line in z.read('SHA256SUMS').decode().splitlines():
+            digest, name = line.split('  ', 1)
+            require(hashlib.sha256(z.read(name)).hexdigest() == digest, 'archive checksum mismatch')
+        if debug:
+            for name in ['app.elf', 'loader.elf', 'app.map', 'loader.map', 'ImageInstallerService.elf', 'installer-disassembly.txt']:
+                require(name in names, 'missing debug asset: ' + name)
+        else:
+            first = 'first-install/Apps/ImageInstaller/'
+            crc = validate_image(z.read('loader.bin'), z.read('app.bin'), z.read(first+'image.bin'))
+            require(z.read('INSTALL-CRC.txt').decode() == crc + '\n', 'arm CRC text mismatch')
+            validate_uapp(z.read(first+'Install_'+manifest['version']+'.uapp'), manifest['version'])
+            for name in ['START-HERE.md', 'LICENSE', 'NOTICES.md', 'RELEASE-NOTES.md', 'tools/requirements.txt',
+                         'tools/wrist-update.py', 'tools/wrist-cmd.py', 'tools/wrist-time.py', 'tools/wrist-crash.py',
+                         'tools/wrist_port.py', 'tools/60-wrist-rs.rules', 'licenses/wrist-glass-font/LICENSE',
+                         'licenses/sdk/libstdc++/GPL-3.0-or-later.txt', 'licenses/sdk/libstdc++/GCC-exception-3.1.txt',
+                         'licenses/gnu-arm-toolchain/license.txt']:
+                require(name in names, 'missing user asset: ' + name)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument('--sdk', type=Path, required=True)
+    ap.add_argument('--version', required=True, help='A.B.C[-suffix], each number <=255')
+    ap.add_argument('--out', type=Path, required=True, help='new empty staging directory')
+    ap.add_argument('--container-id', default='native-uncontainerized')
+    ap.add_argument('--allow-dirty', action='store_true', help='local candidates only')
+    ap.add_argument('--skip-checks', action='store_true', help='local iteration only; recorded')
+    a = ap.parse_args()
+    require(re.fullmatch(r'\d{1,3}\.\d{1,3}\.\d{1,3}(?:-[A-Za-z0-9][A-Za-z0-9.-]*)?', a.version), 'unsafe version')
+    require(all(int(x) <= 255 for x in a.version.split('-')[0].split('.')), 'version byte overflow')
+    a.sdk = a.sdk.resolve()
+    a.out = a.out.resolve()
+    require(not a.out.exists(), 'output must not exist (never replace versioned bytes)')
+    require(a.out != ROOT and ROOT not in a.out.parents, 'stage outside source tree')
+    require(output('rustc', '--version').split()[1] == CONFIG['stable'], 'wrong stable compiler')
+    commit = output('git', 'rev-parse', 'HEAD')
+    dirty = bool(output('git', 'status', '--porcelain', '--untracked-files=normal'))
+    require(a.allow_dirty or not dirty, 'release requires clean source tree')
+    require(output('git', 'rev-parse', 'HEAD', cwd=a.sdk) == CONFIG['sdk_commit'], 'wrong SDK revision')
+    require(not output('git', 'status', '--porcelain', cwd=a.sdk), 'dirty SDK')
+    tags = output('git', 'tag', '--points-at', 'HEAD').splitlines()
+    if not a.allow_dirty and a.version != '0.0.0-candidate.' + commit[:12]:
+        require('v' + a.version in tags, 'version must match a tag on HEAD')
+        require_app_versions(a.version)
+    env = os.environ.copy()
+    env.pop('CARGO_TARGET_DIR', None)
+    env.pop('RUSTC_WRAPPER', None)
+    env.pop('CARGO_ENCODED_RUSTFLAGS', None)
+    env['UNA_SDK'] = str(a.sdk)
+    env['SOURCE_DATE_EPOCH'] = output('git', 'show', '-s', '--format=%ct', 'HEAD')
+    env['WRIST_RELEASE_BUILD_ID'] = commit[:12]
+    env['RUSTFLAGS'] = f'--remap-path-prefix={ROOT}=/src --remap-path-prefix={Path.home()}=/builder'
+    env['TZ'] = 'UTC'
+    commands = []
+    map_dir = Path('/tmp/wrist-rs-release-maps')
+    map_dir.mkdir(exist_ok=True)
+    # A fixed map path, because RUSTFLAGS enter Cargo's fingerprints; builds sharing it take turns.
+    map_lock = (map_dir / 'build.lock').open('w')
+    fcntl.flock(map_lock, fcntl.LOCK_EX)
+    replacements = path_replacements(
+        (ROOT, '/src'), (a.sdk, '/sdk'), (a.out, '/out'),
+        (os.environ.get('CARGO_HOME'), '$CARGO_HOME'),
+        (os.environ.get('RUSTUP_HOME'), '$RUSTUP_HOME'),
+        (Path.home(), '$HOME'), (sys.executable, 'python3'))
+
+    def execute(*args, cwd=ROOT):
+        commands.append(normalize_paths(
+            {'cwd': str(cwd.relative_to(ROOT)), 'argv': list(map(str, args))}, replacements))
+        run(*args, cwd=cwd, env=env)
+
+    a.out.mkdir(parents=True)
+    user = a.out / 'package'
+    debug = a.out / 'debug'
+    user.mkdir()
+    debug.mkdir()
+    if not a.skip_checks:
+        execute(sys.executable, ROOT/'tools/test-release.py')
+        execute('cargo', 'test', '--locked', '--workspace')
+        execute('cargo', 'clippy', '--locked', '--workspace', '--all-targets', '--', '-D', 'warnings')
+    for app, bin_name in [('wrist-loader', 'loader'), ('standalone-boot', 'app')]:
+        cwd = ROOT / 'apps' / app
+        map_path = map_dir / (bin_name + '.map')
+        env['RUSTFLAGS'] += f' -C link-arg=-Map={map_path}'
+        execute('cargo', 'build', '--locked', '--release', cwd=cwd)
+        if not a.skip_checks:
+            execute('cargo', 'clippy', '--locked', '--release', '--', '-D', 'warnings', cwd=cwd)
+        elf = cwd / 'target' / TARGET / 'release' / app
+        execute('arm-none-eabi-objcopy', '-O', 'binary', elf, user / (bin_name + '.bin'))
+        validate_elf(elf, *(layout()[0] if bin_name == 'loader' else layout()[1]))
+        copy(elf, debug / (bin_name + '.elf'))
+        copy(map_path, debug / (bin_name + '.map'))
+        env['RUSTFLAGS'] = env['RUSTFLAGS'].split(' -C link-arg=-Map=')[0]
+    first = user / 'first-install/Apps/ImageInstaller'
+    first.mkdir(parents=True)
+    execute(sys.executable, ROOT / 'tools/combine-image.py', user / 'loader.bin', user / 'app.bin', first / 'image.bin')
+    crc = validate_image((user/'loader.bin').read_bytes(), (user/'app.bin').read_bytes(), (first/'image.bin').read_bytes())
+    (user/'INSTALL-CRC.txt').write_text(crc + '\n')
+    appdir = ROOT / 'apps/image-installer/App'
+    build = a.out / 'installer-build'
+    (appdir.parent / 'Output').mkdir(exist_ok=True)
+    flags = f'-fmacro-prefix-map={ROOT}=/src -fmacro-prefix-map={a.sdk}=/sdk'
+    execute('cmake', '-S', appdir, '-B', build, '-G', 'Unix Makefiles',
+            f'-DBUILD_VERSION={a.version}', f'-DWRIST_NIGHTLY={CONFIG["nightly"]}',
+            f'-DCMAKE_C_FLAGS={flags}', f'-DCMAKE_CXX_FLAGS={flags}',
+            f'-DWRIST_RUSTFLAGS=-C relocation-model=pic {env["RUSTFLAGS"]}')
+    execute('cmake', '--build', build, '--parallel', '2')
+    uapp = build / f'Install_{a.version}.uapp'
+    abi = validate_uapp(uapp.read_bytes(), a.version)
+    copy(uapp, first/uapp.name)
+    copy(appdir/'build/ImageInstallerService.elf', debug/'ImageInstallerService.elf')
+    copy(appdir.parent/'Output/ImageInstallerService.elf.elf.map', debug/'ImageInstallerService.map')
+    # Keep build paths out of the published maps.
+    for map_file in debug.glob('*.map'):
+        map_file.write_text(normalize_paths(map_file.read_text(), replacements))
+    require((debug/'ImageInstallerService.elf').exists(), 'missing installer ELF')
+    dis, commit_functions = audit_commit(debug/'ImageInstallerService.elf')
+    (debug/'installer-disassembly.txt').write_text(normalize_paths(dis, replacements))
+    for name in PACKAGED_TOOLS:
+        copy(ROOT/'tools'/name, user/'tools'/name)
+    for src, dst in PACKAGED_DOCS.items():
+        (user/dst).write_text(package_links((ROOT/'release'/src).read_text(), commit))
+    for image in sorted((ROOT/'release/images').glob('*.svg')):
+        copy(image, user/'images'/image.name)
+    copy(ROOT/'LICENSE', user/'LICENSE')
+    licenses = user/'licenses'
+    for label, cwd in [('root', ROOT), ('app', ROOT/'apps/standalone-boot'), ('loader', ROOT/'apps/wrist-loader')]:
+        metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--locked', '--format-version=1'], cwd=cwd, env=env))
+        normalized_metadata = normalize_paths(metadata, replacements)
+        (debug / (label + '-dependencies.json')).write_text(json.dumps(normalized_metadata, indent=2) + '\n')
+        copy(cwd/'Cargo.lock', debug/label/'Cargo.lock')
+        for pkg in metadata['packages']:
+            base = Path(pkg['manifest_path']).parent
+            for p in base.iterdir():
+                if p.is_file() and re.search(r'(?i)(license|licence|copying|notice|copyright)', p.name):
+                    copy(p, licenses/label/(pkg['name']+'-'+pkg['version'])/p.name)
+    docs = [Path(output('rustc', '+'+compiler, '--print', 'sysroot'))/'share/doc/rust'
+            for compiler in [CONFIG['stable'], CONFIG['nightly']]]
+    collect_licenses(licenses, a.sdk, [doc/'licenses' for doc in docs], shutil.which('arm-none-eabi-gcc'))
+    for compiler, doc in zip([CONFIG['stable'], CONFIG['nightly']], docs):
+        for name in ['COPYRIGHT.html', 'COPYRIGHT-library.html']:
+            if (doc/name).is_file():
+                copy(doc/name, licenses/'rust-toolchain'/compiler/name)
+        if (doc/'licenses').is_dir():
+            for p in (doc/'licenses').rglob('*'):
+                if p.is_file():
+                    copy(p, licenses/'rust-toolchain'/compiler/'licenses'/p.relative_to(doc/'licenses'))
+    require(not list(first.rglob('ARM_INSTALL')), 'armed package')
+    gate = json.loads((ROOT/'release/gate.json').read_text())
+    ready = (bool(gate['hardware_install_numbers']) and bool(gate['stock_version'])
+             and all(gate[k] is True for k in GATE_FLAGS))
+    manifest = {'schema': 1, 'version': a.version, 'source_commit': commit, 'tags': tags, 'dirty': dirty,
+                'release_ready': ready and not dirty and not a.skip_checks, 'release_gate': gate, 'configuration': 'default features; UNAcore + LS012 + original modules',
+                'toolchain': CONFIG, 'features': {'standalone-boot': [], 'wrist-loader': [], 'wrist-flash': ['panic-handler']}, 'container_id': a.container_id, 'checks_skipped': a.skip_checks,
+                'tracked_diff_and_recipe_sha256': hashlib.sha256(subprocess.check_output(['git', 'diff', '--binary', 'HEAD']) + (ROOT/'tools/release-build.py').read_bytes() + (ROOT/'release/toolchain.json').read_bytes()).hexdigest(),
+                'tools': {t: output(*cmd) for t, cmd in {
+                    'rustc': ['rustc', '-Vv'], 'nightly': ['rustc', '+'+CONFIG['nightly'], '-Vv'],
+                    'cargo': ['cargo', '--version'], 'objcopy': ['arm-none-eabi-objcopy', '--version'],
+                    'objdump': ['arm-none-eabi-objdump', '--version'],
+                    'gcc': ['arm-none-eabi-gcc', '--version'], 'cmake': ['cmake', '--version'],
+                    'python': [sys.executable, '--version']}.items()},
+                'commands': commands, 'environment': normalize_paths(
+                    {k: env[k] for k in ['RUSTFLAGS', 'SOURCE_DATE_EPOCH', 'TZ']}, replacements),
+                'installer': abi, 'ram_commit_functions_checked': commit_functions, 'image_crc32': crc, 'reproducibility': 'traceable; independent clean repeat not yet demonstrated',
+                'files': {str(p.relative_to(a.out)): {'bytes': p.stat().st_size, 'sha256': sha(p)}
+                          for tree in [user, debug] for p in sorted(tree.rglob('*')) if p.is_file()}}
+    for tree in [user, debug]:
+        (tree/'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+        (tree/'SHA256SUMS').write_text(''.join(f'{sha(p)}  {p.relative_to(tree).as_posix()}\n' for p in sorted(tree.rglob('*')) if p.is_file() and p.name != 'SHA256SUMS'))
+        zip_path = a.out/f'wrist-rs-{a.version}{"-debug" if tree == debug else ""}.zip'
+        archive(tree, zip_path)
+        verify_archive(zip_path, debug=tree == debug)
+    (a.out/'SHA256SUMS').write_text(''.join(f'{sha(p)}  {p.name}\n' for p in sorted(a.out.glob('*.zip'))))
+    print('Candidate package:', a.out)
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (ValueError, OSError, subprocess.CalledProcessError) as e:
+        sys.exit(str(e))

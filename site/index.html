@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wrist-rs</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="icon" href="favicon.png" type="image/png" sizes="32x32">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="description" content="Open-source Rust firmware for the UNA Watch: it shows the time, updates over USB, and steps aside whenever you want the stock firmware back.">
+<meta name="color-scheme" content="light dark">
+<style>
+:root {
+  --bg: #fbfbfa; --fg: #16181d; --muted: #5d6470; --line: #e3e5e8; --card: #ffffff;
+  --accent: #0a6cff; --accent-fg: #ffffff;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0e1013; --fg: #eceef1; --muted: #9aa2ae; --line: #262a31; --card: #16191e;
+    --accent: #4d94ff; --accent-fg: #0b0d10;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+}
+main, header, footer { max-width: 46rem; margin: 0 auto; padding: 0 1rem; }
+a { color: var(--accent); text-underline-offset: 0.15em; }
+header { display: flex; justify-content: space-between; align-items: baseline; padding-top: 1.5rem; }
+.mark { font-weight: 700; letter-spacing: -0.01em; color: var(--fg); text-decoration: none; }
+header a:last-child { color: var(--muted); text-decoration: none; }
+.hero { display: grid; grid-template-columns: 1fr auto; gap: 2rem; align-items: center; padding: 3.5rem 0 2.5rem; }
+h1 { font-size: clamp(1.9rem, 6vw, 2.6rem); line-height: 1.15; letter-spacing: -0.02em; margin: 0 0 0.75rem; }
+.lede { color: var(--muted); font-size: 1.1rem; margin: 0 0 1.75rem; max-width: 28rem; }
+.actions { display: flex; flex-wrap: wrap; gap: 0.75rem 1.25rem; align-items: center; }
+.button {
+  display: inline-block; background: var(--accent); color: var(--accent-fg); font-weight: 600;
+  padding: 0.7rem 1.2rem; border-radius: 0.6rem; text-decoration: none;
+}
+.button:hover { filter: brightness(1.08); }
+.meta { color: var(--muted); font-size: 0.85rem; margin: 0.9rem 0 0; overflow-wrap: anywhere; }
+code { font: 0.9em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: nowrap; }
+.face { width: 13rem; height: 13rem; border-radius: 50%; display: block; }
+.steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; padding: 1rem 0 2.5rem; }
+.steps section { background: var(--card); border: 1px solid var(--line); border-radius: 0.8rem; padding: 1rem 1.1rem; }
+h2 { font-size: 1rem; margin: 0 0 0.5rem; }
+ol { margin: 0; padding-left: 1.2rem; color: var(--muted); font-size: 0.95rem; }
+.steps p { margin: 0; color: var(--muted); font-size: 0.95rem; }
+.independent { color: var(--muted); font-size: 0.9rem; margin: 0 0 1.25rem; }
+.note { color: var(--muted); font-size: 0.9rem; border-top: 1px solid var(--line); padding: 1.25rem 0; margin: 0; }
+footer { color: var(--muted); font-size: 0.85rem; padding-bottom: 2.5rem; }
+footer a { color: inherit; }
+@media (max-width: 40rem) {
+  .hero { grid-template-columns: 1fr; padding-top: 2.25rem; }
+  .face { width: 11rem; height: 11rem; grid-row: 1; }
+  .steps { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+<header>
+  <a class="mark" href="./">wrist-rs</a>
+  <a href="https://github.com/tobymurray/wrist-rs">GitHub ↗</a>
+</header>
+<main>
+  <div class="hero">
+    <div>
+      <h1>Open firmware for the UNA&nbsp;Watch.</h1>
+      <p class="lede">It shows the time, updates over USB, and steps aside whenever you want the stock firmware back.</p>
+      <p class="independent">An independent project, not affiliated with or endorsed by UNA. For problems with it, <a href="https://github.com/tobymurray/wrist-rs/issues">open an issue</a> rather than contacting UNA support.</p>
+      <div class="actions">
+        <a class="button" href="{{href}}">{{label}}</a>
+        <a href="https://github.com/tobymurray/wrist-rs/blob/main/release/INSTALL.md">Install guide →</a>
+      </div>
+      <p class="meta">{{meta}}</p>
+    </div>
+    <img class="face" src="face.png" width="480" height="480" alt="The watch face: the day and date above the time in large digits, the battery's charge below, inside a ring">
+  </div>
+  <div class="steps">
+    <section>
+      <h2>Install</h2>
+      <ol>
+        <li>On the stock version the release notes name, copy the <strong>Install</strong> glance to the watch</li>
+        <li>Restart and open the glances: Install does a dry run and shows <code>ready</code></li>
+        <li>Check its log, then arm it: next time, Install puts wrist-rs on</li>
+        <li>Set the time from your computer</li>
+      </ol>
+    </section>
+    <section>
+      <h2>Update</h2>
+      <p>Over USB with <code>wrist-update.py app.bin</code>. A new version is kept once it has run a while with the computer connected; a restart before then rolls it back.</p>
+    </section>
+    <section>
+      <h2>Back to stock</h2>
+      <ol>
+        <li>Hold Select about 16&nbsp;s</li>
+        <li>Copy UNA's <code>.ota</code> to <code>UNA BOOT</code></li>
+        <li>Unplug, then choose Continue</li>
+      </ol>
+    </section>
+  </div>
+  <p class="note">Runs on Linux and macOS hosts. Needs the watch's original modules and LS012 display. UNA's bootloader code is never written; one blank page at the end of its partition records the install's outcome.</p>
+</main>
+<footer>
+  <a href="https://github.com/tobymurray/wrist-rs/blob/main/LICENSE">AGPL-3.0-or-later</a> ·
+  <a href="https://github.com/tobymurray/wrist-rs">Source</a> ·
+  Apps for the stock firmware: <a href="https://kira.technicallyrural.com">Kira</a>
+</footer>
+</body>
+</html>

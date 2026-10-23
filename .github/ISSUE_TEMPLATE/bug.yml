@@ -1,0 +1,34 @@
+name: Bug report
+description: Something the watch or a tool did wrong
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what the watch or the tool did instead.
+    validations:
+      required: true
+  - type: textarea
+    id: console
+    attributes:
+      label: Console output
+      description: >
+        With the watch on USB, the output of
+        `.venv/bin/python tools/wrist-cmd.py "version;boot;version;power"`
+        (the first command can be lost to the console's greeting).
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: manifest
+    attributes:
+      label: manifest.json
+      description: The `manifest.json` from the release zip you installed.
+      render: json
+    validations:
+      required: true
+  - type: input
+    id: stock
+    attributes:
+      label: Stock firmware version
+      description: The stock version the watch ran before wrist-rs, if you know it.

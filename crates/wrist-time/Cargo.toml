@@ -1,0 +1,12 @@
+[package]
+name = "wrist-time"
+version = "0.0.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "Calendar arithmetic and the low-power timer's counter extension"
+publish = false
+
+[dependencies]
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }

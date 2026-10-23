@@ -1,0 +1,573 @@
+//! Low-power support.
+//!
+//! The STM32 line of microcontrollers support various deep-sleep modes which exploit clock-gating
+//! to reduce power consumption. The `embassy-stm32` HAL provides a `sleep()` function which
+//! can use knowledge of which peripherals are currently blocked upon to transparently and safely
+//! enter such low-power modes including `STOP1` and `STOP2` when possible.
+//!
+//! `sleep()` determines which peripherals are active by their RCC state; consequently,
+//! low-power states can only be entered if peripherals which block stop have been `drop`'d and if
+//! peripherals that do not block stop are busy. Peripherals which never block stop include:
+//!
+//!  * `GPIO`
+//!  * `RTC`
+//!
+//! Other peripherals which block stop when busy include (this list may be stale):
+//!
+//!  * `I2C`
+//!  * `USART`
+//!
+//! Since entering and leaving low-power modes typically incurs a significant latency, `sleep()`
+//! will only attempt to enter when the next timer event is at least [`config.min_stop_pause`] in the future.
+//!
+//! `embassy-stm32` also provides an `embassy-executor` platform implementation that integrates `sleep()` into the main loop. It is available
+//! in the `embassy_stm32::executor` module, and is enabled by the `executor-thread` or `executor-interrupt` features. This stm32-specific
+//! executor is the preferred way to lower power consumption if you're using `async`, instead of calling `sleep()` directly.
+
+use core::ops::{Deref, DerefMut};
+use core::sync::atomic::{AtomicUsize, Ordering, compiler_fence};
+use core::{mem, ptr};
+
+/// wrist-rs: a Stop entry or exit, for [`set_stop_observer`].
+#[derive(Clone, Copy)]
+pub enum StopEvent {
+    /// Stop is about to be entered.
+    Enter,
+    /// A Stop exit that `PWR.SR.STOPF` confirmed.
+    Exit {
+        /// `PWR.CR1.LPMS` at the exit.
+        lpms: u8,
+    },
+    /// The clocks are back after an `Exit`.
+    Restored,
+    /// No Stop mode is allowed, so the core waits for an interrupt in Sleep.
+    Sleep {
+        /// Peripherals holding the core out of every Stop mode.
+        stop1_holds: u32,
+        /// Peripherals holding it out of Stop 2.
+        stop2_holds: u32,
+    },
+    /// The end of a `Sleep`.
+    Woke,
+}
+
+static STOP_OBSERVER: AtomicUsize = AtomicUsize::new(0);
+
+/// wrist-rs: what the LPTIM time driver saw, for diagnosing late wakes (`WRIST-PATCHES.md`).
+#[cfg(all(feature = "_lp-time-driver", any(stm32wba, stm32u5, stm32u3)))]
+pub use crate::time_driver::stats as time_driver_stats;
+
+/// wrist-rs: `f` runs at each Stop entry and confirmed exit, inside the critical section
+/// around Stop, so it must be short and never block.
+pub fn set_stop_observer(f: fn(StopEvent)) {
+    STOP_OBSERVER.store(f as usize, Ordering::Relaxed);
+}
+
+pub(crate) fn notify_stop(event: StopEvent) {
+    let p = STOP_OBSERVER.load(Ordering::Relaxed);
+    if p != 0 {
+        // SAFETY: only `set_stop_observer` stores here, always a `fn(StopEvent)`.
+        let f: fn(StopEvent) = unsafe { mem::transmute::<usize, fn(StopEvent)>(p) };
+        f(event);
+    }
+}
+
+use cortex_m::peripheral::SCB;
+use critical_section::CriticalSection;
+
+#[cfg(all(feature = "rt", not(feature = "_lp-time-driver")))]
+use crate::interrupt;
+pub use crate::rcc::StopMode;
+use crate::rcc::get_stop_mode;
+use crate::time_driver::{LPTimeDriver, get_driver};
+
+#[cfg(all(feature = "rt", not(any(stm32u0, feature = "_lp-time-driver"))))]
+foreach_interrupt! {
+    (RTC, rtc, $block:ident, WKUP, $irq:ident) => {
+        #[interrupt]
+        #[allow(non_snake_case)]
+        unsafe fn $irq() {
+        }
+    };
+}
+
+#[cfg(all(feature = "rt", stm32u0))]
+foreach_interrupt! {
+    (RTC, rtc, $block:ident, TAMP, $irq:ident) => {
+        #[interrupt]
+        #[allow(non_snake_case)]
+        unsafe fn $irq() {
+        }
+    };
+}
+
+#[cfg(any(stm32l4, stm32l5, stm32u5, stm32u3, stm32wba, stm32wb, stm32wl, stm32u0))]
+use crate::pac::pwr::vals::Lpms;
+
+#[cfg(any(stm32l4, stm32l5, stm32u5, stm32u3, stm32wba, stm32wb, stm32wl, stm32u0))]
+impl Into<Lpms> for StopMode {
+    fn into(self) -> Lpms {
+        match self {
+            StopMode::Stop1 => Lpms::Stop1,
+            #[cfg(not(stm32wba))]
+            StopMode::Standby | StopMode::Stop2 => Lpms::Stop2,
+            #[cfg(stm32wba)]
+            // WBA STOP2 is auto-entered by hardware when LPMS=STOP0 and
+            // the 2.4 GHz radio is in deep sleep. It's not a separate LPMS value.
+            StopMode::Standby | StopMode::Stop2 => Lpms::Stop0,
+        }
+    }
+}
+
+mod platform {
+    use critical_section::CriticalSection;
+
+    use crate::rcc::StopMode;
+
+    /// Enter stop mode
+    pub fn enter_stop(_cs: CriticalSection, stop_mode: StopMode) -> Result<(), ()> {
+        #[cfg(stm32wb)]
+        let mutex = {
+            use crate::hsem::get_hsem;
+            use crate::pac::rcc::vals::{Smps, Sw};
+            use crate::pac::{PWR, RCC};
+
+            trace!("low power: trying to get sem3");
+
+            let sem3_mutex = get_hsem(3).try_fast_lock_with_interrupt().ok_or(())?;
+
+            trace!("low power: got sem3");
+
+            let mut sem4_mutex = get_hsem(4).try_fast_lock();
+            if sem4_mutex.is_some() {
+                trace!("low power: got sem4");
+            }
+
+            if !(sem4_mutex.is_some() && !PWR.extscr().read().c2ds()) {
+                sem4_mutex.take();
+
+                // Set HSION
+                RCC.cr().modify(|w| {
+                    w.set_hsion(true);
+                });
+
+                // Wait for HSIRDY
+                while !RCC.cr().read().hsirdy() {}
+
+                // Set SW to HSI
+                RCC.cfgr().modify(|w| {
+                    w.set_sw(Sw::Hsi);
+                });
+
+                // Wait for SWS to report HSI
+                while !RCC.cfgr().read().sws().eq(&Sw::Hsi) {}
+
+                // Set SMPSSEL to HSI
+                RCC.smpscr().modify(|w| {
+                    w.set_smpssel(Smps::Hsi);
+                });
+            }
+
+            // on PWR
+            RCC.apb1enr1().modify(|r| r.0 |= 1 << 28);
+            cortex_m::asm::dsb();
+
+            // off SMPS, on Bypass
+            PWR.cr5().modify(|r| {
+                let mut val = r.0;
+                val &= !(1 << 15); // sdeb = 0 (off SMPS)
+                val |= 1 << 14; // sdben = 1 (on Bypass)
+                r.0 = val
+            });
+
+            cortex_m::asm::delay(1000);
+
+            sem3_mutex
+        };
+
+        #[cfg(any(stm32l4, stm32l5, stm32u5, stm32u3, stm32u0, stm32wb, stm32wba, stm32wl))]
+        {
+            #[cfg(not(feature = "_core-cm0p"))]
+            crate::pac::PWR.cr1().modify(|m| m.set_lpms(stop_mode.into()));
+            #[cfg(feature = "_core-cm0p")]
+            crate::pac::PWR.c2cr1().modify(|m| m.set_lpms(stop_mode.into()));
+        }
+        #[cfg(stm32h5)]
+        crate::pac::PWR.pmcr().modify(|v| {
+            use crate::pac::pwr::vals;
+            v.set_lpms(vals::Lpms::Stop);
+            v.set_svos(vals::Svos::Scale3);
+        });
+
+        #[cfg(stm32l0)]
+        {
+            use crate::pac::pwr::vals;
+            crate::pac::PWR.cr().modify(|w| {
+                w.set_pdds(vals::Pdds::StopMode);
+                w.set_lpsdsr(vals::Mode::LowPowerMode);
+            });
+        }
+
+        #[cfg(stm32wb)]
+        drop(mutex);
+
+        let _ = stop_mode;
+
+        Ok(())
+    }
+
+    /// Clear any previous stop flags
+    pub fn clear_flags() {
+        #[cfg(stm32wl)]
+        crate::pac::PWR.extscr().modify(|w| {
+            #[cfg(not(feature = "_core-cm0p"))]
+            w.set_c1cssf(true);
+            #[cfg(feature = "_core-cm0p")]
+            w.set_c2cssf(true);
+        });
+        #[cfg(stm32wba)]
+        crate::pac::PWR.sr().modify(|w| w.set_cssf(true));
+        #[cfg(stm32wba)]
+        // Clear WKUP1..WKUP8 pending flags (CWUFx) before stop entry.
+        crate::pac::PWR.wuscr().write(|w| w.0 = 0xff);
+
+        #[cfg(stm32l0)]
+        crate::pac::PWR.cr().modify(|w| w.set_cwuf(true));
+    }
+
+    /// Exit stop mode, reinitializing timer and rcc if required
+    pub fn exit_stop(_cs: CriticalSection) {
+        #[cfg(any(stm32u5, stm32u3))]
+        {
+            let sr = crate::pac::PWR.sr().read();
+            if sr.stopf() {
+                let lpms = crate::pac::PWR.cr1().read().lpms();
+                debug!("low power: U5/U3 woke from STOP (LPMS={:?})", lpms);
+                crate::low_power::notify_stop(crate::low_power::StopEvent::Exit { lpms: lpms.to_bits() });
+
+                // HSE and all PLLs stop in any STOP mode on U5/U3.
+                // Full RCC restore from saved config on every STOP exit.
+                crate::rcc::reinit_saved(_cs);
+                crate::low_power::notify_stop(crate::low_power::StopEvent::Restored);
+
+                // GPTIM timer state is lost in Stop2/Stop3, needs re-init.
+                // LPTIM (_lp-time-driver) survives all STOP modes autonomously.
+                #[cfg(not(feature = "_lp-time-driver"))]
+                if lpms.to_bits() >= 2 {
+                    trace!("low power: re-initializing timer (STOP2+, GPTIM)");
+                    super::get_driver().init_timer(_cs);
+                }
+            }
+
+            // Clear STOPF by writing CSSF
+            crate::pac::PWR.sr().modify(|w| w.set_cssf(true));
+        }
+
+        #[cfg(any(stm32wl, stm32wb, stm32wba))]
+        {
+            // stm32wl5x is dual core and we don't want BOTH cores to re-initialize RCC so we hold a lock
+            #[cfg(stm32wl5x)]
+            let lock = crate::hsem::get_hsem(3).blocking_lock(0);
+
+            #[cfg(any(stm32wl, stm32wb))]
+            let es = crate::pac::PWR.extscr().read();
+
+            #[cfg(stm32wba)]
+            let es = crate::pac::PWR.sr().read();
+
+            // we need to re-initialize RCC if *BOTH* cores have been in some STOP mode!
+            #[cfg(any(stm32wl, stm32wba))]
+            let re_initialize_rcc = {
+                #[cfg(stm32wl5x)]
+                {
+                    // core 1 in any STOP mode AND core 2 in any STOP mode
+                    (es.c1stopf() || es.c1stop2f()) && (es.c2stopf() || es.c2stop2f())
+                }
+                #[cfg(stm32wlex)]
+                {
+                    es.c1stop2f() || es.c1stopf()
+                }
+                #[cfg(stm32wba)]
+                {
+                    es.stopf()
+                }
+            };
+
+            #[cfg(any(stm32wl, stm32wba))]
+            let re_initialize_timer = {
+                #[cfg(all(stm32wl, not(feature = "_core-cm0p")))]
+                {
+                    es.c1stop2f()
+                }
+                #[cfg(all(stm32wl, feature = "_core-cm0p"))]
+                {
+                    es.c2stop2f()
+                }
+                #[cfg(stm32wba)]
+                {
+                    es.stopf()
+                }
+            };
+
+            #[cfg(any(stm32wl, stm32wba))]
+            if re_initialize_rcc {
+                // when we wake from any stop mode we need to re-initialize the rcc
+                crate::rcc::reinit_saved(_cs);
+            }
+
+            #[cfg(stm32wba)]
+            match (es.stopf(), es.stop2f()) {
+                (true, true) => debug!("low power: WBA woke from STOP2"),
+                (true, false) => debug!("low power: WBA woke from STOP0/1"),
+                _ => {}
+            };
+
+            #[cfg(stm32wl)]
+            match (es.c1stopf(), es.c1stop2f()) {
+                (true, false) => debug!("low power: cpu1 has been in STOP1"),
+                (false, true) => debug!("low power: cpu1 has been in STOP2"),
+                (true, true) => debug!("low power: cpu1 has been in STOP1 and STOP2 ???"),
+                (false, false) => trace!("low power: cpu1 stop mode not entered"),
+            };
+
+            #[cfg(stm32wl5x)]
+            // TODO: only for the current cpu
+            match (es.c2stopf(), es.c2stop2f()) {
+                (true, false) => debug!("low power: cpu2 has been in STOP1"),
+                (false, true) => debug!("low power: cpu2 has been in STOP2"),
+                (true, true) => debug!("low power: cpu2 has been in STOP1 and STOP2 ???"),
+                (false, false) => trace!("low power: cpu2 stop mode not entered"),
+            };
+
+            #[cfg(stm32wb)]
+            match (es.c1stopf(), es.c2stopf()) {
+                (true, false) => debug!("low power: cpu1 has been in STOP"),
+                (false, true) => debug!("low power: cpu2 has been in STOP"),
+                (true, true) => debug!("low power: cpu1 and cpu2 have been in STOP"),
+                (false, false) => trace!("low power: stop mode not entered"),
+            };
+
+            clear_flags();
+
+            #[cfg(stm32wl5x)]
+            drop(lock);
+
+            #[cfg(any(stm32wl, stm32wba))]
+            if re_initialize_timer {
+                trace!("low power: re-initializing timer");
+                // when we wake from STOP2, we need to re-initialize the time driver
+                #[cfg(not(feature = "_lp-time-driver"))]
+                super::get_driver().init_timer(_cs);
+            }
+        }
+    }
+}
+
+unsafe fn on_wakeup(cs: CriticalSection) {
+    platform::exit_stop(cs);
+
+    get_driver().resume_time(cs);
+    trace!("low power: resumed");
+}
+
+fn configure_pwr(cs: CriticalSection) -> bool {
+    let mut scb: SCB = unsafe { mem::transmute(()) };
+
+    scb.clear_sleepdeep();
+    platform::clear_flags();
+
+    compiler_fence(Ordering::Acquire);
+
+    let Some(stop_mode) = get_stop_mode(cs) else {
+        return false;
+    };
+
+    if get_driver().pause_time(cs).is_err() {
+        trace!("low_power: failed to pause time, not entering stop");
+
+        false
+    } else if platform::enter_stop(cs, stop_mode).is_err() {
+        trace!("low_power: failed to enter stop");
+
+        false
+    } else {
+        #[cfg(stm32l0)]
+        trace!("low power: enter stop");
+        #[cfg(not(stm32l0))]
+        trace!("low power: enter stop: {:?}", stop_mode);
+        notify_stop(StopEvent::Enter);
+
+        #[cfg(not(feature = "low-power-debug-with-sleep"))]
+        scb.set_sleepdeep();
+
+        true
+    }
+}
+
+/// Sleep with WFI, attempting to enter the deepest STOP mode possible.
+///
+/// If it's not possible to enter any STOP mode due to running peripherals it will
+/// still do a `WFI` sleep. Therefore this function is equivalent to `WFI` except
+/// with lower power consumption and higher latency.
+///
+/// ## SAFETY
+///
+/// Care must be taken that we have ensured that the system is ready to go to deep
+/// sleep, otherwise HAL peripherals may misbehave. HAL drivers automatically prevent
+/// sleep as needed, but you might have to do it manually if you're using some peripherals
+/// with the PAC directly.
+pub unsafe fn sleep(cs: CriticalSection) {
+    let stop = configure_pwr(cs);
+    if !stop {
+        // SAFETY: read inside the critical section the refcounts change under.
+        let (stop1_holds, stop2_holds) = unsafe { (crate::rcc::REFCOUNT_STOP1, crate::rcc::REFCOUNT_STOP2) };
+        notify_stop(StopEvent::Sleep { stop1_holds, stop2_holds });
+    }
+
+    #[cfg(feature = "low-power-defmt-flush")]
+    defmt::flush();
+
+    cortex_m::asm::dsb();
+    cortex_m::asm::wfi();
+
+    cortex_m::asm::isb();
+    cortex_m::asm::dsb();
+    cortex_m::asm::dmb();
+
+    if stop {
+        on_wakeup(cs);
+    } else {
+        notify_stop(StopEvent::Woke);
+    }
+}
+
+trait_set::trait_set! {
+    /// Peripheral that can be suspended
+    #[allow(private_bounds)]
+    pub trait SuspendablePeripheral = SealedSuspendablePeripheral;
+}
+
+pub(crate) trait SealedSuspendablePeripheral {
+    type InternalState;
+
+    #[allow(dead_code)]
+    fn suspend(self) -> Self::InternalState;
+    #[allow(dead_code)]
+    fn resume(state: Self::InternalState) -> Self;
+}
+
+/// A suspended peripheral
+pub struct SuspendedPeripheral<T: SuspendablePeripheral> {
+    state: T::InternalState,
+}
+
+impl<T: SuspendablePeripheral> SuspendedPeripheral<T> {
+    /// Suspend a peripheral
+    pub fn from(peripheral: T) -> Self {
+        Self {
+            state: T::suspend(peripheral),
+        }
+    }
+
+    /// Resume a peripheral
+    pub fn resume(self) -> T {
+        T::resume(self.state)
+    }
+}
+
+enum ResumableState<T: SuspendablePeripheral> {
+    Suspended(SuspendedPeripheral<T>),
+    Resumed(T),
+}
+
+impl<T: SuspendablePeripheral> ResumableState<T> {
+    pub fn resume(&mut self) -> &mut T {
+        if let ResumableState::Suspended(peripheral) = &self {
+            unsafe {
+                let peripheral = ptr::read(peripheral).resume();
+
+                ptr::write(self, ResumableState::Resumed(peripheral));
+            }
+        }
+
+        if let ResumableState::Resumed(peripheral) = self {
+            peripheral
+        } else {
+            unreachable!()
+        }
+    }
+
+    pub fn suspend(&mut self) {
+        if let ResumableState::Resumed(peripheral) = &self {
+            unsafe {
+                let peripheral = SuspendedPeripheral::from(ptr::read(peripheral));
+
+                ptr::write(self, ResumableState::Suspended(peripheral));
+            }
+        }
+    }
+}
+
+/// A mutex-like object to resume a peripheral
+pub struct ResumablePeripheral<T: SuspendablePeripheral> {
+    state: ResumableState<T>,
+}
+
+impl<T: SuspendablePeripheral> ResumablePeripheral<T> {
+    /// Create the object. Will suspend the peripheral as soon as it is passed.
+    pub fn new(peripheral: T) -> Self {
+        Self {
+            state: ResumableState::Suspended(SuspendedPeripheral::from(peripheral)),
+        }
+    }
+
+    /// Suspend the peripheral, if it is resumed
+    pub fn suspend(&mut self) {
+        self.state.suspend()
+    }
+
+    /// Resume the peripheral and get a mutable reference to it
+    pub fn resume(&mut self) -> &mut T {
+        self.state.resume()
+    }
+
+    /// Get a guard that will put the peripheral back to sleep once it is dropped
+    pub fn borrow(&mut self) -> ResumablePeripheralGuard<'_, T> {
+        self.state.resume();
+
+        ResumablePeripheralGuard { state: &mut self.state }
+    }
+}
+
+/// A mutex-like object guard, that when held, activates the peripheral
+pub struct ResumablePeripheralGuard<'a, T: SuspendablePeripheral> {
+    state: &'a mut ResumableState<T>,
+}
+
+impl<'a, T: SuspendablePeripheral> Drop for ResumablePeripheralGuard<'a, T> {
+    fn drop(&mut self) {
+        self.state.suspend();
+    }
+}
+
+impl<'a, T: SuspendablePeripheral> Deref for ResumablePeripheralGuard<'a, T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        if let ResumableState::Resumed(peripheral) = &self.state {
+            peripheral
+        } else {
+            unreachable!()
+        }
+    }
+}
+
+impl<'a, T: SuspendablePeripheral> DerefMut for ResumablePeripheralGuard<'a, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        if let ResumableState::Resumed(peripheral) = &mut self.state {
+            peripheral
+        } else {
+            unreachable!()
+        }
+    }
+}

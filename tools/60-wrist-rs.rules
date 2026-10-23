@@ -1,0 +1,4 @@
+# Lets the logged-in user open the watch's console and keeps ModemManager off it. Install:
+#   sudo cp 60-wrist-rs.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload && sudo udevadm trigger
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="d1a1", TAG+="uaccess", ENV{ID_MM_DEVICE_IGNORE}="1"

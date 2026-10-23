@@ -1,0 +1,69 @@
+[package]
+name = "standalone-boot"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+publish = false
+description = "wrist-rs firmware for the UNA Watch"
+
+[workspace]
+
+[dependencies]
+cortex-m-rt = "0.7.7"
+cortex-m = { version = "0.7.9", features = ["critical-section-single-core"] }
+# No `memory-x`: memory.x here places the image at its partition.
+embassy-stm32 = { version = "0.6.0", features = ["stm32u5a5qj", "time-driver-lptim4", "low-power", "executor-thread", "rt", "time", "exti"] }
+embassy-executor = "0.10.0"
+embassy-time = { version = "0.5.1", features = ["tick-hz-32_768"] }
+static_cell = "2.1.1"
+critical-section = "1.2"
+embassy-usb = { version = "0.6.0", default-features = false }
+log = { version = "0.4", default-features = false, optional = true }
+embassy-sync = "0.8.0"
+embassy-futures = "0.1.2"
+embassy-boot-stm32 = "0.8.0"
+wrist-flash = { path = "../../crates/wrist-flash" }
+wrist-board = { path = "../../crates/wrist-board" }
+wrist-glass = { path = "../../crates/wrist-glass" }
+wrist-time = { path = "../../crates/wrist-time" }
+wrist-eeprom = { path = "../../crates/wrist-eeprom" }
+wrist-power = { path = "../../crates/wrist-power" }
+wrist-vcom = { path = "../../crates/wrist-vcom" }
+
+[features]
+# embassy-usb's own log of the link, printed by `usblog`.
+usb-log = ["dep:log", "embassy-usb/log"]
+
+[[bin]]
+name = "standalone-boot"
+test = false
+bench = false
+
+[profile.release]
+opt-level = "z"
+lto = true
+panic = "abort"
+debug = true
+codegen-units = 1
+
+[profile.dev]
+panic = "abort"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+
+# Every Embassy crate on one revision, so their types match (vendor/*/WRIST-PATCHES.md).
+[patch.crates-io]
+embassy-stm32 = { path = "../../vendor/embassy-stm32" }
+embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "81cabe7e5307c702d27e98577ac5e063c7796910" }
+embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "81cabe7e5307c702d27e98577ac5e063c7796910" }
+embassy-time-driver = { git = "https://github.com/embassy-rs/embassy", rev = "81cabe7e5307c702d27e98577ac5e063c7796910" }
+embassy-time-queue-utils = { git = "https://github.com/embassy-rs/embassy", rev = "81cabe7e5307c702d27e98577ac5e063c7796910" }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "81cabe7e5307c702d27e98577ac5e063c7796910" }
+embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev = "81cabe7e5307c702d27e98577ac5e063c7796910" }
+embassy-hal-internal = { git = "https://github.com/embassy-rs/embassy", rev = "81cabe7e5307c702d27e98577ac5e063c7796910" }
+embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy", rev = "81cabe7e5307c702d27e98577ac5e063c7796910" }
+embassy-net-driver = { git = "https://github.com/embassy-rs/embassy", rev = "81cabe7e5307c702d27e98577ac5e063c7796910" }
+embassy-usb-driver = { git = "https://github.com/embassy-rs/embassy", rev = "81cabe7e5307c702d27e98577ac5e063c7796910" }
+embassy-usb-synopsys-otg = { path = "../../vendor/embassy-usb-synopsys-otg" }
+embassy-usb = { git = "https://github.com/embassy-rs/embassy", rev = "81cabe7e5307c702d27e98577ac5e063c7796910" }

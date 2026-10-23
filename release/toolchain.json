@@ -1,0 +1,8 @@
+{
+  "stable": "1.99.1",
+  "nightly": "nightly-2026-10-19",
+  "target": "thumbv8m.main-none-eabihf",
+  "sdk_url": "https://github.com/UNAWatch/una-sdk",
+  "sdk_tag": "sdk-v1.3.0",
+  "sdk_commit": "7a556a3e8538c0b1b495d45fe21a53b00a60a594"
+}
