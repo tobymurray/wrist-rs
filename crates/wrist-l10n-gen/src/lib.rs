@@ -486,10 +486,13 @@ mod tests {
         assert_eq!(camel("battery-cell-mv"), "BatteryCellMv");
     }
 
+    /// Tests run in parallel, so each catalogue gets its own file.
     fn compile(ftl: &str) -> Result<Catalogue, String> {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!("wrist-l10n-gen-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("t.ftl");
+        let path = dir.join(format!("t{n}.ftl"));
         fs::write(&path, ftl).unwrap();
         catalogue(&path, &mut BTreeMap::new(), true)
     }
