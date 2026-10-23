@@ -35,8 +35,9 @@ use embassy_stm32::time::Hertz;
 use embassy_stm32::{peripherals, Peri};
 use embassy_time::{Duration, Instant, Timer};
 use static_cell::{ConstStaticCell, StaticCell};
-use embassy_futures::select::{select, select3, select4, Either};
+use embassy_futures::select::{select3, select4, Either3};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::channel::Channel;
 use embassy_sync::signal::Signal;
 use wrist_glass::pages;
 use wrist_glass::text::Glass;
@@ -609,6 +610,29 @@ impl ButtonLines {
 /// Short presses, and the button edges that woke the button task, for `power`.
 static PRESSES: AtomicU32 = AtomicU32::new(0);
 static PRESS_EDGES: AtomicU32 = AtomicU32::new(0);
+/// Presses from the console's `press`, counted apart so a battery stretch's figures are real.
+static INJECTED: AtomicU32 = AtomicU32::new(0);
+
+/// A debounced press: the button's index in [`BUTTONS`], and whether it was held past a
+/// short press (but never as long as the hold that resets).
+#[derive(Clone, Copy)]
+pub struct Press {
+    pub button: usize,
+    pub long: bool,
+}
+
+static PRESS_IN: Channel<CriticalSectionRawMutex, Press, 4> = Channel::new();
+
+/// Hand the button task a press, as if released after debouncing; false while four wait.
+pub fn inject_press(press: Press) -> bool {
+    PRESS_IN.try_send(press).is_ok()
+}
+
+/// The index in [`BUTTONS`] for `up`, `down`, `back` or `select`.
+#[must_use]
+pub fn button_named(name: &str) -> Option<usize> {
+    ["up", "down", "back", "select"].iter().position(|&n| n == name)
+}
 
 /// The `[button]` line of `power`: a battery stretch's wake rate depends on how often the
 /// face was lit.
@@ -617,7 +641,9 @@ pub fn write_buttons(uart: Uart) {
     uart.write_u32(PRESSES.load(Ordering::Relaxed));
     uart.write_str(", edges that woke the button task ");
     uart.write_u32(PRESS_EDGES.load(Ordering::Relaxed));
-    uart.write_line("");
+    uart.write_str("; injected by `press` ");
+    uart.write_u32(INJECTED.load(Ordering::Relaxed));
+    uart.write_line(" (not counted in either)");
 }
 
 /// Feeds the watchdog, so a stalled executor resets into the bootloader.
@@ -628,7 +654,6 @@ async fn button_watch(mut lines: ButtonLines) -> ! {
     const SAMPLE_MS: u64 = 50;
     const HOLD_SAMPLES: u32 = 60;
     const SHORT_SAMPLES: u32 = 20;
-    const LIT_FOR: Duration = Duration::from_secs(3);
     let uart = Uart::best_effort();
     let mut seen_up: u32 = 0;
     let mut held_for: u32 = 0;
@@ -643,14 +668,16 @@ async fn button_watch(mut lines: ButtonLines) -> ! {
         let deliberate = down & seen_up;
         if was_down & !down != 0 && held_for < SHORT_SAMPLES {
             PRESSES.fetch_add(1, Ordering::Relaxed);
-            if light_until.is_none() && lcd::light_on() {
-                backlight(false);
-                uart.write_line("[button] short press: the console's light off");
-            } else {
-                backlight(true);
-                light_until = Some(Instant::now() + LIT_FOR);
-                uart.write_line("[button] short press: face lit for 3 s");
-            }
+            let button = (was_down & !down).trailing_zeros() as usize;
+            on_press(uart, Press { button, long: false }, false, &mut light_until);
+        } else if was_down & !down != 0 {
+            let button = (was_down & !down).trailing_zeros() as usize;
+            on_press(uart, Press { button, long: true }, false, &mut light_until);
+        }
+        // Injected presses never touch the hold count, so they cannot reach the reset.
+        while let Ok(press) = PRESS_IN.try_receive() {
+            INJECTED.fetch_add(1, Ordering::Relaxed);
+            on_press(uart, press, true, &mut light_until);
         }
         if light_until.is_some_and(|off| Instant::now() >= off) {
             backlight(false);
@@ -679,12 +706,34 @@ async fn button_watch(mut lines: ButtonLines) -> ! {
         if deliberate == 0 {
             let feed = Instant::now() + FEED;
             let until = light_until.map_or(feed, |off| off.min(feed));
-            if let Either::First(()) = select(lines.any_press(), Timer::at(until)).await {
-                PRESS_EDGES.fetch_add(1, Ordering::Relaxed);
+            match select3(lines.any_press(), Timer::at(until), PRESS_IN.ready_to_receive()).await {
+                Either3::First(()) => {
+                    PRESS_EDGES.fetch_add(1, Ordering::Relaxed);
+                }
+                Either3::Second(()) | Either3::Third(()) => {}
             }
         } else {
             Timer::after_millis(SAMPLE_MS).await;
         }
+    }
+}
+
+/// What a debounced press does: a short one lights the face for 3 s, or turns off a light the
+/// console switched on; a long one does nothing yet.
+fn on_press(uart: Uart, press: Press, injected: bool, light_until: &mut Option<Instant>) {
+    const LIT_FOR: Duration = Duration::from_secs(3);
+    uart.write_str(if injected { "[button] injected " } else { "[button] " });
+    uart.write_str(if press.long { "long press " } else { "short press " });
+    uart.write_str(BUTTONS.get(press.button).map_or("?", |b| b.3));
+    if press.long {
+        uart.write_line(": no action");
+    } else if light_until.is_none() && lcd::light_on() {
+        backlight(false);
+        uart.write_line(": the console's light off");
+    } else {
+        backlight(true);
+        *light_until = Some(Instant::now() + LIT_FOR);
+        uart.write_line(": face lit for 3 s");
     }
 }
 
@@ -755,6 +804,12 @@ async fn display(mut bus: pmic::AsyncBus, mut pwr_int: ExtiInput<'static, Async>
             let (composed, short) = pages::compose(&glass::status(soc_pct));
             glass::note_max(&glass::MAX_COMPOSE_US, elapsed_us(t0));
             show(panel, (fb, bg), uart, &mut drawn, (composed, short)).await;
+        }
+        if glass::dump_wanted() {
+            if panel.is_none() {
+                uart.write_line("[frame] the panel is not started; the buffer holds no face");
+            }
+            glass::dump(fb).await;
         }
         // Asleep until the minute turns, unless USB, the input line or a request needs it sooner.
         let line_low = pwr_int.is_low();
