@@ -135,7 +135,7 @@ pub fn fmt_u32(buf: &mut [u8; 11], value: u32) -> &str {
             break;
         }
     }
-    core::str::from_utf8(&buf[i..]).unwrap_or("?")
+    core::str::from_utf8(&buf[i..]).unwrap_or("?") // verbatim: never taken, the digits are ASCII
 }
 
 /// Writes right-aligned into `buf` and returns the used tail.
@@ -154,7 +154,7 @@ pub fn fmt_i32(buf: &mut [u8; 11], value: i32) -> &str {
         i -= 1;
         buf[i] = b'-';
     }
-    core::str::from_utf8(&buf[i..]).unwrap_or("?")
+    core::str::from_utf8(&buf[i..]).unwrap_or("?") // verbatim: never taken, the digits are ASCII
 }
 
 pub const MAX_LINES: usize = 8;
