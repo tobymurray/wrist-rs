@@ -1101,6 +1101,8 @@ impl Link<'_> {
                 self.uart.write_line(if relay { " ms, with heart rate" } else { " ms" });
             }
             Ok(r) => {
+                // Refused while the central side scans or connects: it resumes when that ends.
+                self.central.advertising_refused();
                 self.uart.write_str("[ble] advertising refused, status ");
                 self.uart.write_hex8(r.status);
                 self.uart.write_line("");

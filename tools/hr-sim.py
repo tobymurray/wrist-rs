@@ -6,6 +6,7 @@ without a strap on anyone's chest.
     hr-sim.py --seconds 60           ... for a minute
     hr-sim.py --consume 02:80:E1:..  also subscribe to the watch's own heart rate (the relay)
                                      once the watch connects, and print what it sends
+    hr-sim.py --consume ADDR --connect   ... connecting to the watch ourselves, as a rower would
 
 The simulated strap advertises as HR-SIM with service 0x180D and notifies a Heart Rate
 Measurement once a second while subscribed: flags 0x16 (skin contact, RR intervals), a rate
@@ -17,7 +18,7 @@ connects, the host discovers the watch's GATT and subscribes to its Heart Rate M
 so `hr relay on` on the watch sends the host's own readings back to it. That shows both
 halves (strap in, sensor out) with one adapter.
 
-Needs dbus-fast (and bleak for --consume): pip install bleak.
+Needs dbus-fast (pip install bleak brings it).
 """
 import argparse
 import asyncio
@@ -57,6 +58,12 @@ class Advertisement(ServiceInterface):
     @dbus_property(access=PropertyAccess.READ)
     def Includes(self) -> "as":
         return []
+
+    # General discoverable, as a strap is: GAP discovery (the watch's `ble scan`) reports only
+    # discoverable advertisers' advertisements, and their scan responses otherwise.
+    @dbus_property(access=PropertyAccess.READ)
+    def Discoverable(self) -> "b":
+        return True
 
 
 class Service(ServiceInterface):
@@ -142,30 +149,67 @@ def measurement(t):
     return bytes([0x16, bpm, rr & 0xFF, rr >> 8]), bpm
 
 
-async def consume(address, stop):
-    """Subscribe to the watch's Heart Rate Measurement once it is connected, and print it."""
-    from bleak import BleakClient
-
+async def consume(bus, adapter, address, connect, stop):
+    """Subscribe to the watch's Heart Rate Measurement over whichever link joins us, and print
+    what it sends. BlueZ is this host's GATT client on a link in either role, so when the
+    watch connects to the simulated strap, the host reads the watch's heart rate back over
+    that same link (two links between the same two devices are refused). With `connect`,
+    the host opens the link itself, as a rower or a bike would."""
+    dev_path = f"/org/bluez/{adapter}/dev_{address.upper().replace(':', '_')}"
+    root = bus.get_proxy_object("org.bluez", "/", await bus.introspect("org.bluez", "/"))
+    manager = root.get_interface("org.freedesktop.DBus.ObjectManager")
+    asked = False
     while not stop.is_set():
-        try:
-            async with BleakClient(address, timeout=20) as client:
-                def on(_h, data):
-                    data = bytes(data)
-                    print(f"-- {time.strftime('%H:%M:%S')} the watch relayed {data.hex(' ')} "
-                          f"({data[1] if len(data) > 1 else '?'} bpm)", flush=True)
-                await client.start_notify(HRM, on)
-                print(f"-- {time.strftime('%H:%M:%S')} subscribed to the watch's heart rate", flush=True)
-                while client.is_connected and not stop.is_set():
-                    await asyncio.sleep(0.5)
-        except Exception as e:  # the watch not connected yet, or gone
-            print(f"-- consume: {type(e).__name__}: {e}", flush=True)
+        objects = await manager.call_get_managed_objects()
+        dev = objects.get(dev_path, {}).get("org.bluez.Device1")
+        if dev is None:
+            await asyncio.sleep(1)
+            continue
+        if not dev["Connected"].value or not dev["ServicesResolved"].value:
+            if connect and not asked:
+                asked = True
+                obj = bus.get_proxy_object("org.bluez", dev_path, await bus.introspect("org.bluez", dev_path))
+                try:
+                    await obj.get_interface("org.bluez.Device1").call_connect()
+                except Exception as e:
+                    print(f"-- consume: connect: {e}", flush=True)
+                    asked = False
+            await asyncio.sleep(1)
+            continue
+        chars = [path for path, ifaces in objects.items()
+                 if path.startswith(dev_path + "/")
+                 and ifaces.get("org.bluez.GattCharacteristic1", {}).get("UUID", Variant("s", "")).value == HRM]
+        if not chars:
+            print("-- consume: the watch is connected but shows no Heart Rate Measurement", flush=True)
             await asyncio.sleep(3)
+            continue
+        obj = bus.get_proxy_object("org.bluez", chars[0], await bus.introspect("org.bluez", chars[0]))
+        props = obj.get_interface("org.freedesktop.DBus.Properties")
+
+        def changed(iface, values, _invalid):
+            if iface == "org.bluez.GattCharacteristic1" and "Value" in values:
+                data = bytes(values["Value"].value)
+                print(f"-- {time.strftime('%H:%M:%S')} the watch relayed {data.hex(' ')} "
+                      f"({data[1] if len(data) > 1 else '?'} bpm)", flush=True)
+
+        props.on_properties_changed(changed)
+        await obj.get_interface("org.bluez.GattCharacteristic1").call_start_notify()
+        print(f"-- {time.strftime('%H:%M:%S')} subscribed to the watch's heart rate ({chars[0]})", flush=True)
+        while not stop.is_set():
+            await asyncio.sleep(1)
+            dev = (await manager.call_get_managed_objects()).get(dev_path, {}).get("org.bluez.Device1")
+            if dev is None or not dev["Connected"].value:
+                print(f"-- {time.strftime('%H:%M:%S')} the watch's link is down", flush=True)
+                props.off_properties_changed(changed)
+                asked = False
+                break
 
 
 async def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--seconds", type=float, default=0, help="stop after this long (0: until Ctrl-C)")
     ap.add_argument("--consume", metavar="WATCH", help="also subscribe to the watch's heart rate (relay test)")
+    ap.add_argument("--connect", action="store_true", help="with --consume, open the link to the watch ourselves")
     ap.add_argument("--adapter", default="hci0")
     args = ap.parse_args()
 
@@ -186,7 +230,7 @@ async def main():
     print("-- advertising HR-SIM (0x180D); Ctrl-C stops", flush=True)
 
     stop = asyncio.Event()
-    task = asyncio.create_task(consume(args.consume, stop)) if args.consume else None
+    task = asyncio.create_task(consume(bus, args.adapter, args.consume, args.connect, stop)) if args.consume else None
     start = time.time()
     sent = 0
     try:

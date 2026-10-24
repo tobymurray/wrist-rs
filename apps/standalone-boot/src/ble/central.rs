@@ -498,6 +498,14 @@ impl Central {
         RELAY_SUBSCRIBERS.store(0, Ordering::Relaxed);
     }
 
+    /// Advertising was refused: if a scan or a connection attempt is the reason, advertising
+    /// resumes when it ends. Otherwise nothing retries here (no loop on a chip that refuses).
+    pub(super) fn advertising_refused(&mut self) {
+        if self.scan.is_some() || self.connecting.is_some() {
+            self.paused_advertising = true;
+        }
+    }
+
     /// The radio is going off.
     pub(super) fn stopped() {
         CENTRAL.store(CENTRAL_UNAVAILABLE, Ordering::Relaxed);
