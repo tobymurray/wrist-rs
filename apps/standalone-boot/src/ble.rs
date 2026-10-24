@@ -424,6 +424,7 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
             pair_ask: PairAsk::default(),
             hrs: None,
             advertised_relay: false,
+            advertised_every: 0,
             central: central::Central::default(),
         };
         link.bring_up().await;
@@ -494,6 +495,9 @@ struct Link<'d> {
     hrs: Option<(u16, u16, u16)>,
     /// Advertising carries the Heart Rate Service (the relay was on when it started).
     advertised_relay: bool,
+    /// The interval advertising actually runs at (0.625 ms units), which beside a sensor link
+    /// may be shorter than the timing wanted.
+    advertised_every: u16,
     /// The watch as a central: scanning, the sensor link, heart rate in.
     central: central::Central,
 }
@@ -1087,8 +1091,6 @@ impl Link<'_> {
         let want = timing(power(), false);
         let mut p = [0u8; 24];
         p[0] = 0x00;
-        p[1..3].copy_from_slice(&want.advertise.to_le_bytes());
-        p[3..5].copy_from_slice(&want.advertise.to_le_bytes());
         p[5] = address::STATIC_RANDOM;
         p[6] = 0x00;
         p[7] = u8::try_from(1 + DEVICE_NAME.len()).unwrap_or(0);
@@ -1108,27 +1110,48 @@ impl Link<'_> {
             n += 1;
         }
         p[n..n + 4].copy_from_slice(&[0x00, 0x00, 0x00, 0x00]);
-        match self.command(ACI_GAP_SET_DISCOVERABLE, &p[..n + 4]).await {
-            Ok(r) if r.status == 0 => {
-                STATE.store(STATE_ADVERTISING, Ordering::Relaxed);
-                self.advertised = Some(want);
-                self.advertised_relay = relay;
-                self.uart.write_str("[ble] advertising as UNA every ");
-                self.uart.write_u32(u32::from(want.advertise) * 625 / 1000);
-                self.uart.write_line(if relay { " ms, with heart rate" } else { " ms" });
-            }
-            Ok(r) => {
-                // Refused while the central side scans or connects: it resumes when that ends.
-                self.central.advertising_refused();
-                self.uart.write_str("[ble] advertising refused, status ");
-                self.uart.write_hex8(r.status);
-                self.uart.write_line("");
-            }
-            Err(why) => {
-                self.uart.write_str("[ble] advertising: ");
-                self.uart.write_line(why);
+        let ladder = wrist_wake::ble::advertising_ladder(want.advertise, self.central.interval());
+        for every in ladder.into_iter().flatten() {
+            p[1..3].copy_from_slice(&every.to_le_bytes());
+            p[3..5].copy_from_slice(&every.to_le_bytes());
+            match self.command(ACI_GAP_SET_DISCOVERABLE, &p[..n + 4]).await {
+                Ok(r) if r.status == 0 => {
+                    STATE.store(STATE_ADVERTISING, Ordering::Relaxed);
+                    self.advertised = Some(want);
+                    self.advertised_every = every;
+                    self.advertised_relay = relay;
+                    self.uart.write_str("[ble] advertising as UNA every ");
+                    self.uart.write_u32(u32::from(every) * 625 / 1000);
+                    self.uart.write_str(if relay { " ms, with heart rate" } else { " ms" });
+                    return self.uart.write_line(if every == want.advertise { "" } else { " (to fit the sensor link)" });
+                }
+                // ST's scheduler (0x82 to 0x86: no slot, interval too large, ...): the next rung.
+                Ok(r) if (0x82..=0x86).contains(&r.status) => {
+                    self.uart.write_str("[ble] advertising every ");
+                    self.uart.write_u32(u32::from(every) * 625 / 1000);
+                    self.uart.write_str(" ms does not fit beside the sensor link, status ");
+                    self.uart.write_hex8(r.status);
+                    self.uart.write_line("");
+                }
+                Ok(r) => {
+                    // Refused while the central side scans or connects: it resumes when that ends.
+                    self.central.advertising_refused();
+                    STATE.store(STATE_IDLE, Ordering::Relaxed);
+                    self.uart.write_str("[ble] advertising refused, status ");
+                    self.uart.write_hex8(r.status);
+                    return self.uart.write_line("");
+                }
+                Err(why) => {
+                    STATE.store(STATE_IDLE, Ordering::Relaxed);
+                    self.uart.write_str("[ble] advertising: ");
+                    return self.uart.write_line(why);
+                }
             }
         }
+        // Retried when the sensor link changes or goes (`advertised` is cleared then).
+        STATE.store(STATE_IDLE, Ordering::Relaxed);
+        self.advertised = None;
+        self.uart.write_line("[ble] advertising: no interval fits beside the sensor link");
     }
 
     async fn list_bonds(&mut self) {
@@ -1315,10 +1338,8 @@ impl Link<'_> {
                 self.advertised = None;
                 self.uart.write_line("[ble] connected");
             }
-            Event::ConnectionUpdate { handle, interval: iv, .. } if self.central.handle() == Some(handle) => {
-                self.uart.write_str("[ble] sensor link interval ");
-                write_interval(self.uart, iv);
-                self.uart.write_line("");
+            Event::ConnectionUpdate { handle, interval, .. } if self.central.handle() == Some(handle) => {
+                self.sensor_interval(interval);
             }
             Event::ConnectionUpdate { interval: iv, latency: lat, .. } => {
                 INTERVAL.store(iv, Ordering::Relaxed);
@@ -1330,7 +1351,7 @@ impl Link<'_> {
                 self.uart.write_line("");
             }
             Event::Disconnected { handle, reason } if self.central.handle() == Some(handle) => {
-                self.central.disconnected(reason, self.uart);
+                self.sensor_disconnected(reason);
             }
             Event::Disconnected { reason, .. } => {
                 central::relay_subscribed(true, false);

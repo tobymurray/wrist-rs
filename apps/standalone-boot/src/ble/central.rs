@@ -3,9 +3,9 @@
 //! a strap and served again from the watch's own Heart Rate Service (the relay).
 //!
 //! Everything here is off until a console command starts it, and bounded in time: a scan
-//! ends, a connection attempt and each GATT procedure give up after 10 s, and a lost strap is
-//! looked for with a backoff and then given up (`wrist_wake::ble`). One GATT procedure runs
-//! at a time. Events reach this module only when they carry the sensor link's handle, so
+//! ends, a connection attempt gives up after 10 s (20 s on battery), each GATT procedure
+//! after 10 s, and a lost strap is looked for with a backoff and then given up
+//! (`wrist_wake::ble`). One GATT procedure runs at a time. Events reach this module only when they carry the sensor link's handle, so
 //! nothing on the sensor link can touch the console or the phone link's security.
 
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU8, Ordering};
@@ -20,12 +20,11 @@ use wrist_aci::opcode::{
 };
 use wrist_aci::{address, gap_proc, vendor, Address, L2capUpdateRequest, Uuid};
 use wrist_profiles::heart_rate::{self, rr_ms, Contact, Measurement};
-use wrist_wake::ble::{reconnect_after_ms, scan, sensor, Timing, GIVE_UP_MS};
+use wrist_wake::ble::{connect_timeout_ms, reconnect_after_ms, scan, sensor, Timing, GIVE_UP_MS};
 
 use super::{power, Link, Request, REQUESTS, STATE, STATE_ADVERTISING, STATE_IDLE};
 use crate::uart::Uart;
 
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const PROC_TIMEOUT: Duration = Duration::from_secs(10);
 const SCAN_DEFAULT_S: u8 = 10;
 const SCAN_MAX_S: u8 = 30;
@@ -53,7 +52,8 @@ const COMMAND_DISALLOWED: u8 = 0x0C;
 /// Console requests for the central side.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Ask {
-    Scan(u8),
+    /// Seconds, and an interval and window (0.625 ms units) in place of the power source's.
+    Scan(u8, Option<(u16, u16)>),
     Connect(Address),
     Drop,
     Services,
@@ -131,11 +131,23 @@ pub(super) fn ble_command(args: &[u8], uart: Uart) -> Parsed {
         return Parsed::NotCentral;
     };
     let ask = match first {
-        "scan" => match words.next().map(str::parse::<u8>) {
-            None => Ask::Scan(SCAN_DEFAULT_S),
-            Some(Ok(s)) if (1..=SCAN_MAX_S).contains(&s) => Ask::Scan(s),
-            _ => return usage(uart, "ble scan [seconds, 1 to 30]"),
-        },
+        "scan" => {
+            let seconds = words.next().map(str::parse::<u8>);
+            let ms = |w: Option<&str>| w.and_then(|w| w.parse::<u32>().ok());
+            let duty = match (ms(words.next()), ms(words.next())) {
+                (None, None) => None,
+                // Core Specification: 2.5 ms to 10.24 s, the window no longer than the interval.
+                (Some(i), Some(w)) if (3..=10_240).contains(&i) && (3..=i).contains(&w) => {
+                    Some((u16::try_from(i * 8 / 5).unwrap_or(16), u16::try_from(w * 8 / 5).unwrap_or(16)))
+                }
+                _ => return usage(uart, "ble scan [seconds, 1 to 30] [interval ms] [window ms]"),
+            };
+            match seconds {
+                None => Ask::Scan(SCAN_DEFAULT_S, None),
+                Some(Ok(s)) if (1..=SCAN_MAX_S).contains(&s) => Ask::Scan(s, duty),
+                _ => return usage(uart, "ble scan [seconds, 1 to 30] [interval ms] [window ms]"),
+            }
+        }
         "connect" => match parse_address(words.next(), words.next()) {
             Some(a) => Ask::Connect(a),
             None => return usage(uart, "ble connect AA:BB:CC:DD:EE:FF [random]"),
@@ -417,6 +429,8 @@ struct Strap {
     lost_since: Option<Instant>,
     /// The quiet state has been logged since the last reading.
     quiet_told: bool,
+    /// A reading has been logged since the subscription.
+    announced: bool,
     contact: Contact,
 }
 
@@ -431,6 +445,8 @@ pub(super) struct Central {
     seen_next: usize,
     connecting: Option<(Address, Instant)>,
     link: Option<(u16, Address)>,
+    /// The sensor link's connection interval (1.25 ms units).
+    link_interval: Option<u16>,
     proc: Option<(Proc, Instant)>,
     /// The sensor link's timing last asked.
     asked: Option<Timing>,
@@ -449,6 +465,15 @@ pub(super) struct Central {
 impl Central {
     pub(super) fn handle(&self) -> Option<u16> {
         self.link.map(|(h, _)| h)
+    }
+
+    /// The sensor link's interval, while it is up.
+    pub(super) fn interval(&self) -> Option<u16> {
+        self.link.and(self.link_interval)
+    }
+
+    pub(super) fn set_interval(&mut self, iv: u16) {
+        self.link_interval = Some(iv);
     }
 
     /// When the loop must next run for the central's sake.
@@ -473,7 +498,7 @@ impl Central {
         [
             work.then_some(now),
             self.scan.map(|(until, ..)| until),
-            self.connecting.map(|(_, since)| since + CONNECT_TIMEOUT),
+            self.connecting.map(|(_, since)| since + connect_timeout()),
             self.proc.map(|(_, since)| since + PROC_TIMEOUT),
             strap,
             self.fake.map(|(_, at)| at),
@@ -561,6 +586,7 @@ impl Central {
     pub(super) fn connected(&mut self, handle: u16, peer: Address, interval: Option<(u16, u16)>, uart: Uart) {
         self.connecting = None;
         self.link = Some((handle, peer));
+        self.link_interval = interval.map(|(iv, _)| iv);
         self.asked = None;
         self.proc = None;
         Self::set_peer(peer);
@@ -749,7 +775,8 @@ impl Central {
         if let Some(s) = self.strap.as_mut() {
             if s.stage == Stage::Live && s.measurement == Some(attr) {
                 if let Some(m) = Measurement::decode(value) {
-                    let first = HR_READINGS.load(Ordering::Relaxed) == 0 || s.quiet_told;
+                    let first = !s.announced || s.quiet_told;
+                    s.announced = true;
                     let contact_changed = m.contact != s.contact;
                     s.quiet_told = false;
                     s.contact = m.contact;
@@ -819,6 +846,7 @@ impl Central {
             Some(Stage::Live) => {
                 s.stage = Stage::Live;
                 s.quiet_told = false;
+                s.announced = false;
                 s.lost_since = None;
                 HR_AT_MS.store(now_ms(), Ordering::Relaxed);
                 HR.store(HR_LIVE, Ordering::Relaxed);
@@ -838,6 +866,17 @@ impl Central {
             }
         }
     }
+}
+
+fn connect_timeout() -> Duration {
+    Duration::from_millis(connect_timeout_ms(power()))
+}
+
+/// Counts and the last reading start again with each `hr strap` or `hr fake`.
+fn new_source() {
+    HR_READINGS.store(0, Ordering::Relaxed);
+    HR_AT_MS.store(0, Ordering::Relaxed);
+    RELAYED.store(0, Ordering::Relaxed);
 }
 
 /// A heart-rate reading, from the strap or `hr fake`, into the statics `hr` reports.
@@ -883,10 +922,10 @@ impl Link<'_> {
             return uart.write_line("[ble] the central role is not available on this chip (see the start-up log)");
         }
         match ask {
-            Ask::Scan(seconds) => {
+            Ask::Scan(seconds, duty) => {
                 self.central.seen = [None; SCAN_SEEN];
                 self.central.seen_next = 0;
-                self.start_scan(seconds).await;
+                self.start_scan(seconds, duty).await;
             }
             Ask::Connect(a) => self.start_connect(a).await,
             Ask::Drop => {
@@ -904,6 +943,7 @@ impl Link<'_> {
             }
             Ask::Fake(bpm) => {
                 self.central.fake = Some((bpm, Instant::now()));
+                new_source();
                 HR.store(HR_FAKE, Ordering::Relaxed);
                 uart.write_line("[hr] fake readings once a second; `hr off` stops them");
             }
@@ -935,8 +975,10 @@ impl Link<'_> {
                     retry_at: Instant::now(),
                     lost_since: None,
                     quiet_told: false,
+                    announced: false,
                     contact: Contact::Unsupported,
                 });
+                new_source();
                 HR.store(if connected { HR_DISCOVERING } else { HR_CONNECTING }, Ordering::Relaxed);
             }
             client => self.client_request(client).await,
@@ -1007,11 +1049,11 @@ impl Link<'_> {
         }
     }
 
-    async fn start_scan(&mut self, seconds: u8) {
+    async fn start_scan(&mut self, seconds: u8, duty: Option<(u16, u16)>) {
         if self.central.scan.is_some() || self.central.connecting.is_some() {
             return self.uart.write_line("[ble] a scan or a connection attempt is already running");
         }
-        let s = scan(power());
+        let s = duty.map_or(scan(power()), |(interval, window)| wrist_wake::ble::Scan { interval, window });
         let mut p = [0u8; 6];
         p[0..2].copy_from_slice(&s.interval.to_le_bytes());
         p[2..4].copy_from_slice(&s.window.to_le_bytes());
@@ -1026,7 +1068,11 @@ impl Link<'_> {
                 self.uart.write_u32(u32::from(seconds));
                 self.uart.write_str(" s, listening ");
                 self.uart.write_u32(u32::from(s.window) * 100 / u32::from(s.interval));
-                self.uart.write_line("% of the time");
+                self.uart.write_str("% of the time (");
+                self.uart.write_u32(u32::from(s.window) * 5 / 8);
+                self.uart.write_str(" ms in every ");
+                self.uart.write_u32(u32::from(s.interval) * 5 / 8);
+                self.uart.write_line(" ms)");
             }
             Ok(status) => {
                 self.uart.write_str("[ble] scan refused, status ");
@@ -1070,7 +1116,9 @@ impl Link<'_> {
                 CENTRAL.store(CENTRAL_CONNECTING, Ordering::Relaxed);
                 self.uart.write_str("[ble] connecting to ");
                 write_address(self.uart, a);
-                self.uart.write_line(" (10 s)");
+                self.uart.write_str(" (");
+                self.uart.write_u32(u32::try_from(connect_timeout().as_secs()).unwrap_or(0));
+                self.uart.write_line(" s)");
             }
             Ok(status) => {
                 self.uart.write_str("[ble] connection refused, status ");
@@ -1085,6 +1133,26 @@ impl Link<'_> {
                 self.central.strap_retry();
             }
         }
+    }
+
+    /// The sensor link's interval changed: advertising chosen to fit the old one is chosen again.
+    pub(super) fn sensor_interval(&mut self, iv: u16) {
+        self.central.set_interval(iv);
+        self.advertised = None;
+        self.readvertise |= STATE.load(Ordering::Relaxed) == STATE_IDLE;
+        self.uart.write_str("[ble] sensor link interval ");
+        super::write_interval(self.uart, iv);
+        self.uart.write_line("");
+    }
+
+    /// The sensor link went down: advertising fitted to it goes back to the timing wanted.
+    pub(super) fn sensor_disconnected(&mut self, reason: u8) {
+        self.central.disconnected(reason, self.uart);
+        if self.advertised.is_some_and(|t| t.advertise != self.advertised_every) {
+            self.advertised = None;
+        }
+        // Up, not connected and not advertising: nothing fitted beside the link; try again.
+        self.readvertise |= STATE.load(Ordering::Relaxed) == STATE_IDLE;
     }
 
     /// The sensor link closed, or the attempt to make it cancelled.
@@ -1120,11 +1188,11 @@ impl Link<'_> {
         if self.central.scan.is_none() && self.central.connecting.is_none() {
             self.resume_advertising();
         }
-        if self.central.connecting.is_some_and(|(_, since)| now >= since + CONNECT_TIMEOUT) {
+        if self.central.connecting.is_some_and(|(_, since)| now >= since + connect_timeout()) {
             let _ = self.command(ACI_GAP_TERMINATE_GAP_PROC, &[gap_proc::DIRECT_CONNECTION]).await;
             if self.central.connecting.take().is_some() {
                 CENTRAL.store(CENTRAL_IDLE, Ordering::Relaxed);
-                uart.write_line("[ble] connection attempt: not found in 10 s");
+                uart.write_line("[ble] connection attempt: not found in time");
                 self.central.strap_retry();
             }
         }
