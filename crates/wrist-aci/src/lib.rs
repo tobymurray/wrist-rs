@@ -53,8 +53,9 @@ pub mod opcode {
     pub const ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_REQ: u16 = 0xFD81;
 }
 
-/// `ACI_GATT_ADD_CHAR`'s security permissions (ST's `ble_defs.h`). ST's stack does not apply
-/// them to a write without response, so a characteristic that needs them must not offer one.
+/// `ACI_GATT_ADD_CHAR`'s security permissions (ST's `ble_defs.h`). ST's stack applies them to
+/// writes with response only; a write without response arrives whatever the link, so the
+/// application checks the link for those itself.
 pub mod permission {
     pub const NONE: u8 = 0x00;
     /// Writes only over a link encrypted with authenticated (MITM-protected) keys.

@@ -9,12 +9,11 @@
 //! Security. Pairing is LE Secure Connections with numeric comparison, MITM required: the
 //! central shows a number, `ble` on the USB console shows the same one, and `ble yes`
 //! answers it (`ble no`, or 60 s, rejects). With MITM required no unauthenticated key
-//! exists, so an encrypted link is a bonded central's. The console's RX characteristic takes
-//! writes with response only, and only over an authenticated, encrypted link; ST's stack
-//! does not apply those permissions to a write without response, so it is not offered. The
-//! watch also checks in software: nothing written over a link that is not encrypted is acted
-//! on, and the console's output is mirrored only to an encrypted link. The loader is never
-//! accepted over the air.
+//! exists, so an encrypted link is a bonded central's. The console's RX characteristic asks
+//! the stack for an authenticated, encrypted link, which ST's stack checks on writes with
+//! response but not on writes without; so the watch checks too: nothing written over a link
+//! that is not encrypted is acted on, and the console's output is mirrored only to an
+//! encrypted link. The loader is never accepted over the air.
 //!
 //! Power. On a cable the radio is as responsive as the link allows; on battery it
 //! advertises about once a second and asks for a slow, latent link, fast only while a
@@ -99,6 +98,7 @@ const UUID_MANUFACTURER_NAME: u16 = 0x2A29;
 const UUID_MODEL_NUMBER: u16 = 0x2A24;
 const UUID_FIRMWARE_REVISION: u16 = 0x2A26;
 const CHAR_PROP_READ: u8 = 0x02;
+const CHAR_PROP_WRITE_WITHOUT_RESPONSE: u8 = 0x04;
 const CHAR_PROP_WRITE: u8 = 0x08;
 const CHAR_PROP_NOTIFY: u8 = 0x10;
 const MANUFACTURER: &[u8] = b"wrist-rs";
@@ -778,9 +778,12 @@ impl Link<'_> {
             self.fail("adding the console service");
             return false;
         };
+        // Write alone is not enough: with it, a bonded central's writes were neither answered nor
+        // reported (installs 140 to 143). ST's stack checks `secured` only on writes with
+        // response; `attribute_modified` drops the rest unless the link is encrypted.
         let secured = permission::AUTHEN_WRITE | permission::ENCRY_WRITE;
         let (Some(rx), Some(tx)) = (
-            self.add_char_128(nus, NUS_RX, CHAR_PROP_WRITE, secured, 0x01).await,
+            self.add_char_128(nus, NUS_RX, CHAR_PROP_WRITE | CHAR_PROP_WRITE_WITHOUT_RESPONSE, secured, 0x01).await,
             self.add_char_128(nus, NUS_TX, CHAR_PROP_NOTIFY, permission::NONE, 0x00).await,
         ) else {
             self.fail("adding a console characteristic");

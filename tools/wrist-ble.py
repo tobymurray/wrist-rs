@@ -10,7 +10,9 @@ Linux or Mac host. The watch needs a build with the `ble` feature and `ble on`.
 Needs `bleak` (pip install bleak) and, for --update over USB-less links, a bond. Finds the
 watch by its advertised name (--name, default UNA); the watch takes one central at a time.
 
-The console answers only a bonded central over an encrypted link. --pair (Linux, BlueZ)
+The console answers only a bonded central over an encrypted link. BlueZ keeps the watch's
+GATT table for a bonded watch; after a build that changes the table, remove the watch from
+this host (`bluetoothctl remove <address>`) and pair again. --pair (Linux, BlueZ)
 registers a D-Bus agent that displays and confirms, asks BlueZ to pair, and when BlueZ asks
 whether the number matches, reads the watch's own number from its USB console (`ble`), sends
 `ble yes` there if they agree, and accepts. No button on the watch is pressed.
@@ -132,11 +134,16 @@ async def find(name, timeout=15):
 
 
 async def attach(client, con):
-    """Subscribe to TX; the watch mirrors its console once the link is encrypted."""
+    """Subscribe to TX; the watch mirrors its console once the link is encrypted. A host that
+    is not bonded gets no answer (BlueZ may try to pair, which the watch times out)."""
     await client.start_notify(TX, con.on_notify)
-    for _ in range(20):
-        await send(client, "ping")
-        if await con.wait_for(["pong", "[usb]"], 0.5):
+    for _ in range(10):
+        try:
+            await asyncio.wait_for(send(client, "ping"), 5)
+        except (asyncio.TimeoutError, Exception) as e:
+            print(f"-- a write was not answered ({e!r})", flush=True)
+            break
+        if await con.wait_for(["pong"], 1):
             return True
     print("-- no answer over the air: is this host bonded? (--pair)", flush=True)
     return False
