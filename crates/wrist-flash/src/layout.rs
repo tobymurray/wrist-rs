@@ -27,6 +27,7 @@ pub mod bank1 {
     /// embassy-boot's swap and revert state.
     pub const STATE: u16 = 181;
     /// Past the state page: never written by wrist-rs, so it holds the stock kernel's tail.
+    /// Pages 196 to 255 stay unused for good: they are opposite the glyph store.
     pub const UNUSED: Range<u16> = 182..256;
 }
 
@@ -50,6 +51,7 @@ pub mod bank2 {
     /// The installer's staged image, under stock; a stale copy stays after an install.
     pub const STAGING: Range<u16> = 128..196;
     /// Language packs: data, CRC-checked, never executed. Opposite it is unused bank 1.
+    /// Fixed for the life of the project; nothing records where it is.
     pub const GLYPH_STORE: Range<u16> = 196..256;
 }
 

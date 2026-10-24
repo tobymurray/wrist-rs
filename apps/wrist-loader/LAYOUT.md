@@ -31,6 +31,10 @@ erases the same page of bank 1 instead, so each region is placed for what lies o
 | staging | 128–195 | `0x08300000` | the installer's staged image; a stale copy stays after an install | dfu and state, under stock |
 | glyph store | 196–255 | `0x08388000` | language packs: data, CRC-checked, never executed | unused |
 
+The bank 2 map is fixed for the life of the project. Nothing records where the glyph store
+is and nothing migrates it: the store is a cache, which the host fills again after every
+return to stock. Bank 1 pages 196–255, opposite the store, stay unused.
+
 Nothing of ours erases bank 2 below page 48 except the self-test. The numbers are in
 [`crates/wrist-flash/src/layout.rs`](../../crates/wrist-flash/src/layout.rs), whose
 compile-time checks keep the regions apart and hold the installer's plan to them, and whose

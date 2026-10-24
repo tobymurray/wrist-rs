@@ -226,7 +226,9 @@ pub const RETIRED_RANGE: Range<usize> = RECORD_LEN..RECORD_LEN + QUADWORD;
 const MAGIC: [u8; 4] = *b"WGS1";
 pub const FORMAT: u8 = 1;
 
-/// What makes a pack count: written last, after the pack has been read back whole.
+/// What makes a pack count: written last, after the pack has been read back whole. It holds
+/// no location, since the store's pages are fixed; a layout change would be a new
+/// [`FORMAT`], with the packs sent again, not a migration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CommitRecord {
     /// The pack's locale, from `l10n/locales.toml`.
