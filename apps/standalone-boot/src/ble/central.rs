@@ -3,10 +3,9 @@
 //! a strap and served again from the watch's own Heart Rate Service (the relay).
 //!
 //! Everything here is off until a console command starts it, and bounded in time: a scan
-//! ends, a connection attempt gives up after 10 s (20 s on battery) and each GATT procedure
-//! after 10 s, and a lost strap is
-//! looked for with a backoff and then given up (`wrist_wake::ble`). One GATT procedure runs
-//! at a time. Events reach this module only when they carry the sensor link's handle, so
+//! ends, a connection attempt gives up after 10 s (20 s on battery), each GATT procedure
+//! after 10 s, and a lost strap is looked for with a backoff and then given up
+//! (`wrist_wake::ble`). One GATT procedure runs at a time. Events reach this module only when they carry the sensor link's handle, so
 //! nothing on the sensor link can touch the console or the phone link's security.
 
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU8, Ordering};
