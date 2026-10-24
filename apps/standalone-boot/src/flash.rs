@@ -5,18 +5,20 @@ use crate::{
     mmio::{read32, FLASH_BASE},
     uart::Uart,
 };
+use core::ops::Range;
 use wrist_flash::{
-    plan::{bank1_page_address, bank2_page_address, FIRST_KERNEL_PAGE},
+    layout::{bank1, bank2},
+    plan::{bank1_page_address, bank2_page_address},
     survey::{blank, offset, Map, Registers, PAGES_PER_BANK, PAGES_PER_LINE, PAGE_WORDS},
 };
 
-/// The ranges the glyph-store plan names for bank 2, as `(first, last, what)`.
-const BANK2_REGIONS: [(usize, usize, &str); 5] = [
-    (0, 23, "stock spill"),
-    (48, 115, "reserve"),
-    (116, 127, "settings"),
-    (128, 195, "staging"),
-    (196, 255, "glyph store"),
+/// The bank 2 regions `wrist_flash::layout` names.
+const BANK2_REGIONS: [(Range<u16>, &str); 5] = [
+    (bank2::STOCK_SPILL, "stock spill"),
+    (bank2::RESERVE, "reserve"),
+    (bank2::SETTINGS, "settings"),
+    (bank2::STAGING, "staging"),
+    (bank2::GLYPH_STORE, "glyph store"),
 ];
 
 pub fn command(args: &[u8], uart: Uart) {
@@ -136,6 +138,24 @@ async fn write_map(uart: Uart, bank: &str, map: &Map, unread: usize) {
     }
 }
 
+/// `[flash] bank2 196-255 glyph store: 0 of 60 not blank`.
+fn write_count(uart: Uart, bank: &str, pages: &Range<u16>, what: &str, map: &Map) {
+    uart.write_str("[flash] ");
+    uart.write_str(bank);
+    uart.write_str(" ");
+    uart.write_u32(u32::from(pages.start));
+    uart.write_str("-");
+    uart.write_u32(u32::from(pages.end - 1));
+    uart.write_str(" ");
+    uart.write_str(what);
+    uart.write_str(": ");
+    let count = map.count(usize::from(pages.start)..usize::from(pages.end));
+    uart.write_u32(u32::try_from(count).unwrap_or(0));
+    uart.write_str(" of ");
+    uart.write_u32(u32::from(pages.end - pages.start));
+    uart.write_line(" not blank");
+}
+
 /// One page a turn of the executor: a page is 2048 word reads.
 pub async fn survey(uart: Uart) {
     let before = registers();
@@ -146,7 +166,7 @@ pub async fn survey(uart: Uart) {
         return;
     }
 
-    let first = usize::from(FIRST_KERNEL_PAGE);
+    let first = usize::from(bank1::BOOTLOADER.end);
     let (mut bank1, mut bank2) = (Map::default(), Map::default());
     for page in first..PAGES_PER_BANK {
         if !page_blank(bank1_page_address(u8::try_from(page).unwrap_or(u8::MAX))) {
@@ -164,21 +184,9 @@ pub async fn survey(uart: Uart) {
     uart.write_line("[flash] map: # holds anything, . blank, space not read (the vendor bootloader)");
     write_map(uart, "bank1", &bank1, first).await;
     write_map(uart, "bank2", &bank2, 0).await;
-    uart.write_str("[flash] bank1 182-255 (past the state page): ");
-    uart.write_u32(u32::try_from(bank1.count(182..256)).unwrap_or(0));
-    uart.write_line(" of 74 not blank");
-    for (lo, hi, what) in BANK2_REGIONS {
-        uart.write_str("[flash] bank2 ");
-        uart.write_u32(u32::try_from(lo).unwrap_or(0));
-        uart.write_str("-");
-        uart.write_u32(u32::try_from(hi).unwrap_or(0));
-        uart.write_str(" ");
-        uart.write_str(what);
-        uart.write_str(": ");
-        uart.write_u32(u32::try_from(bank2.count(lo..hi + 1)).unwrap_or(0));
-        uart.write_str(" of ");
-        uart.write_u32(u32::try_from(hi + 1 - lo).unwrap_or(0));
-        uart.write_line(" not blank");
+    write_count(uart, "bank1", &bank1::UNUSED, "unused, past the state page", &bank1);
+    for (pages, what) in BANK2_REGIONS {
+        write_count(uart, "bank2", &pages, what, &bank2);
     }
     let after = registers();
     write_eccr(uart, "[flash] eccr after the reads ", after.eccr);

@@ -201,6 +201,13 @@ name = "wrist-power"
 version = "0.0.0"
 
 [[package]]
+name = "wrist-store"
+version = "0.0.0"
+dependencies = [
+ "wrist-flash",
+]
+
+[[package]]
 name = "wrist-time"
 version = "0.0.0"
 

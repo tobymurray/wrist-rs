@@ -1,0 +1,13 @@
+[package]
+name = "wrist-store"
+version = "0.0.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "The glyph store's pages, write plans, commit records and boot checks, host-tested"
+publish = false
+
+[dependencies]
+wrist-flash = { path = "../wrist-flash" }
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
