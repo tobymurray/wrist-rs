@@ -35,6 +35,8 @@
 //! echoes MOSI. Pairing fails at the `DHKey` check until a public address has been written
 //! (`ACI_HAL_WRITE_CONFIG_DATA` offset 0), which ST's samples do first.
 
+mod central;
+
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU8, Ordering};
 
 use embassy_futures::select::{select, select4, Either4};
@@ -50,19 +52,22 @@ use embassy_sync::pipe::Pipe;
 use embassy_sync::signal::Signal;
 use embassy_time::{with_timeout, Duration, Instant, Timer};
 use wrist_aci::opcode::{
-    ACI_GAP_ALLOW_REBOND, ACI_GAP_CLEAR_SECURITY_DB, ACI_GAP_GET_BONDED_DEVICES, ACI_GAP_INIT,
+    ACI_GAP_ALLOW_REBOND, ACI_GAP_CLEAR_SECURITY_DB, ACI_GAP_GET_BONDED_DEVICES, ACI_GAP_INIT, ACI_GAP_IS_DEVICE_BONDED,
     ACI_GAP_NUMERIC_COMPARISON_CONFIRM, ACI_GAP_PASS_KEY_RESP, ACI_GAP_SET_AUTHENTICATION_REQUIREMENT,
     ACI_GAP_SET_DISCOVERABLE, ACI_GAP_SET_IO_CAPABILITY, ACI_GAP_SET_NON_DISCOVERABLE, ACI_GAP_SLAVE_SECURITY_REQ,
     ACI_GAP_TERMINATE, ACI_GATT_ADD_CHAR, ACI_GATT_ADD_SERVICE, ACI_GATT_EXCHANGE_CONFIG, ACI_GATT_INIT,
     ACI_GATT_UPDATE_CHAR_VALUE, ACI_HAL_GET_FW_BUILD_NUMBER, ACI_HAL_SET_TX_POWER_LEVEL, ACI_HAL_WRITE_CONFIG_DATA,
     ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_REQ, HCI_LE_RAND, HCI_READ_LOCAL_VERSION, HCI_SET_EVENT_MASK,
 };
-use wrist_aci::{permission, vendor, AttributeModified, Event};
+use wrist_aci::{permission, role, vendor, Address, AttributeModified, Event};
+use wrist_profiles::heart_rate;
 use wrist_wake::ble::{timing, Power, Timing};
 
 use crate::console::Target;
 use crate::uart::Uart;
 use crate::update::FlashMutex;
+
+pub use central::hr_command;
 
 bind_interrupts!(struct Irqs {
     EXTI9 => exti::InterruptHandler<embassy_stm32::interrupt::typelevel::EXTI9>;
@@ -134,6 +139,8 @@ enum Request {
     Disconnect,
     /// Ask for this interval range (1.25 ms units) on the current connection.
     IntervalNow(u16, u16),
+    /// The central side: scanning, the sensor link, its GATT client, heart rate.
+    Central(central::Ask),
 }
 
 static REQUESTS: Channel<CriticalSectionRawMutex, Request, 4> = Channel::new();
@@ -184,6 +191,15 @@ static ANSWER: AtomicU8 = AtomicU8::new(0);
 static ADDRESS: [AtomicU8; 6] = [const { AtomicU8::new(0) }; 6];
 /// `ble profile`: 0 follows the power source, 1 always the cable's, 2 always the battery's.
 static PROFILE: AtomicU8 = AtomicU8::new(0);
+/// `ble multi on`: advertise while a central is connected, so a second one can connect.
+static MULTI: AtomicBool = AtomicBool::new(false);
+/// Advertising runs while a central is connected (`ble multi`).
+static ADVERTISING_CONNECTED: AtomicBool = AtomicBool::new(false);
+/// A second central's connection handle (0: none). It may read and subscribe to heart rate;
+/// the console is the first link's alone.
+static SECOND: AtomicU16 = AtomicU16::new(0);
+/// `ble multi` changed: the loop starts or stops advertising beside the connected central, once.
+static MULTI_CHANGED: AtomicBool = AtomicBool::new(false);
 
 /// Signalled when [`PROVEN`] first becomes true.
 static PROVEN_NOW: Signal<CriticalSectionRawMutex, ()> = Signal::new();
@@ -241,6 +257,17 @@ pub fn command(args: &[u8], uart: Uart) {
             uart.write_str("[ble] timing: ");
             return uart.write_line(word);
         }
+        b"multi on" | b"multi off" => {
+            let on = args == b"multi on";
+            MULTI.store(on, Ordering::Relaxed);
+            MULTI_CHANGED.store(true, Ordering::Relaxed);
+            WAKE.signal(());
+            return uart.write_line(if on {
+                "[ble] multi: advertising goes on while a central is connected, so a second can connect (costs current)"
+            } else {
+                "[ble] multi off: one central at a time"
+            });
+        }
         rest if rest.starts_with(b"interval now") => {
             let text = core::str::from_utf8(&rest[12..]).unwrap_or("");
             let mut units = text.split_whitespace().map(|w| w.parse::<u16>().ok());
@@ -251,11 +278,15 @@ pub fn command(args: &[u8], uart: Uart) {
                 _ => return uart.write_line("[ble] usage: ble interval now <min> <max> (1.25 ms units, 6 to 3200)"),
             }
         }
-        _ => {
-            return uart.write_line(
-                "[ble] usage: ble [on|off|version|yes|no|bonds|forget|disconnect|profile auto|cable|battery|interval now <min> <max>]",
-            )
-        }
+        _ => match central::ble_command(args, uart) {
+            central::Parsed::Request(request) => request,
+            central::Parsed::Mistyped => return,
+            central::Parsed::NotCentral => {
+                return uart.write_line(
+                    "[ble] usage: ble [on|off|version|yes|no|bonds|forget|disconnect|profile auto|cable|battery|multi on|off|interval now <min> <max>|scan [s]|connect <addr> [random]|drop|services|chars <s> <e>|descs <s> <e>|read <h>|write <h> <hex>|subscribe <h> [indicate|off]]",
+                )
+            }
+        },
     };
     if REQUESTS.try_send(request).is_err() {
         uart.write_line("[ble] not queued: four already waiting");
@@ -263,6 +294,11 @@ pub fn command(args: &[u8], uart: Uart) {
 }
 
 pub fn write_status(uart: Uart) {
+    write_link_status(uart);
+    central::write_status(uart);
+}
+
+fn write_link_status(uart: Uart) {
     uart.write_str("[ble] ");
     uart.write_str(match STATE.load(Ordering::Relaxed) {
         STATE_OFF => "off (chip in reset)",
@@ -273,6 +309,12 @@ pub fn write_status(uart: Uart) {
         _ => "failed to start (see the log; `ble on` retries)",
     });
     if STATE.load(Ordering::Relaxed) == STATE_CONNECTED {
+        if ADVERTISING_CONNECTED.load(Ordering::Relaxed) {
+            uart.write_str(", advertising too");
+        }
+        if SECOND.load(Ordering::Relaxed) != 0 {
+            uart.write_str(", a second central connected");
+        }
         uart.write_str(if ENCRYPTED.load(Ordering::Relaxed) { ", encrypted" } else { ", NOT encrypted" });
         uart.write_str(", interval ");
         write_interval(uart, INTERVAL.load(Ordering::Relaxed));
@@ -346,7 +388,12 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
         while !on {
             match REQUESTS.receive().await {
                 Request::On => on = true,
-                Request::Version | Request::Bonds | Request::Forget | Request::Disconnect | Request::IntervalNow(..) => {
+                Request::Version
+                | Request::Bonds
+                | Request::Forget
+                | Request::Disconnect
+                | Request::IntervalNow(..)
+                | Request::Central(_) => {
                     uart.write_line("[ble] off; `ble on` starts it");
                 }
                 Request::Off | Request::Yes | Request::No => uart.write_line("[ble] already off"),
@@ -392,6 +439,11 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
             last_data: Instant::from_ticks(0),
             finish_transfer: false,
             console_at: Instant::from_ticks(0),
+            peer: Address::default(),
+            hrs: None,
+            advertised_relay: false,
+            advertised_every: 0,
+            central: central::Central::default(),
         };
         link.bring_up().await;
         link.serve(&mut changes).await;
@@ -401,6 +453,7 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
         MIRROR.store(false, Ordering::Relaxed);
         ENCRYPTED.store(false, Ordering::Relaxed);
         STATE.store(STATE_OFF, Ordering::Relaxed);
+        central::Central::stopped();
         crate::rtc::set_radio_wanted(false);
         uart.write_line("[ble] off: chip held in reset");
         on = false;
@@ -449,6 +502,17 @@ struct Link<'d> {
     finish_transfer: bool,
     /// The next console notification may go at this instant ([`CONSOLE_PACE`]).
     console_at: Instant,
+    /// The central on the peripheral link, as its connection reported it.
+    peer: Address,
+    /// The Heart Rate Service: service, measurement and body sensor location handles.
+    hrs: Option<(u16, u16, u16)>,
+    /// Advertising carries the Heart Rate Service (the relay was on when it started).
+    advertised_relay: bool,
+    /// The interval advertising actually runs at (0.625 ms units), which beside a sensor link
+    /// may be shorter than the timing wanted.
+    advertised_every: u16,
+    /// The watch as a central: scanning, the sensor link, heart rate in.
+    central: central::Central,
 }
 
 impl Link<'_> {
@@ -458,6 +522,7 @@ impl Link<'_> {
         loop {
             WAKE.reset();
             self.deferred().await;
+            self.central_tick().await;
             self.retime().await;
             self.console_tick().await;
             let due = self.due();
@@ -521,6 +586,7 @@ impl Link<'_> {
             console: (self.nus.is_some() && MIRROR.load(Ordering::Relaxed))
                 .then(|| Console { pending: !OUT.is_empty(), next_at: tick(self.console_at) }),
             abandon_at: self.transfer.as_ref().map(|_| tick(self.last_data + TRANSFER_IDLE + one)),
+            central_at: self.central.due().map(tick),
         };
         wrist_wake::ble::due(&state).map(Instant::from_ticks)
     }
@@ -555,6 +621,7 @@ impl Link<'_> {
                     self.uart.write_line("[ble] interval now: not connected");
                 }
             }
+            Request::Central(ask) => self.central_request(ask).await,
         }
     }
 
@@ -584,8 +651,18 @@ impl Link<'_> {
     /// the new interval, or the connection asked for new parameters.
     async fn retime(&mut self) {
         let want = timing(power(), self.transfer.is_some());
+        if MULTI_CHANGED.swap(false, Ordering::Relaxed) && STATE.load(Ordering::Relaxed) == STATE_CONNECTED {
+            if MULTI.load(Ordering::Relaxed) {
+                if !ADVERTISING_CONNECTED.load(Ordering::Relaxed) && SECOND.load(Ordering::Relaxed) == 0 {
+                    self.advertise().await;
+                }
+            } else if ADVERTISING_CONNECTED.swap(false, Ordering::Relaxed) {
+                let _ = self.command(ACI_GAP_SET_NON_DISCOVERABLE, &[]).await;
+                self.uart.write_line("[ble] multi off: advertising stopped");
+            }
+        }
         match STATE.load(Ordering::Relaxed) {
-            STATE_ADVERTISING if self.advertised != Some(want) => {
+            STATE_ADVERTISING if self.advertised != Some(want) || self.advertised_relay != central::relay_on() => {
                 if self.command(ACI_GAP_SET_NON_DISCOVERABLE, &[]).await.is_ok() {
                     self.advertise().await;
                 }
@@ -630,8 +707,12 @@ impl Link<'_> {
             let _ = self.command(ACI_GATT_EXCHANGE_CONFIG, &h).await;
         } else if self.ask_security {
             self.ask_security = false;
-            // A bonded central encrypts at once; another is asked to pair.
-            let _ = self.command(ACI_GAP_SLAVE_SECURITY_REQ, &h).await;
+            // A bonded central encrypts at once; another is asked to pair. While the relay
+            // serves heart rate, only a bonded central is asked: a rower or a bike that came
+            // for heart rate cannot pair, and may hang up if asked.
+            if !central::relay_on() || self.peer_bonded().await {
+                let _ = self.command(ACI_GAP_SLAVE_SECURITY_REQ, &h).await;
+            }
         } else if let Some((min, max)) = self.request_interval.take() {
             // Latency 0, 5 s supervision timeout (10 ms units).
             self.ask_connection(min, max, 0, 500).await;
@@ -709,14 +790,35 @@ impl Link<'_> {
                 return;
             }
         }
-        // GAP init: peripheral, no privacy, a name of up to 7 bytes. The reply carries the GAP
-        // service and device-name handles.
-        let (service, name_char) = match self.command(ACI_GAP_INIT, &[0x01, 0x00, 0x07]).await {
-            Ok(r) if r.status == 0 && r.len >= 6 => {
-                (u16::from_le_bytes([r.params[0], r.params[1]]), u16::from_le_bytes([r.params[2], r.params[3]]))
+        // GAP init: peripheral and central, no privacy, a name of up to 7 bytes; peripheral
+        // alone if the chip refuses both, so updates never depend on the central role. The
+        // reply carries the GAP service and device-name handles.
+        let mut handles = None;
+        for roles in [role::PERIPHERAL | role::CENTRAL, role::PERIPHERAL] {
+            match self.command(ACI_GAP_INIT, &[roles, 0x00, 0x07]).await {
+                Ok(r) if r.status == 0 && r.len >= 6 => {
+                    let service = u16::from_le_bytes([r.params[0], r.params[1]]);
+                    let name_char = u16::from_le_bytes([r.params[2], r.params[3]]);
+                    handles = Some((service, name_char, roles & role::CENTRAL != 0));
+                    break;
+                }
+                Ok(r) => {
+                    self.uart.write_str("[ble] GAP init refused roles ");
+                    self.uart.write_hex8(roles);
+                    self.uart.write_str(", status ");
+                    self.uart.write_hex8(r.status);
+                    self.uart.write_line("");
+                }
+                Err(why) => {
+                    self.uart.write_str("[ble] GAP init: ");
+                    self.uart.write_line(why);
+                }
             }
-            _ => return self.fail("GAP init"),
+        }
+        let Some((service, name_char, central)) = handles else {
+            return self.fail("GAP init");
         };
+        self.central.started(central);
         let mut name = [0u8; 16];
         name[0..2].copy_from_slice(&service.to_le_bytes());
         name[2..4].copy_from_slice(&name_char.to_le_bytes());
@@ -750,7 +852,7 @@ impl Link<'_> {
                 self.uart.write_str(":");
             }
         }
-        self.uart.write_line("");
+        self.uart.write_line(if central { ", peripheral and central" } else { ", peripheral only" });
         self.list_bonds().await;
         self.advertise().await;
     }
@@ -790,6 +892,22 @@ impl Link<'_> {
             return false;
         };
         self.nus = Some((nus, rx, tx));
+        // Heart rate, served for the relay (`hr relay`): service, measurement (notify) with its
+        // CCCD, body sensor location; read and notify only, so it needs no pairing, as a
+        // strap's does not. The location is the chest while the strap is the only source.
+        let Some(hrs) = self.add_service(heart_rate::SERVICE, 8).await else {
+            return false;
+        };
+        let (Some(measurement), Some(location)) = (
+            self.add_char_props(hrs, heart_rate::MEASUREMENT, heart_rate::MAX_LEN, CHAR_PROP_NOTIFY).await,
+            self.add_char_props(hrs, heart_rate::BODY_SENSOR_LOCATION, 1, CHAR_PROP_READ).await,
+        ) else {
+            return false;
+        };
+        if !self.update_value(hrs, location, &[heart_rate::location::CHEST]).await {
+            return false;
+        }
+        self.hrs = Some((hrs, measurement, location));
         true
     }
 
@@ -841,11 +959,16 @@ impl Link<'_> {
 
     /// A readable, variable-length characteristic with a 16-bit UUID.
     async fn add_char(&mut self, service: u16, uuid: u16, len: usize) -> Option<u16> {
+        self.add_char_props(service, uuid, len, CHAR_PROP_READ).await
+    }
+
+    /// A variable-length characteristic with a 16-bit UUID and these properties.
+    async fn add_char_props(&mut self, service: u16, uuid: u16, len: usize, props: u8) -> Option<u16> {
         let sv = service.to_le_bytes();
         let u = uuid.to_le_bytes();
         let l = u16::try_from(len).unwrap_or(0).to_le_bytes();
         // No security permissions, no write events, key size 7, variable length.
-        let p = [sv[0], sv[1], 0x01, u[0], u[1], l[0], l[1], CHAR_PROP_READ, permission::NONE, 0x00, 0x07, 0x01];
+        let p = [sv[0], sv[1], 0x01, u[0], u[1], l[0], l[1], props, permission::NONE, 0x00, 0x07, 0x01];
         match self.command(ACI_GATT_ADD_CHAR, &p).await {
             Ok(r) if r.status == 0 && r.len >= 2 => Some(u16::from_le_bytes([r.params[0], r.params[1]])),
             _ => {
@@ -985,36 +1108,74 @@ impl Link<'_> {
     /// public address, no filter, name `UNA`, no UUIDs, no interval hint.
     async fn advertise(&mut self) {
         let want = timing(power(), false);
-        let mut p = [0u8; 20];
+        let mut p = [0u8; 24];
         p[0] = 0x00;
-        p[1..3].copy_from_slice(&want.advertise.to_le_bytes());
-        p[3..5].copy_from_slice(&want.advertise.to_le_bytes());
         p[5] = 0x00;
         p[6] = 0x00;
         p[7] = u8::try_from(1 + DEVICE_NAME.len()).unwrap_or(0);
         p[8] = 0x09;
         p[9..9 + DEVICE_NAME.len()].copy_from_slice(DEVICE_NAME);
-        let n = 9 + DEVICE_NAME.len();
-        // Service UUID length 0, then slave connection interval min and max 0.
-        p[n..n + 5].copy_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00]);
-        match self.command(ACI_GAP_SET_DISCOVERABLE, &p[..n + 5]).await {
-            Ok(r) if r.status == 0 => {
-                STATE.store(STATE_ADVERTISING, Ordering::Relaxed);
-                self.advertised = Some(want);
-                self.uart.write_str("[ble] advertising as UNA every ");
-                self.uart.write_u32(u32::from(want.advertise) * 625 / 1000);
-                self.uart.write_line(" ms");
-            }
-            Ok(r) => {
-                self.uart.write_str("[ble] advertising refused, status ");
-                self.uart.write_hex8(r.status);
-                self.uart.write_line("");
-            }
-            Err(why) => {
-                self.uart.write_str("[ble] advertising: ");
-                self.uart.write_line(why);
+        let mut n = 9 + DEVICE_NAME.len();
+        // The service UUID list (the Heart Rate Service while the relay is on, so a rower or a
+        // bike looking for a heart-rate sensor finds the watch), then slave connection interval
+        // min and max 0.
+        let relay = central::relay_on();
+        if relay {
+            let u = heart_rate::SERVICE.to_le_bytes();
+            p[n..n + 4].copy_from_slice(&[0x03, wrist_aci::ad::UUID16_COMPLETE, u[0], u[1]]);
+            n += 4;
+        } else {
+            p[n] = 0x00;
+            n += 1;
+        }
+        p[n..n + 4].copy_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+        let ladder = wrist_wake::ble::advertising_ladder(want.advertise, self.central.interval());
+        for every in ladder.into_iter().flatten() {
+            p[1..3].copy_from_slice(&every.to_le_bytes());
+            p[3..5].copy_from_slice(&every.to_le_bytes());
+            match self.command(ACI_GAP_SET_DISCOVERABLE, &p[..n + 4]).await {
+                Ok(r) if r.status == 0 => {
+                    if STATE.load(Ordering::Relaxed) == STATE_CONNECTED {
+                        ADVERTISING_CONNECTED.store(true, Ordering::Relaxed);
+                        self.uart.write_line("[ble] multi: the chip advertises with a central connected");
+                    } else {
+                        STATE.store(STATE_ADVERTISING, Ordering::Relaxed);
+                    }
+                    self.advertised = Some(want);
+                    self.advertised_every = every;
+                    self.advertised_relay = relay;
+                    self.uart.write_str("[ble] advertising as UNA every ");
+                    self.uart.write_u32(u32::from(every) * 625 / 1000);
+                    self.uart.write_str(if relay { " ms, with heart rate" } else { " ms" });
+                    return self.uart.write_line(if every == want.advertise { "" } else { " (to fit the sensor link)" });
+                }
+                // ST's scheduler (0x82 to 0x86: no slot, interval too large, ...): the next rung.
+                Ok(r) if (0x82..=0x86).contains(&r.status) => {
+                    self.uart.write_str("[ble] advertising every ");
+                    self.uart.write_u32(u32::from(every) * 625 / 1000);
+                    self.uart.write_str(" ms does not fit beside the sensor link, status ");
+                    self.uart.write_hex8(r.status);
+                    self.uart.write_line("");
+                }
+                Ok(r) => {
+                    // Refused while the central side scans or connects: it resumes when that ends.
+                    self.central.advertising_refused();
+                    STATE.store(STATE_IDLE, Ordering::Relaxed);
+                    self.uart.write_str("[ble] advertising refused, status ");
+                    self.uart.write_hex8(r.status);
+                    return self.uart.write_line("");
+                }
+                Err(why) => {
+                    STATE.store(STATE_IDLE, Ordering::Relaxed);
+                    self.uart.write_str("[ble] advertising: ");
+                    return self.uart.write_line(why);
+                }
             }
         }
+        // Retried when the sensor link changes or goes (`advertised` is cleared then).
+        STATE.store(STATE_IDLE, Ordering::Relaxed);
+        self.advertised = None;
+        self.uart.write_line("[ble] advertising: no interval fits beside the sensor link");
     }
 
     async fn list_bonds(&mut self) {
@@ -1039,6 +1200,14 @@ impl Link<'_> {
                 self.uart.write_line("");
             }
         }
+    }
+
+    /// The central on the peripheral link is in the chip's bond table.
+    async fn peer_bonded(&mut self) -> bool {
+        let mut p = [0u8; 7];
+        p[0] = self.peer.kind;
+        p[1..7].copy_from_slice(&self.peer.bytes);
+        matches!(self.command(ACI_GAP_IS_DEVICE_BONDED, &p).await, Ok(r) if r.status == 0)
     }
 
     /// A random six-digit passkey from the controller's own generator, shown on the console
@@ -1179,24 +1348,23 @@ impl Link<'_> {
                     self.reply = Some(Reply { status, params: [0; 64], len: 0 });
                 }
             }
-            Event::Connected { handle, interval } => {
-                CONN_HANDLE.store(handle, Ordering::Relaxed);
-                if let Some((iv, lat)) = interval {
-                    INTERVAL.store(iv, Ordering::Relaxed);
-                    LATENCY.store(lat, Ordering::Relaxed);
-                }
-                STATE.store(STATE_CONNECTED, Ordering::Relaxed);
-                ENCRYPTED.store(false, Ordering::Relaxed);
-                self.subscribed = false;
-                self.set_mirror();
-                self.mtu = DEFAULT_MTU;
-                self.exchange_mtu = true;
-                self.ask_security = true;
-                self.asked = None;
-                self.advertised = None;
-                self.uart.write_line("[ble] connected");
+            Event::Connected { handle, central: true, peer, interval } => {
+                self.central.connected(handle, peer, interval, self.uart);
             }
-            Event::ConnectionUpdate { interval: iv, latency: lat } => {
+            Event::ConnectFailed { status } => self.central.connect_failed(status, self.uart),
+            Event::Connected { handle, central: false, .. } if STATE.load(Ordering::Relaxed) == STATE_CONNECTED => {
+                self.second_connected(handle);
+            }
+            Event::Connected { handle, central: false, peer, interval } => self.phone_connected(handle, peer, interval),
+            Event::ConnectionUpdate { handle, interval, .. } if self.central.handle() == Some(handle) => {
+                self.sensor_interval(interval);
+            }
+            Event::ConnectionUpdate { handle, interval, .. } if handle == SECOND.load(Ordering::Relaxed) => {
+                self.uart.write_str("[ble] the second central's interval ");
+                write_interval(self.uart, interval);
+                self.uart.write_line("");
+            }
+            Event::ConnectionUpdate { interval: iv, latency: lat, .. } => {
                 INTERVAL.store(iv, Ordering::Relaxed);
                 LATENCY.store(lat, Ordering::Relaxed);
                 self.uart.write_str("[ble] connection interval ");
@@ -1205,26 +1373,18 @@ impl Link<'_> {
                 self.uart.write_u32(u32::from(lat));
                 self.uart.write_line("");
             }
-            Event::Disconnected { reason } => {
-                STATE.store(STATE_IDLE, Ordering::Relaxed);
-                CONN_HANDLE.store(0, Ordering::Relaxed);
-                ENCRYPTED.store(false, Ordering::Relaxed);
-                self.subscribed = false;
-                self.set_mirror();
-                self.confirm_for = None;
-                self.exchange_mtu = false;
-                self.ask_security = false;
-                self.request_interval = None;
-                clear_prompt();
-                if let Some(session) = self.transfer.take() {
-                    crate::update::abort(session);
-                }
-                self.uart.write_str("[ble] disconnected, reason ");
-                self.uart.write_hex8(reason);
-                self.uart.write_line(" (13 = the central hung up)");
-                self.readvertise = true;
+            Event::Disconnected { handle, reason } if self.central.handle() == Some(handle) => {
+                self.sensor_disconnected(reason);
             }
-            Event::Encryption { on } => {
+            Event::Disconnected { handle, reason } if handle != CONN_HANDLE.load(Ordering::Relaxed) => {
+                self.other_disconnected(handle, reason);
+            }
+            Event::Disconnected { reason, .. } => self.phone_disconnected(reason),
+            // Only the peripheral link's encryption unlocks the console.
+            Event::Encryption { handle, on } if handle != CONN_HANDLE.load(Ordering::Relaxed) => {
+                self.uart.write_line(if on != 0 { "[ble] another link encrypted" } else { "[ble] another link's encryption off" });
+            }
+            Event::Encryption { on, .. } => {
                 let on = on != 0;
                 ENCRYPTED.store(on, Ordering::Relaxed);
                 if on && !PROVEN.swap(true, Ordering::Relaxed) {
@@ -1233,17 +1393,119 @@ impl Link<'_> {
                 self.uart.write_line(if on { "[ble] link encrypted" } else { "[ble] link encryption off" });
                 self.set_mirror();
             }
+            Event::Advertising { data } => self.central.advertising(data, self.uart),
+            // Data length change, remote features, PHY update: the stack's business.
+            Event::LeMeta { sub: 0x04 | 0x07 | 0x0C } => {}
+            Event::LeMeta { sub } => {
+                self.uart.write_str("[ble] LE event ");
+                self.uart.write_hex8(sub);
+                self.uart.write_line(" not handled");
+            }
             Event::Vendor { code, params } => self.vendor(code, params),
         }
     }
 
+    /// The first central connected: the console's link.
+    fn phone_connected(&mut self, handle: u16, peer: Address, interval: Option<(u16, u16)>) {
+        ADVERTISING_CONNECTED.store(false, Ordering::Relaxed);
+        CONN_HANDLE.store(handle, Ordering::Relaxed);
+        self.peer = peer;
+        if let Some((iv, lat)) = interval {
+            INTERVAL.store(iv, Ordering::Relaxed);
+            LATENCY.store(lat, Ordering::Relaxed);
+        }
+        STATE.store(STATE_CONNECTED, Ordering::Relaxed);
+        ENCRYPTED.store(false, Ordering::Relaxed);
+        self.subscribed = false;
+        self.set_mirror();
+        self.mtu = DEFAULT_MTU;
+        self.exchange_mtu = true;
+        self.ask_security = true;
+        self.asked = None;
+        self.advertised = None;
+        self.readvertise = MULTI.load(Ordering::Relaxed);
+        self.uart.write_line("[ble] connected");
+    }
+
+    /// The first central's link went down.
+    fn phone_disconnected(&mut self, reason: u8) {
+        central::relay_subscribed(central::SUB_PHONE, false);
+        // Advertising beside this link (`ble multi`) goes on by itself.
+        let still_advertising = ADVERTISING_CONNECTED.swap(false, Ordering::Relaxed);
+        STATE.store(if still_advertising { STATE_ADVERTISING } else { STATE_IDLE }, Ordering::Relaxed);
+        CONN_HANDLE.store(0, Ordering::Relaxed);
+        ENCRYPTED.store(false, Ordering::Relaxed);
+        self.subscribed = false;
+        self.set_mirror();
+        self.confirm_for = None;
+        self.exchange_mtu = false;
+        self.ask_security = false;
+        self.request_interval = None;
+        clear_prompt();
+        if let Some(session) = self.transfer.take() {
+            crate::update::abort(session);
+        }
+        self.uart.write_str("[ble] disconnected, reason ");
+        self.uart.write_hex8(reason);
+        self.uart.write_line(" (13 = the central hung up)");
+        self.readvertise = !still_advertising;
+    }
+
+    /// A second central while the first is connected (`ble multi`): heart rate only.
+    fn second_connected(&mut self, handle: u16) {
+        // Advertising stopped with this connection; one more is all `ble multi` takes.
+        ADVERTISING_CONNECTED.store(false, Ordering::Relaxed);
+        SECOND.store(handle, Ordering::Relaxed);
+        self.uart.write_str("[ble] a second central connected, handle ");
+        self.uart.write_hex8((handle >> 8) as u8);
+        self.uart.write_hex8((handle & 0xFF) as u8);
+        self.uart.write_line(": heart rate only, never the console");
+    }
+
+    /// A link other than the first central's and the sensor link went down.
+    fn other_disconnected(&mut self, handle: u16, reason: u8) {
+        if handle != SECOND.swap(0, Ordering::Relaxed) {
+            return self.uart.write_line("[ble] a link we did not know went down");
+        }
+        central::relay_subscribed(central::SUB_SECOND, false);
+        self.uart.write_str("[ble] the second central disconnected, reason ");
+        self.uart.write_hex8(reason);
+        self.uart.write_line("");
+        // Advertising again so another can take its place.
+        self.readvertise = MULTI.load(Ordering::Relaxed) && STATE.load(Ordering::Relaxed) == STATE_CONNECTED;
+    }
+
     /// A central wrote one of our attributes: the console's RX (bytes for the parser or a
-    /// transfer) or TX's CCCD (the mirror on or off).
-    fn attribute_modified(&mut self, write: AttributeModified) {
+    /// transfer) or TX's CCCD (the mirror on or off), over the peripheral link only; or the
+    /// heart rate's CCCD, over either link.
+    fn attribute_modified(&mut self, conn: u16, write: AttributeModified) {
         let AttributeModified { attr, offset, data } = write;
+        let phone = conn == CONN_HANDLE.load(Ordering::Relaxed) && STATE.load(Ordering::Relaxed) == STATE_CONNECTED;
+        if let Some((_, measurement, _)) = self.hrs {
+            if attr == measurement + 2 {
+                let on = data.first().is_some_and(|b| b & 0x01 != 0);
+                let who = if phone {
+                    central::SUB_PHONE
+                } else if conn == SECOND.load(Ordering::Relaxed) {
+                    central::SUB_SECOND
+                } else {
+                    central::SUB_SENSOR
+                };
+                central::relay_subscribed(who, on);
+                self.uart.write_line(if on { "[hr] a central subscribed to the watch's heart rate" } else { "[hr] a central unsubscribed" });
+                return;
+            }
+        }
         let Some((_, rx, tx)) = self.nus else {
             return;
         };
+        if !phone {
+            if attr == rx + 1 || attr == tx + 2 {
+                UNSECURED.fetch_add(1, Ordering::Relaxed);
+                self.uart.write_line("[ble] a write to the console over another link: dropped");
+            }
+            return;
+        }
         if attr == rx + 1 {
             if !ENCRYPTED.load(Ordering::Relaxed) {
                 UNSECURED.fetch_add(1, Ordering::Relaxed);
@@ -1269,6 +1531,31 @@ impl Link<'_> {
 
     fn vendor(&mut self, ecode: u16, rest: &[u8]) {
         let handle = wrist_aci::connection_handle;
+        // The GATT client's events on the sensor link belong to the central side.
+        let client = matches!(
+            ecode,
+            vendor::GATT_PROC_TIMEOUT
+                | vendor::ATT_EXCHANGE_MTU_RESP
+                | vendor::ATT_FIND_INFO_RESP
+                | vendor::ATT_FIND_BY_TYPE_VALUE_RESP
+                | vendor::ATT_READ_BY_TYPE_RESP
+                | vendor::ATT_READ_RESP
+                | vendor::ATT_READ_BY_GROUP_TYPE_RESP
+                | vendor::GATT_INDICATION
+                | vendor::GATT_NOTIFICATION
+                | vendor::GATT_PROC_COMPLETE
+                | vendor::GATT_ERROR_RESP
+                | vendor::L2CAP_CONNECTION_UPDATE_REQ
+        );
+        let sensor = rest.len() >= 2 && self.central.handle() == Some(handle(rest));
+        if client && sensor {
+            return self.central.client_event(ecode, rest, self.uart);
+        }
+        // Pairing on the sensor link (a bonded host encrypting it) is not the phone's.
+        if sensor && ecode == vendor::GAP_PAIRING_COMPLETE {
+            let ok = wrist_aci::pairing_complete(rest).is_some_and(|(status, _)| status == 0);
+            return self.uart.write_line(if ok { "[ble] sensor link paired" } else { "[ble] sensor link pairing failed" });
+        }
         match ecode {
             vendor::BLUE_INITIALIZED => self.uart.write_line("[ble] chip initialised"),
             vendor::HAL_EVENTS_LOST => self.uart.write_line("[ble] the chip dropped events: the host read too slowly"),
@@ -1300,18 +1587,28 @@ impl Link<'_> {
                 }
             }
             vendor::GAP_BOND_LOST => self.rebond_for = Some(handle(rest)),
-            vendor::ATT_EXCHANGE_MTU_RESP if rest.len() >= 4 => {
+            // The first link's MTU only: a second central's exchange is the stack's business.
+            vendor::ATT_EXCHANGE_MTU_RESP if rest.len() >= 4 && handle(rest) == CONN_HANDLE.load(Ordering::Relaxed) => {
                 self.mtu = usize::from(wrist_aci::att_mtu(rest).unwrap_or(0)).clamp(DEFAULT_MTU, 247);
                 self.uart.write_str("[ble] ATT MTU ");
                 self.uart.write_u32(u32::try_from(self.mtu).unwrap_or(0));
                 self.uart.write_line("");
             }
             vendor::GAP_SLAVE_SECURITY_INITIATED => self.uart.write_line("[ble] security requested"),
-            // The MTU exchange ends with this; nothing else of ours is a client procedure.
-            vendor::GATT_PROC_COMPLETE => {}
+            // The phone link's one client procedure is the MTU exchange; its end, errors and
+            // timeouts need nothing, nor a client confirming one of our indications.
+            vendor::GATT_PROC_COMPLETE
+            | vendor::GATT_ERROR_RESP
+            | vendor::GATT_PROC_TIMEOUT
+            | vendor::GATT_SERVER_CONFIRMATION => {}
             vendor::GATT_ATTRIBUTE_MODIFIED if rest.len() >= 8 => {
                 if let Some(write) = AttributeModified::decode(rest) {
-                    self.attribute_modified(write);
+                    self.attribute_modified(handle(rest), write);
+                }
+            }
+            vendor::GAP_PROC_COMPLETE => {
+                if let Some((code, status)) = wrist_aci::gap_proc_complete(rest) {
+                    self.central.gap_proc_complete(code, status, self.uart);
                 }
             }
             _ => {

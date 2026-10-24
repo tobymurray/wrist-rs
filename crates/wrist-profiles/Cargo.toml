@@ -1,0 +1,12 @@
+[package]
+name = "wrist-profiles"
+version = "0.0.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+publish = false
+description = "Bluetooth SIG GATT profiles as bytes: the Heart Rate Service's measurement, decoded and encoded from the published specification. no_std, no allocation, host-tested"
+
+[dependencies]
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
