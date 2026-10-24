@@ -1,6 +1,6 @@
 //! The BLE loop's deadlines: idle costs no wake, and everything it does by time has one.
 
-use wrist_wake::ble::{due, timing, Console, Power, State, Transfer};
+use wrist_wake::ble::{due, reconnect_after_ms, scan, sensor, timing, Console, Power, State, Transfer, GIVE_UP_MS};
 use wrist_wake::earliest;
 
 const NOW: u64 = 1_000;
@@ -14,6 +14,7 @@ fn idle() -> State {
         console: None,
         abandon_at: None,
         ask_at: None,
+        central_at: None,
     }
 }
 
@@ -176,4 +177,43 @@ fn an_encrypted_or_pairing_link_is_never_asked() {
     // The next link starts afresh, on the image's own tick.
     ask.connected(NOW, 32_768);
     assert_eq!(ask.due(), Some(NOW + ASK_TO_PAIR_AFTER_MS * 32_768 / 1_000));
+}
+
+#[test]
+fn central_work_by_time_wakes_the_loop() {
+    let s = State { central_at: Some(NOW + 10_000), ..idle() };
+    assert_eq!(due(&s), Some(NOW + 10_000));
+    let s = State { central_at: Some(NOW + 10_000), abandon_at: Some(NOW + 5_000), ..idle() };
+    assert_eq!(due(&s), Some(NOW + 5_000));
+}
+
+#[test]
+fn scanning_listens_less_on_battery() {
+    for power in [Power::Cable, Power::Battery] {
+        let s = scan(power);
+        // Core Specification limits: 2.5 ms to 10.24 s, window no longer than interval.
+        assert!((4..=0x4000).contains(&s.interval) && (4..=s.interval).contains(&s.window));
+    }
+    let duty = |s: wrist_wake::ble::Scan| u32::from(s.window) * 100 / u32::from(s.interval);
+    assert_eq!(duty(scan(Power::Cable)), 60);
+    assert_eq!(duty(scan(Power::Battery)), 20);
+}
+
+#[test]
+fn the_sensor_link_is_slow_on_battery_and_within_the_spec() {
+    for power in [Power::Cable, Power::Battery] {
+        let t = sensor(power);
+        assert!((6..=t.interval_max).contains(&t.interval_min) && t.interval_max <= 3200);
+        assert_eq!(t.latency, 0);
+        // The timeout (10 ms) exceeds twice the longest interval (1.25 ms): (1 + 0) * 2 * max.
+        assert!(u32::from(t.timeout) * 10 * 100 > 2 * u32::from(t.interval_max) * 125);
+        assert!((10..=3200).contains(&t.timeout));
+    }
+    assert!(sensor(Power::Battery).interval_min >= 8 * sensor(Power::Cable).interval_max);
+}
+
+#[test]
+fn a_lost_sensor_is_retried_less_often_on_battery_and_not_for_ever() {
+    assert!(reconnect_after_ms(Power::Battery) > reconnect_after_ms(Power::Cable));
+    assert!(GIVE_UP_MS >= 10 * reconnect_after_ms(Power::Battery));
 }
