@@ -129,6 +129,11 @@ watch's own Heart Rate Service and advertises it, so a rower or a bike that take
 heart-rate sensor can use the watch. On battery the scan listens a fifth of the time and the
 strap's link wakes the radio twice a second.
 
+The watch takes one central at a time unless `ble multi on`: then it advertises again
+while connected, so a second central (a rower or a bike for heart rate, while the computer
+holds the console) can connect. The second may read and subscribe to heart rate, never the
+console. It costs current while it advertises, and is off after a reset.
+
 Without a strap, a Linux host can be one:
 
 ```sh
