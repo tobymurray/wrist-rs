@@ -63,12 +63,34 @@ class Console:
         return None
 
 
-def mtu_of(client):
-    """BlueZ 5.62 and later report the MTU on each characteristic; other backends know it."""
+async def acquire_mtu(client):
+    """BlueZ reports 23 for a bonded watch until asked, and only `AcquireWrite` on a
+    characteristic we may write without response answers; the other backends know already."""
+    backend = getattr(client, "_backend", None)
+    if not hasattr(backend, "_acquire_mtu"):
+        return
+    from bleak.backends.bluezdbus import defs
+    from dbus_fast import Message
+    import os
     char = client.services.get_characteristic(RX)
-    size = getattr(char, "max_write_without_response_size", None)
-    if hasattr(getattr(client, "_backend", None), "_acquire_mtu") and size:
-        return size + 3
+    for _ in range(5):
+        try:
+            reply = await backend._bus.call(Message(
+                destination=defs.BLUEZ_SERVICE, path=char.obj[0],
+                interface=defs.GATT_CHARACTERISTIC_INTERFACE,
+                member="AcquireWrite", signature="a{sv}", body=[{}]))
+            if reply.message_type.name == "ERROR":
+                raise RuntimeError(reply.body)
+            os.close(reply.unix_fds[0])
+            backend._mtu_size = reply.body[1]
+            return
+        except Exception as e:
+            err = e
+            await asyncio.sleep(1)
+    print(f"-- could not read the MTU ({err}); using 23", flush=True)
+
+
+def mtu_of(client):
     return client.mtu_size or 23
 
 
@@ -319,6 +341,7 @@ async def main():
     async with BleakClient(device, timeout=20) as client:
         if not await attach(client, con):
             return 1
+        await acquire_mtu(client)
         print(f"-- mtu {mtu_of(client)}", flush=True)
         ok = True
         for cmd in [c.strip() for c in args.commands.split(";") if c.strip()]:
