@@ -53,7 +53,8 @@ const COMMAND_DISALLOWED: u8 = 0x0C;
 /// Console requests for the central side.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Ask {
-    Scan(u8),
+    /// Seconds, and an interval and window (0.625 ms units) in place of the power source's.
+    Scan(u8, Option<(u16, u16)>),
     Connect(Address),
     Drop,
     Services,
@@ -131,11 +132,23 @@ pub(super) fn ble_command(args: &[u8], uart: Uart) -> Parsed {
         return Parsed::NotCentral;
     };
     let ask = match first {
-        "scan" => match words.next().map(str::parse::<u8>) {
-            None => Ask::Scan(SCAN_DEFAULT_S),
-            Some(Ok(s)) if (1..=SCAN_MAX_S).contains(&s) => Ask::Scan(s),
-            _ => return usage(uart, "ble scan [seconds, 1 to 30]"),
-        },
+        "scan" => {
+            let seconds = words.next().map(str::parse::<u8>);
+            let ms = |w: Option<&str>| w.and_then(|w| w.parse::<u32>().ok());
+            let duty = match (ms(words.next()), ms(words.next())) {
+                (None, None) => None,
+                // Core Specification: 2.5 ms to 10.24 s, the window no longer than the interval.
+                (Some(i), Some(w)) if (3..=10_240).contains(&i) && (3..=i).contains(&w) => {
+                    Some((u16::try_from(i * 8 / 5).unwrap_or(16), u16::try_from(w * 8 / 5).unwrap_or(16)))
+                }
+                _ => return usage(uart, "ble scan [seconds, 1 to 30] [interval ms] [window ms]"),
+            };
+            match seconds {
+                None => Ask::Scan(SCAN_DEFAULT_S, None),
+                Some(Ok(s)) if (1..=SCAN_MAX_S).contains(&s) => Ask::Scan(s, duty),
+                _ => return usage(uart, "ble scan [seconds, 1 to 30] [interval ms] [window ms]"),
+            }
+        }
         "connect" => match parse_address(words.next(), words.next()) {
             Some(a) => Ask::Connect(a),
             None => return usage(uart, "ble connect AA:BB:CC:DD:EE:FF [random]"),
@@ -906,10 +919,10 @@ impl Link<'_> {
             return uart.write_line("[ble] the central role is not available on this chip (see the start-up log)");
         }
         match ask {
-            Ask::Scan(seconds) => {
+            Ask::Scan(seconds, duty) => {
                 self.central.seen = [None; SCAN_SEEN];
                 self.central.seen_next = 0;
-                self.start_scan(seconds).await;
+                self.start_scan(seconds, duty).await;
             }
             Ask::Connect(a) => self.start_connect(a).await,
             Ask::Drop => {
@@ -1033,11 +1046,11 @@ impl Link<'_> {
         }
     }
 
-    async fn start_scan(&mut self, seconds: u8) {
+    async fn start_scan(&mut self, seconds: u8, duty: Option<(u16, u16)>) {
         if self.central.scan.is_some() || self.central.connecting.is_some() {
             return self.uart.write_line("[ble] a scan or a connection attempt is already running");
         }
-        let s = scan(power());
+        let s = duty.map_or(scan(power()), |(interval, window)| wrist_wake::ble::Scan { interval, window });
         let mut p = [0u8; 6];
         p[0..2].copy_from_slice(&s.interval.to_le_bytes());
         p[2..4].copy_from_slice(&s.window.to_le_bytes());
@@ -1052,7 +1065,11 @@ impl Link<'_> {
                 self.uart.write_u32(u32::from(seconds));
                 self.uart.write_str(" s, listening ");
                 self.uart.write_u32(u32::from(s.window) * 100 / u32::from(s.interval));
-                self.uart.write_line("% of the time");
+                self.uart.write_str("% of the time (");
+                self.uart.write_u32(u32::from(s.window) * 5 / 8);
+                self.uart.write_str(" ms in every ");
+                self.uart.write_u32(u32::from(s.interval) * 5 / 8);
+                self.uart.write_line(" ms)");
             }
             Ok(status) => {
                 self.uart.write_str("[ble] scan refused, status ");

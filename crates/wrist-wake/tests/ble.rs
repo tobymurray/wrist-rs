@@ -1,7 +1,7 @@
 //! The BLE loop's deadlines: idle costs no wake, and everything it does by time has one.
 
 use wrist_wake::ble::{
-    advertising_ladder, due, reconnect_after_ms, scan, sensor, timing, Console, Power, State, Transfer, ADVERTISE_FASTEST,
+    advertising_ladder, due, fits, reconnect_after_ms, scan, sensor, timing, Console, Power, State, Transfer, ADVERTISE_FASTEST,
     GIVE_UP_MS,
 };
 use wrist_wake::earliest;
@@ -82,7 +82,7 @@ fn every_timing_is_inside_the_specification() {
 fn battery_is_slow_until_a_transfer_and_a_cable_is_fast() {
     let idle = timing(Power::Battery, false);
     let cable = timing(Power::Cable, false);
-    assert!(idle.advertise >= 1_600, "about a second on battery");
+    assert!(idle.advertise >= 1_590, "about a second on battery");
     // An idle link wakes the radio at most about once a second.
     assert!(u32::from(idle.interval_min) * 125 / 100 * (1 + u32::from(idle.latency)) >= 500);
     assert_eq!(cable, timing(Power::Battery, true), "a transfer is as fast as a cable");
@@ -138,17 +138,30 @@ fn advertising_without_a_sensor_link_is_as_wanted_then_the_cable_interval() {
 }
 
 #[test]
-fn beside_a_sensor_link_advertising_tries_multiples_of_its_interval() {
-    // Install 151: a 420 ms link (336 units) and the battery's 1022.5 ms (1636 units) refused.
-    let battery = timing(Power::Battery, false).advertise;
-    let ladder = advertising_ladder(battery, Some(336));
-    // 2 x 420 ms = 840 ms (1344 units), then 420 ms (672), then the cable's 100 ms.
-    assert_eq!(ladder, [Some(1636), Some(1344), Some(672), Some(ADVERTISE_FASTEST)]);
-    for v in ladder.into_iter().flatten() {
-        assert!(v <= battery && v >= 32);
+fn beside_a_sensor_link_advertising_tries_intervals_that_fit() {
+    // Install 151: a 420 ms link (336 units) and 1022.5 ms (1636 units) refused.
+    let ladder = advertising_ladder(1636, Some(336));
+    // 2 x 420 - 5 = 835 ms (1336 units), then 415 ms (664), then the cable's 100 ms.
+    assert_eq!(ladder, [Some(1636), Some(1336), Some(664), Some(ADVERTISE_FASTEST)]);
+    for v in ladder.into_iter().take(3).skip(1).flatten() {
+        assert!(fits(v, 336));
     }
-    // A link slower than the wanted interval: no multiple fits, only the cable's.
+    // A link slower than the wanted interval: none fits, only what was wanted.
     assert_eq!(advertising_ladder(160, Some(400)), [Some(160), None, None, None]);
-    // A 40 ms link (32 units) on a cable: 80 ms, then 40 ms.
-    assert_eq!(advertising_ladder(160, Some(32)), [Some(160), Some(128), Some(64), None]);
+}
+
+#[test]
+fn each_power_sources_advertising_fits_beside_its_sensor_link() {
+    for power in [Power::Cable, Power::Battery] {
+        let adv = timing(power, false).advertise;
+        let s = sensor(power);
+        // Some interval the stack may pick within the range fits.
+        assert!((s.interval_min..=s.interval_max).any(|iv| fits(adv, iv)), "{power:?}");
+        // So the ladder's first rung is the interval wanted.
+        assert_eq!(advertising_ladder(adv, Some(s.interval_min.max(28).min(s.interval_max)))[0], Some(adv));
+    }
+    // Install 152's figures: 100 ms beside 35 ms fits; 1022.5 ms beside 400 to 500 ms never does.
+    assert!(fits(160, 28));
+    assert!(!(320..=400).any(|iv| fits(1636, iv)));
+    assert!(fits(1592, 400));
 }

@@ -88,14 +88,14 @@ pub mod ble {
     }
 
     /// On a cable, as responsive as the link allows. On battery, current first: advertising
-    /// about once a second (1022.5 ms, an interval phones scan well) and an idle link that
+    /// about once a second (995 ms, chosen to fit beside a sensor link: [`sensor`]) and an idle link that
     /// wakes the radio about once a second, until a transfer asks for speed while it lasts.
     #[must_use]
     pub const fn timing(power: Power, transfer: bool) -> Timing {
         const FAST: Timing = Timing { advertise: 160, interval_min: 12, interval_max: 24, latency: 0, timeout: 500 };
         match (power, transfer) {
             (Power::Cable, _) | (Power::Battery, true) => FAST,
-            (Power::Battery, false) => Timing { advertise: 1636, interval_min: 80, interval_max: 160, latency: 4, timeout: 600 },
+            (Power::Battery, false) => Timing { advertise: 1592, interval_min: 80, interval_max: 160, latency: 4, timeout: 600 },
         }
     }
 
@@ -119,13 +119,28 @@ pub mod ble {
 
     /// The link the watch asks of a sensor it connects to as the central (latency 0: a
     /// central attends every event). A heart-rate strap notifies about once a second, so on
-    /// battery 400 to 500 ms loses nothing a person sees; on a cable, 30 to 50 ms.
+    /// battery 500 ms loses nothing a person sees; on a cable, 30 to 50 ms.
+    ///
+    /// ST's stack schedules its own advertising around a link where the watch is the
+    /// central, and (ST's programming manual, as quoted on ST's forum) wants the advertising
+    /// interval plus 5 ms to be a whole multiple of that link's interval. Without it the chip
+    /// refused the connection (0x84) or the advertising (0x85) at installs 151 and 152. So the
+    /// two are chosen together: 995 ms + 5 ms is twice 500 ms, and on a cable 100 ms + 5 ms is
+    /// three times 35 ms, inside 30 to 50 ms.
     #[must_use]
     pub const fn sensor(power: Power) -> Timing {
         match power {
             Power::Cable => Timing { advertise: 0, interval_min: 24, interval_max: 40, latency: 0, timeout: 400 },
-            Power::Battery => Timing { advertise: 0, interval_min: 320, interval_max: 400, latency: 0, timeout: 600 },
+            Power::Battery => Timing { advertise: 0, interval_min: 400, interval_max: 400, latency: 0, timeout: 600 },
         }
+    }
+
+    /// Whether advertising every `advertise` (0.625 ms units) fits beside a central link of
+    /// `interval` (1.25 ms units): `advertise + 5 ms` a whole multiple of the interval.
+    #[must_use]
+    pub const fn fits(advertise: u16, interval: u16) -> bool {
+        // In units of 0.625 ms: 5 ms is 8, and the interval is twice its count.
+        interval > 0 && (advertise as u32 + 8).is_multiple_of(2 * interval as u32)
     }
 
     /// After a sensor is lost, how long (ms) before the next attempt to reach it: 5 s on a
@@ -146,11 +161,10 @@ pub mod ble {
 
     /// The advertising intervals to try, best first (0.625 ms units). With a link of its own
     /// as the central (`sensor_interval`, 1.25 ms units), ST's stack schedules advertising
-    /// around that link and refuses an interval that does not fit (installs 151: 1022.5 ms
-    /// beside a 420 ms link, status 0x85). So after the wanted interval come the two largest
-    /// multiples of the link's interval no longer than it, then the cable's interval: the
-    /// watch must stay reachable, and a faster interval costs current but never loses the
-    /// phone.
+    /// around that link and refuses an interval that does not [`fits`] (install 151: 1022.5 ms
+    /// beside a 420 ms link, status 0x85). So after the wanted interval come the two longest
+    /// that fit and are no longer than it, then the cable's interval: the watch must stay
+    /// reachable, and a faster interval costs current but never loses the phone.
     #[must_use]
     pub fn advertising_ladder(want: u16, sensor_interval: Option<u16>) -> [Option<u16>; 4] {
         let mut out = [Some(want), None, None, None];
@@ -164,10 +178,10 @@ pub mod ble {
         };
         if let Some(iv) = sensor_interval.filter(|&iv| iv > 0) {
             let step = u32::from(iv) * 2;
-            let k = u32::from(want) / step;
+            let k = (u32::from(want) + 8) / step;
             for k in [k, k.saturating_sub(1)] {
-                if k >= 1 {
-                    push(u16::try_from(k * step).unwrap_or(want), &mut out);
+                if k >= 1 && k * step > 8 {
+                    push(u16::try_from(k * step - 8).unwrap_or(want), &mut out);
                 }
             }
         }
