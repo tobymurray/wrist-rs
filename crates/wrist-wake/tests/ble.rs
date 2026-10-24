@@ -1,7 +1,7 @@
 //! The BLE loop's deadlines: idle costs no wake, and everything it does by time has one.
 
 use wrist_wake::ble::{
-    advertising_ladder, due, fits, reconnect_after_ms, scan, sensor, timing, Console, Power, State, Transfer, ADVERTISE_FASTEST,
+    advertising_ladder, connect_timeout_ms, due, fits, reconnect_after_ms, scan, sensor, timing, Console, Power, State, Transfer, ADVERTISE_FASTEST,
     GIVE_UP_MS,
 };
 use wrist_wake::earliest;
@@ -108,6 +108,12 @@ fn scanning_listens_less_on_battery() {
     let duty = |s: wrist_wake::ble::Scan| u32::from(s.window) * 100 / u32::from(s.interval);
     assert_eq!(duty(scan(Power::Cable)), 60);
     assert_eq!(duty(scan(Power::Battery)), 20);
+    // About one window per advertising period: the scan interval within 10% of advertising's.
+    for power in [Power::Cable, Power::Battery] {
+        let (scan, adv) = (u32::from(scan(power).interval), u32::from(timing(power, false).advertise));
+        assert!(scan * 10 >= adv * 9 && scan * 10 <= adv * 11, "{power:?}");
+    }
+    assert!(connect_timeout_ms(Power::Battery) >= 10 * u64::from(scan(Power::Battery).interval) * 5 / 8);
 }
 
 #[test]

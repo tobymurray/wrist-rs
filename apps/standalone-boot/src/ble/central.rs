@@ -3,7 +3,8 @@
 //! a strap and served again from the watch's own Heart Rate Service (the relay).
 //!
 //! Everything here is off until a console command starts it, and bounded in time: a scan
-//! ends, a connection attempt and each GATT procedure give up after 10 s, and a lost strap is
+//! ends, a connection attempt gives up after 10 s (20 s on battery) and each GATT procedure
+//! after 10 s, and a lost strap is
 //! looked for with a backoff and then given up (`wrist_wake::ble`). One GATT procedure runs
 //! at a time. Events reach this module only when they carry the sensor link's handle, so
 //! nothing on the sensor link can touch the console or the phone link's security.
@@ -20,12 +21,11 @@ use wrist_aci::opcode::{
 };
 use wrist_aci::{gap_proc, vendor, Address, L2capUpdateRequest, Uuid};
 use wrist_profiles::heart_rate::{self, rr_ms, Contact, Measurement};
-use wrist_wake::ble::{reconnect_after_ms, scan, sensor, Timing, GIVE_UP_MS};
+use wrist_wake::ble::{connect_timeout_ms, reconnect_after_ms, scan, sensor, Timing, GIVE_UP_MS};
 
 use super::{power, Link, Request, REQUESTS, STATE, STATE_ADVERTISING, STATE_IDLE};
 use crate::uart::Uart;
 
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const PROC_TIMEOUT: Duration = Duration::from_secs(10);
 const SCAN_DEFAULT_S: u8 = 10;
 const SCAN_MAX_S: u8 = 30;
@@ -499,7 +499,7 @@ impl Central {
         [
             work.then_some(now),
             self.scan.map(|(until, ..)| until),
-            self.connecting.map(|(_, since)| since + CONNECT_TIMEOUT),
+            self.connecting.map(|(_, since)| since + connect_timeout()),
             self.proc.map(|(_, since)| since + PROC_TIMEOUT),
             strap,
             self.fake.map(|(_, at)| at),
@@ -869,6 +869,10 @@ impl Central {
     }
 }
 
+fn connect_timeout() -> Duration {
+    Duration::from_millis(connect_timeout_ms(power()))
+}
+
 /// Counts and the last reading start again with each `hr strap` or `hr fake`.
 fn new_source() {
     HR_READINGS.store(0, Ordering::Relaxed);
@@ -1113,7 +1117,9 @@ impl Link<'_> {
                 CENTRAL.store(CENTRAL_CONNECTING, Ordering::Relaxed);
                 self.uart.write_str("[ble] connecting to ");
                 write_address(self.uart, a);
-                self.uart.write_line(" (10 s)");
+                self.uart.write_str(" (");
+                self.uart.write_u32(u32::try_from(connect_timeout().as_secs()).unwrap_or(0));
+                self.uart.write_line(" s)");
             }
             Ok(status) => {
                 self.uart.write_str("[ble] connection refused, status ");
@@ -1183,11 +1189,11 @@ impl Link<'_> {
         if self.central.scan.is_none() && self.central.connecting.is_none() {
             self.resume_advertising();
         }
-        if self.central.connecting.is_some_and(|(_, since)| now >= since + CONNECT_TIMEOUT) {
+        if self.central.connecting.is_some_and(|(_, since)| now >= since + connect_timeout()) {
             let _ = self.command(ACI_GAP_TERMINATE_GAP_PROC, &[gap_proc::DIRECT_CONNECTION]).await;
             if self.central.connecting.take().is_some() {
                 CENTRAL.store(CENTRAL_IDLE, Ordering::Relaxed);
-                uart.write_line("[ble] connection attempt: not found in 10 s");
+                uart.write_line("[ble] connection attempt: not found in time");
                 self.central.strap_retry();
             }
         }

@@ -107,13 +107,27 @@ pub mod ble {
     }
 
     /// Scanning only ever runs on request and for a bounded time. On a cable it listens 60% of
-    /// the time (30 ms in every 50 ms); on battery 20% (20 ms in every 100 ms), which still
-    /// hears a device advertising every second or faster within a few seconds.
+    /// the time (60 ms in every 100 ms); on battery 20% (200 ms in every second).
+    ///
+    /// The interval follows advertising's: while the watch advertises, ST's stack granted
+    /// about one scan window per advertising period (install 153, advertising every 995 ms,
+    /// six seconds each: 20 ms in every 100 ms heard 3 reports, 30 ms in every 50 ms 7, 100 ms
+    /// in every 500 ms 20, 200 ms in every 1000 ms 51).
     #[must_use]
     pub const fn scan(power: Power) -> Scan {
         match power {
-            Power::Cable => Scan { interval: 80, window: 48 },
-            Power::Battery => Scan { interval: 160, window: 32 },
+            Power::Cable => Scan { interval: 160, window: 96 },
+            Power::Battery => Scan { interval: 1600, window: 320 },
+        }
+    }
+
+    /// How long one attempt to connect to a sensor lasts (ms): it listens as [`scan`] does,
+    /// which on battery hears an advertiser less often.
+    #[must_use]
+    pub const fn connect_timeout_ms(power: Power) -> u64 {
+        match power {
+            Power::Cable => 10_000,
+            Power::Battery => 20_000,
         }
     }
 
