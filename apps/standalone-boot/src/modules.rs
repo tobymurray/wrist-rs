@@ -17,10 +17,11 @@ use crate::uart::Uart;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Slot {
     View = 0,
-    Link2 = 1,
+    Link1 = 1,
+    Link2 = 2,
 }
 
-const ALL: [Slot; 2] = [Slot::View, Slot::Link2];
+const ALL: [Slot; 3] = [Slot::View, Slot::Link1, Slot::Link2];
 
 struct Spec {
     name: &'static str,
@@ -30,13 +31,23 @@ struct Spec {
     without: &'static str,
 }
 
-const SPECS: [Spec; 2] = [
+const SPECS: [Spec; 3] = [
     Spec {
         name: "view",
         bus: "I2C1",
         expects: "LS012",
         drives: "the panel (lcd.rs)",
         without: "nothing drawn, VCOM not started",
+    },
+    Spec {
+        name: "link1",
+        bus: "I2C3",
+        expects: "BLUENRG2",
+        #[cfg(feature = "ble")]
+        drives: "Bluetooth, once `ble on` (ble.rs)",
+        #[cfg(not(feature = "ble"))]
+        drives: "nothing: this build has no Bluetooth; the chip is held in reset (park.rs)",
+        without: "`ble on` refused",
     },
     Spec {
         name: "link2",
@@ -54,10 +65,20 @@ struct Found {
     took_us: u32,
 }
 
-static FOUND: Mutex<CriticalSectionRawMutex, RefCell<[Found; 2]>> = Mutex::new(RefCell::new(
-    [Found { verdict: Verdict::Unread, read: Err("not read yet"), took_us: 0 }; 2],
+static FOUND: Mutex<CriticalSectionRawMutex, RefCell<[Found; 3]>> = Mutex::new(RefCell::new(
+    [Found { verdict: Verdict::Unread, read: Err("not read yet"), took_us: 0 }; 3],
 ));
 static VIEW_FORCED: AtomicBool = AtomicBool::new(false);
+static LINK1_FORCED: AtomicBool = AtomicBool::new(false);
+
+/// The slots `modules force` may override for this boot.
+fn forced(slot: Slot) -> bool {
+    match slot {
+        Slot::View => VIEW_FORCED.load(Ordering::Relaxed),
+        Slot::Link1 => LINK1_FORCED.load(Ordering::Relaxed),
+        Slot::Link2 => false,
+    }
+}
 
 fn found(slot: Slot) -> Found {
     FOUND.lock(|f| f.borrow()[slot as usize])
@@ -85,7 +106,7 @@ fn error_word(e: Error) -> &'static str {
 }
 
 pub fn allowed(slot: Slot) -> bool {
-    !found(slot).verdict.refuses() || (slot == Slot::View && VIEW_FORCED.load(Ordering::Relaxed))
+    !found(slot).verdict.refuses() || forced(slot)
 }
 
 pub fn command(args: &[u8], uart: Uart) {
@@ -103,7 +124,14 @@ pub fn command(args: &[u8], uart: Uart) {
             crate::wake_display();
             uart.write_line("[mod] view forced for this boot: the panel starts now");
         }
-        _ => uart.write_line("[mod] usage: modules | modules force view"),
+        "force link1" => {
+            if !found(Slot::Link1).verdict.refuses() {
+                return uart.write_line("[mod] link1 is not refused; nothing to force");
+            }
+            LINK1_FORCED.store(true, Ordering::Relaxed);
+            uart.write_line("[mod] link1 forced for this boot: `ble on` may start it");
+        }
+        _ => uart.write_line("[mod] usage: modules | modules force view|link1"),
     }
 }
 
@@ -126,7 +154,7 @@ fn write_slot(uart: Uart, slot: Slot) {
     uart.write_str(" (");
     uart.write_u32(f.took_us);
     uart.write_str(" us); ");
-    let forced = slot == Slot::View && VIEW_FORCED.load(Ordering::Relaxed);
+    let forced = forced(slot);
     match f.verdict {
         Verdict::Expected => uart.write_str("drives "),
         Verdict::Other if forced => uart.write_str("REFUSED but forced from the console: drives "),
@@ -137,8 +165,10 @@ fn write_slot(uart: Uart, slot: Slot) {
     if f.verdict.refuses() && !forced {
         uart.write_str("; ");
         uart.write_str(spec.without);
-        if slot == Slot::View {
-            uart.write_str("; `modules force view` drives it");
+        match slot {
+            Slot::View => uart.write_str("; `modules force view` drives it"),
+            Slot::Link1 => uart.write_str("; `modules force link1` allows it"),
+            Slot::Link2 => {}
         }
     }
     uart.write_line("");

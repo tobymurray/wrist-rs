@@ -3,6 +3,8 @@
 #![no_std]
 #![no_main]
 
+#[cfg(feature = "ble")]
+mod ble;
 mod console;
 mod crash;
 mod glass;
@@ -349,6 +351,13 @@ fn main() -> ! {
 
     uart.write_line("[10c] module EEPROMs (only another module's name refuses a slot):");
     modules::read_at_boot(modules::Slot::View, &mut bus, uart);
+    {
+        let mut link1_config = embassy_stm32::i2c::Config::default();
+        link1_config.frequency = Hertz::khz(100);
+        link1_config.timeout = embassy_time::Duration::from_millis(20);
+        let mut link1 = I2c::new_blocking(p.I2C3, p.PC0, p.PC1, link1_config);
+        modules::read_at_boot(modules::Slot::Link1, &mut link1, uart);
+    }
     let mut sensor_config = embassy_stm32::i2c::Config::default();
     sensor_config.frequency = Hertz::khz(400);
     sensor_config.timeout = embassy_time::Duration::from_millis(20);
@@ -368,6 +377,7 @@ fn main() -> ! {
         emmc_en: p.PD10,
         gnss_en: p.PG5,
         gnss_wake: p.PD1,
+        #[cfg(not(feature = "ble"))]
         ble_rst: p.PA8,
         body_rst: p.PF13,
         body_cs: p.PG12,
@@ -402,6 +412,23 @@ fn main() -> ! {
         if let Some(pins) = usb {
             spawner.spawn(console::service(pins, flash).unwrap());
         }
+        #[cfg(feature = "ble")]
+        spawner.spawn(
+            ble::run(
+                ble::Pins {
+                    spi: p.SPI1,
+                    sck: p.PG2,
+                    miso: p.PG3,
+                    mosi: p.PB5,
+                    cs: p.PA15,
+                    irq: p.PA9,
+                    irq_exti: p.EXTI9,
+                    rst: p.PA8,
+                },
+                flash,
+            )
+            .unwrap(),
+        );
     })
 }
 
@@ -950,8 +977,23 @@ pub fn wake_display() {
     DISPLAY_WAKE.signal(());
 }
 
-/// Keeps the image once it has run a while, and an update only once a host has
-/// configured its USB, the way the next update must arrive.
+/// Keeps the image once it has run a while, and an update only once a way to send the next
+/// one has worked: a host configured its USB, or (`ble` feature) an encrypted Bluetooth link
+/// was up.
+fn bluetooth_proven() -> bool {
+    #[cfg(feature = "ble")]
+    return ble::proven();
+    #[cfg(not(feature = "ble"))]
+    false
+}
+
+async fn bluetooth_proven_changed() {
+    #[cfg(feature = "ble")]
+    ble::proven_changed().await;
+    #[cfg(not(feature = "ble"))]
+    core::future::pending::<()>().await;
+}
+
 #[embassy_executor::task]
 async fn heartbeat(flash: &'static update::FlashMutex) -> ! {
     const MARK_BOOTED_AT: u32 = 15;
@@ -963,22 +1005,37 @@ async fn heartbeat(flash: &'static update::FlashMutex) -> ! {
     loop {
         // On battery nothing hears the line, so no wake a second until a cable is in.
         if n >= MARK_BOOTED_AT {
-            power::wait_while_on_battery(&mut changes).await;
+            // An update not yet kept is also kept when a Bluetooth link proves itself.
+            embassy_futures::select::select(power::wait_while_on_battery(&mut changes), async {
+                if kept {
+                    core::future::pending::<()>().await;
+                }
+                bluetooth_proven_changed().await;
+            })
+            .await;
         }
         n = n.wrapping_add(1);
         Uart::retry();
         if n >= MARK_BOOTED_AT && !kept {
-            if update::just_updated(flash) && !console::host_configured() {
+            if update::just_updated(flash) && !console::host_configured() && !bluetooth_proven() {
                 if !said_waiting {
-                    uart.write_line("[boot] not kept yet: waiting for a host to configure USB");
+                    uart.write_line("[boot] not kept yet: waiting for a host to configure USB, or an encrypted Bluetooth link");
                     said_waiting = true;
                 }
             } else {
                 kept = true;
+                let via = if !update::just_updated(flash) {
+                    ""
+                } else if console::host_configured() {
+                    "; kept: a USB host configured"
+                } else {
+                    "; kept: an encrypted Bluetooth link"
+                };
                 match update::mark_booted(flash) {
                     Ok(was) => {
                         uart.write_str("[boot] marked booted; state was ");
-                        uart.write_line(was);
+                        uart.write_str(was);
+                        uart.write_line(via);
                     }
                     Err(()) => {
                         uart.write_line("[boot] could not mark booted: state partition write failed");
