@@ -1,11 +1,21 @@
 //! `flash survey`: every page from the loader up, blank or not, and the flash controller's
 //! status and option registers (`wrist_flash::survey`). It only reads. The vendor
 //! bootloader's pages, bank 1 0 to 47, are not read.
+//!
+//! Also the NMI's catch: a double ECC error in the glyph store is cleared and returned from,
+//! so a damaged pack is rejected instead of resetting the watch
+//! (`plan/GLYPH-STORE-2026-10-23.md` 6.2). `flash ecc-test` proves the path on ST's
+//! test words in system flash.
 use crate::{
-    mmio::{read32, FLASH_BASE},
+    mmio::{read32, write32, FLASH_BASE},
     uart::Uart,
 };
-use core::ops::Range;
+use core::{
+    ops::Range,
+    ptr::read_volatile,
+    sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed},
+};
+use wrist_store::{eccr_clearing_both, eccr_clearing_double, nmi_in_store, nmi_in_system_flash, ECCC, ECCD, ECCIE};
 use wrist_flash::{
     layout::{bank1, bank2},
     plan::{bank1_page_address, bank2_page_address},
@@ -21,10 +31,86 @@ const BANK2_REGIONS: [(Range<u16>, &str); 5] = [
     (bank2::GLYPH_STORE, "glyph store"),
 ];
 
+/// Words in system flash with a 1-bit and a 2-bit ECC error, for testing (RM0456 7.3.2).
+const TEST_WORD_CORRECTED: u32 = 0x0BFA_1F00;
+const TEST_WORD_DOUBLE: u32 = 0x0BFA_1F80;
+const SYSF_ECC: u32 = 1 << 22;
+
+/// Double errors the NMI has returned from since boot, and the `FLASH_ECCR` of the last.
+static CAUGHT: AtomicU32 = AtomicU32::new(0);
+static LAST_CAUGHT: AtomicU32 = AtomicU32::new(0);
+/// Set by `flash ecc-test` for its one read of the 2-bit word; the NMI takes it.
+static SELF_TEST: AtomicBool = AtomicBool::new(false);
+
+/// From the NMI. True when it was a double ECC error in the glyph store, or the armed
+/// self-test's, now cleared, so the handler returns. Every other NMI still resets.
+pub fn nmi_caught() -> bool {
+    let eccr = unsafe { read32(FLASH_BASE + offset::ECCR) };
+    let test = SELF_TEST.swap(false, Relaxed);
+    if !(nmi_in_store(eccr) || (test && nmi_in_system_flash(eccr))) {
+        return false;
+    }
+    unsafe { write32(FLASH_BASE + offset::ECCR, eccr_clearing_double(eccr)) };
+    // RM0456 7.3.2: the NMI "must clean the cache".
+    crate::update::invalidate_icache();
+    LAST_CAUGHT.store(eccr, Relaxed);
+    CAUGHT.fetch_add(1, Relaxed);
+    true
+}
+
+fn fence() {
+    unsafe { core::arch::asm!("dsb sy", "isb sy", options(nostack)) };
+}
+
+fn clear_ecc() {
+    unsafe { write32(FLASH_BASE + offset::ECCR, eccr_clearing_both(read32(FLASH_BASE + offset::ECCR))) };
+    crate::update::invalidate_icache();
+}
+
+/// Reads ST's corrected word, then its double-error word with the catch armed for it.
+fn ecc_test(uart: Uart) {
+    let eccr = || unsafe { read32(FLASH_BASE + offset::ECCR) };
+    if eccr() & ECCIE != 0 {
+        // A corrected error would raise the flash interrupt, which nothing here handles.
+        uart.write_line("[flash] ecc-test: ECCIE is set; not reading");
+        return;
+    }
+    clear_ecc();
+    let _ = unsafe { read_volatile(TEST_WORD_CORRECTED as *const u32) };
+    fence();
+    let corrected = eccr();
+    write_eccr(uart, "[flash] ecc-test 1-bit word: eccr ", corrected);
+    clear_ecc();
+
+    let before = CAUGHT.load(Relaxed);
+    SELF_TEST.store(true, Relaxed);
+    fence();
+    let _ = unsafe { read_volatile(TEST_WORD_DOUBLE as *const u32) };
+    fence();
+    let armed_after = SELF_TEST.swap(false, Relaxed);
+    let caught = CAUGHT.load(Relaxed).wrapping_sub(before);
+    let after = eccr();
+    uart.write_str("[flash] ecc-test 2-bit word: NMIs caught ");
+    uart.write_u32(caught);
+    uart.write_line(if armed_after { ", catch still armed" } else { "" });
+    if caught > 0 {
+        write_eccr(uart, "[flash] ecc-test eccr in the NMI ", LAST_CAUGHT.load(Relaxed));
+    }
+    write_eccr(uart, "[flash] ecc-test eccr now ", after);
+    clear_ecc();
+
+    let pass = corrected & (ECCC | SYSF_ECC) == ECCC | SYSF_ECC
+        && caught == 1
+        && LAST_CAUGHT.load(Relaxed) & (ECCD | SYSF_ECC) == ECCD | SYSF_ECC
+        && after & ECCD == 0;
+    uart.write_line(if pass { "[flash] ecc-test passed" } else { "[flash] ecc-test FAILED" });
+}
+
 pub fn command(args: &[u8], uart: Uart) {
     match args {
         b" survey" => crate::REPORT.signal(crate::Report::FlashSurvey),
-        _ => uart.write_line("[flash] usage: flash survey"),
+        b" ecc-test" => ecc_test(uart),
+        _ => uart.write_line("[flash] usage: flash survey|ecc-test"),
     }
 }
 
@@ -109,7 +195,13 @@ fn write_eccr(uart: Uart, label: &str, eccr: u32) {
         Some(e) => {
             uart.write_str(if e.double { " DOUBLE" } else { "" });
             uart.write_str(if e.corrected { " corrected" } else { "" });
-            uart.write_str(if e.bank2 { " bank2 offset " } else { " bank1 offset " });
+            uart.write_str(if eccr & SYSF_ECC != 0 {
+                " system flash offset "
+            } else if e.bank2 {
+                " bank2 offset "
+            } else {
+                " bank1 offset "
+            });
             uart.write_hex32(e.offset);
             uart.write_line("");
         }
@@ -190,6 +282,9 @@ pub async fn survey(uart: Uart) {
     }
     let after = registers();
     write_eccr(uart, "[flash] eccr after the reads ", after.eccr);
+    uart.write_str("[flash] nmi: double errors caught since boot ");
+    uart.write_u32(CAUGHT.load(Relaxed));
+    uart.write_line("");
     uart.write_str("[flash] survey ");
     uart.write_line(if before.clean() && after.ecc().is_none() { "clean" } else { "NOT clean" });
 }

@@ -1481,8 +1481,10 @@ unsafe fn UsageFault() -> ! {
 fn SysTick() {}
 
 #[exception]
-unsafe fn NonMaskableInt() -> ! {
-    fault_then_reset("NonMaskableInt (NMI)", None)
+unsafe fn NonMaskableInt() {
+    if !flash::nmi_caught() {
+        fault_then_reset("NonMaskableInt (NMI)", None)
+    }
 }
 
 #[exception]

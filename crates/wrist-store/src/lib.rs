@@ -327,14 +327,46 @@ pub fn mounted(found: &[Found], i: usize) -> bool {
         })
 }
 
+/// `FLASH_ECCR.ECCD`: a double error, which raises the NMI (RM0456 7.9.11). Write 1 to clear.
+pub const ECCD: u32 = 1 << 31;
+/// `FLASH_ECCR.ECCC`: a corrected error. Write 1 to clear.
+pub const ECCC: u32 = 1 << 30;
+/// `FLASH_ECCR.ECCIE`: the corrected-error interrupt enable, the register's one writable bit.
+pub const ECCIE: u32 = 1 << 24;
+const SYSF_ECC: u32 = 1 << 22;
+const BK_ECC: u32 = 1 << 21;
+
 /// `FLASH_ECCR` names a double error in the store: the one NMI the image returns from.
 #[must_use]
 pub const fn nmi_in_store(eccr: u32) -> bool {
-    let double = eccr & (1 << 31) != 0;
-    let bank2 = eccr & (1 << 21) != 0;
-    let system = eccr & (1 << 22) != 0;
     let offset = eccr & wrist_flash::survey::ADDR_MASK;
-    double && bank2 && !system && offset >= GLYPH_STORE.start as u32 * PAGE_SIZE_U32 && offset <= 0x1F_FFF0
+    eccr & ECCD != 0
+        && eccr & BK_ECC != 0
+        && eccr & SYSF_ECC == 0
+        && offset >= GLYPH_STORE.start as u32 * PAGE_SIZE_U32
+        && offset <= 0x1F_FFF0
+}
+
+/// `FLASH_ECCR` names a double error in system flash, where ST keeps a word with a 2-bit
+/// error for testing the NMI path (RM0456 7.3.2). The image returns from it only while its
+/// self-test has armed the catch for that one read.
+#[must_use]
+pub const fn nmi_in_system_flash(eccr: u32) -> bool {
+    eccr & ECCD != 0 && eccr & SYSF_ECC != 0
+}
+
+/// What to write to `FLASH_ECCR` to clear `ECCD` alone: `ECCC` stays for the validator to
+/// see, and `ECCIE` keeps its value.
+#[must_use]
+pub const fn eccr_clearing_double(eccr: u32) -> u32 {
+    (eccr & ECCIE) | ECCD
+}
+
+/// What to write to `FLASH_ECCR` to clear both flags, as the validator does before it reads,
+/// since the hardware records a new error only when both are clear.
+#[must_use]
+pub const fn eccr_clearing_both(eccr: u32) -> u32 {
+    (eccr & ECCIE) | ECCD | ECCC
 }
 
 /// What a boot does before it reads the store.
