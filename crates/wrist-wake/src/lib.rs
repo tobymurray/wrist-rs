@@ -52,6 +52,9 @@ pub mod ble {
         pub console: Option<Console>,
         /// A transfer that has gone quiet is abandoned at this tick.
         pub abandon_at: Option<u64>,
+        /// The watch's own central work by time, the earliest of: a scan's end, a connection
+        /// attempt or GATT procedure given up, the next reconnection to a sensor.
+        pub central_at: Option<u64>,
     }
 
     /// When the loop must next run by time; `None` means only the chip's IRQ, a request or
@@ -61,7 +64,7 @@ pub mod ble {
         let now = s.now;
         let quiet = s.transfer == Transfer::Started;
         let console = s.console.and_then(|c| (c.pending && !quiet).then_some(c.next_at.max(now)));
-        earliest([s.work.then_some(now), s.confirm_by, console, s.abandon_at])
+        earliest([s.work.then_some(now), s.confirm_by, console, s.abandon_at, s.central_at])
     }
 
     /// Where the watch's power comes from, as the radio sees it.
@@ -96,4 +99,45 @@ pub mod ble {
         }
     }
 
+    /// A scan's duty: every `interval`, listen for `window` (both 0.625 ms units).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct Scan {
+        pub interval: u16,
+        pub window: u16,
+    }
+
+    /// Scanning only ever runs on request and for a bounded time. On a cable it listens 60% of
+    /// the time (30 ms in every 50 ms); on battery 20% (20 ms in every 100 ms), which still
+    /// hears a device advertising every second or faster within a few seconds.
+    #[must_use]
+    pub const fn scan(power: Power) -> Scan {
+        match power {
+            Power::Cable => Scan { interval: 80, window: 48 },
+            Power::Battery => Scan { interval: 160, window: 32 },
+        }
+    }
+
+    /// The link the watch asks of a sensor it connects to as the central (latency 0: a
+    /// central attends every event). A heart-rate strap notifies about once a second, so on
+    /// battery 400 to 500 ms loses nothing a person sees; on a cable, 30 to 50 ms.
+    #[must_use]
+    pub const fn sensor(power: Power) -> Timing {
+        match power {
+            Power::Cable => Timing { advertise: 0, interval_min: 24, interval_max: 40, latency: 0, timeout: 400 },
+            Power::Battery => Timing { advertise: 0, interval_min: 320, interval_max: 400, latency: 0, timeout: 600 },
+        }
+    }
+
+    /// After a sensor is lost, how long (ms) before the next attempt to reach it: 5 s on a
+    /// cable, 30 s on battery, each attempt a scan of its own.
+    #[must_use]
+    pub const fn reconnect_after_ms(power: Power) -> u64 {
+        match power {
+            Power::Cable => 5_000,
+            Power::Battery => 30_000,
+        }
+    }
+
+    /// How long a lost sensor is looked for before the watch gives up on it (ms).
+    pub const GIVE_UP_MS: u64 = 5 * 60 * 1000;
 }

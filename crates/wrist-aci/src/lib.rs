@@ -43,14 +43,53 @@ pub mod opcode {
     pub const ACI_GAP_TERMINATE: u16 = 0xFC93;
     pub const ACI_GAP_CLEAR_SECURITY_DB: u16 = 0xFC94;
     pub const ACI_GAP_ALLOW_REBOND: u16 = 0xFC95;
+    /// Scan interval and window (0.625 ms), own address type, filter duplicates. Reports come
+    /// as LE Advertising Reports; `GAP_PROC_COMPLETE` ends it.
+    pub const ACI_GAP_START_GENERAL_DISCOVERY_PROC: u16 = 0xFC97;
+    /// Scan interval and window, peer address type and address, own address type, interval
+    /// min and max, latency, supervision timeout, CE length min and max.
+    pub const ACI_GAP_CREATE_CONNECTION: u16 = 0xFC9C;
+    /// Ends a GAP procedure by its code ([`super::gap_proc`]).
+    pub const ACI_GAP_TERMINATE_GAP_PROC: u16 = 0xFC9D;
+    /// As a central: handle, interval min and max, latency, timeout, CE length min and max.
+    pub const ACI_GAP_START_CONNECTION_UPDATE: u16 = 0xFC9E;
     pub const ACI_GAP_GET_BONDED_DEVICES: u16 = 0xFCA3;
+    /// Peer address type and address; status 0 when bonded.
+    pub const ACI_GAP_IS_DEVICE_BONDED: u16 = 0xFCA4;
     pub const ACI_GAP_NUMERIC_COMPARISON_CONFIRM: u16 = 0xFCA5;
     pub const ACI_GATT_INIT: u16 = 0xFD01;
     pub const ACI_GATT_ADD_SERVICE: u16 = 0xFD02;
     pub const ACI_GATT_ADD_CHAR: u16 = 0xFD04;
     pub const ACI_GATT_UPDATE_CHAR_VALUE: u16 = 0xFD06;
     pub const ACI_GATT_EXCHANGE_CONFIG: u16 = 0xFD0B;
+    // GATT client procedures, on a connection in either role: each answers with Command
+    // Status, its results come as ATT response events, and `GATT_PROC_COMPLETE` ends it.
+    pub const ACI_GATT_DISC_ALL_PRIMARY_SERVICES: u16 = 0xFD12;
+    pub const ACI_GATT_DISC_PRIMARY_SERVICE_BY_UUID: u16 = 0xFD13;
+    pub const ACI_GATT_DISC_ALL_CHAR_OF_SERVICE: u16 = 0xFD15;
+    /// Handle, characteristic value handle, end handle: the descriptors after the value.
+    pub const ACI_GATT_DISC_ALL_CHAR_DESC: u16 = 0xFD17;
+    pub const ACI_GATT_READ_CHAR_VALUE: u16 = 0xFD18;
+    /// Handle, attribute handle, length (one byte), value.
+    pub const ACI_GATT_WRITE_CHAR_VALUE: u16 = 0xFD1C;
+    pub const ACI_GATT_WRITE_CHAR_DESC: u16 = 0xFD21;
+    /// An indication's confirmation; the next indication waits for it.
+    pub const ACI_GATT_CONFIRM_INDICATION: u16 = 0xFD25;
     pub const ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_REQ: u16 = 0xFD81;
+    /// As a central, the answer to a peripheral's request ([`super::L2capUpdateRequest`]).
+    pub const ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_RESP: u16 = 0xFD82;
+}
+
+/// `ACI_GAP_INIT`'s roles, a bitmask.
+pub mod role {
+    pub const PERIPHERAL: u8 = 0x01;
+    pub const CENTRAL: u8 = 0x04;
+}
+
+/// GAP procedure codes, for `ACI_GAP_TERMINATE_GAP_PROC` and `GAP_PROC_COMPLETE`.
+pub mod gap_proc {
+    pub const GENERAL_DISCOVERY: u8 = 0x02;
+    pub const DIRECT_CONNECTION: u8 = 0x40;
 }
 
 /// `ACI_GATT_ADD_CHAR`'s security permissions (ST's `ble_defs.h`). ST's stack applies them to
@@ -73,11 +112,23 @@ pub mod vendor {
     pub const GAP_PASS_KEY_REQ: u16 = 0x0402;
     pub const GAP_SLAVE_SECURITY_INITIATED: u16 = 0x0404;
     pub const GAP_BOND_LOST: u16 = 0x0405;
+    /// A GAP procedure ended: its code, status, data ([`super::gap_proc_complete`]).
+    pub const GAP_PROC_COMPLETE: u16 = 0x0407;
     pub const GAP_NUMERIC_COMPARISON_VALUE: u16 = 0x0409;
+    /// As a central: a peripheral asks for new connection parameters.
+    pub const L2CAP_CONNECTION_UPDATE_REQ: u16 = 0x0802;
     pub const GATT_ATTRIBUTE_MODIFIED: u16 = 0x0C01;
     pub const GATT_PROC_TIMEOUT: u16 = 0x0C02;
     pub const ATT_EXCHANGE_MTU_RESP: u16 = 0x0C03;
+    pub const ATT_FIND_INFO_RESP: u16 = 0x0C04;
+    pub const ATT_FIND_BY_TYPE_VALUE_RESP: u16 = 0x0C05;
+    pub const ATT_READ_BY_TYPE_RESP: u16 = 0x0C06;
+    pub const ATT_READ_RESP: u16 = 0x0C07;
+    pub const ATT_READ_BY_GROUP_TYPE_RESP: u16 = 0x0C0A;
+    pub const GATT_INDICATION: u16 = 0x0C0E;
+    pub const GATT_NOTIFICATION: u16 = 0x0C0F;
     pub const GATT_PROC_COMPLETE: u16 = 0x0C10;
+    pub const GATT_ERROR_RESP: u16 = 0x0C11;
 }
 
 /// An HCI command packet (`01`, opcode, length, parameters) into `out`;
@@ -115,6 +166,13 @@ pub fn packet_whole(p: &[u8]) -> bool {
     }
 }
 
+/// A device address as the air carries it: little-endian, and public (0) or random (1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct Address {
+    pub kind: u8,
+    pub bytes: [u8; 6],
+}
+
 /// The events the image acts on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Event<'a> {
@@ -122,15 +180,22 @@ pub enum Event<'a> {
     CommandComplete { opcode: u16, status: u8, params: &'a [u8] },
     /// Command Status: a command accepted (0) or refused, results to follow.
     CommandStatus { opcode: u16, status: u8 },
-    /// LE (Enhanced) Connection Complete with success: the handle, and the
-    /// interval (1.25 ms units) and latency when the packet carries them.
-    Connected { handle: u16, interval: Option<(u16, u16)> },
+    /// LE (Enhanced) Connection Complete with success: the handle, whether the watch is the
+    /// central, the peer, and the interval (1.25 ms units) and latency when the packet
+    /// carries them.
+    Connected { handle: u16, central: bool, peer: Address, interval: Option<(u16, u16)> },
+    /// LE (Enhanced) Connection Complete with an error: a connection that never formed.
+    ConnectFailed { status: u8 },
     /// LE Connection Update Complete with success: interval (1.25 ms units), latency.
-    ConnectionUpdate { interval: u16, latency: u16 },
+    ConnectionUpdate { handle: u16, interval: u16, latency: u16 },
     /// Disconnection Complete, with its reason (0x13: the peer hung up).
-    Disconnected { reason: u8 },
+    Disconnected { handle: u16, reason: u8 },
     /// Encryption Change: 1 on, 0 off.
-    Encryption { on: u8 },
+    Encryption { handle: u16, on: u8 },
+    /// LE Advertising Report: one or more reports ([`reports`]).
+    Advertising { data: &'a [u8] },
+    /// Another LE meta event, by subevent code.
+    LeMeta { sub: u8 },
     /// One of ST's events: its code and the bytes after it.
     Vendor { code: u16, params: &'a [u8] },
 }
@@ -138,6 +203,7 @@ pub enum Event<'a> {
 /// The event in one HCI packet, if it is one the image acts on.
 #[must_use]
 pub fn parse(p: &[u8]) -> Option<Event<'_>> {
+    let u16_at = |i: usize| u16::from_le_bytes([p[i], p[i + 1]]);
     match p {
         [0x04, 0x0E, _, _num, lo, hi, status, params @ ..] => {
             Some(Event::CommandComplete { opcode: u16::from_le_bytes([*lo, *hi]), status: *status, params })
@@ -145,24 +211,104 @@ pub fn parse(p: &[u8]) -> Option<Event<'_>> {
         [0x04, 0x0F, _, status, _num, lo, hi, ..] => {
             Some(Event::CommandStatus { opcode: u16::from_le_bytes([*lo, *hi]), status: *status })
         }
-        // Status, handle, role, peer address type and address, then (Enhanced)
+        // Status, handle, role (0 central), peer address type and address, then (Enhanced)
         // two resolvable addresses, then interval and latency.
-        [0x04, 0x3E, _, sub @ (0x01 | 0x0A), 0x00, lo, hi, ..] => {
+        [0x04, 0x3E, _, sub @ (0x01 | 0x0A), 0x00, _, _, role, kind, a0, a1, a2, a3, a4, a5, ..] => {
             let at = if *sub == 0x01 { 15 } else { 27 };
             Some(Event::Connected {
-                handle: u16::from_le_bytes([*lo, *hi]),
+                handle: u16_at(5),
+                central: *role == 0,
+                // An Enhanced report says 2 or 3 for an identity it resolved: still public or random.
+                peer: Address { kind: kind & 0x01, bytes: [*a0, *a1, *a2, *a3, *a4, *a5] },
                 interval: p.get(at..at + 4).map(|v| (u16::from_le_bytes([v[0], v[1]]), u16::from_le_bytes([v[2], v[3]]))),
             })
         }
-        [0x04, 0x3E, _, 0x03, 0x00, _, _, iv_lo, iv_hi, lat_lo, lat_hi, ..] => Some(Event::ConnectionUpdate {
-            interval: u16::from_le_bytes([*iv_lo, *iv_hi]),
-            latency: u16::from_le_bytes([*lat_lo, *lat_hi]),
-        }),
-        [0x04, 0x05, _, _status, _lo, _hi, reason] => Some(Event::Disconnected { reason: *reason }),
-        [0x04, 0x08, _, _status, _lo, _hi, on] => Some(Event::Encryption { on: *on }),
+        [0x04, 0x3E, _, 0x01 | 0x0A, status, ..] if *status != 0 => Some(Event::ConnectFailed { status: *status }),
+        [0x04, 0x3E, _, 0x03, 0x00, _, _, _, _, _, _, ..] => {
+            Some(Event::ConnectionUpdate { handle: u16_at(5), interval: u16_at(7), latency: u16_at(9) })
+        }
+        [0x04, 0x3E, _, 0x02, data @ ..] => Some(Event::Advertising { data }),
+        [0x04, 0x3E, _, sub, ..] => Some(Event::LeMeta { sub: *sub }),
+        [0x04, 0x05, _, _status, _, _, reason] => Some(Event::Disconnected { handle: u16_at(4), reason: *reason }),
+        [0x04, 0x08, _, _status, _, _, on] => Some(Event::Encryption { handle: u16_at(4), on: *on }),
         [0x04, 0xFF, _, lo, hi, params @ ..] => Some(Event::Vendor { code: u16::from_le_bytes([*lo, *hi]), params }),
         _ => None,
     }
+}
+
+/// One advertising report: what kind (0 connectable undirected, 4 a scan response, ...),
+/// who, the advertising data and the signal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Report<'a> {
+    pub kind: u8,
+    pub address: Address,
+    pub data: &'a [u8],
+    pub rssi: i8,
+}
+
+/// The reports in an LE Advertising Report's parameters (after the subevent code): a count,
+/// then each report whole (type, address type, address, length, data, RSSI), as ST's stack
+/// packs them. A report cut short ends the list.
+pub fn reports(data: &[u8]) -> impl Iterator<Item = Report<'_>> + '_ {
+    let count = data.first().copied().unwrap_or(0);
+    let mut at = 1;
+    (0..count).map_while(move |_| {
+        let head = data.get(at..at + 9)?;
+        let len = usize::from(head[8]);
+        let body = data.get(at + 9..at + 9 + len)?;
+        let rssi = *data.get(at + 9 + len)?;
+        at += 10 + len;
+        Some(Report {
+            kind: head[0],
+            address: Address { kind: head[1] & 0x01, bytes: [head[2], head[3], head[4], head[5], head[6], head[7]] },
+            data: body,
+            rssi: rssi.cast_signed(),
+        })
+    })
+}
+
+/// Advertising data's structures: (AD type, value). A structure cut short ends the list.
+pub fn ad_structures(data: &[u8]) -> impl Iterator<Item = (u8, &[u8])> + '_ {
+    let mut at = 0;
+    core::iter::from_fn(move || {
+        let len = usize::from(*data.get(at)?);
+        if len == 0 {
+            return None;
+        }
+        let s = data.get(at + 1..at + 1 + len)?;
+        at += 1 + len;
+        Some((s[0], &s[1..]))
+    })
+}
+
+/// AD types (Bluetooth SIG assigned numbers).
+pub mod ad {
+    pub const UUID16_INCOMPLETE: u8 = 0x02;
+    pub const UUID16_COMPLETE: u8 = 0x03;
+    pub const UUID128_INCOMPLETE: u8 = 0x06;
+    pub const UUID128_COMPLETE: u8 = 0x07;
+    pub const NAME_SHORT: u8 = 0x08;
+    pub const NAME_COMPLETE: u8 = 0x09;
+}
+
+/// The name in advertising data, complete or shortened.
+#[must_use]
+pub fn ad_name(data: &[u8]) -> Option<&[u8]> {
+    ad_structures(data).find(|(t, _)| *t == ad::NAME_COMPLETE || *t == ad::NAME_SHORT).map(|(_, v)| v)
+}
+
+/// The 16-bit service UUIDs in advertising data.
+pub fn ad_uuid16s(data: &[u8]) -> impl Iterator<Item = u16> + '_ {
+    ad_structures(data)
+        .filter(|(t, _)| *t == ad::UUID16_COMPLETE || *t == ad::UUID16_INCOMPLETE)
+        .flat_map(|(_, v)| v.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)))
+}
+
+/// The 128-bit service UUIDs in advertising data, little-endian as carried.
+pub fn ad_uuid128s(data: &[u8]) -> impl Iterator<Item = &[u8; 16]> + '_ {
+    ad_structures(data)
+        .filter(|(t, _)| *t == ad::UUID128_COMPLETE || *t == ad::UUID128_INCOMPLETE)
+        .flat_map(|(_, v)| v.as_chunks::<16>().0.iter())
 }
 
 /// The connection handle that starts most vendor events (0 if short).
@@ -221,4 +367,164 @@ pub fn att_mtu(params: &[u8]) -> Option<u16> {
 #[must_use]
 pub fn interval_hundredths_ms(units: u16) -> u32 {
     u32::from(units) * 125
+}
+
+/// A UUID as an attribute carries it: 16-bit, or 128-bit little-endian.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Uuid {
+    U16(u16),
+    U128([u8; 16]),
+}
+
+impl Uuid {
+    /// Two or sixteen bytes; anything else is not a UUID.
+    #[must_use]
+    pub fn from_le(b: &[u8]) -> Option<Self> {
+        match b {
+            [lo, hi] => Some(Self::U16(u16::from_le_bytes([*lo, *hi]))),
+            _ => b.try_into().ok().map(Self::U128),
+        }
+    }
+}
+
+/// The ATT response events of the GATT client, after the connection handle, share a shape: an
+/// element length, a data length, then elements of that length. Elements cut short are dropped.
+fn elements(params: &[u8], len_at: usize) -> &[u8] {
+    let n = params.get(len_at).map_or(0, |&n| usize::from(n));
+    params.get(len_at + 1..).map_or(&[], |rest| &rest[..n.min(rest.len())])
+}
+
+/// A primary service from `ATT_READ_BY_GROUP_TYPE_RESP`: its handle range and UUID.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Service {
+    pub start: u16,
+    pub end: u16,
+    pub uuid: Uuid,
+}
+
+/// `ATT_READ_BY_GROUP_TYPE_RESP` from a primary service discovery: connection handle, element
+/// length, data length, then (start, end, UUID) each.
+pub fn services(params: &[u8]) -> impl Iterator<Item = Service> + '_ {
+    let each = params.get(2).map_or(0, |&n| usize::from(n));
+    let data = elements(params, 3);
+    data.chunks_exact(each.max(1)).filter(move |_| each == 6 || each == 20).filter_map(|e| {
+        Some(Service {
+            start: u16::from_le_bytes([e[0], e[1]]),
+            end: u16::from_le_bytes([e[2], e[3]]),
+            uuid: Uuid::from_le(&e[4..])?,
+        })
+    })
+}
+
+/// A characteristic declaration from `ATT_READ_BY_TYPE_RESP`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Characteristic {
+    pub declaration: u16,
+    pub properties: u8,
+    pub value: u16,
+    pub uuid: Uuid,
+}
+
+/// Characteristic properties (Core Specification, Vol 3, Part G, 3.3.1.1).
+pub mod props {
+    pub const READ: u8 = 0x02;
+    pub const WRITE_WITHOUT_RESPONSE: u8 = 0x04;
+    pub const WRITE: u8 = 0x08;
+    pub const NOTIFY: u8 = 0x10;
+    pub const INDICATE: u8 = 0x20;
+}
+
+/// `ATT_READ_BY_TYPE_RESP` from a characteristic discovery: connection handle, element
+/// length, data length, then (declaration handle, properties, value handle, UUID) each.
+pub fn characteristics(params: &[u8]) -> impl Iterator<Item = Characteristic> + '_ {
+    let each = params.get(2).map_or(0, |&n| usize::from(n));
+    let data = elements(params, 3);
+    data.chunks_exact(each.max(1)).filter(move |_| each == 7 || each == 21).filter_map(|e| {
+        Some(Characteristic {
+            declaration: u16::from_le_bytes([e[0], e[1]]),
+            properties: e[2],
+            value: u16::from_le_bytes([e[3], e[4]]),
+            uuid: Uuid::from_le(&e[5..])?,
+        })
+    })
+}
+
+/// `ATT_FIND_INFO_RESP` from a descriptor discovery: connection handle, format (1: 16-bit
+/// UUIDs, 2: 128-bit), data length, then (handle, UUID) each.
+pub fn descriptors(params: &[u8]) -> impl Iterator<Item = (u16, Uuid)> + '_ {
+    let each = match params.get(2) {
+        Some(1) => 4,
+        Some(2) => 18,
+        _ => 0,
+    };
+    let data = if each == 0 { &[][..] } else { elements(params, 3) };
+    data.chunks_exact(each.max(1))
+        .filter(move |_| each != 0)
+        .filter_map(|e| Some((u16::from_le_bytes([e[0], e[1]]), Uuid::from_le(&e[2..])?)))
+}
+
+/// `ATT_FIND_BY_TYPE_VALUE_RESP` from a discovery by UUID: the first (found, group end)
+/// handle pair, the service's range.
+#[must_use]
+pub fn service_range(params: &[u8]) -> Option<(u16, u16)> {
+    let v = params.get(3..7)?;
+    Some((u16::from_le_bytes([v[0], v[1]]), u16::from_le_bytes([v[2], v[3]])))
+}
+
+/// `ATT_READ_RESP`: the value read, cut to what the event holds.
+#[must_use]
+pub fn read_value(params: &[u8]) -> Option<&[u8]> {
+    let n = usize::from(*params.get(2)?);
+    params.get(3..3 + n.min(params.len() - 3))
+}
+
+/// `GATT_NOTIFICATION` or `GATT_INDICATION`: connection handle, attribute handle, a one-byte
+/// length, the value.
+#[must_use]
+pub fn notification(params: &[u8]) -> Option<(u16, &[u8])> {
+    let attr = u16::from_le_bytes([*params.get(2)?, *params.get(3)?]);
+    let n = usize::from(*params.get(4)?);
+    Some((attr, params.get(5..5 + n.min(params.len() - 5))?))
+}
+
+/// `GATT_ERROR_RESP`: the request opcode refused, the attribute and the ATT error code.
+#[must_use]
+pub fn gatt_error(params: &[u8]) -> Option<(u8, u16, u8)> {
+    Some((*params.get(2)?, u16::from_le_bytes([*params.get(3)?, *params.get(4)?]), *params.get(5)?))
+}
+
+/// `GATT_PROC_COMPLETE`: 0 when the procedure succeeded, else its error.
+#[must_use]
+pub fn proc_complete(params: &[u8]) -> Option<u8> {
+    params.get(2).copied()
+}
+
+/// `GAP_PROC_COMPLETE`: the procedure's code and its status (0 success). It carries no
+/// connection handle.
+#[must_use]
+pub fn gap_proc_complete(params: &[u8]) -> Option<(u8, u8)> {
+    Some((*params.first()?, *params.get(1)?))
+}
+
+/// `L2CAP_CONNECTION_UPDATE_REQ`: a peripheral asks the central for an interval range, a
+/// latency and a timeout; the answer echoes the identifier.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct L2capUpdateRequest {
+    pub handle: u16,
+    pub identifier: u8,
+    pub interval_min: u16,
+    pub interval_max: u16,
+    pub latency: u16,
+    pub timeout: u16,
+}
+
+impl L2capUpdateRequest {
+    /// Connection handle, data length, identifier, L2CAP length, interval min and max,
+    /// latency, timeout multiplier.
+    #[must_use]
+    pub fn decode(params: &[u8]) -> Option<Self> {
+        let p = params.get(..14)?;
+        let at = |i: usize| u16::from_le_bytes([p[i], p[i + 1]]);
+        Some(Self { handle: at(0), identifier: p[3], interval_min: at(6), interval_max: at(8), latency: at(10), timeout: at(12) })
+    }
 }
