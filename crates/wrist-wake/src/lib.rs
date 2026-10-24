@@ -140,4 +140,38 @@ pub mod ble {
 
     /// How long a lost sensor is looked for before the watch gives up on it (ms).
     pub const GIVE_UP_MS: u64 = 5 * 60 * 1000;
+
+    /// The shortest advertising interval the watch uses (0.625 ms units): the cable's.
+    pub const ADVERTISE_FASTEST: u16 = timing(Power::Cable, false).advertise;
+
+    /// The advertising intervals to try, best first (0.625 ms units). With a link of its own
+    /// as the central (`sensor_interval`, 1.25 ms units), ST's stack schedules advertising
+    /// around that link and refuses an interval that does not fit (installs 151: 1022.5 ms
+    /// beside a 420 ms link, status 0x85). So after the wanted interval come the two largest
+    /// multiples of the link's interval no longer than it, then the cable's interval: the
+    /// watch must stay reachable, and a faster interval costs current but never loses the
+    /// phone.
+    #[must_use]
+    pub fn advertising_ladder(want: u16, sensor_interval: Option<u16>) -> [Option<u16>; 4] {
+        let mut out = [Some(want), None, None, None];
+        let mut n = 1;
+        let mut push = |v: u16, out: &mut [Option<u16>; 4]| {
+            // Connectable advertising may be no faster than 20 ms (32 units).
+            if v >= 32 && !out.contains(&Some(v)) && n < out.len() {
+                out[n] = Some(v);
+                n += 1;
+            }
+        };
+        if let Some(iv) = sensor_interval.filter(|&iv| iv > 0) {
+            let step = u32::from(iv) * 2;
+            let k = u32::from(want) / step;
+            for k in [k, k.saturating_sub(1)] {
+                if k >= 1 {
+                    push(u16::try_from(k * step).unwrap_or(want), &mut out);
+                }
+            }
+        }
+        push(ADVERTISE_FASTEST.min(want), &mut out);
+        out
+    }
 }

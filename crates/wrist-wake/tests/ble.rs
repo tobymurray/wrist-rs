@@ -1,6 +1,9 @@
 //! The BLE loop's deadlines: idle costs no wake, and everything it does by time has one.
 
-use wrist_wake::ble::{due, reconnect_after_ms, scan, sensor, timing, Console, Power, State, Transfer, GIVE_UP_MS};
+use wrist_wake::ble::{
+    advertising_ladder, due, reconnect_after_ms, scan, sensor, timing, Console, Power, State, Transfer, ADVERTISE_FASTEST,
+    GIVE_UP_MS,
+};
 use wrist_wake::earliest;
 
 const NOW: u64 = 1_000;
@@ -124,4 +127,28 @@ fn the_sensor_link_is_slow_on_battery_and_within_the_spec() {
 fn a_lost_sensor_is_retried_less_often_on_battery_and_not_for_ever() {
     assert!(reconnect_after_ms(Power::Battery) > reconnect_after_ms(Power::Cable));
     assert!(GIVE_UP_MS >= 10 * reconnect_after_ms(Power::Battery));
+}
+
+#[test]
+fn advertising_without_a_sensor_link_is_as_wanted_then_the_cable_interval() {
+    let battery = timing(Power::Battery, false).advertise;
+    assert_eq!(advertising_ladder(battery, None), [Some(battery), Some(ADVERTISE_FASTEST), None, None]);
+    // On a cable the wanted interval is the fastest already: nothing else to try.
+    assert_eq!(advertising_ladder(ADVERTISE_FASTEST, None), [Some(ADVERTISE_FASTEST), None, None, None]);
+}
+
+#[test]
+fn beside_a_sensor_link_advertising_tries_multiples_of_its_interval() {
+    // Install 151: a 420 ms link (336 units) and the battery's 1022.5 ms (1636 units) refused.
+    let battery = timing(Power::Battery, false).advertise;
+    let ladder = advertising_ladder(battery, Some(336));
+    // 2 x 420 ms = 840 ms (1344 units), then 420 ms (672), then the cable's 100 ms.
+    assert_eq!(ladder, [Some(1636), Some(1344), Some(672), Some(ADVERTISE_FASTEST)]);
+    for v in ladder.into_iter().flatten() {
+        assert!(v <= battery && v >= 32);
+    }
+    // A link slower than the wanted interval: no multiple fits, only the cable's.
+    assert_eq!(advertising_ladder(160, Some(400)), [Some(160), None, None, None]);
+    // A 40 ms link (32 units) on a cable: 80 ms, then 40 ms.
+    assert_eq!(advertising_ladder(160, Some(32)), [Some(160), Some(128), Some(64), None]);
 }

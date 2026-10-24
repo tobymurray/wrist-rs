@@ -417,6 +417,8 @@ struct Strap {
     lost_since: Option<Instant>,
     /// The quiet state has been logged since the last reading.
     quiet_told: bool,
+    /// A reading has been logged since the subscription.
+    announced: bool,
     contact: Contact,
 }
 
@@ -431,6 +433,8 @@ pub(super) struct Central {
     seen_next: usize,
     connecting: Option<(Address, Instant)>,
     link: Option<(u16, Address)>,
+    /// The sensor link's connection interval (1.25 ms units).
+    link_interval: Option<u16>,
     proc: Option<(Proc, Instant)>,
     /// The sensor link's timing last asked.
     asked: Option<Timing>,
@@ -449,6 +453,15 @@ pub(super) struct Central {
 impl Central {
     pub(super) fn handle(&self) -> Option<u16> {
         self.link.map(|(h, _)| h)
+    }
+
+    /// The sensor link's interval, while it is up.
+    pub(super) fn interval(&self) -> Option<u16> {
+        self.link.and(self.link_interval)
+    }
+
+    pub(super) fn set_interval(&mut self, iv: u16) {
+        self.link_interval = Some(iv);
     }
 
     /// When the loop must next run for the central's sake.
@@ -561,6 +574,7 @@ impl Central {
     pub(super) fn connected(&mut self, handle: u16, peer: Address, interval: Option<(u16, u16)>, uart: Uart) {
         self.connecting = None;
         self.link = Some((handle, peer));
+        self.link_interval = interval.map(|(iv, _)| iv);
         self.asked = None;
         self.proc = None;
         Self::set_peer(peer);
@@ -749,7 +763,8 @@ impl Central {
         if let Some(s) = self.strap.as_mut() {
             if s.stage == Stage::Live && s.measurement == Some(attr) {
                 if let Some(m) = Measurement::decode(value) {
-                    let first = HR_READINGS.load(Ordering::Relaxed) == 0 || s.quiet_told;
+                    let first = !s.announced || s.quiet_told;
+                    s.announced = true;
                     let contact_changed = m.contact != s.contact;
                     s.quiet_told = false;
                     s.contact = m.contact;
@@ -819,6 +834,7 @@ impl Central {
             Some(Stage::Live) => {
                 s.stage = Stage::Live;
                 s.quiet_told = false;
+                s.announced = false;
                 s.lost_since = None;
                 HR_AT_MS.store(now_ms(), Ordering::Relaxed);
                 HR.store(HR_LIVE, Ordering::Relaxed);
@@ -838,6 +854,13 @@ impl Central {
             }
         }
     }
+}
+
+/// Counts and the last reading start again with each `hr strap` or `hr fake`.
+fn new_source() {
+    HR_READINGS.store(0, Ordering::Relaxed);
+    HR_AT_MS.store(0, Ordering::Relaxed);
+    RELAYED.store(0, Ordering::Relaxed);
 }
 
 /// A heart-rate reading, from the strap or `hr fake`, into the statics `hr` reports.
@@ -904,6 +927,7 @@ impl Link<'_> {
             }
             Ask::Fake(bpm) => {
                 self.central.fake = Some((bpm, Instant::now()));
+                new_source();
                 HR.store(HR_FAKE, Ordering::Relaxed);
                 uart.write_line("[hr] fake readings once a second; `hr off` stops them");
             }
@@ -935,8 +959,10 @@ impl Link<'_> {
                     retry_at: Instant::now(),
                     lost_since: None,
                     quiet_told: false,
+                    announced: false,
                     contact: Contact::Unsupported,
                 });
+                new_source();
                 HR.store(if connected { HR_DISCOVERING } else { HR_CONNECTING }, Ordering::Relaxed);
             }
             client => self.client_request(client).await,
@@ -1085,6 +1111,26 @@ impl Link<'_> {
                 self.central.strap_retry();
             }
         }
+    }
+
+    /// The sensor link's interval changed: advertising chosen to fit the old one is chosen again.
+    pub(super) fn sensor_interval(&mut self, iv: u16) {
+        self.central.set_interval(iv);
+        self.advertised = None;
+        self.readvertise |= STATE.load(Ordering::Relaxed) == STATE_IDLE;
+        self.uart.write_str("[ble] sensor link interval ");
+        super::write_interval(self.uart, iv);
+        self.uart.write_line("");
+    }
+
+    /// The sensor link went down: advertising fitted to it goes back to the timing wanted.
+    pub(super) fn sensor_disconnected(&mut self, reason: u8) {
+        self.central.disconnected(reason, self.uart);
+        if self.advertised.is_some_and(|t| t.advertise != self.advertised_every) {
+            self.advertised = None;
+        }
+        // Up, not connected and not advertising: nothing fitted beside the link; try again.
+        self.readvertise |= STATE.load(Ordering::Relaxed) == STATE_IDLE;
     }
 
     /// The sensor link closed, or the attempt to make it cancelled.
