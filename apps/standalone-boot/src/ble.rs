@@ -1355,6 +1355,8 @@ impl Link<'_> {
                 self.set_mirror();
             }
             Event::Advertising { data } => self.central.advertising(data, self.uart),
+            // Data length change, remote features, PHY update: the stack's business.
+            Event::LeMeta { sub: 0x04 | 0x07 | 0x0C } => {}
             Event::LeMeta { sub } => {
                 self.uart.write_str("[ble] LE event ");
                 self.uart.write_hex8(sub);
@@ -1382,8 +1384,11 @@ impl Link<'_> {
             return;
         };
         if !phone {
-            UNSECURED.fetch_add(1, Ordering::Relaxed);
-            return self.uart.write_line("[ble] a console write over the sensor link: dropped");
+            if attr == rx + 1 || attr == tx + 2 {
+                UNSECURED.fetch_add(1, Ordering::Relaxed);
+                self.uart.write_line("[ble] a write to the console over the sensor link: dropped");
+            }
+            return;
         }
         if attr == rx + 1 {
             if !ENCRYPTED.load(Ordering::Relaxed) {
@@ -1426,8 +1431,14 @@ impl Link<'_> {
                 | vendor::GATT_ERROR_RESP
                 | vendor::L2CAP_CONNECTION_UPDATE_REQ
         );
-        if client && rest.len() >= 2 && self.central.handle() == Some(handle(rest)) {
+        let sensor = rest.len() >= 2 && self.central.handle() == Some(handle(rest));
+        if client && sensor {
             return self.central.client_event(ecode, rest, self.uart);
+        }
+        // Pairing on the sensor link (a bonded host encrypting it) is not the phone's.
+        if sensor && ecode == vendor::GAP_PAIRING_COMPLETE {
+            let ok = wrist_aci::pairing_complete(rest).is_some_and(|(status, _)| status == 0);
+            return self.uart.write_line(if ok { "[ble] sensor link paired" } else { "[ble] sensor link pairing failed" });
         }
         match ecode {
             vendor::BLUE_INITIALIZED => self.uart.write_line("[ble] chip initialised"),
@@ -1468,8 +1479,11 @@ impl Link<'_> {
             }
             vendor::GAP_SLAVE_SECURITY_INITIATED => self.uart.write_line("[ble] security requested"),
             // The phone link's one client procedure is the MTU exchange; its end, errors and
-            // timeouts need nothing.
-            vendor::GATT_PROC_COMPLETE | vendor::GATT_ERROR_RESP | vendor::GATT_PROC_TIMEOUT => {}
+            // timeouts need nothing, nor a client confirming one of our indications.
+            vendor::GATT_PROC_COMPLETE
+            | vendor::GATT_ERROR_RESP
+            | vendor::GATT_PROC_TIMEOUT
+            | vendor::GATT_SERVER_CONFIRMATION => {}
             vendor::GATT_ATTRIBUTE_MODIFIED if rest.len() >= 8 => {
                 if let Some(write) = AttributeModified::decode(rest) {
                     self.attribute_modified(handle(rest), write);

@@ -33,6 +33,11 @@ const SCAN_MAX_S: u8 = 30;
 const SCAN_LINES: u32 = 48;
 /// A strap with no reading for this long is quiet.
 const QUIET: Duration = Duration::from_secs(5);
+/// A link this quiet is dropped and the strap looked for again: a host that stops serving
+/// keeps the link, and an idle link costs current for nothing.
+const STALE: Duration = Duration::from_secs(30);
+/// Advertisers one scan tells apart; past this, repeats may print again.
+const SCAN_SEEN: usize = 32;
 /// `hr fake` notifies this often, as a strap does.
 const FAKE_EVERY: Duration = Duration::from_secs(1);
 /// Generic notifications are printed at most this often; the rest are counted.
@@ -419,8 +424,11 @@ struct Strap {
 pub(super) struct Central {
     /// The chip took the central role at GAP init.
     pub available: bool,
-    /// A scan runs until this instant; lines printed and advertisers heard.
+    /// A scan runs until this instant; lines printed and reports heard.
     scan: Option<(Instant, u32, u32)>,
+    /// The advertisers this scan has printed (address, a scan response), oldest replaced.
+    seen: [Option<(Address, bool)>; SCAN_SEEN],
+    seen_next: usize,
     connecting: Option<(Address, Instant)>,
     link: Option<(u16, Address)>,
     proc: Option<(Proc, Instant)>,
@@ -454,10 +462,11 @@ impl Central {
                 && self.strap.as_ref().is_some_and(|s| !matches!(s.stage, Stage::Connect | Stage::Live)));
         let strap = self.strap.as_ref().and_then(|s| match s.stage {
             Stage::Connect if self.link.is_none() && self.connecting.is_none() => Some(s.retry_at),
-            Stage::Live if !s.quiet_told => {
+            Stage::Live => {
                 let at = HR_AT_MS.load(Ordering::Relaxed);
                 let age = Duration::from_millis(u64::from(now_ms().wrapping_sub(at)));
-                Some(now + QUIET.checked_sub(age).unwrap_or(Duration::from_ticks(0)) + Duration::from_millis(1))
+                let limit = if s.quiet_told { STALE } else { QUIET };
+                Some(now + limit.checked_sub(age).unwrap_or(Duration::from_ticks(0)) + Duration::from_millis(1))
             }
             _ => None,
         });
@@ -503,9 +512,13 @@ impl Central {
         };
         for r in wrist_aci::reports(data) {
             *heard += 1;
-            if *printed >= SCAN_LINES {
+            // The chip's duplicate filter lets repeats through: one line per advertiser and kind.
+            let key = (r.address, r.kind == 0x04);
+            if *printed >= SCAN_LINES || self.seen.contains(&Some(key)) {
                 continue;
             }
+            self.seen[self.seen_next] = Some(key);
+            self.seen_next = (self.seen_next + 1) % SCAN_SEEN;
             *printed += 1;
             uart.write_str("[ble] seen ");
             write_address(uart, r.address);
@@ -603,7 +616,8 @@ impl Central {
     pub(super) fn gap_proc_complete(&mut self, code: u8, status: u8, uart: Uart) {
         match code {
             gap_proc::GENERAL_DISCOVERY => self.scan_ended(uart),
-            gap_proc::DIRECT_CONNECTION if self.connecting.is_some() && self.link.is_none() => {
+            // Success comes before the connection's own event, which ends the attempt.
+            gap_proc::DIRECT_CONNECTION if status != 0 && self.connecting.is_some() && self.link.is_none() => {
                 self.connect_failed(status, uart);
             }
             _ => {}
@@ -616,7 +630,7 @@ impl Central {
             uart.write_u32(heard);
             uart.write_str(" reports, ");
             uart.write_u32(printed);
-            uart.write_line(" printed");
+            uart.write_line(" advertisers printed");
             if CENTRAL.load(Ordering::Relaxed) == CENTRAL_SCANNING {
                 CENTRAL.store(CENTRAL_IDLE, Ordering::Relaxed);
             }
@@ -861,7 +875,11 @@ impl Link<'_> {
             return uart.write_line("[ble] the central role is not available on this chip (see the start-up log)");
         }
         match ask {
-            Ask::Scan(seconds) => self.start_scan(seconds).await,
+            Ask::Scan(seconds) => {
+                self.central.seen = [None; SCAN_SEEN];
+                self.central.seen_next = 0;
+                self.start_scan(seconds).await;
+            }
             Ask::Connect(a) => self.start_connect(a).await,
             Ask::Drop => {
                 self.central.strap = None;
@@ -1142,11 +1160,15 @@ impl Link<'_> {
             return;
         };
         let uart = self.uart;
-        if s.stage == Stage::Live && !s.quiet_told {
-            let age = now_ms().wrapping_sub(HR_AT_MS.load(Ordering::Relaxed));
-            if u64::from(age) > QUIET.as_millis() {
+        if s.stage == Stage::Live {
+            let age = u64::from(now_ms().wrapping_sub(HR_AT_MS.load(Ordering::Relaxed)));
+            if !s.quiet_told && age > QUIET.as_millis() {
                 s.quiet_told = true;
                 uart.write_line("[hr] quiet: no reading for 5 s (strap off, or out of range)");
+            } else if s.quiet_told && age > STALE.as_millis() && self.central.proc.is_none() {
+                uart.write_line("[hr] no reading for 30 s on a live link: dropping it to look for the strap again");
+                s.stage = Stage::Connect;
+                return self.drop_sensor().await;
             }
         }
         if s.stage == Stage::Connect {

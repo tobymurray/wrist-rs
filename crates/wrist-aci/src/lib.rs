@@ -129,6 +129,7 @@ pub mod vendor {
     pub const GATT_NOTIFICATION: u16 = 0x0C0F;
     pub const GATT_PROC_COMPLETE: u16 = 0x0C10;
     pub const GATT_ERROR_RESP: u16 = 0x0C11;
+    pub const GATT_SERVER_CONFIRMATION: u16 = 0x0C17;
 }
 
 /// An HCI command packet (`01`, opcode, length, parameters) into `out`;
