@@ -96,7 +96,7 @@ static HR_AT_MS: AtomicU32 = AtomicU32::new(0);
 static HR_READINGS: AtomicU32 = AtomicU32::new(0);
 static RELAY: AtomicBool = AtomicBool::new(false);
 static RELAYED: AtomicU32 = AtomicU32::new(0);
-/// Connections subscribed to the watch's heart rate: bit 0 the phone link, bit 1 the sensor link.
+/// Connections subscribed to the watch's heart rate: the phone link, the sensor link, a second central.
 static RELAY_SUBSCRIBERS: AtomicU8 = AtomicU8::new(0);
 
 /// The relay is on: advertising carries the Heart Rate Service, and readings are notified.
@@ -104,9 +104,13 @@ pub(super) fn relay_on() -> bool {
     RELAY.load(Ordering::Relaxed)
 }
 
-/// A central wrote the watch's heart-rate CCCD: `phone` for the peripheral link.
-pub(super) fn relay_subscribed(phone: bool, on: bool) {
-    let bit = if phone { 1 } else { 2 };
+/// Who subscribed to the watch's heart rate, as [`RELAY_SUBSCRIBERS`] bits.
+pub(super) const SUB_PHONE: u8 = 1;
+pub(super) const SUB_SENSOR: u8 = 2;
+pub(super) const SUB_SECOND: u8 = 4;
+
+/// A central wrote the watch's heart-rate CCCD over the link `bit` names.
+pub(super) fn relay_subscribed(bit: u8, on: bool) {
     if on {
         RELAY_SUBSCRIBERS.fetch_or(bit, Ordering::Relaxed);
     } else {
@@ -627,7 +631,7 @@ impl Central {
         self.proc = None;
         self.confirm = false;
         self.update_request = None;
-        RELAY_SUBSCRIBERS.fetch_and(!2, Ordering::Relaxed);
+        RELAY_SUBSCRIBERS.fetch_and(!SUB_SENSOR, Ordering::Relaxed);
         CENTRAL.store(CENTRAL_IDLE, Ordering::Relaxed);
         uart.write_str("[ble] sensor link down, reason ");
         uart.write_hex8(reason);
