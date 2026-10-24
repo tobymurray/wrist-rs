@@ -1,7 +1,7 @@
 use wrist_flash::layout::bank1;
 use wrist_flash::plan::{crc32, PAGE_SIZE, QUADWORD};
 use wrist_store::{
-    boot_actions, mounted, nmi_in_store, pages_for, plan_write, retired, valid, CommitRecord, Found, Refusal, Reject,
+    boot_actions, eccr_clearing_both, eccr_clearing_double, mounted, nmi_in_store, nmi_in_system_flash, pages_for, plan_write, retired, valid, CommitRecord, Found, Refusal, Reject,
     StorePage, COMMIT_AREA, MAX_PACK, PAGES, RECORD_LEN, RETIRED_RANGE,
 };
 
@@ -144,6 +144,33 @@ fn the_nmi_predicate_takes_exactly_the_store() {
     assert!(!nmi_in_store(eccd | 0x18_8000), "bank 1");
     assert!(!nmi_in_store(eccd | bank2 | system | 0x18_8000), "system flash");
     assert!(!nmi_in_store(bank2 | 0x18_8000), "corrected only");
+}
+
+#[test]
+fn the_self_test_takes_only_system_flash_double_errors() {
+    let double = 1 << 31;
+    let system = 1 << 22;
+    assert!(nmi_in_system_flash(double | system | 0x1_1F80));
+    assert!(!nmi_in_system_flash(double | (1 << 21) | 0x18_8000), "the store is not system flash");
+    assert!(!nmi_in_system_flash(system | (1 << 30)), "corrected only");
+    for byte in 0..=u32::MAX / 0x0101_0101 {
+        let eccr = byte.wrapping_mul(0x0101_0101);
+        assert!(!(nmi_in_store(eccr) && nmi_in_system_flash(eccr)), "{eccr:08X}");
+    }
+}
+
+#[test]
+fn clearing_keeps_the_interrupt_enable_and_writes_no_reserved_bit() {
+    let ecc_ie = 1 << 24;
+    let corrected = 1 << 30;
+    let double = 1 << 31;
+    for eccr in [0, u32::MAX, double | corrected | 0x18_8000, ecc_ie | double | (1 << 21)] {
+        let one = eccr_clearing_double(eccr);
+        let both = eccr_clearing_both(eccr);
+        assert_eq!(one & ecc_ie, eccr & ecc_ie, "{eccr:08X}");
+        assert_eq!(one & !ecc_ie, double, "only ECCD cleared, {eccr:08X}");
+        assert_eq!(both & !ecc_ie, double | corrected, "{eccr:08X}");
+    }
 }
 
 #[test]

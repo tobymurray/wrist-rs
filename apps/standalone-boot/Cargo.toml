@@ -23,6 +23,7 @@ embassy-sync = "0.8.0"
 embassy-futures = "0.1.2"
 embassy-boot-stm32 = "0.8.0"
 wrist-flash = { path = "../../crates/wrist-flash" }
+wrist-store = { path = "../../crates/wrist-store" }
 wrist-board = { path = "../../crates/wrist-board" }
 wrist-glass = { path = "../../crates/wrist-glass" }
 wrist-pages = { path = "../../crates/wrist-pages" }
