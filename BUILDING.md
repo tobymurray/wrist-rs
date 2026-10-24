@@ -120,6 +120,22 @@ An update that arrived over the air is kept once USB is configured or an encrypt
 Bluetooth link is up. BlueZ keeps a bonded watch's services: after a build that changes
 them, `bluetoothctl remove <address>` and pair again.
 
+The watch is also a central, for any Bluetooth LE device: `ble scan [s]` lists advertisers,
+`ble connect <addr> [random]` makes a link of its own beside the phone's, and `ble services`,
+`chars`, `descs`, `read`, `write` and `subscribe` use it; `ble drop` ends it. For heart rate,
+`hr strap <addr>` reads a standard heart-rate strap (a Polar H10, say), reports when it goes
+quiet, and finds it again after it is lost; `hr relay on` serves those readings from the
+watch's own Heart Rate Service and advertises it, so a rower or a bike that takes a
+heart-rate sensor can use the watch. On battery the scan listens a fifth of the time and the
+strap's link wakes the radio twice a second.
+
+Without a strap, a Linux host can be one:
+
+```sh
+.venv/bin/python tools/hr-sim.py --consume <watch address>   # a strap, and a relay listener
+.venv/bin/python tools/wrist-cmd.py "hr relay on;hr strap <host address>"
+```
+
 ## Working on InscribedDisc
 
 The face is drawn with [InscribedDisc](https://crates.io/crates/inscribed-disc), developed
