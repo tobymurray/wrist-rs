@@ -23,6 +23,8 @@ embassy-sync = "0.8.0"
 embassy-futures = "0.1.2"
 embassy-boot-stm32 = "0.8.0"
 wrist-flash = { path = "../../crates/wrist-flash" }
+wrist-aci = { path = "../../crates/wrist-aci", optional = true }
+wrist-wake = { path = "../../crates/wrist-wake", optional = true }
 wrist-board = { path = "../../crates/wrist-board" }
 wrist-glass = { path = "../../crates/wrist-glass" }
 wrist-pages = { path = "../../crates/wrist-pages" }
@@ -34,6 +36,9 @@ wrist-vcom = { path = "../../crates/wrist-vcom" }
 [features]
 # embassy-usb's own log of the link, printed by `usblog`.
 usb-log = ["dep:log", "embassy-usb/log"]
+# The console and application updates over Bluetooth, for a bonded central (ble.rs). The radio
+# stays in reset until `ble on`.
+ble = ["dep:wrist-aci", "dep:wrist-wake"]
 
 [[bin]]
 name = "standalone-boot"

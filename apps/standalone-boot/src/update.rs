@@ -109,6 +109,13 @@ impl Session {
     pub fn complete(&self) -> bool {
         self.received >= self.len
     }
+
+    /// The first image byte is in.
+    #[cfg(feature = "ble")]
+    #[must_use]
+    pub fn started(&self) -> bool {
+        self.received > 0
+    }
 }
 
 /// Also when the link is rebuilt under a transfer and the session goes with it.

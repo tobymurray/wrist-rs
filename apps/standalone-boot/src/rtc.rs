@@ -437,6 +437,29 @@ pub fn set_zone(z: &Zone) {
     }
 }
 
+/// `BKP16R`: tag `BL` and 1 while the radio should be on, so it comes back after a reset.
+#[cfg(feature = "ble")]
+const TAMP_BKP16R: u32 = 0x4600_7C00 + 0x140;
+#[cfg(feature = "ble")]
+const RADIO_ON: u32 = 0x424C_0001;
+
+/// `ble on` was the last word, since the backup domain was last reset.
+#[cfg(feature = "ble")]
+#[must_use]
+pub fn radio_wanted() -> bool {
+    clock_bus();
+    unsafe { read32(TAMP_BKP16R) == RADIO_ON }
+}
+
+#[cfg(feature = "ble")]
+pub fn set_radio_wanted(on: bool) {
+    clock_bus();
+    unsafe {
+        write32(PWR_DBPR, DBPR_DBP);
+        write32(TAMP_BKP16R, if on { RADIO_ON } else { 0 });
+    }
+}
+
 pub fn clear_zone() {
     clock_bus();
     unsafe {

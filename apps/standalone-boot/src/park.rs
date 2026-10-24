@@ -27,6 +27,8 @@ pub struct Pins {
     pub emmc_en: Peri<'static, peripherals::PD10>,
     pub gnss_en: Peri<'static, peripherals::PG5>,
     pub gnss_wake: Peri<'static, peripherals::PD1>,
+    /// With the `ble` feature, `ble.rs` holds it instead.
+    #[cfg(not(feature = "ble"))]
     pub ble_rst: Peri<'static, peripherals::PA8>,
     pub body_rst: Peri<'static, peripherals::PF13>,
     pub body_cs: Peri<'static, peripherals::PG12>,
@@ -82,6 +84,7 @@ pub fn park(pins: Pins, sensor_bus: Option<&mut I2c<'static, Blocking, Master>>,
     hold_low(pins.emmc_en);
     hold_low(pins.gnss_en);
     hold_low(pins.gnss_wake);
+    #[cfg(not(feature = "ble"))]
     hold_low(pins.ble_rst);
     hold_low(pins.body_rst);
     hold_low(pins.body_cs);
@@ -102,7 +105,10 @@ pub fn park(pins: Pins, sensor_bus: Option<&mut I2c<'static, Blocking, Master>>,
 }
 
 pub fn write_report(uart: Uart) {
+    #[cfg(not(feature = "ble"))]
     uart.write_str("     off: eMMC, GNSS, Bluetooth, heart rate, altimeter, haptics, buzzer; SDMMC1 ");
+    #[cfg(feature = "ble")]
+    uart.write_str("     off: eMMC, GNSS, Bluetooth until `ble on`, heart rate, altimeter, haptics, buzzer; SDMMC1 ");
     uart.write_line(if SDMMC_WAS_ON.load(Ordering::Relaxed) { "was on, now off" } else { "off" });
     uart.write_str("     ");
     uart.write_u32(u32::try_from(ANALOG.len()).unwrap_or(0));
