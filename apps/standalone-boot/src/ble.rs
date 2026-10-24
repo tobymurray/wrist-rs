@@ -191,6 +191,15 @@ static ANSWER: AtomicU8 = AtomicU8::new(0);
 static ADDRESS: [AtomicU8; 6] = [const { AtomicU8::new(0) }; 6];
 /// `ble profile`: 0 follows the power source, 1 always the cable's, 2 always the battery's.
 static PROFILE: AtomicU8 = AtomicU8::new(0);
+/// `ble multi on`: advertise while a central is connected, so a second one can connect.
+static MULTI: AtomicBool = AtomicBool::new(false);
+/// Advertising runs while a central is connected (`ble multi`).
+static ADVERTISING_CONNECTED: AtomicBool = AtomicBool::new(false);
+/// A second central's connection handle (0: none). It may read and subscribe to heart rate;
+/// the console is the first link's alone.
+static SECOND: AtomicU16 = AtomicU16::new(0);
+/// `ble multi` changed: the loop starts or stops advertising beside the connected central, once.
+static MULTI_CHANGED: AtomicBool = AtomicBool::new(false);
 
 /// Signalled when [`PROVEN`] first becomes true.
 static PROVEN_NOW: Signal<CriticalSectionRawMutex, ()> = Signal::new();
@@ -248,6 +257,17 @@ pub fn command(args: &[u8], uart: Uart) {
             uart.write_str("[ble] timing: ");
             return uart.write_line(word);
         }
+        b"multi on" | b"multi off" => {
+            let on = args == b"multi on";
+            MULTI.store(on, Ordering::Relaxed);
+            MULTI_CHANGED.store(true, Ordering::Relaxed);
+            WAKE.signal(());
+            return uart.write_line(if on {
+                "[ble] multi: advertising goes on while a central is connected, so a second can connect (costs current)"
+            } else {
+                "[ble] multi off: one central at a time"
+            });
+        }
         rest if rest.starts_with(b"interval now") => {
             let text = core::str::from_utf8(&rest[12..]).unwrap_or("");
             let mut units = text.split_whitespace().map(|w| w.parse::<u16>().ok());
@@ -263,7 +283,7 @@ pub fn command(args: &[u8], uart: Uart) {
             central::Parsed::Mistyped => return,
             central::Parsed::NotCentral => {
                 return uart.write_line(
-                    "[ble] usage: ble [on|off|version|yes|no|bonds|forget|disconnect|profile auto|cable|battery|interval now <min> <max>|scan [s]|connect <addr> [random]|drop|services|chars <s> <e>|descs <s> <e>|read <h>|write <h> <hex>|subscribe <h> [indicate|off]]",
+                    "[ble] usage: ble [on|off|version|yes|no|bonds|forget|disconnect|profile auto|cable|battery|multi on|off|interval now <min> <max>|scan [s]|connect <addr> [random]|drop|services|chars <s> <e>|descs <s> <e>|read <h>|write <h> <hex>|subscribe <h> [indicate|off]]",
                 )
             }
         },
@@ -289,6 +309,12 @@ fn write_link_status(uart: Uart) {
         _ => "failed to start (see the log; `ble on` retries)",
     });
     if STATE.load(Ordering::Relaxed) == STATE_CONNECTED {
+        if ADVERTISING_CONNECTED.load(Ordering::Relaxed) {
+            uart.write_str(", advertising too");
+        }
+        if SECOND.load(Ordering::Relaxed) != 0 {
+            uart.write_str(", a second central connected");
+        }
         uart.write_str(if ENCRYPTED.load(Ordering::Relaxed) { ", encrypted" } else { ", NOT encrypted" });
         uart.write_str(", interval ");
         write_interval(uart, INTERVAL.load(Ordering::Relaxed));
@@ -625,6 +651,16 @@ impl Link<'_> {
     /// the new interval, or the connection asked for new parameters.
     async fn retime(&mut self) {
         let want = timing(power(), self.transfer.is_some());
+        if MULTI_CHANGED.swap(false, Ordering::Relaxed) && STATE.load(Ordering::Relaxed) == STATE_CONNECTED {
+            if MULTI.load(Ordering::Relaxed) {
+                if !ADVERTISING_CONNECTED.load(Ordering::Relaxed) && SECOND.load(Ordering::Relaxed) == 0 {
+                    self.advertise().await;
+                }
+            } else if ADVERTISING_CONNECTED.swap(false, Ordering::Relaxed) {
+                let _ = self.command(ACI_GAP_SET_NON_DISCOVERABLE, &[]).await;
+                self.uart.write_line("[ble] multi off: advertising stopped");
+            }
+        }
         match STATE.load(Ordering::Relaxed) {
             STATE_ADVERTISING if self.advertised != Some(want) || self.advertised_relay != central::relay_on() => {
                 if self.command(ACI_GAP_SET_NON_DISCOVERABLE, &[]).await.is_ok() {
@@ -1099,7 +1135,12 @@ impl Link<'_> {
             p[3..5].copy_from_slice(&every.to_le_bytes());
             match self.command(ACI_GAP_SET_DISCOVERABLE, &p[..n + 4]).await {
                 Ok(r) if r.status == 0 => {
-                    STATE.store(STATE_ADVERTISING, Ordering::Relaxed);
+                    if STATE.load(Ordering::Relaxed) == STATE_CONNECTED {
+                        ADVERTISING_CONNECTED.store(true, Ordering::Relaxed);
+                        self.uart.write_line("[ble] multi: the chip advertises with a central connected");
+                    } else {
+                        STATE.store(STATE_ADVERTISING, Ordering::Relaxed);
+                    }
                     self.advertised = Some(want);
                     self.advertised_every = every;
                     self.advertised_relay = relay;
@@ -1311,26 +1352,17 @@ impl Link<'_> {
                 self.central.connected(handle, peer, interval, self.uart);
             }
             Event::ConnectFailed { status } => self.central.connect_failed(status, self.uart),
-            Event::Connected { handle, central: false, peer, interval } => {
-                CONN_HANDLE.store(handle, Ordering::Relaxed);
-                self.peer = peer;
-                if let Some((iv, lat)) = interval {
-                    INTERVAL.store(iv, Ordering::Relaxed);
-                    LATENCY.store(lat, Ordering::Relaxed);
-                }
-                STATE.store(STATE_CONNECTED, Ordering::Relaxed);
-                ENCRYPTED.store(false, Ordering::Relaxed);
-                self.subscribed = false;
-                self.set_mirror();
-                self.mtu = DEFAULT_MTU;
-                self.exchange_mtu = true;
-                self.ask_security = true;
-                self.asked = None;
-                self.advertised = None;
-                self.uart.write_line("[ble] connected");
+            Event::Connected { handle, central: false, .. } if STATE.load(Ordering::Relaxed) == STATE_CONNECTED => {
+                self.second_connected(handle);
             }
+            Event::Connected { handle, central: false, peer, interval } => self.phone_connected(handle, peer, interval),
             Event::ConnectionUpdate { handle, interval, .. } if self.central.handle() == Some(handle) => {
                 self.sensor_interval(interval);
+            }
+            Event::ConnectionUpdate { handle, interval, .. } if handle == SECOND.load(Ordering::Relaxed) => {
+                self.uart.write_str("[ble] the second central's interval ");
+                write_interval(self.uart, interval);
+                self.uart.write_line("");
             }
             Event::ConnectionUpdate { interval: iv, latency: lat, .. } => {
                 INTERVAL.store(iv, Ordering::Relaxed);
@@ -1344,29 +1376,13 @@ impl Link<'_> {
             Event::Disconnected { handle, reason } if self.central.handle() == Some(handle) => {
                 self.sensor_disconnected(reason);
             }
-            Event::Disconnected { reason, .. } => {
-                central::relay_subscribed(true, false);
-                STATE.store(STATE_IDLE, Ordering::Relaxed);
-                CONN_HANDLE.store(0, Ordering::Relaxed);
-                ENCRYPTED.store(false, Ordering::Relaxed);
-                self.subscribed = false;
-                self.set_mirror();
-                self.confirm_for = None;
-                self.exchange_mtu = false;
-                self.ask_security = false;
-                self.request_interval = None;
-                clear_prompt();
-                if let Some(session) = self.transfer.take() {
-                    crate::update::abort(session);
-                }
-                self.uart.write_str("[ble] disconnected, reason ");
-                self.uart.write_hex8(reason);
-                self.uart.write_line(" (13 = the central hung up)");
-                self.readvertise = true;
+            Event::Disconnected { handle, reason } if handle != CONN_HANDLE.load(Ordering::Relaxed) => {
+                self.other_disconnected(handle, reason);
             }
+            Event::Disconnected { reason, .. } => self.phone_disconnected(reason),
             // Only the peripheral link's encryption unlocks the console.
             Event::Encryption { handle, on } if handle != CONN_HANDLE.load(Ordering::Relaxed) => {
-                self.uart.write_line(if on != 0 { "[ble] sensor link encrypted" } else { "[ble] sensor link encryption off" });
+                self.uart.write_line(if on != 0 { "[ble] another link encrypted" } else { "[ble] another link's encryption off" });
             }
             Event::Encryption { on, .. } => {
                 let on = on != 0;
@@ -1389,6 +1405,76 @@ impl Link<'_> {
         }
     }
 
+    /// The first central connected: the console's link.
+    fn phone_connected(&mut self, handle: u16, peer: Address, interval: Option<(u16, u16)>) {
+        ADVERTISING_CONNECTED.store(false, Ordering::Relaxed);
+        CONN_HANDLE.store(handle, Ordering::Relaxed);
+        self.peer = peer;
+        if let Some((iv, lat)) = interval {
+            INTERVAL.store(iv, Ordering::Relaxed);
+            LATENCY.store(lat, Ordering::Relaxed);
+        }
+        STATE.store(STATE_CONNECTED, Ordering::Relaxed);
+        ENCRYPTED.store(false, Ordering::Relaxed);
+        self.subscribed = false;
+        self.set_mirror();
+        self.mtu = DEFAULT_MTU;
+        self.exchange_mtu = true;
+        self.ask_security = true;
+        self.asked = None;
+        self.advertised = None;
+        self.readvertise = MULTI.load(Ordering::Relaxed);
+        self.uart.write_line("[ble] connected");
+    }
+
+    /// The first central's link went down.
+    fn phone_disconnected(&mut self, reason: u8) {
+        central::relay_subscribed(central::SUB_PHONE, false);
+        // Advertising beside this link (`ble multi`) goes on by itself.
+        let still_advertising = ADVERTISING_CONNECTED.swap(false, Ordering::Relaxed);
+        STATE.store(if still_advertising { STATE_ADVERTISING } else { STATE_IDLE }, Ordering::Relaxed);
+        CONN_HANDLE.store(0, Ordering::Relaxed);
+        ENCRYPTED.store(false, Ordering::Relaxed);
+        self.subscribed = false;
+        self.set_mirror();
+        self.confirm_for = None;
+        self.exchange_mtu = false;
+        self.ask_security = false;
+        self.request_interval = None;
+        clear_prompt();
+        if let Some(session) = self.transfer.take() {
+            crate::update::abort(session);
+        }
+        self.uart.write_str("[ble] disconnected, reason ");
+        self.uart.write_hex8(reason);
+        self.uart.write_line(" (13 = the central hung up)");
+        self.readvertise = !still_advertising;
+    }
+
+    /// A second central while the first is connected (`ble multi`): heart rate only.
+    fn second_connected(&mut self, handle: u16) {
+        // Advertising stopped with this connection; one more is all `ble multi` takes.
+        ADVERTISING_CONNECTED.store(false, Ordering::Relaxed);
+        SECOND.store(handle, Ordering::Relaxed);
+        self.uart.write_str("[ble] a second central connected, handle ");
+        self.uart.write_hex8((handle >> 8) as u8);
+        self.uart.write_hex8((handle & 0xFF) as u8);
+        self.uart.write_line(": heart rate only, never the console");
+    }
+
+    /// A link other than the first central's and the sensor link went down.
+    fn other_disconnected(&mut self, handle: u16, reason: u8) {
+        if handle != SECOND.swap(0, Ordering::Relaxed) {
+            return self.uart.write_line("[ble] a link we did not know went down");
+        }
+        central::relay_subscribed(central::SUB_SECOND, false);
+        self.uart.write_str("[ble] the second central disconnected, reason ");
+        self.uart.write_hex8(reason);
+        self.uart.write_line("");
+        // Advertising again so another can take its place.
+        self.readvertise = MULTI.load(Ordering::Relaxed) && STATE.load(Ordering::Relaxed) == STATE_CONNECTED;
+    }
+
     /// A central wrote one of our attributes: the console's RX (bytes for the parser or a
     /// transfer) or TX's CCCD (the mirror on or off), over the peripheral link only; or the
     /// heart rate's CCCD, over either link.
@@ -1398,7 +1484,14 @@ impl Link<'_> {
         if let Some((_, measurement, _)) = self.hrs {
             if attr == measurement + 2 {
                 let on = data.first().is_some_and(|b| b & 0x01 != 0);
-                central::relay_subscribed(phone, on);
+                let who = if phone {
+                    central::SUB_PHONE
+                } else if conn == SECOND.load(Ordering::Relaxed) {
+                    central::SUB_SECOND
+                } else {
+                    central::SUB_SENSOR
+                };
+                central::relay_subscribed(who, on);
                 self.uart.write_line(if on { "[hr] a central subscribed to the watch's heart rate" } else { "[hr] a central unsubscribed" });
                 return;
             }
@@ -1409,7 +1502,7 @@ impl Link<'_> {
         if !phone {
             if attr == rx + 1 || attr == tx + 2 {
                 UNSECURED.fetch_add(1, Ordering::Relaxed);
-                self.uart.write_line("[ble] a write to the console over the sensor link: dropped");
+                self.uart.write_line("[ble] a write to the console over another link: dropped");
             }
             return;
         }
@@ -1494,7 +1587,8 @@ impl Link<'_> {
                 }
             }
             vendor::GAP_BOND_LOST => self.rebond_for = Some(handle(rest)),
-            vendor::ATT_EXCHANGE_MTU_RESP if rest.len() >= 4 => {
+            // The first link's MTU only: a second central's exchange is the stack's business.
+            vendor::ATT_EXCHANGE_MTU_RESP if rest.len() >= 4 && handle(rest) == CONN_HANDLE.load(Ordering::Relaxed) => {
                 self.mtu = usize::from(wrist_aci::att_mtu(rest).unwrap_or(0)).clamp(DEFAULT_MTU, 247);
                 self.uart.write_str("[ble] ATT MTU ");
                 self.uart.write_u32(u32::try_from(self.mtu).unwrap_or(0));
