@@ -18,7 +18,7 @@ pub mod bank1 {
     pub const DFU: Range<u16> = 116..181;
     /// embassy-boot's swap and revert state.
     pub const STATE: u16 = 181;
-    /// Never written by wrist-rs.
+    /// Never written by wrist-rs; the pages opposite the glyph store stay unused for good.
     pub const UNUSED: Range<u16> = 182..256;
 }
 
@@ -38,7 +38,8 @@ pub mod bank2 {
     pub const SETTINGS: Range<u16> = 116..128;
     /// The installer's staged image, under stock; a stale copy stays after an install.
     pub const STAGING: Range<u16> = 128..196;
-    /// Language packs, never executed.
+    /// Language packs, never executed, on pages fixed for good since nothing records where
+    /// they are.
     pub const GLYPH_STORE: Range<u16> = 196..256;
 }
 
