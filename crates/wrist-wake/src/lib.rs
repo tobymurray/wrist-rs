@@ -56,6 +56,8 @@ pub mod ble {
         /// The watch's own central work by time, the earliest of: a scan's end, a connection
         /// attempt or GATT procedure given up, the next reconnection to a sensor.
         pub central_at: Option<u64>,
+        /// Advertising slows down at this tick ([`advertise_every`]).
+        pub slow_at: Option<u64>,
     }
 
     /// When the loop must next run by time; `None` means only the chip's IRQ, a request or
@@ -65,7 +67,7 @@ pub mod ble {
         let now = s.now;
         let quiet = s.transfer == Transfer::Started;
         let console = s.console.and_then(|c| (c.pending && !quiet).then_some(c.next_at.max(now)));
-        earliest([s.work.then_some(now), s.confirm_by, console, s.abandon_at, s.ask_at, s.central_at])
+        earliest([s.work.then_some(now), s.confirm_by, console, s.abandon_at, s.ask_at, s.central_at, s.slow_at])
     }
 
     /// How long a link stays unencrypted before the watch asks its central to pair: well past a
@@ -231,6 +233,32 @@ pub mod ble {
                 }
                 _ => Err(status),
             }
+        }
+    }
+
+    /// How long (ms) the watch keeps advertising at [`timing`]'s interval after the radio
+    /// starts, a central leaves or a button is pressed.
+    pub const ADVERTISE_FAST_MS: u64 = 2 * 60 * 1000;
+
+    /// The battery's idle advertising (0.625 ms units): 2495 ms, so that, as 995 ms does, it
+    /// plus 5 ms is a whole multiple of the battery's 500 ms sensor link ([`fits`]).
+    pub const ADVERTISE_IDLE: u16 = 3992;
+
+    /// The advertising interval (0.625 ms units), `since_ms` after the radio started, a
+    /// central left or a button was pressed, whichever was last.
+    ///
+    /// Each advertising event is three transmissions, the largest share of an idle radio's
+    /// current. On battery, once nobody has connected for [`ADVERTISE_FAST_MS`], the watch
+    /// advertises two and a half times less often: a phone that is away costs less, and a
+    /// press brings the usual interval back for when the owner wants to connect. While the
+    /// relay serves heart rate it stays at the usual interval, so a rower or a bike finds the
+    /// watch quickly. On a cable, always the cable's.
+    #[must_use]
+    pub const fn advertise_every(power: Power, since_ms: u64, relay: bool) -> u16 {
+        let usual = timing(power, false).advertise;
+        match power {
+            Power::Battery if !relay && since_ms >= ADVERTISE_FAST_MS => ADVERTISE_IDLE,
+            _ => usual,
         }
     }
 

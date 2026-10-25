@@ -801,6 +801,8 @@ async fn button_watch(mut lines: ButtonLines) -> ! {
 /// switched on, on every page; then the pages' model moves where it says.
 fn on_press(uart: Uart, press: Press, injected: bool, light_until: &mut Option<Instant>) {
     const LIT_FOR: Duration = Duration::from_secs(3);
+    #[cfg(feature = "ble")]
+    crate::ble::pressed();
     uart.write_str(if injected { "[button] injected " } else { "[button] " });
     uart.write_str(if press.long { "long press " } else { "short press " });
     uart.write_str(press.button.label());

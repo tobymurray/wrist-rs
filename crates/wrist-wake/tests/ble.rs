@@ -18,6 +18,7 @@ fn idle() -> State {
         abandon_at: None,
         ask_at: None,
         central_at: None,
+        slow_at: None,
     }
 }
 
@@ -262,4 +263,26 @@ fn each_power_sources_advertising_fits_beside_its_sensor_link() {
     assert!(fits(160, 28));
     assert!(!(320..=400).any(|iv| fits(1636, iv)));
     assert!(fits(1592, 400));
+}
+
+#[test]
+fn slowing_advertising_is_a_deadline() {
+    let s = State { slow_at: Some(NOW + 120_000), central_at: Some(NOW + 200_000), ..idle() };
+    assert_eq!(due(&s), Some(NOW + 120_000));
+}
+
+#[test]
+fn advertising_slows_on_battery_when_nobody_comes() {
+    use wrist_wake::ble::{advertise_every, ADVERTISE_FAST_MS, ADVERTISE_IDLE};
+    let usual = timing(Power::Battery, false).advertise;
+    assert_eq!(advertise_every(Power::Battery, 0, false), usual);
+    assert_eq!(advertise_every(Power::Battery, ADVERTISE_FAST_MS - 1, false), usual);
+    assert_eq!(advertise_every(Power::Battery, ADVERTISE_FAST_MS, false), ADVERTISE_IDLE);
+    // The relay keeps it findable; a cable keeps it fast.
+    assert_eq!(advertise_every(Power::Battery, u64::MAX, true), usual);
+    assert_eq!(advertise_every(Power::Cable, u64::MAX, false), timing(Power::Cable, false).advertise);
+    // 2495 ms, and it fits beside the battery's sensor link as 995 ms does.
+    assert_eq!(u32::from(ADVERTISE_IDLE) * 625, 2_495_000);
+    assert!(fits(ADVERTISE_IDLE, sensor(Power::Battery).interval_min));
+    assert!(ADVERTISE_IDLE > usual);
 }

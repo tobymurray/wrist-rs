@@ -105,7 +105,9 @@ A `--features ble` image keeps the radio in reset until `ble on` on the console;
 puts it back, and the choice survives a reset. The console answers over the air only to a
 bonded computer, over an encrypted link, and takes application updates but never the
 loader. On battery the radio advertises about once a second and keeps an idle link slow;
-`ble profile battery|cable|auto` forces one timing for testing.
+once nobody has connected for two minutes it advertises every 2.5 s instead, until a button
+is pressed, a central leaves or the relay is turned on. `ble profile battery|cable|auto`
+forces one timing for testing.
 
 From Linux, with the watch also on USB, pairing needs no button: the tool confirms the
 watch's number over the USB console.

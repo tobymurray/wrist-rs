@@ -66,7 +66,9 @@ use wrist_aci::opcode::{
 use wrist_aci::{address, config, permission, role, vendor, Address, AttributeModified, Event};
 use wrist_profiles::heart_rate;
 use wrist_settings::{Key, Value};
-use wrist_wake::ble::{timing, Outbox, PairAsk, Power, Radio, Timing};
+use wrist_wake::ble::{
+    advertise_every, timing, Outbox, PairAsk, Power, Radio, Timing, ADVERTISE_FAST_MS, ADVERTISE_IDLE,
+};
 
 use crate::console::Target;
 use crate::uart::Uart;
@@ -196,6 +198,26 @@ static ANSWER: AtomicU8 = AtomicU8::new(0);
 static ADDRESS: [AtomicU8; 6] = [const { AtomicU8::new(0) }; 6];
 /// `ble profile`: 0 follows the power source, 1 always the cable's, 2 always the battery's.
 static PROFILE: AtomicU8 = AtomicU8::new(0);
+/// When the radio last came up, a central left or a button was pressed, in seconds since
+/// boot: advertising slows down on battery a while after it (`wrist_wake::ble::advertise_every`).
+static ACTIVE_AT_S: AtomicU32 = AtomicU32::new(0);
+/// The advertising interval last granted, in 0.625 ms units, for `ble`.
+static ADVERTISED_EVERY: AtomicU16 = AtomicU16::new(0);
+
+fn note_activity() {
+    ACTIVE_AT_S.store(u32::try_from(Instant::now().as_secs()).unwrap_or(u32::MAX), Ordering::Relaxed);
+}
+
+/// A button was pressed: the owner may want to connect, so advertising speeds up again.
+pub fn pressed() {
+    note_activity();
+    WAKE.signal(());
+}
+
+/// When advertising may slow down.
+fn active_until() -> Instant {
+    Instant::from_secs(u64::from(ACTIVE_AT_S.load(Ordering::Relaxed))) + Duration::from_millis(ADVERTISE_FAST_MS)
+}
 /// `ble multi on`: advertise while a central is connected, so a second one can connect.
 static MULTI: AtomicBool = AtomicBool::new(false);
 /// Advertising runs while a central is connected (`ble multi`).
@@ -227,6 +249,12 @@ pub fn tee(bytes: &[u8]) {
     if MIRROR.load(Ordering::Relaxed) && OUT.try_write(bytes).is_ok() {
         WAKE.signal(());
     }
+}
+
+/// The timing advertising wants now: the power source's, slowed on battery while nobody comes.
+fn advertising() -> Timing {
+    let since = Instant::now().saturating_duration_since(Instant::from_secs(u64::from(ACTIVE_AT_S.load(Ordering::Relaxed))));
+    Timing { advertise: advertise_every(power(), since.as_millis(), central::relay_on()), ..timing(power(), false) }
 }
 
 fn power() -> Power {
@@ -343,6 +371,12 @@ fn write_link_status(uart: Uart) {
         STATE_CONNECTED => "connected",
         _ => "failed to start (see the log; `ble on` retries)",
     });
+    if STATE.load(Ordering::Relaxed) == STATE_ADVERTISING {
+        let every = ADVERTISED_EVERY.load(Ordering::Relaxed);
+        uart.write_str(" every ");
+        uart.write_u32(u32::from(every) * 625 / 1000);
+        uart.write_str(if every == ADVERTISE_IDLE { " ms (slowed: nobody came; a press speeds it up)" } else { " ms" });
+    }
     if STATE.load(Ordering::Relaxed) == STATE_CONNECTED {
         if ADVERTISING_CONNECTED.load(Ordering::Relaxed) {
             uart.write_str(", advertising too");
@@ -634,6 +668,10 @@ impl Link<'_> {
             abandon_at: self.transfer.as_ref().map(|_| tick(self.last_data + TRANSFER_IDLE + one)),
             ask_at: self.pair_ask.due(),
             central_at: self.central.due().map(tick),
+            slow_at: (STATE.load(Ordering::Relaxed) == STATE_ADVERTISING
+                && self.advertised.is_some_and(|t| t.advertise != ADVERTISE_IDLE)
+                && advertise_every(power(), u64::MAX, central::relay_on()) == ADVERTISE_IDLE)
+                .then(|| tick(active_until())),
         };
         wrist_wake::ble::due(&state).map(Instant::from_ticks)
     }
@@ -709,7 +747,7 @@ impl Link<'_> {
             }
         }
         match STATE.load(Ordering::Relaxed) {
-            STATE_ADVERTISING if self.advertised != Some(want) || self.advertised_relay != central::relay_on() => {
+            STATE_ADVERTISING if self.advertised != Some(advertising()) || self.advertised_relay != central::relay_on() => {
                 if self.command(ACI_GAP_SET_NON_DISCOVERABLE, &[]).await.is_ok() {
                     self.advertise().await;
                 }
@@ -825,6 +863,7 @@ impl Link<'_> {
     /// requirements, advertise: ST's sample order.
     async fn bring_up(&mut self) {
         STATE.store(STATE_STARTING, Ordering::Relaxed);
+        note_activity();
         clear_prompt();
         self.reset().await;
         let addr = address_from_uid();
@@ -1159,7 +1198,7 @@ impl Link<'_> {
     /// `ACI_GAP_SET_DISCOVERABLE`: connectable undirected at the power source's interval,
     /// static random address, no filter, name `UNA`, no UUIDs, no interval hint.
     async fn advertise(&mut self) {
-        let want = timing(power(), false);
+        let want = advertising();
         let mut p = [0u8; 24];
         p[0] = 0x00;
         p[5] = address::STATIC_RANDOM;
@@ -1195,6 +1234,7 @@ impl Link<'_> {
                     }
                     self.advertised = Some(want);
                     self.advertised_every = every;
+                    ADVERTISED_EVERY.store(every, Ordering::Relaxed);
                     self.advertised_relay = relay;
                     self.uart.write_str("[ble] advertising as UNA every ");
                     self.uart.write_u32(u32::from(every) * 625 / 1000);
@@ -1495,6 +1535,7 @@ impl Link<'_> {
         self.uart.write_hex8(reason);
         self.uart.write_line(" (13 = the central hung up)");
         self.readvertise = !still_advertising;
+        note_activity();
     }
 
     /// A second central while the first is connected (`ble multi`): heart rate only.
