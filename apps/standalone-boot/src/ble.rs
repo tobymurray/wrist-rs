@@ -67,7 +67,7 @@ use wrist_aci::{address, config, permission, role, vendor, Address, AttributeMod
 use wrist_profiles::heart_rate;
 use wrist_settings::{Key, Value};
 use wrist_wake::ble::{
-    advertise_every, timing, Outbox, PairAsk, Power, Radio, Timing, ADVERTISE_FAST_MS, ADVERTISE_IDLE,
+    advertise_every, satisfies, timing, Outbox, PairAsk, Power, Radio, Timing, ADVERTISE_FAST_MS, ADVERTISE_IDLE,
 };
 
 use crate::console::Target;
@@ -754,7 +754,9 @@ impl Link<'_> {
             }
             STATE_CONNECTED if self.asked != Some(want) => {
                 self.asked = Some(want);
-                self.ask_connection(want.interval_min, want.interval_max, want.latency, want.timeout).await;
+                if !satisfies(want, INTERVAL.load(Ordering::Relaxed), LATENCY.load(Ordering::Relaxed)) {
+                    self.ask_connection(want.interval_min, want.interval_max, want.latency, want.timeout).await;
+                }
             }
             _ => {}
         }

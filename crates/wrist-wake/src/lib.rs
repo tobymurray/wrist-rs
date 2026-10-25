@@ -239,6 +239,15 @@ pub mod ble {
         }
     }
 
+    /// Whether a link at `interval` (1.25 ms units) and `latency` already gives what `want`
+    /// asks: then the watch asks nothing. A central that set a faster link than the range
+    /// for a transfer (15 ms, where the watch asks 15 to 30) keeps it; asking would let the
+    /// central move it to the range's slow end (`BlueZ` chose 30 ms, halving an update's speed).
+    #[must_use]
+    pub const fn satisfies(want: Timing, interval: u16, latency: u16) -> bool {
+        interval >= want.interval_min && interval <= want.interval_max && latency <= want.latency
+    }
+
     /// How long (ms) the watch keeps advertising at [`timing`]'s interval after the radio
     /// starts, a central leaves or a button is pressed.
     pub const ADVERTISE_FAST_MS: u64 = 2 * 60 * 1000;
