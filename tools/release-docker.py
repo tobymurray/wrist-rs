@@ -71,6 +71,8 @@ def main():
     if not a.sdk or not a.out:
         ap.error('--sdk and --out are required')
     sdk, out = a.sdk.resolve(), a.out.resolve()
+    if not sdk.is_dir():
+        raise ValueError(f'{sdk} is not a directory: clone the SDK at toolchain.json sdk_commit')
     if out.exists():
         raise ValueError(f'{out} exists: use a new directory')
     if ROOT in out.parents:

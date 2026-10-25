@@ -1,9 +1,9 @@
 name: Build image
 # Publishes release/Dockerfile for release/toolchain.json to pin (release/README.md, "Moving the image forward").
 on:
-  # Any branch, so a branch that changes the Dockerfile can pin its own image; never a tag.
+  # A branch that changes the Dockerfile pins its own image, so main and tags never publish.
   push:
-    branches: ['**']
+    branches: ['**', '!main']
     paths:
       - release/Dockerfile
       - .github/workflows/toolchain.yml
