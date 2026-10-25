@@ -17,6 +17,7 @@ mod panel_dma;
 mod park;
 mod pmic;
 mod rtc;
+mod settings;
 mod power;
 mod sleep;
 mod uart;

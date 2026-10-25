@@ -20,6 +20,7 @@ use wrist_aci::opcode::{
 };
 use wrist_aci::{address, gap_proc, vendor, Address, L2capUpdateRequest, Uuid};
 use wrist_profiles::heart_rate::{self, rr_ms, Contact, Measurement};
+use wrist_settings::{Device, Key, Value};
 use wrist_wake::ble::{connect_timeout_ms, reconnect_after_ms, scan, sensor, Timing, GIVE_UP_MS};
 
 use super::{power, Link, Request, REQUESTS, STATE, STATE_ADVERTISING, STATE_IDLE};
@@ -65,7 +66,6 @@ pub(super) enum Ask {
     Subscribe(u16, u8),
     Strap(Address),
     HrOff,
-    Relay(bool),
     Fake(u16),
 }
 
@@ -102,6 +102,10 @@ static RELAY_SUBSCRIBERS: AtomicU8 = AtomicU8::new(0);
 /// The relay is on: advertising carries the Heart Rate Service, and readings are notified.
 pub(super) fn relay_on() -> bool {
     RELAY.load(Ordering::Relaxed)
+}
+
+pub(super) fn set_relay(on: bool) {
+    RELAY.store(on, Ordering::Relaxed);
 }
 
 /// Who subscribed to the watch's heart rate, as [`RELAY_SUBSCRIBERS`] bits.
@@ -199,13 +203,16 @@ pub fn hr_command(args: &[u8], uart: Uart) {
     let ask = match words.next() {
         None => return write_hr(uart),
         Some("strap") => match parse_address(words.next(), words.next()) {
-            Some(a) => Ask::Strap(a),
+            Some(a) => {
+                let d = Device { random: a.kind == 1, address: a.bytes };
+                return crate::settings::change(Key::Strap, Value::Device(Some(d)), uart);
+            }
             None => return uart.write_line("[hr] usage: hr strap AA:BB:CC:DD:EE:FF [random]"),
         },
-        Some("off") => Ask::HrOff,
+        // Stops fake readings too, which are not saved.
+        Some("off") => return crate::settings::change(Key::Strap, Value::Device(None), uart),
         Some("relay") => match words.next() {
-            Some("on") => Ask::Relay(true),
-            Some("off") => Ask::Relay(false),
+            Some(w @ ("on" | "off")) => return crate::settings::change(Key::Relay, Value::Switch(w == "on"), uart),
             _ => return uart.write_line("[hr] usage: hr relay on|off"),
         },
         Some("fake") => match words.next().map(str::parse::<u16>) {
@@ -919,6 +926,16 @@ impl Link<'_> {
         self.central.handle().map(u16::to_le_bytes)
     }
 
+    /// The saved strap, looked for as the radio comes up.
+    pub(super) async fn restore_strap(&mut self) {
+        let Some(d) = crate::settings::load().strap else { return };
+        if !self.central.available {
+            return self.uart.write_line("[hr] a strap is saved, but the central role is not available");
+        }
+        self.uart.write_line("[hr] looking for the saved strap (`settings`; `hr off` forgets it)");
+        self.central_request(Ask::Strap(Address { kind: u8::from(d.random), bytes: d.address })).await;
+    }
+
     /// A console request for the central side.
     pub(super) async fn central_request(&mut self, ask: Ask) {
         let uart = self.uart;
@@ -936,14 +953,6 @@ impl Link<'_> {
                 self.central.strap = None;
                 HR.store(HR_OFF, Ordering::Relaxed);
                 self.drop_sensor().await;
-            }
-            Ask::Relay(on) => {
-                RELAY.store(on, Ordering::Relaxed);
-                uart.write_line(if on {
-                    "[hr] relay on: readings are served as a heart-rate sensor, and advertised"
-                } else {
-                    "[hr] relay off"
-                });
             }
             Ask::Fake(bpm) => {
                 self.central.fake = Some((bpm, Instant::now()));

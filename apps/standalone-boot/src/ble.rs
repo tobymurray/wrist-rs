@@ -63,8 +63,9 @@ use wrist_aci::opcode::{
     ACI_GATT_UPDATE_CHAR_VALUE, ACI_HAL_GET_FW_BUILD_NUMBER, ACI_HAL_SET_TX_POWER_LEVEL, ACI_HAL_WRITE_CONFIG_DATA,
     ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_REQ, HCI_LE_RAND, HCI_READ_LOCAL_VERSION, HCI_SET_EVENT_MASK,
 };
-use wrist_aci::{address, config, permission, role, vendor, AttributeModified, Event};
+use wrist_aci::{address, config, permission, role, vendor, Address, AttributeModified, Event};
 use wrist_profiles::heart_rate;
+use wrist_settings::{Key, Value};
 use wrist_wake::ble::{timing, Outbox, PairAsk, Power, Radio, Timing};
 
 use crate::console::Target;
@@ -262,15 +263,8 @@ pub fn command(args: &[u8], uart: Uart) {
             return uart.write_line(word);
         }
         b"multi on" | b"multi off" => {
-            let on = args == b"multi on";
-            MULTI.store(on, Ordering::Relaxed);
-            MULTI_CHANGED.store(true, Ordering::Relaxed);
-            WAKE.signal(());
-            return uart.write_line(if on {
-                "[ble] multi: advertising goes on while a central is connected, so a second can connect (costs current)"
-            } else {
-                "[ble] multi off: one central at a time"
-            });
+            let on = Value::Switch(args == b"multi on");
+            return crate::settings::change(Key::Multi, on, uart);
         }
         rest if rest.starts_with(b"interval now") => {
             let text = core::str::from_utf8(&rest[12..]).unwrap_or("");
@@ -294,6 +288,43 @@ pub fn command(args: &[u8], uart: Uart) {
     };
     if REQUESTS.try_send(request).is_err() {
         uart.write_line("[ble] not queued: four already waiting");
+    }
+}
+
+/// A setting applied now; `crate::settings` has saved it.
+pub fn apply_setting(key: Key, value: Value, uart: Uart) {
+    let radio_on = STATE.load(Ordering::Relaxed) != STATE_OFF;
+    match (key, value) {
+        (Key::Multi, Value::Switch(on)) => {
+            MULTI.store(on, Ordering::Relaxed);
+            MULTI_CHANGED.store(true, Ordering::Relaxed);
+            WAKE.signal(());
+            uart.write_line(if on {
+                "[ble] multi: advertising goes on while a central is connected, so a second can connect (costs current)"
+            } else {
+                "[ble] multi off: one central at a time"
+            });
+        }
+        (Key::Relay, Value::Switch(on)) => {
+            central::set_relay(on);
+            WAKE.signal(());
+            uart.write_line(if on {
+                "[hr] relay on: readings are served as a heart-rate sensor, and advertised"
+            } else {
+                "[hr] relay off"
+            });
+        }
+        (Key::Strap, Value::Device(d)) if radio_on => {
+            let ask = d.map_or(central::Ask::HrOff, |d| {
+                central::Ask::Strap(Address { kind: u8::from(d.random), bytes: d.address })
+            });
+            if REQUESTS.try_send(Request::Central(ask)).is_err() {
+                uart.write_line("[hr] saved, not queued: four already waiting");
+            }
+        }
+        (Key::Strap, Value::Device(Some(_))) => uart.write_line("[hr] strap saved; the radio is off, and `ble on` connects to it"),
+        (Key::Strap, Value::Device(None)) => uart.write_line("[hr] off"),
+        _ => {}
     }
 }
 
@@ -385,6 +416,9 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
     let mut rst = Output::new(pins.rst, Level::Low, Speed::Low);
     let mut changes = crate::power::changes();
     let mut on = crate::rtc::radio_wanted();
+    let saved = crate::settings::load();
+    MULTI.store(saved.multi, Ordering::Relaxed);
+    central::set_relay(saved.relay);
     if on {
         uart.write_line("[ble] on at boot: `ble on` was the last word (BKP16R)");
     }
@@ -461,6 +495,7 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
             on = false;
             continue;
         }
+        link.restore_strap().await;
         link.serve(&mut changes).await;
         // `ble off`: the chip in reset first, then SPI1, CS and IRQ dropped back to analog.
         link.rst.set_low();

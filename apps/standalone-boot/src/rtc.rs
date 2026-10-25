@@ -460,6 +460,25 @@ pub fn set_radio_wanted(on: bool) {
     }
 }
 
+/// `BKP17R` to `BKP30R`: the saved settings (`wrist_settings`).
+const TAMP_BKP17R: u32 = 0x4600_7C00 + 0x144;
+
+#[must_use]
+pub fn settings_words() -> [u32; wrist_settings::WORDS] {
+    clock_bus();
+    core::array::from_fn(|i| unsafe { read32(TAMP_BKP17R + 4 * u32::try_from(i).unwrap_or(0)) })
+}
+
+pub fn set_settings_words(w: &[u32; wrist_settings::WORDS]) {
+    clock_bus();
+    unsafe {
+        write32(PWR_DBPR, DBPR_DBP);
+        for (i, &v) in (0u32..).zip(w) {
+            write32(TAMP_BKP17R + 4 * i, v);
+        }
+    }
+}
+
 pub fn clear_zone() {
     clock_bus();
     unsafe {

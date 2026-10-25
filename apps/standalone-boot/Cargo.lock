@@ -1006,6 +1006,7 @@ dependencies = [
  "wrist-panel",
  "wrist-power",
  "wrist-profiles",
+ "wrist-settings",
  "wrist-time",
  "wrist-vcom",
  "wrist-wake",
@@ -1280,6 +1281,10 @@ version = "0.0.0"
 
 [[package]]
 name = "wrist-profiles"
+version = "0.0.0"
+
+[[package]]
+name = "wrist-settings"
 version = "0.0.0"
 
 [[package]]

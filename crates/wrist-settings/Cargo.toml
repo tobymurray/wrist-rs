@@ -1,0 +1,12 @@
+[package]
+name = "wrist-settings"
+version = "0.0.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+publish = false
+description = "The owner's saved preferences as a versioned, checked record of words, with names and values for the console. no_std, no allocation, host-tested"
+
+[dependencies]
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }

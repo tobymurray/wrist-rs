@@ -29,6 +29,7 @@ wrist-profiles = { path = "../../crates/wrist-profiles", optional = true }
 wrist-board = { path = "../../crates/wrist-board" }
 wrist-glass = { path = "../../crates/wrist-glass" }
 wrist-pages = { path = "../../crates/wrist-pages" }
+wrist-settings = { path = "../../crates/wrist-settings" }
 wrist-time = { path = "../../crates/wrist-time" }
 wrist-eeprom = { path = "../../crates/wrist-eeprom" }
 wrist-power = { path = "../../crates/wrist-power" }
