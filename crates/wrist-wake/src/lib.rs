@@ -129,13 +129,16 @@ pub mod ble {
 
     /// On a cable, as responsive as the link allows. On battery, current first: advertising
     /// about once a second (995 ms, chosen to fit beside a sensor link: [`sensor`]) and an idle link that
-    /// wakes the radio about once a second, until a transfer asks for speed while it lasts.
+    /// wakes the radio about every 2 s, until a transfer asks for speed while it lasts. The idle
+    /// link is as slow as Apple's accessory rules allow (interval x (1 + latency) at most 2 s,
+    /// and the timeout above three times that and at most 6 s), so a Mac keeps it; the watch
+    /// still sends at once, and only what a central sends waits for the next event it attends.
     #[must_use]
     pub const fn timing(power: Power, transfer: bool) -> Timing {
         const FAST: Timing = Timing { advertise: 160, interval_min: 12, interval_max: 24, latency: 0, timeout: 500 };
         match (power, transfer) {
             (Power::Cable, _) | (Power::Battery, true) => FAST,
-            (Power::Battery, false) => Timing { advertise: 1592, interval_min: 80, interval_max: 160, latency: 4, timeout: 600 },
+            (Power::Battery, false) => Timing { advertise: 1592, interval_min: 80, interval_max: 160, latency: 8, timeout: 600 },
         }
     }
 

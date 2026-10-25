@@ -89,12 +89,28 @@ fn every_timing_is_inside_the_specification() {
 }
 
 #[test]
+fn every_timing_keeps_to_apples_accessory_rules() {
+    // Apple's Accessory Design Guidelines, connection parameters: a Mac refuses an update
+    // outside them.
+    for power in [Power::Cable, Power::Battery] {
+        for transfer in [false, true] {
+            let t = timing(power, transfer);
+            let (min_ms, max_ms) = (u32::from(t.interval_min) * 125 / 100, u32::from(t.interval_max) * 125 / 100);
+            let span_ms = max_ms * (1 + u32::from(t.latency));
+            assert!(min_ms >= 15 && max_ms >= min_ms + 15, "{t:?}");
+            assert!(t.latency <= 30 && span_ms <= 2_000, "{t:?}");
+            assert!(u32::from(t.timeout) * 10 <= 6_000 && u32::from(t.timeout) * 10 > 3 * span_ms, "{t:?}");
+        }
+    }
+}
+
+#[test]
 fn battery_is_slow_until_a_transfer_and_a_cable_is_fast() {
     let idle = timing(Power::Battery, false);
     let cable = timing(Power::Cable, false);
     assert!(idle.advertise >= 1_590, "about a second on battery");
-    // An idle link wakes the radio at most about once a second.
-    assert!(u32::from(idle.interval_min) * 125 / 100 * (1 + u32::from(idle.latency)) >= 500);
+    // An idle link wakes the radio about every 2 s at most, and never more than once a second.
+    assert!(u32::from(idle.interval_min) * 125 / 100 * (1 + u32::from(idle.latency)) >= 900);
     assert_eq!(cable, timing(Power::Battery, true), "a transfer is as fast as a cable");
     assert_eq!(cable, timing(Power::Cable, true));
     assert!(cable.advertise <= 160 && cable.interval_max <= 24 && cable.latency == 0);
