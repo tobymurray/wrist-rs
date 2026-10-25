@@ -1,0 +1,102 @@
+name: Build image
+# Publishes release/Dockerfile for release/toolchain.json to pin (release/README.md, "Moving the image forward").
+on:
+  # A branch that changes the Dockerfile pins its own image, so main and tags never publish.
+  push:
+    branches: ['**', '!main']
+    paths:
+      - release/Dockerfile
+      - .github/workflows/toolchain.yml
+  workflow_dispatch:
+    inputs:
+      mirror_base:
+        description: "Instead, copy the Dockerfile's base image by digest to ghcr.io/OWNER/stm32cubeide"
+        type: boolean
+        default: false
+permissions:
+  contents: read
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/wrist-rs-build
+jobs:
+  publish:
+    # Dependabot's token cannot write packages; its branches run this by hand.
+    if: ${{ !inputs.mirror_base && github.actor != 'dependabot[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # Checked by DOCKERFILE_LABEL in tools/release-docker.py.
+      - name: Hash the Dockerfile
+        id: dockerfile
+        run: echo "sha256=$(sha256sum release/Dockerfile | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        id: build
+        with:
+          context: release
+          file: release/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.IMAGE }}:${{ github.sha }}
+          labels: io.github.tobymurray.wrist-rs.dockerfile-sha256=${{ steps.dockerfile.outputs.sha256 }}
+          # Off, so the digest is the image's own manifest and not an index around it.
+          provenance: false
+          sbom: false
+      - name: Check the tools, and print the digest to pin
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          image="$IMAGE@$DIGEST"
+          docker run --rm --user "$(id -u):$(id -g)" --env HOME=/tmp "$image" bash -c \
+            'set -e; rustup toolchain list; rustc -V; arm-none-eabi-gcc --version | head -1; cmake --version | head -1; python3 -c "import elftools, PIL"'
+          echo "build_image: $image"
+          {
+            echo "### Build image published"
+            echo
+            echo "Pin it as \`build_image\` in \`release/toolchain.json\`:"
+            echo
+            echo "\`$image\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Keeps the base fetchable if Docker Hub loses it.
+  mirror:
+    if: ${{ inputs.mirror_base }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    env:
+      UPSTREAM: docker.io/xanderhendriks/stm32cubeide
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Copy the base by digest
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          from=$(sed -n 's/^FROM \([^ ]*\)$/\1/p' release/Dockerfile)
+          digest=${from#*@}
+          tag=${from%@*}; tag=${tag##*:}
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::FROM is not pinned by digest: $from"; exit 1; }
+          mirror="ghcr.io/$OWNER/stm32cubeide"
+          echo "$TOKEN" | skopeo login ghcr.io --username "$ACTOR" --password-stdin
+          skopeo copy --all --preserve-digests "docker://$UPSTREAM@$digest" "docker://$mirror:$tag"
+          copied="sha256:$(skopeo inspect --raw "docker://$mirror:$tag" | sha256sum | cut -d' ' -f1)"
+          [ "$copied" = "$digest" ] || { echo "::error::$mirror:$tag is $copied, not $digest"; exit 1; }
+          echo "FROM $mirror:$tag@$digest" | tee -a "$GITHUB_STEP_SUMMARY"

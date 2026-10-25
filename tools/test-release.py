@@ -234,6 +234,71 @@ class BuildId(unittest.TestCase):
         self.assertEqual(r.firmware_build.build_id(self.d), digest[:12])
 
 
+class BuildImage(unittest.TestCase):
+    """CI and a local build run the recipe the same way, in the image toolchain.json pins."""
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location('release_docker', Path(__file__).with_name('release-docker.py'))
+        cls.d = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.d)
+
+    def test_toolchain_json(self):
+        self.assertEqual(r.CONFIG['build_image'].split('@')[0], 'ghcr.io/tobymurray/wrist-rs-build')
+        self.assertEqual(self.d.sdk_repository(r.CONFIG), 'UNAWatch/una-sdk')
+        self.assertEqual(self.d.sdk_repository({'sdk_url': 'https://github.com/tobymurray/una-sdk.git'}),
+                         'tobymurray/una-sdk')
+        with self.assertRaises(ValueError):
+            self.d.sdk_repository({'sdk_url': 'https://example.org/una-sdk'})
+        dockerfile = (r.ROOT/'release/Dockerfile').read_text()
+        for pin in [f'--default-toolchain {r.CONFIG["stable"]} ', f'--target {r.CONFIG["target"]}',
+                    f'toolchain install {r.CONFIG["nightly"]} ']:
+            self.assertIn(pin, dockerfile)
+        self.assertRegex(dockerfile, r'(?m)^FROM \S+@sha256:[0-9a-f]{64}$')
+
+    def test_placeholder_refused(self):
+        digest = 'ghcr.io/tobymurray/wrist-rs-build@sha256:' + '0123456789abcdef' * 4
+        self.assertEqual(self.d.pinned_image({'build_image': digest}), digest)
+        for bad in ['', 'ghcr.io/tobymurray/wrist-rs-build@sha256:UNPUBLISHED', 'ghcr.io/tobymurray/wrist-rs-build:latest',
+                    'wrist-rs-build:local', digest[:-1], digest + ' ']:
+            with self.assertRaises(ValueError):
+                self.d.pinned_image({'build_image': bad})
+        pins = subprocess.run([sys.executable, str(r.ROOT/'tools/release-docker.py'), '--pins'],
+                              capture_output=True, text=True)
+        try:
+            image = self.d.pinned_image(r.CONFIG)
+        except ValueError:
+            self.assertNotEqual(pins.returncode, 0)
+            self.assertIn('toolchain.yml', pins.stderr)
+            self.assertEqual(pins.stdout, '')
+        else:
+            self.assertEqual(pins.stdout.splitlines(), [f'build_image={image}', 'sdk_repository=UNAWatch/una-sdk',
+                                                        f'sdk_commit={r.CONFIG["sdk_commit"]}'])
+
+    def test_ci_runs_the_local_command(self):
+        workflow = (r.ROOT/'.github/workflows/firmware.yml').read_text()
+        self.assertNotIn('docker ', workflow)
+        self.assertIn('release-docker.py --pins', workflow)
+        self.assertIn('release-docker.py --sdk "$PWD/sdk" --out "$RUNNER_TEMP/firmware" --version "$version"\n',
+                      workflow)
+        image = 'ghcr.io/tobymurray/wrist-rs-build@sha256:' + 'ab' * 32
+        argv = self.d.command(image, Path('/w/sdk'), Path('/runner/temp/firmware'), ['--version', '1.2.3'],
+                              image, 1001, 118, root=Path('/w/source'))
+        self.assertEqual(argv, [
+            'docker', 'run', '--rm', '--platform', 'linux/amd64', '--user', '1001:118',
+            '--env', 'HOME=/tmp', '--env', 'CARGO_HOME=/tmp/wrist-rs-cargo', '--workdir', '/src', '--entrypoint', 'bash',
+            '-v', '/w/source:/src', '-v', '/w/sdk:/sdk:ro', '-v', '/runner/temp:/stage', image, '-c', self.d.SCRIPT, '--',
+            '--sdk', '/sdk', '--out', '/stage/firmware', '--container-id', image, '--version', '1.2.3'])
+        self.assertIn('umask 022;', self.d.SCRIPT)
+        self.assertTrue(self.d.SCRIPT.endswith('exec python3 tools/release-build.py "$@"'))
+
+    def test_paths_remapped(self):
+        flags = r.firmware_build.environment({'CARGO_HOME': '/tmp/wrist-rs-cargo', 'RUSTUP_HOME': '/opt/rustup'},
+                                             '/sdk', 'x')['RUSTFLAGS'].split()
+        self.assertEqual(flags, [f'--remap-path-prefix={Path.home()}=/builder', '--remap-path-prefix=/tmp/wrist-rs-cargo=/cargo_home',
+                                 '--remap-path-prefix=/opt/rustup=/rustup_home', f'--remap-path-prefix={r.ROOT}=/src'])
+
+
 GATE = {'stock_version': '1.6.1', 'hardware_install_numbers': [1], 'round_trip_validated': True,
         'license_distribution_approved': True, 'notices_reviewed': True, 'github_candidate_run_verified': True,
         'image_crc32': '0A1B2C3D'}

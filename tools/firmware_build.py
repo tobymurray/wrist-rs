@@ -43,7 +43,10 @@ def environment(base, sdk, build_id, root=ROOT):
     # The last commit to change an input, so that a later commit of anything else changes no byte.
     env['SOURCE_DATE_EPOCH'] = git('log', '-1', '--format=%ct', 'HEAD', '--', *inputs(root), root=root).decode().strip()
     env['WRIST_RELEASE_BUILD_ID'] = build_id
-    env['RUSTFLAGS'] = f'--remap-path-prefix={root}=/src --remap-path-prefix={Path.home()}=/builder'
+    # rustc applies the last prefix that matches: the checkout is /src, inside a home or not.
+    prefixes = [(Path.home(), '/builder')] + [(env[name], '/' + name.lower()) for name in
+                                              ['CARGO_HOME', 'RUSTUP_HOME'] if env.get(name)]
+    env['RUSTFLAGS'] = ' '.join(f'--remap-path-prefix={path}={token}' for path, token in [*prefixes, (root, '/src')])
     env['TZ'] = 'UTC'
     return env
 

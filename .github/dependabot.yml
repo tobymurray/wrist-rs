@@ -47,6 +47,7 @@ updates:
       prefix: build
       include: scope
 
+  # A bump needs a newly pinned build image (release/README.md, "Moving the image forward").
   - package-ecosystem: docker
     directory: /release
     schedule:

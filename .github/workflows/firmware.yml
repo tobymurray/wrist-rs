@@ -26,10 +26,15 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
           path: source
+      - name: Read the pinned build image and SDK
+        id: pins
+        run: |
+          set -euo pipefail
+          python3 source/tools/release-docker.py --pins | tee -a "$GITHUB_OUTPUT"
       - uses: actions/checkout@v7
         with:
-          repository: UNAWatch/una-sdk
-          ref: 7a556a3e8538c0b1b495d45fe21a53b00a60a594
+          repository: ${{ steps.pins.outputs.sdk_repository }}
+          ref: ${{ steps.pins.outputs.sdk_commit }}
           persist-credentials: false
           path: sdk
       - uses: actions/cache@v6
@@ -50,10 +55,7 @@ jobs:
           key: firmware-loader-${{ runner.os }}-${{ hashFiles('source/apps/wrist-loader/Cargo.lock', 'source/release/Dockerfile', 'source/release/toolchain.json') }}-${{ github.sha }}
           restore-keys: |
             firmware-loader-${{ runner.os }}-${{ hashFiles('source/apps/wrist-loader/Cargo.lock', 'source/release/Dockerfile', 'source/release/toolchain.json') }}-
-      - name: Build compiler image without registry authentication
-        working-directory: source
-        run: docker build -t wrist-rs-build -f release/Dockerfile .
-      - name: Build, lint, test and package
+      - name: Build, lint, test and package in the pinned build image
         env:
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
@@ -62,14 +64,7 @@ jobs:
           commit=$(git -C source rev-parse HEAD)
           version="0.0.0-candidate.${commit:0:12}"
           if [ "$REF_TYPE" = tag ]; then version="${REF_NAME#v}"; fi
-          image=$(docker image inspect wrist-rs-build --format '{{.Id}}')
-          # The runner's user, so actions/cache can read the bind-mounted target directories.
-          docker run --rm --user "$(id -u):$(id -g)" \
-            --env HOME=/tmp --env CARGO_HOME=/tmp/wrist-rs-cargo \
-            --entrypoint bash \
-            -v "$PWD/source:/src" -v "$PWD/sdk:/sdk:ro" -v "$RUNNER_TEMP:/stage" \
-            wrist-rs-build -c 'git config --global --add safe.directory /src; git config --global --add safe.directory /sdk; exec python3 tools/release-build.py "$@"' \
-            -- --sdk /sdk --out /stage/firmware --version "$version" --container-id "$image"
+          python3 source/tools/release-docker.py --sdk "$PWD/sdk" --out "$RUNNER_TEMP/firmware" --version "$version"
       # Every candidate is attested, so the gate can check the zips it installs; publish
       # releases these same zips.
       - uses: actions/attest-build-provenance@v4

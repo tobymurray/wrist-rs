@@ -7,7 +7,7 @@
   `cargo objcopy` from `cargo-binutils`.
 - Python 3 with [`tools/requirements.txt`](tools/requirements.txt), for the host tools.
 - For the stock installer and the release zip: Docker and the UNA SDK, as
-  [release/README.md](release/README.md) describes.
+  [release/README.md](release/README.md#build-locally) describes.
 
 ## The image
 

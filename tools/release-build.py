@@ -402,7 +402,7 @@ def main():
                     'python': [sys.executable, '--version']}.items()},
                 'commands': commands, 'environment': normalize_paths(
                     {k: env[k] for k in ['RUSTFLAGS', 'SOURCE_DATE_EPOCH', 'TZ']}, replacements),
-                'installer': abi, 'ram_commit_functions_checked': commit_functions, 'image_crc32': crc, 'reproducibility': 'traceable; independent clean repeat not yet demonstrated',
+                'installer': abi, 'ram_commit_functions_checked': commit_functions, 'image_crc32': crc, 'reproducibility': 'built in toolchain.json build_image' if a.container_id == CONFIG['build_image'] else 'not built in toolchain.json build_image; not expected to match CI',
                 'files': {str(p.relative_to(a.out)): {'bytes': p.stat().st_size, 'sha256': sha(p)}
                           for tree in [user, debug] for p in sorted(tree.rglob('*')) if p.is_file()}}
     for tree in [user, debug]:
