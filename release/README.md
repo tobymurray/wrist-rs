@@ -118,8 +118,8 @@ To switch to both:
 4. On one branch, change `FROM` in [`Dockerfile`](Dockerfile) to
    `ghcr.io/tobymurray/stm32cubeide:<tag>@<the same digest>`, set `sdk_url` in
    [`toolchain.json`](toolchain.json) to `https://github.com/tobymurray/una-sdk`, and
-   pin the image that branch publishes, as above. Both land in `toolchain.json`, a build-ID
-   input, so one gate covers the change.
+   pin the image that branch publishes, as above. The new pin and `sdk_url` are both in
+   `toolchain.json`, a build-ID input, so one gate covers the change.
 
 ## GitHub
 
