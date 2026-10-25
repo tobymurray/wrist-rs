@@ -25,7 +25,7 @@ stock version is not supported until they name it.
 ## What it does
 
 - Shows the time, the day and date, and the battery's charge.
-- Lights the face when you press a button.
+- Lights the face when you press a button; Up and Down step to the battery and about pages.
 - Keeps time through restarts and updates; [`tools/wrist-time.py`](tools/wrist-time.py) sets it from your computer,
   with the next daylight-saving changes.
 - Installs updates over USB into a second slot, and goes back to the previous version if

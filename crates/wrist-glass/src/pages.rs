@@ -109,6 +109,105 @@ pub fn compose(s: &Status) -> (Glass, Short) {
     (b.glass, b.short)
 }
 
+/// What the battery page shows; `None` for a reading not yet made.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Battery {
+    pub soc_pct: Option<u8>,
+    pub cell_mv: Option<u32>,
+    /// True on USB or another external input, false on the cell.
+    pub external: Option<bool>,
+}
+
+/// What the about page shows: the image's version and build ID.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct About<'a> {
+    pub version: &'a str,
+    /// 12 hex digits, then `-dirty` for an uncommitted tree, or a name a build was given.
+    pub build: &'a str,
+}
+
+const TITLE_TOP: i32 = 58;
+/// `BATTERY`.
+const TITLE_W: usize = 7;
+const BATT_PCT_TOP: i32 = 88;
+const BATT_PCT_SCALE: u32 = 5;
+const BATT_MV_TOP: i32 = 136;
+/// `65535 mV`.
+const BATT_MV_W: usize = 8;
+const BATT_INPUT_TOP: i32 = 164;
+/// `input cell`.
+const BATT_INPUT_W: usize = 10;
+const ABOUT_NAME_TOP: i32 = 88;
+/// `wrist-rs`.
+const ABOUT_NAME_W: usize = 8;
+const ABOUT_VERSION_TOP: i32 = 116;
+/// `100.100.100`.
+const ABOUT_VERSION_W: usize = 11;
+const ABOUT_BUILD_TOP: i32 = 146;
+/// Twelve hex digits.
+const ABOUT_BUILD_W: usize = 12;
+const ABOUT_DIRTY_TOP: i32 = 166;
+const ABOUT_DIRTY_W: usize = 12;
+
+/// The charge, the cell's voltage and the input.
+#[must_use]
+pub fn compose_battery(s: &Battery) -> (Glass, Short) {
+    let mut b = Builder::new();
+    b.at::<TITLE_TOP, 3, TITLE_W>(|l| l.push("BATTERY"));
+    b.at::<BATT_PCT_TOP, BATT_PCT_SCALE, FACE_BATT_W>(|l| {
+        match s.soc_pct {
+            Some(pct) => l.push_u32(u32::from(pct))?,
+            None => l.push("--")?,
+        }
+        l.push(" %")
+    });
+    b.at::<BATT_MV_TOP, 3, BATT_MV_W>(|l| {
+        match s.cell_mv {
+            Some(mv) => l.push_u32(mv)?,
+            None => l.push("--")?,
+        }
+        l.push(" mV")
+    });
+    b.at::<BATT_INPUT_TOP, 3, BATT_INPUT_W>(|l| {
+        l.push(match s.external {
+            Some(true) => "input USB",
+            Some(false) => "input cell",
+            None => "input ?",
+        })
+    });
+    (b.glass, b.short)
+}
+
+/// The version and the build ID, upper case since the font has no small `b`; a suffix after
+/// the ID's first twelve characters goes on a line of its own.
+#[must_use]
+pub fn compose_about(a: &About<'_>) -> (Glass, Short) {
+    let mut b = Builder::new();
+    b.at::<TITLE_TOP, 3, TITLE_W>(|l| l.push("ABOUT"));
+    b.at::<ABOUT_NAME_TOP, 3, ABOUT_NAME_W>(|l| l.push("wrist-rs"));
+    b.at::<ABOUT_VERSION_TOP, 3, ABOUT_VERSION_W>(|l| l.push(a.version));
+    let build = a.build.as_bytes();
+    let (id, rest) = build.split_at(build.len().min(ABOUT_BUILD_W));
+    b.at::<ABOUT_BUILD_TOP, 2, ABOUT_BUILD_W>(|l| push_upper(l, id));
+    if !rest.is_empty() {
+        b.at::<ABOUT_DIRTY_TOP, 2, ABOUT_DIRTY_W>(|l| push_upper(l, rest.strip_prefix(b"-").unwrap_or(rest)));
+    }
+    (b.glass, b.short)
+}
+
+fn push_upper<const N: usize>(line: &mut Line<N>, s: &[u8]) -> Result<(), Overflow> {
+    let mut buf = [0u8; N];
+    let n = s.len().min(N);
+    for (dst, src) in buf.iter_mut().zip(s) {
+        *dst = src.to_ascii_uppercase();
+    }
+    line.push_bytes(&buf[..n])?;
+    if s.len() > N {
+        return Err(Overflow { needed: s.len() });
+    }
+    Ok(())
+}
+
 /// False, drawing nothing, when `fb` is not `WIDTH * HEIGHT` bytes.
 pub fn render(fb: &mut [u8], glass: &Glass) -> bool {
     if !background(fb) {
