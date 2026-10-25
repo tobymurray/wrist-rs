@@ -89,8 +89,8 @@ The image changes only by a reviewed commit:
    The run's summary prints the digest.
 3. That branch sets `build_image` in [`toolchain.json`](toolchain.json) to the digest.
    Until then, `tools/release-docker.py` refuses to build.
-4. Both files are build-ID inputs ([`build-inputs.txt`](build-inputs.txt)), so the build ID
-   and the image change, and the [gate](GATE.md) runs again on the new candidate.
+4. `toolchain.json` is a build-ID input ([`build-inputs.txt`](build-inputs.txt)), so the
+   build ID changes with the pin, and the [gate](GATE.md) runs again on the new candidate.
 
 No image version that a tag's `toolchain.json` names is ever deleted from GHCR, and the
 package stays public, so every release rebuilds.
@@ -118,8 +118,8 @@ To switch to both:
 4. On one branch, change `FROM` in [`Dockerfile`](Dockerfile) to
    `ghcr.io/tobymurray/stm32cubeide:<tag>@<the same digest>`, set `sdk_url` in
    [`toolchain.json`](toolchain.json) to `https://github.com/tobymurray/una-sdk`, and
-   pin the image that branch publishes, as above. Both are build-ID inputs, so one gate
-   covers the change.
+   pin the image that branch publishes, as above. Both land in `toolchain.json`, a build-ID
+   input, so one gate covers the change.
 
 ## GitHub
 

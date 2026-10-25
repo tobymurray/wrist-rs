@@ -73,7 +73,7 @@ def main():
     sdk, out = a.sdk.resolve(), a.out.resolve()
     if out.exists():
         raise ValueError(f'{out} exists: use a new directory')
-    if out.parent == ROOT or ROOT in out.parents:
+    if ROOT in out.parents:
         raise ValueError('--out must be outside the checkout')
     if a.local_image:
         docker('build', '--platform', 'linux/amd64', '-t', LOCAL_IMAGE, '-f', str(ROOT/'release/Dockerfile'),

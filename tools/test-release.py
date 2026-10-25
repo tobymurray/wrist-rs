@@ -234,7 +234,6 @@ class BuildId(unittest.TestCase):
         self.assertEqual(r.firmware_build.build_id(self.d), digest[:12])
 
 
-
 class BuildImage(unittest.TestCase):
     """CI and a local build run the recipe the same way, in the image toolchain.json pins."""
 
