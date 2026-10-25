@@ -2,6 +2,7 @@
 
 //! The watch face, as bytes for the panel driver.
 
+pub mod dump;
 pub mod font;
 pub mod pages;
 pub mod text;

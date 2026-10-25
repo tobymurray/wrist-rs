@@ -173,8 +173,13 @@ impl Handler for LinkWatcher {
 
 static OUT: Pipe<CriticalSectionRawMutex, 8192> = Pipe::new();
 
-pub fn tee(bytes: &[u8]) {
-    let _ = OUT.try_write(bytes);
+/// Queues what fits of `bytes` and drops the rest, which it returns.
+pub fn tee(bytes: &[u8]) -> &[u8] {
+    let mut rest = bytes;
+    while let Ok(n @ 1..) = OUT.try_write(rest) {
+        rest = &rest[n..];
+    }
+    rest
 }
 
 /// Wait, boundedly, for the pipe to be half empty, so long output written in
@@ -187,6 +192,23 @@ pub async fn make_room() {
         }
         Timer::after_millis(5).await;
     }
+}
+
+/// Queues `line` for the host whole, waiting boundedly for room; false if the console is
+/// closed or stays full.
+pub async fn write_whole(line: &[u8]) -> bool {
+    /// Room left for other tasks' lines.
+    const HEADROOM: usize = 1024;
+    for _ in 0..100 {
+        if !TERMINAL_OPEN.load(Ordering::Relaxed) || line.len() + HEADROOM > OUT.capacity() {
+            return false;
+        }
+        if OUT.capacity() - OUT.len() >= line.len() + HEADROOM {
+            return tee(line).is_empty();
+        }
+        Timer::after_millis(5).await;
+    }
+    false
 }
 
 static EP_OUT: ConstStaticCell<[u8; 256]> = ConstStaticCell::new([0; 256]);
@@ -450,7 +472,7 @@ pub fn command(cmd: &[u8], flash: &'static FlashMutex) {
     match cmd.strip_suffix(b" ").unwrap_or(cmd) {
         b"help" | b"?" => {
             uart.write_line(
-                "[usb] commands: help ping uptime version boot reset report usblog time [set YYYY-MM-DD HH:MM:SS|zone <min> [<utc s> <min>]...] power [sleep on|off|status|clear-crash] page [lag [s]|vcom [auto|low|high]|light on|off] modules [force view] staging <len>|<off> <n> update <len> <crc32> loader <len> <crc32>",
+                "[usb] commands: help ping uptime version boot reset report usblog time [set YYYY-MM-DD HH:MM:SS|zone <min> [<utc s> <min>]...] power [sleep on|off|status|clear-crash] page [lag [s]|vcom [auto|low|high]|light on|off|dump] press <up|down|back|select> [long] modules [force view] staging <len>|<off> <n> update <len> <crc32> loader <len> <crc32>",
             );
             uart.write_line("[usb]   boot: the loader's state word; update: stream a new application (tools/wrist-update.py)");
             uart.write_line("[usb]   time set: the calendar in local time (tools/wrist-time.py sends the host's)");
@@ -459,6 +481,8 @@ pub fn command(cmd: &[u8], flash: &'static FlashMutex) {
             uart.write_line("[usb]   reset: software reset; hold Select through it for the bootloader's USB mode");
             uart.write_line("[usb]   power: the input, the last stretch on battery, sleep counters, the retained crash record");
             uart.write_line("[usb]   page: the face as last drawn, frame and executor-latency figures; vcom and the light");
+            uart.write_line("[usb]   page dump: the frame last drawn, as run-length rows (tools/wrist-frame.py)");
+            uart.write_line("[usb]   press: a debounced press, as if from the button; never a hold");
             uart.write_line("[usb]   modules: what the display and GNSS slots' EEPROMs say");
         }
         b"usblog" => crate::REPORT.signal(crate::Report::UsbLog),
@@ -507,6 +531,7 @@ pub fn command(cmd: &[u8], flash: &'static FlashMutex) {
             uart.write_line(update::state_name(flash));
         }
         b"ping" => uart.write_line("[usb] pong"),
+        rest if rest == b"press" || rest.starts_with(b"press ") => press(&rest[5..], uart),
         rest if rest == b"page" || rest.starts_with(b"page ") => crate::glass::command(&rest[4..], uart),
         b"uptime" => {
             uart.write_str("[usb] uptime ");
@@ -528,5 +553,25 @@ pub fn command(cmd: &[u8], flash: &'static FlashMutex) {
             uart.write_str("[usb] unknown command: ");
             uart.write_line(core::str::from_utf8(other).unwrap_or("?"));
         }
+    }
+}
+
+/// `press <up|down|back|select> [long]`: a press for the button task, counted apart from real
+/// ones. A long press is past a short one; nothing here can stand in for a hold.
+fn press(args: &[u8], uart: Uart) {
+    let mut words = core::str::from_utf8(args).unwrap_or("").split_whitespace();
+    let button = words.next().and_then(crate::button_named);
+    let long = match words.next() {
+        None => Some(false),
+        Some("long") => Some(true),
+        Some(_) => None,
+    };
+    match (button, long, words.next()) {
+        (Some(button), Some(long), None) => {
+            if !crate::inject_press(crate::Press { button, long }) {
+                uart.write_line("[button] not injected: the queue is full");
+            }
+        }
+        _ => uart.write_line("[button] usage: press <up|down|back|select> [long]"),
     }
 }
