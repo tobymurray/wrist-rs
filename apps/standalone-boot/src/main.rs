@@ -614,16 +614,17 @@ static PRESS_EDGES: AtomicU32 = AtomicU32::new(0);
 static INJECTED: AtomicU32 = AtomicU32::new(0);
 
 /// A debounced press: the button's index in [`BUTTONS`], and whether it was held past a
-/// short press (but never as long as the hold that resets).
+/// short press.
 #[derive(Clone, Copy)]
 pub struct Press {
     pub button: usize,
     pub long: bool,
 }
 
-static PRESS_IN: Channel<CriticalSectionRawMutex, Press, 4> = Channel::new();
+const PRESS_QUEUE: usize = 4;
+static PRESS_IN: Channel<CriticalSectionRawMutex, Press, PRESS_QUEUE> = Channel::new();
 
-/// Hand the button task a press, as if released after debouncing; false while four wait.
+/// Hand the button task a press, as if released after debouncing; false while the queue is full.
 pub fn inject_press(press: Press) -> bool {
     PRESS_IN.try_send(press).is_ok()
 }
@@ -631,7 +632,7 @@ pub fn inject_press(press: Press) -> bool {
 /// The index in [`BUTTONS`] for `up`, `down`, `back` or `select`.
 #[must_use]
 pub fn button_named(name: &str) -> Option<usize> {
-    ["up", "down", "back", "select"].iter().position(|&n| n == name)
+    BUTTONS.iter().position(|b| b.3.rsplit('/').next().is_some_and(|n| n.eq_ignore_ascii_case(name)))
 }
 
 /// The `[button]` line of `power`: a battery stretch's wake rate depends on how often the
@@ -666,13 +667,14 @@ async fn button_watch(mut lines: ButtonLines) -> ! {
         // A button counts once seen released, so a stuck-low pin cannot reset the watch.
         seen_up |= !down & 0b1111;
         let deliberate = down & seen_up;
-        if was_down & !down != 0 && held_for < SHORT_SAMPLES {
-            PRESSES.fetch_add(1, Ordering::Relaxed);
-            let button = (was_down & !down).trailing_zeros() as usize;
-            on_press(uart, Press { button, long: false }, false, &mut light_until);
-        } else if was_down & !down != 0 {
-            let button = (was_down & !down).trailing_zeros() as usize;
-            on_press(uart, Press { button, long: true }, false, &mut light_until);
+        let released = was_down & !down;
+        if released != 0 {
+            let long = held_for >= SHORT_SAMPLES;
+            if !long {
+                PRESSES.fetch_add(1, Ordering::Relaxed);
+            }
+            let button = released.trailing_zeros() as usize;
+            on_press(uart, Press { button, long }, false, &mut light_until);
         }
         // Injected presses never touch the hold count, so they cannot reach the reset.
         while let Ok(press) = PRESS_IN.try_receive() {
@@ -718,8 +720,8 @@ async fn button_watch(mut lines: ButtonLines) -> ! {
     }
 }
 
-/// What a debounced press does: a short one lights the face for 3 s, or turns off a light the
-/// console switched on; a long one does nothing yet.
+/// What a debounced press does: a short one lights the face, or turns off a light the console
+/// switched on.
 fn on_press(uart: Uart, press: Press, injected: bool, light_until: &mut Option<Instant>) {
     const LIT_FOR: Duration = Duration::from_secs(3);
     uart.write_str(if injected { "[button] injected " } else { "[button] " });

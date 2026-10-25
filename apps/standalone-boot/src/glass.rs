@@ -130,9 +130,7 @@ pub fn dump_wanted() -> bool {
     DUMP_WANTED.swap(false, Ordering::Relaxed)
 }
 
-/// `fb`, the frame last drawn, to the console only: a `begin` line, one line per row of
-/// run-length pairs in hex (`wrist_glass::dump`), and an `end` line with the frame's CRC-32.
-/// A row at a time, yielding after each. `tools/wrist-frame.py` reads it.
+/// `fb` to the console only, in the format `tools/wrist-frame.py` reads.
 pub async fn dump(fb: &[u8]) {
     let uart = Uart::best_effort();
     let t = Instant::now();
@@ -141,7 +139,11 @@ pub async fn dump(fb: &[u8]) {
     let mut longest_us = 0;
     let mut crc = 0xFFFF_FFFF;
     let mut n = 0;
-    put(&mut line, &mut n, b"[frame] begin 240 240 abgr2222 frame ");
+    put(&mut line, &mut n, b"[frame] begin ");
+    put_u32(&mut line, &mut n, crate::lcd::WIDTH);
+    put(&mut line, &mut n, b" ");
+    put_u32(&mut line, &mut n, crate::lcd::HEIGHT);
+    put(&mut line, &mut n, b" abgr2222 frame ");
     put_u32(&mut line, &mut n, FRAMES.load(Ordering::Relaxed));
     put(&mut line, &mut n, b"\r\n");
     let mut sent = crate::console::write_whole(&line[..n]).await;

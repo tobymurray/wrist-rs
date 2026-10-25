@@ -173,12 +173,13 @@ impl Handler for LinkWatcher {
 
 static OUT: Pipe<CriticalSectionRawMutex, 8192> = Pipe::new();
 
-/// What fits of `bytes`; a write stops at the ring's end, so the rest is tried again.
-pub fn tee(bytes: &[u8]) {
+/// Queues what fits of `bytes` and drops the rest, which it returns.
+pub fn tee(bytes: &[u8]) -> &[u8] {
     let mut rest = bytes;
     while let Ok(n @ 1..) = OUT.try_write(rest) {
         rest = &rest[n..];
     }
+    rest
 }
 
 /// Wait, boundedly, for the pipe to be half empty, so long output written in
@@ -193,23 +194,17 @@ pub async fn make_room() {
     }
 }
 
-/// Queue `line` for the host only, all or nothing, so other tasks' lines fall between whole
-/// ones. Waits boundedly for room for it and [`HEADROOM`] more, which keeps those lines
-/// whole too; false if the console is closed or stays full.
+/// Queues `line` for the host whole, waiting boundedly for room; false if the console is
+/// closed or stays full.
 pub async fn write_whole(line: &[u8]) -> bool {
-    /// About ten console lines.
+    /// Room left for other tasks' lines.
     const HEADROOM: usize = 1024;
     for _ in 0..100 {
         if !TERMINAL_OPEN.load(Ordering::Relaxed) || line.len() + HEADROOM > OUT.capacity() {
             return false;
         }
         if OUT.capacity() - OUT.len() >= line.len() + HEADROOM {
-            // A write stops at the ring's end; with room checked, the rest goes in at once.
-            let mut rest = line;
-            while let Ok(n @ 1..) = OUT.try_write(rest) {
-                rest = &rest[n..];
-            }
-            return rest.is_empty();
+            return tee(line).is_empty();
         }
         Timer::after_millis(5).await;
     }
@@ -574,7 +569,7 @@ fn press(args: &[u8], uart: Uart) {
     match (button, long, words.next()) {
         (Some(button), Some(long), None) => {
             if !crate::inject_press(crate::Press { button, long }) {
-                uart.write_line("[button] not injected: four presses already wait");
+                uart.write_line("[button] not injected: the queue is full");
             }
         }
         _ => uart.write_line("[button] usage: press <up|down|back|select> [long]"),

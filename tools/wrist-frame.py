@@ -63,11 +63,11 @@ def read_console(port, seconds):
     s.reset_input_buffer()
     s.write(b'page dump\r\n')
     s.flush()
-    buf, end = b'', time.time() + seconds
-    while time.time() < end:
+    buf, deadline = b'', time.time() + seconds
+    while time.time() < deadline:
         buf += s.read(65536)
-        end = max(buf.find(b'[frame] end'), buf.find(b'[frame] abandoned'))
-        if end >= 0 and b'\n' in buf[end:]:
+        at = max(buf.find(b'[frame] end'), buf.find(b'[frame] abandoned'))
+        if at >= 0 and b'\n' in buf[at:]:
             break
     return buf.decode('utf-8', 'replace')
 

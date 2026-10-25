@@ -82,9 +82,10 @@ image. The UNA Dev Tool hears the image's UART as well, under the conditions in
 
 Two commands test the watch without touching it. `press <up|down|back|select> [long]` hands
 the button task a debounced press, as a released button does. It cannot stand in for a hold,
-so the 3 s and 16 s holds still need a hand, and `power` counts these presses apart from real
-ones. `page dump` writes the frame the face last drew, one run-length row a line, and
-[`tools/wrist-frame.py`](tools/wrist-frame.py) makes it a PNG:
+so holds still need a hand, and `power` counts these presses apart from real ones. `page dump`
+writes the frame the face last drew, one run-length row a line, and
+[`tools/wrist-frame.py`](tools/wrist-frame.py) makes it a PNG. To compare it with the host's
+render, pass the example the time, date and charge the watch was showing:
 
 ```sh
 .venv/bin/python tools/wrist-cmd.py "press select"
