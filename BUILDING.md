@@ -134,7 +134,14 @@ strap's link wakes the radio twice a second.
 The watch takes one central at a time unless `ble multi on`: then it advertises again
 while connected, so a second central (a rower or a bike for heart rate, while the computer
 holds the console) can connect. The second may read and subscribe to heart rate, never the
-console. It costs current while it advertises, and is off after a reset.
+console. It costs current while it advertises.
+
+The strap, the relay and `ble multi` are saved as they are set, so they come back after a
+reset or an update: the watch looks for a saved strap each time the radio starts, and gives
+it up after five minutes as it does a lost one. `hr off` forgets the strap. `settings` lists
+what is saved, `settings set <name> <value>` sets one by name, `settings reset` puts every
+one back to off, and `settings export` writes a `settings import ...` line to restore them.
+They live in backup registers, so a flat battery, or the PMIC's hard reset, clears them.
 
 Without a strap, a Linux host can be one:
 

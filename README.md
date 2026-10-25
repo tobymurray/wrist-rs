@@ -35,6 +35,7 @@ stock version is not supported until they name it.
   computer it is bonded to. The radio stays off until you turn it on ([BUILDING.md](BUILDING.md#bluetooth)).
   The same build reads other Bluetooth LE devices, a heart-rate strap among them, and can
   pass a strap's heart rate on to a rower or a bike as a heart-rate sensor of its own.
+  The strap and the relay are remembered across resets and updates (`settings`).
 - Never writes UNA's bootloader code, so the stock firmware is always one recovery away.
   The installer records its outcome in a blank page at the end of the bootloader's partition.
 
