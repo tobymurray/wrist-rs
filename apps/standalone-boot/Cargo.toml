@@ -25,6 +25,7 @@ embassy-boot-stm32 = "0.8.0"
 wrist-flash = { path = "../../crates/wrist-flash" }
 wrist-board = { path = "../../crates/wrist-board" }
 wrist-glass = { path = "../../crates/wrist-glass" }
+wrist-pages = { path = "../../crates/wrist-pages" }
 wrist-time = { path = "../../crates/wrist-time" }
 wrist-eeprom = { path = "../../crates/wrist-eeprom" }
 wrist-power = { path = "../../crates/wrist-power" }
