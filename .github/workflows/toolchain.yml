@@ -19,7 +19,8 @@ env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/wrist-rs-build
 jobs:
   publish:
-    if: ${{ !inputs.mirror_base }}
+    # Dependabot's token cannot write packages; its branches run this by hand.
+    if: ${{ !inputs.mirror_base && github.actor != 'dependabot[bot]' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:

@@ -85,7 +85,7 @@ The image changes only by a reviewed commit:
    [Dependabot](../.github/dependabot.yml) bump of the base.
 2. The [build image workflow](../.github/workflows/toolchain.yml) publishes it to
    `ghcr.io/tobymurray/wrist-rs-build`, tagged with the commit, on a push that changes it.
-   Dependabot's runs cannot write packages, so on its branch, run the workflow by hand.
+   It skips Dependabot's pushes, which cannot write packages, so on its branch, run it by hand.
    The run's summary prints the digest.
 3. That branch sets `build_image` in [`toolchain.json`](toolchain.json) to the digest.
    Until then, `tools/release-docker.py` refuses to build.
