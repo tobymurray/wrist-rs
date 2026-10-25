@@ -1,0 +1,31 @@
+[package]
+name = "wrist-installer-ui"
+version = "0.0.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "The installer app's screen: its confirm, its verdicts and their drawing, checked on the host"
+publish = false
+
+[features]
+# The C interface and the panic handler, for the GUI process's static library.
+device = []
+# PNGs of the screens, for the docs (examples/screens.rs).
+preview = ["inscribed-disc/preview", "dep:png"]
+
+[dependencies]
+inscribed-disc = { version = "0.2.1", default-features = false, features = ["embedded-graphics", "abgr2222"] }
+incised-text = { version = "0.1.0", default-features = false, features = ["abgr2222", "atkinson"] }
+# Square roots and the arcs' ends, to well under a pixel.
+libm = "0.2.16"
+# Indexed PNGs, which keep the screenshots a few kilobytes.
+png = { version = "0.17", optional = true }
+
+[dev-dependencies]
+inscribed-disc = { version = "0.2.1", default-features = false, features = ["embedded-graphics", "abgr2222", "std"] }
+
+[[example]]
+name = "screens"
+required-features = ["preview"]
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
