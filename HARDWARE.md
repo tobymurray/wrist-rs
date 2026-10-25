@@ -427,6 +427,11 @@ Read from the PCA9420 under the stock kernel, decoded with datasheet Rev 4.2:
 | `MODECFG_2_*` 0x2A–0x2D | `5C 4C 42 34` | Mode 2: **only LDO1 (`1V8_RTC`) on**, chosen by the `MODESEL` pins: a holding state with everything but the RTC rail off. Nothing here selects it |
 | `REG_STATUS` 0x20 | `0xF0` | SW1, SW2, LDO1, LDO2 all power-good |
 
+The PCA9420 itself costs little on battery: 3.5 µA typical (5 µA maximum) at 25 °C with
+all four regulators on, unloaded and switching (datasheet Rev 4.2, Table 80,
+`IBAT_NOLOAD2`), and its bucks use PFM at light load. So no rail setting is worth changing
+for current; what the rails feed is what counts.
+
 So under the vendor kernel no PCA9420 watchdog runs, and a standalone image inherits a
 PMIC that will not reset it on its own. The same reading shows the kernel holding **PB15 as an
 output driven high** with the dev tool attached (`GPIOB MODER 0x6816AAA5`, `ODR` bit 15
