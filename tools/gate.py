@@ -64,7 +64,7 @@ def park_checks(report, bits=None):
             (ahb2 is not None and not ahb2 & bits['RCC_AHB2ENR1_SDMMC1EN'], 'RCC_AHB2ENR1_SDMMC1EN clear')]
 
 
-def check_install_log(text, crc, size, armed, pages=None):
+def check_install_log(text, crc, size, pages=None):
     """(passed, what) for each thing INSTALL.md step 4 asks of install.log."""
     first, last = plan_pages() if pages is None else pages
     found = lambda pattern: re.search(pattern, text, re.M)
@@ -78,14 +78,13 @@ def check_install_log(text, crc, size, armed, pages=None):
         (bool(found(r'^staging\s*: bank 2 pages 128-195')), 'staging in bank 2 pages 128 to 195'),
         (bool(found(r'^unlock test: 3\b')), 'unlock and re-unlock'),
         (not found(r'refus|MISMATCH|FOREIGN DATA'), 'no refusal'),
-        (bool(found(r'^installing: ' if armed else r'^dry run only, nothing written')),
-         'installing' if armed else 'dry run only'),
+        (bool(found(r'^dry run passed')), 'dry run passed'),
     ]
     return checks
 
 
 def witness_checks(text, crc):
-    """Step 16: the last install's outcome record, for this CRC."""
+    """Step 17: the last install's outcome record, for this CRC."""
     return [(bool(re.search(r'OUTCOME 1: erase\+program\+verify all SUCCEEDED', text)), 'outcome 1 recorded'),
             (bool(re.search(rf'image crc\s*: {crc}\b', text)), f'outcome record for {crc}'),
             (bool(re.search(r'witness page \(bank 1, 45\): ours', text)), 'witness page ours')]
@@ -120,7 +119,7 @@ class Gate:
         self.results = []
         self.installs = []
         self.before = ''
-        self.drive14 = self.drive16 = None
+        self.drive14 = self.drive17 = None
 
     # -- records --
     def start(self, out):
@@ -279,7 +278,7 @@ class Gate:
                  + ('runs' if self.round_trip else 'carries over'))
         self.stock = gate.get('stock_version')
         # Step 2.
-        if self.round_trip and chosen & set(range(13, 18)):
+        if self.round_trip and chosen & set(range(13, 19)):
             if not (a.ota and a.ota.is_file()):
                 sys.exit('section D runs: pass --ota with the stock .ota the release notes name')
             self.log(f'  {a.ota.name}: SHA-256 {hashlib.sha256(a.ota.read_bytes()).hexdigest()}')
@@ -523,27 +522,29 @@ class Gate:
             shutil.copy2(p, folder / p.name)
         self.log(f'  {folder}: ' + ', '.join(sorted(p.name for p in folder.iterdir())))
         self.eject(step, drive)
-        self.do(step, 'unplug, restart the watch, and open the glance carousel on battery')
+        self.do(step, 'unplug and restart the watch, then open the launcher on battery')
         crc = self.m['image_crc32']
-        self.ask(step, f'the Install tile reads ready {crc}?')
-        self.do(step, 'plug the cable in')
+        self.ask(step, 'the launcher lists wrist-rs Setup?')
+        self.do(step, 'open wrist-rs Setup and wait for Checking to end')
+        self.ask(step, f'the screen shows {crc} and "Dry run passed"?')
+        self.do(step, 'press Back to leave, then plug the cable in')
         drive = self.drive(step, lambda v: (v / 'Apps/ImageInstaller/install.log').is_file())
         log = (drive / 'Apps/ImageInstaller/install.log').read_text(errors='replace')
         self.save(f'step{step}-install.log', log)
         size = (self.pkg / 'first-install/Apps/ImageInstaller/image.bin').stat().st_size
-        for ok, what in check_install_log(log, crc, size, armed=False):
+        for ok, what in check_install_log(log, crc, size):
             self.check(step, ok, 'install.log: ' + what)
         return drive, log
 
     def install(self, step, drive):
         drive = drive or self.drive(step, lambda v: (v / 'Apps/ImageInstaller').is_dir())
-        (drive / 'Apps/ImageInstaller/ARM_INSTALL').write_text((self.pkg / 'INSTALL-CRC.txt').read_text())
         self.eject(step, drive)
-        self.do(step, 'unplug and open the carousel: the installer installs')
-        frozen = input(f'\n>>> step {step}: how many seconds did the Install tile stay frozen? ').strip()
-        self.log(f'  step {step}: tile frozen {frozen} s')
+        crc = self.m['image_crc32']
+        self.do(step, f'unplug, open wrist-rs Setup, and once it shows {crc}, hold Select until it reads Installing')
+        shown = input(f'\n>>> step {step}: how many seconds did Installing stay on screen? ').strip()
+        self.log(f'  step {step}: Installing on screen {shown} s')
         self.do(step, 'plug the cable back in once wrist-rs shows its face')
-        self.installed(step, 'the candidate from stock, with the Install glance')
+        self.installed(step, 'the candidate from stock, with wrist-rs Setup\'s hold')
         self.version_is(step, self.m['build_id'])
 
     def step13(self):
@@ -553,23 +554,41 @@ class Gate:
         self.drive14, _ = self.dry_run(14)
 
     def step15(self):
-        self.install(15, self.drive14)
-        text = self.cmd('time', 3)
-        self.save('step15-time-after-hold.txt', text)
-        self.check(15, bool(re.search(r'^\s*zone\s*: no record', text, re.M)), 'after the 16 s hold, no zone record')
-        self.step5(15)
-        self.step6(15)
+        drive = self.drive14 or self.drive(15, lambda v: (v / 'Apps/ImageInstaller').is_dir())
+        self.eject(15, drive)
+        crc = self.m['image_crc32']
+        self.do(15, f'unplug, and open wrist-rs Setup until it shows {crc}')
+        for what in ['click Select once',
+                     'hold Select for about two seconds and let go',
+                     'hold Select, and press Back during the countdown',
+                     'press Back to leave; then hold Select from the launcher, opening wrist-rs Setup, '
+                     'and keep holding through Checking until the ready screen appears']:
+            self.do(15, what)
+            self.ask(15, f'it did not install: the screen is back to {crc} and "Hold Select to install"?')
+        note = input('\n>>> step 15: anything else a 3 s hold of Select brought up (Enter for nothing)? ').strip()
+        self.log(f'  step 15: other things a 3 s hold brings up: {note or "nothing"}')
+        self.do(15, 'press Back to leave, and plug the cable in')
+        self.drive14 = self.drive(15, lambda v: v.name != 'UNA BOOT' and (v / 'Apps/ImageInstaller').is_dir())
+        self.check(15, bool(self.drive14), 'still stock: its drive is back')
 
     def step16(self):
-        self.to_stock(16)
-        self.drive16, log = self.dry_run(16)
+        self.install(16, self.drive14)
+        text = self.cmd('time', 3)
+        self.save('step16-time-after-hold.txt', text)
+        self.check(16, bool(re.search(r'^\s*zone\s*: no record', text, re.M)), 'after the 16 s hold, no zone record')
+        self.step5(16)
+        self.step6(16)
+
+    def step17(self):
+        self.to_stock(17)
+        self.drive17, log = self.dry_run(17)
         for ok, what in witness_checks(log, self.m['image_crc32']):
-            self.check(16, ok, 'install.log: ' + what)
+            self.check(17, ok, 'install.log: ' + what)
         staging = re.search(r'^staging.*$', log, re.M)
         self.log('  staging as the recovery left it: ' + (staging[0] if staging else '?'))
 
-    def step17(self):
-        self.install(17, self.drive16)
+    def step18(self):
+        self.install(18, self.drive17)
 
     def summary(self):
         failed = [r for r in self.results if r[1] == 'FAIL']
@@ -597,7 +616,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('candidate', type=Path, help="the directory holding the candidate's zips and SHA256SUMS")
     ap.add_argument('--ota', type=Path, help='the stock .ota, for section D')
-    ap.add_argument('--steps', default='4-17', help='which steps, as 4-8,11; 1 to 3 always run')
+    ap.add_argument('--steps', default='4-18', help='which steps, as 4-8,11; 1 to 3 always run')
     ap.add_argument('--round-trip', action='store_true', help='run section D even when it carries over')
     ap.add_argument('--port')
     ap.add_argument('--out', type=Path)
@@ -606,7 +625,7 @@ def main():
     chosen = steps(a.steps)
     g.prepare(chosen)
     if not g.round_trip:
-        chosen -= set(range(13, 18))
+        chosen -= set(range(13, 19))
     for n in sorted(chosen - {1, 2, 3}):
         g.log(f'\n== step {n} ==')
         getattr(g, f'step{n}')()

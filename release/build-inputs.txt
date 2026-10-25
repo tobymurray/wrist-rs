@@ -15,9 +15,10 @@
 apps/standalone-boot
 # The loader, the first 32 KiB of image.bin.
 apps/wrist-loader
-# The installer's service and its CMake build, in the .uapp.
+# The installer's service, its GUI's shell and its CMake build, in the .uapp.
 apps/image-installer
-# The image links every crate here; the installer links wrist-flash.
+# The image links every crate here but wrist-installer-ui; the installer links wrist-flash
+# and wrist-installer-ui.
 crates
 # Embassy's STM32 HAL and USB driver, with our patches.
 vendor

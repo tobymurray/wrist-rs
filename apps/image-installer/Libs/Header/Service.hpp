@@ -4,9 +4,11 @@
 #include <cstdint>
 
 #include "SDK/Kernel/Kernel.hpp"
-#include "SDK/Glance/GlanceControl.hpp"
 
-/// Replaces the vendor kernel with `image.bin`, only when `ARM_INSTALL` holds that image's CRC-32.
+#include "Commands.hpp"
+
+/// Checks `image.bin` once the GUI is up, and replaces the vendor kernel with it only on the
+/// GUI's confirm naming that image's CRC-32.
 class Service
 {
 public:
@@ -16,42 +18,36 @@ public:
     void run();
 
 private:
-    static constexpr int16_t kTitleX = 18, kTitleY = 0, kTitleW = 205, kTitleH = 30;
-    static constexpr int16_t kValueX = 18, kValueY = 28, kValueW = 205, kValueH = 40;
-
     static constexpr const char* kImageFile = "image.bin";
-    static constexpr const char* kArmFile   = "ARM_INSTALL";
     static constexpr const char* kLogFile   = "install.log";
     /// Separate from `install.log`, which is never reopened.
     static constexpr const char* kStageLogFile = "stage.log";
 
-    /// Only so a wrong file cannot be read into the stack.
-    static constexpr size_t kArmFileMax = 32;
-
     static constexpr size_t kPageSize = 8192;
+
+    /// A service started with no GUI, by anything but the launcher, leaves after this
+    /// without having touched flash.
+    static constexpr uint32_t kNoGuiGraceMs = 5000;
 
     /// Added to wrist-flash's refusal codes; bank 1 is untouched.
     static constexpr int32_t kErrImageChanged = -14;
     static constexpr int32_t kErrImageUnreadable = -15;
+    /// A confirm that arrived before a ready dry run, or that names another image.
+    static constexpr int32_t kErrNotConfirmed = -16;
 
-    enum class ArmState : uint8_t
-    {
-        Absent,
-        Unparseable,
-        Mismatch,
-        Confirmed,
-    };
+    /// `wrist_flash_unlock_selftest`: both unlocks returned.
+    static constexpr int32_t kUnlockPassed = 3;
+    /// `wrist_flash_erase_selftest`: erased, blank, programmed, read back, erased, blank.
+    static constexpr int32_t kFlashTestPassed = 0x3F;
 
-    SDK::Kernel&             mKernel;
-    SDK::Glance::Form        mGlanceUI;
-    SDK::Glance::ControlText mGlanceTitle;
-    SDK::Glance::ControlText mGlanceValue;
-    bool                     mRan = false;
+    SDK::Kernel&              mKernel;
+    InstallerMessage::Verdict mVerdict{};
+    bool                      mChecked   = false;
+    bool                      mConfirmed = false;
 
-    bool configGui();
-    void createGuiControls();
-    void onGlanceTick();
-    void install();
+    void report();
+    void dryRun();
+    void install(uint32_t confirmedCrc);
 
     /// Kept in step with crates/wrist-flash/src/hw.rs.
     static constexpr uint32_t kStatusAddress = 0x0805A000u;
@@ -70,7 +66,7 @@ private:
     static constexpr uint32_t kRccAhb2Enr1  = 0x46020C8Cu;
     int  describeDebugPath(char* out, size_t capacity);
 
-    int describeProtection(char* out, size_t capacity);
+    int describeProtection(char* out, size_t capacity, int32_t eraseSelftest);
 
     int describeFlash(char* out, size_t capacity);
 
@@ -79,7 +75,6 @@ private:
     bool     crcImage(size_t length, uint32_t& crc);
     /// 0, or a negative code; bank 1 is untouched either way.
     int32_t  stageImage(size_t length, uint32_t crc);
-    ArmState readArm(uint32_t expectedCrc, uint32_t& found);
     bool     writeLog(const char* text, size_t length);
     bool     writeFile(const char* name, const char* text, size_t length);
 };

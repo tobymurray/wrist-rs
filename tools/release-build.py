@@ -114,17 +114,30 @@ def validate_image(loader, app, image):
     return f'{zlib.crc32(image):08X}'
 
 
+# The header's flags, as the SDK's app_merging.py packs them; only a bare utility app passes.
+UAPP_TYPE_UTILITY = 0x01
+
+
 def validate_uapp(data, version):
+    """The installer's .uapp: a utility app with launcher icons, a service and a GUI, and no flag
+    that lets anything but the launcher start it."""
     require(len(data) >= 52, 'truncated uapp')
     require(zlib.crc32(data[:-4]) == struct.unpack_from('<I', data, len(data)-4)[0], 'uapp CRC mismatch')
     appid, ver, abi, service, flags, name, large, small = struct.unpack_from('<QIIII16sII', data)
     major, minor, patch = map(int, version.split('-')[0].split('.'))
     require(appid == 0x854CD3EFBD7BA411 and ver == major << 16 | minor << 8 | patch,
             'uapp identity/version mismatch')
-    require(abi == 3 and flags == 0x22 and name.rstrip(b'\0') == b'Install', 'uapp ABI/type mismatch')
-    require(large == 3600 and small == 900 and len(data) == 48 + large + small + service + 4,
-            'uapp payload/header mismatch')
-    return {'libc_abi': '0.0.3', 'crc32': f'{zlib.crc32(data[:-4]):08X}'}
+    require(abi == 3 and flags == UAPP_TYPE_UTILITY and name.rstrip(b'\0') == b'wrist-rs Setup',
+            'uapp ABI/type mismatch')
+    require(large == 3600 and small == 900, 'uapp icon sizes mismatch')
+    require(any(data[48:48 + large]) and any(data[48 + large:48 + large + small]), 'uapp without icons')
+    # Each process is packed by the SDK's app_packer.py, whose image starts with this magic.
+    first = 48 + large + small
+    gui = len(data) - 4 - first - service
+    require(service > 0 and gui > 0 and data[first:first + 4] == b'UAPP'
+            and data[first + service:first + service + 4] == b'UAPP', 'uapp payload/header mismatch')
+    return {'type': 'Utility', 'libc_abi': '0.0.3', 'service_bytes': service, 'gui_bytes': gui,
+            'crc32': f'{zlib.crc32(data[:-4]):08X}'}
 
 
 def validate_elf(path, address, limit):
@@ -167,6 +180,15 @@ def audit_commit(elf):
     return dis, sorted(seen)
 
 
+def audit_gui(elf):
+    """The GUI only shows the service's verdict and sends the confirm: no flash code in it."""
+    with elf.open('rb') as f:
+        symbols = ELFFile(f).get_section_by_name('.symtab')
+        require(symbols is not None, 'GUI ELF has no symbol table')
+        flash = sorted({s.name for s in symbols.iter_symbols() if s.name.startswith('wrist_flash')})
+    require(not flash, 'flash code in the GUI: ' + ', '.join(flash))
+
+
 def copy(src, dest):
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dest)
@@ -174,6 +196,9 @@ def copy(src, dest):
 
 # What the installer links from the SDK, besides UNA's own code: coreJSON and libstdc++.
 SDK_LICENSES = ['LICENSE', 'THIRD-PARTY-LICENSES.md', 'ThirdParty/coreJSON/LICENSE']
+
+# The installer's screen draws IncisedText's glyphs, rendered from these fonts under the SIL OFL 1.1.
+FONT_LICENSES = ['OFL-Poppins.txt', 'OFL-AtkinsonHyperlegibleNext.txt']
 
 
 # The docs in release/ as the zip holds them, under these names; the tools beside them.
@@ -225,6 +250,15 @@ def collect_licenses(dest, sdk, rust_licenses, gcc):
     copy(ROOT/'crates/wrist-glass/LICENSE-FONT', dest/'wrist-glass-font/LICENSE')
 
 
+def package_licenses(base):
+    """A Cargo package's licence and notice files, relative to its directory `base`: those at its
+    top, and the font licences of a package that ships glyphs, such as incised-text's
+    `Fonts/OFL-*.txt`."""
+    top = [p for p in base.iterdir()
+           if p.is_file() and re.search(r'(?i)(license|licence|copying|notice|copyright)', p.name)]
+    return sorted(p.relative_to(base) for p in top + list(base.glob('Fonts/OFL*.txt')))
+
+
 def path_replacements(*paths):
     return sorted(((str(Path(path).resolve()), token) for path, token in paths if path),
                   key=lambda pair: len(pair[0]), reverse=True)
@@ -260,7 +294,7 @@ def verify_archive(path, debug=False):
         names = z.namelist()
         require(len(names) == len(set(names)), 'duplicate ZIP entries')
         require(all(not n.startswith('/') and '..' not in Path(n).parts for n in names), 'unsafe ZIP path')
-        require(not any(Path(n).name == 'ARM_INSTALL' or n.endswith('.ota') for n in names), 'armed/vendor package')
+        require(not any(Path(n).name == 'ARM_INSTALL' or n.endswith('.ota') for n in names), 'arm file/vendor package')
         manifest = json.loads(z.read('manifest.json'))
         prefix = 'debug/' if debug else 'package/'
         expected = {name[len(prefix):] for name in manifest['files'] if name.startswith(prefix)}
@@ -273,13 +307,14 @@ def verify_archive(path, debug=False):
             digest, name = line.split('  ', 1)
             require(hashlib.sha256(z.read(name)).hexdigest() == digest, 'archive checksum mismatch')
         if debug:
-            for name in ['app.elf', 'loader.elf', 'app.map', 'loader.map', 'ImageInstallerService.elf', 'installer-disassembly.txt']:
+            for name in ['app.elf', 'loader.elf', 'app.map', 'loader.map', 'ImageInstallerService.elf',
+                         'ImageInstallerGUI.elf', 'installer-disassembly.txt']:
                 require(name in names, 'missing debug asset: ' + name)
         else:
             first = 'first-install/Apps/ImageInstaller/'
             crc = validate_image(z.read('loader.bin'), z.read('app.bin'), z.read(first+'image.bin'))
             require(z.read('INSTALL-CRC.txt').decode() == crc + '\n', 'arm CRC text mismatch')
-            uapp = z.read(first+'Install_'+manifest['version']+'.uapp')
+            uapp = z.read(first+'wrist-rs-installer_'+manifest['version']+'.uapp')
             validate_uapp(uapp, manifest['version'])
             require(manifest['round_trip_fingerprint'] == round_trip_fingerprint(uapp, z.read('loader.bin')),
                     'round-trip fingerprint mismatch')
@@ -289,6 +324,9 @@ def verify_archive(path, debug=False):
                          'licenses/sdk/libstdc++/GPL-3.0-or-later.txt', 'licenses/sdk/libstdc++/GCC-exception-3.1.txt',
                          'licenses/gnu-arm-toolchain/license.txt']:
                 require(name in names, 'missing user asset: ' + name)
+            for font in FONT_LICENSES:
+                require(any(re.fullmatch(r'licenses/root/incised-text-[^/]+/Fonts/' + re.escape(font), n)
+                            for n in names), 'missing user asset: the installer\'s font licence ' + font)
 
 
 def main():
@@ -363,13 +401,15 @@ def main():
     uapp = firmware_build.build_installer(execute, env, a.sdk, a.version, CONFIG['nightly'], a.out / 'installer-build')
     abi = validate_uapp(uapp.read_bytes(), a.version)
     copy(uapp, first/uapp.name)
-    copy(appdir/'build/ImageInstallerService.elf', debug/'ImageInstallerService.elf')
-    copy(appdir.parent/'Output/ImageInstallerService.elf.elf.map', debug/'ImageInstallerService.map')
+    for process in ['Service', 'GUI']:
+        copy(appdir/f'build/ImageInstaller{process}.elf', debug/f'ImageInstaller{process}.elf')
+        copy(appdir.parent/f'Output/ImageInstaller{process}.elf.elf.map', debug/f'ImageInstaller{process}.map')
     # Keep build paths out of the published maps.
     for map_file in debug.glob('*.map'):
         map_file.write_text(normalize_paths(map_file.read_text(), replacements))
     require((debug/'ImageInstallerService.elf').exists(), 'missing installer ELF')
     dis, commit_functions = audit_commit(debug/'ImageInstallerService.elf')
+    audit_gui(debug/'ImageInstallerGUI.elf')
     (debug/'installer-disassembly.txt').write_text(normalize_paths(dis, replacements))
     for name in PACKAGED_TOOLS:
         copy(ROOT/'tools'/name, user/'tools'/name)
@@ -387,9 +427,8 @@ def main():
         copy(cwd/'Cargo.lock', debug/label/'Cargo.lock')
         for pkg in metadata['packages']:
             base = Path(pkg['manifest_path']).parent
-            for p in base.iterdir():
-                if p.is_file() and re.search(r'(?i)(license|licence|copying|notice|copyright)', p.name):
-                    copy(p, licenses/label/(pkg['name']+'-'+pkg['version'])/p.name)
+            for p in package_licenses(base):
+                copy(base/p, licenses/label/(pkg['name']+'-'+pkg['version'])/p)
     docs = [Path(output('rustc', '+'+compiler, '--print', 'sysroot'))/'share/doc/rust'
             for compiler in [CONFIG['stable'], CONFIG['nightly']]]
     collect_licenses(licenses, a.sdk, [doc/'licenses' for doc in docs], shutil.which('arm-none-eabi-gcc'))
@@ -401,7 +440,7 @@ def main():
             for p in (doc/'licenses').rglob('*'):
                 if p.is_file():
                     copy(p, licenses/'rust-toolchain'/compiler/'licenses'/p.relative_to(doc/'licenses'))
-    require(not list(first.rglob('ARM_INSTALL')), 'armed package')
+    require(not list(first.rglob('ARM_INSTALL')), 'arm file in package')
     gate = json.loads((ROOT/'release/gate.json').read_text())
     fingerprint = round_trip_fingerprint(uapp.read_bytes(), (user/'loader.bin').read_bytes())
     blockers = gate_open(gate, crc, fingerprint)
@@ -410,7 +449,7 @@ def main():
     require(not release or not blockers, f'v{a.version} is not the gated build: ' + '; '.join(blockers))
     manifest = {'schema': 1, 'version': a.version, 'build_id': build_id, 'source_commit': commit, 'tags': tags, 'dirty': dirty,
                 'release_ready': not blockers and not dirty and not a.skip_checks, 'release_gate': gate, 'configuration': 'default features; UNAcore + LS012 + original modules',
-                'toolchain': CONFIG, 'features': {'standalone-boot': [], 'wrist-loader': [], 'wrist-flash': ['panic-handler']}, 'container_id': a.container_id, 'checks_skipped': a.skip_checks,
+                'toolchain': CONFIG, 'features': {'standalone-boot': [], 'wrist-loader': [], 'wrist-flash': ['panic-handler'], 'wrist-installer-ui': ['device']}, 'container_id': a.container_id, 'checks_skipped': a.skip_checks,
                 'tracked_diff_and_recipe_sha256': hashlib.sha256(subprocess.check_output(['git', 'diff', '--binary', 'HEAD']) + (ROOT/'tools/release-build.py').read_bytes() + (ROOT/'tools/firmware_build.py').read_bytes() + (ROOT/'release/toolchain.json').read_bytes()).hexdigest(),
                 'tools': {t: output(*cmd) for t, cmd in {
                     'rustc': ['rustc', '-Vv'], 'nightly': ['rustc', '+'+CONFIG['nightly'], '-Vv'],

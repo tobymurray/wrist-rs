@@ -24,9 +24,11 @@ def raw(addr, size=64):
     return struct.pack('<II', 0x2026FFE0, addr + 9) + bytes(size - 8)
 
 
-def uapp(version=0x010203):
-    b = struct.pack('<QIIII16sII', 0x854CD3EFBD7BA411, version, 3, 8, 0x22,
-                    b'Install', 3600, 900) + bytes(4508)
+def uapp(version=0x010203, flags=0x01, icons=b'\x41', gui=16):
+    """A utility .uapp: header, 60x60 and 30x30 icons, an 8-byte service, then the GUI."""
+    b = struct.pack('<QIIII16sII', 0x854CD3EFBD7BA411, version, 3, 8, flags,
+                    b'wrist-rs Setup', 3600, 900) + icons * 3600 + icons * 900 + b'UAPP' + bytes(4) \
+        + (b'UAPP' + bytes(gui - 4) if gui else b'')
     return b + struct.pack('<I', zlib.crc32(b))
 
 
@@ -58,6 +60,7 @@ class Packaging(unittest.TestCase):
 
     def test_uapp_identity_crc_header_and_abi(self):
         self.assertEqual(r.validate_uapp(uapp(), '1.2.3')['libc_abi'], '0.0.3')
+        self.assertEqual(r.validate_uapp(uapp(), '1.2.3')['gui_bytes'], 16)
         for bad in [b'', uapp()[:-1], uapp()[:-4]+bytes(4), uapp(0x010204)]:
             with self.assertRaises(ValueError):
                 r.validate_uapp(bad, '1.2.3')
@@ -65,6 +68,20 @@ class Packaging(unittest.TestCase):
             b = bytearray(uapp()[:-4]); b[offset] ^= 1
             with self.assertRaises(ValueError):
                 r.validate_uapp(bytes(b)+struct.pack('<I', zlib.crc32(b)), '1.2.3')
+
+    def test_uapp_is_a_utility_only_the_launcher_starts(self):
+        # A glance, the glance bit, autostart and the other types are all refused.
+        for flags in [0x02, 0x22, 0x21, 0x09, 0x00, 0x03]:
+            with self.assertRaises(ValueError, msg=hex(flags)):
+                r.validate_uapp(uapp(flags=flags), '1.2.3')
+        # A utility app needs its GUI and its launcher icons.
+        for bad in [uapp(gui=0), uapp(icons=b'\0')]:
+            with self.assertRaises(ValueError):
+                r.validate_uapp(bad, '1.2.3')
+        # The service's size has to land on the GUI's magic.
+        b = bytearray(uapp()[:-4]); b[-16] ^= 1
+        with self.assertRaises(ValueError):
+            r.validate_uapp(bytes(b) + struct.pack('<I', zlib.crc32(b)), '1.2.3')
 
     def test_combine_refuses_missing_empty_and_oversize(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -111,6 +128,25 @@ class Packaging(unittest.TestCase):
                          (d/'sdk', [d/'rust'], str(d/'rust/MIT.txt')), (d/'rust', [d/'rust'], str(gcc))]:
                 with self.assertRaises(ValueError):
                     r.collect_licenses(d/'again', *args)
+
+    def test_package_licenses_include_font_licences(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            for name in ['LICENSE-MIT', 'COPYRIGHT', 'README.md', 'Fonts/OFL-Poppins.txt', 'Fonts/FONTS.md',
+                         'Fonts/Poppins-Regular.ttf', 'src/license.rs']:
+                (d/name).parent.mkdir(parents=True, exist_ok=True); (d/name).write_text(name)
+            self.assertEqual([p.as_posix() for p in r.package_licenses(d)],
+                             ['COPYRIGHT', 'Fonts/OFL-Poppins.txt', 'LICENSE-MIT'])
+
+    def test_the_installer_ships_its_font_licences(self):
+        metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--locked', '--format-version=1'],
+                                                      cwd=r.ROOT))
+        incised = [p for p in metadata['packages'] if p['name'] == 'incised-text']
+        self.assertEqual(len(incised), 1)
+        base = Path(incised[0]['manifest_path']).parent
+        shipped = [p.as_posix() for p in r.package_licenses(base)]
+        for font in r.FONT_LICENSES:
+            self.assertIn('Fonts/' + font, shipped)
 
     def test_tag_matches_app_versions(self):
         r.require_app_versions(r.app_version((r.ROOT/'apps/standalone-boot/Cargo.toml').read_text()))
@@ -366,10 +402,11 @@ plan code  : 0
 first page : 48 (bank 1)
 pages      : 21
 padded len : 164800
+quadwords  : 10300
 staging    : bank 2 pages 128-195, 0 of 68 not blank now
-ARM_INSTALL       : no (dry run)
 unlock test: 3 (unlock OK, re-unlock OK)
-dry run only, nothing written
+flash test : 0000003F (passed)
+dry run passed; installs only on the confirm on screen
 
 -- flash forensics --
   image crc  : 28E7EE86
@@ -381,8 +418,8 @@ witness page (bank 1, 45): ours
 class GateScript(unittest.TestCase):
     """tools/gate.py's reading of install.log and power."""
 
-    def failed(self, log, crc='28E7EE86', size=164788, armed=False):
-        return [what for ok, what in gate.check_install_log(log, crc, size, armed) if not ok]
+    def failed(self, log, crc='28E7EE86', size=164788):
+        return [what for ok, what in gate.check_install_log(log, crc, size) if not ok]
 
     def test_a_good_dry_run(self):
         self.assertEqual(gate.plan_pages(), (48, 115))
@@ -394,10 +431,10 @@ class GateScript(unittest.TestCase):
         self.assertEqual(self.failed(DRY_RUN, size=1), ['image.bin, 1 bytes'])
         self.assertEqual(self.failed(DRY_RUN.replace('pages      : 21', 'pages      : 69')),
                          ['a plan within bank 1 pages 48 to 115'])
-        self.assertEqual(self.failed(DRY_RUN.replace('dry run only, nothing written', 'refused, nothing written')),
-                         ['no refusal', 'dry run only'])
+        self.assertEqual(self.failed(DRY_RUN.replace('dry run passed; installs only on the confirm on screen',
+                                                     'refused: firmware isolates apps (2)')),
+                         ['no refusal', 'dry run passed'])
         self.assertEqual(self.failed(DRY_RUN.replace('unlock test: 3', 'unlock test: 1')), ['unlock and re-unlock'])
-        self.assertIn('installing', self.failed(DRY_RUN, armed=True))
         self.assertFalse(all(ok for ok, _ in gate.witness_checks(DRY_RUN, '00000000')))
 
     def test_wake_rate(self):

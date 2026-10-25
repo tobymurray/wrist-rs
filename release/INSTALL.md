@@ -41,37 +41,44 @@ tobymurray/wrist-rs` shows which workflow and commit built it.
 
 1. Connect the data cable. Stock firmware shows the watch's storage as a USB drive (not
    `UNA BOOT`, which is the recovery's drive).
-2. In `Apps/ImageInstaller/` on the watch, back up and then remove any `ARM_INSTALL`, older
-   `Install_*.uapp` and old logs. Copy the **Install** glance, the package's
-   `first-install/Apps/ImageInstaller/`, into it: exactly `Install_VERSION.uapp` and
-   `image.bin`, and no `ARM_INSTALL`. Neither `app.bin` nor `image.bin` is an `.ota`.
-3. Eject the drive safely, unplug, and restart the watch: stock finds a newly copied
-   glance only when it starts. Then open the glance carousel on battery. Stock starts
-   **every** glance service together, so opening the carousel runs the installer's dry
-   run whether or not its tile is in view.
-4. Find **Install**. It should read `ready XXXXXXXX`, the digits in `INSTALL-CRC.txt`.
-   Plug in and copy `Apps/ImageInstaller/install.log` to your computer. Check it against
-   `manifest.json`: the CRC and size, a plan within bank 1 pages 48 to 115, staging in
-   bank 2 pages 128 to 195, a successful unlock and flash self-test, and no refusal. If
-   the log is missing, anything mismatches, or it refused: stop, remove the installer's
-   files from the watch, and keep the logs.
-5. Only once the dry run is right, create the arm file **on the watch**, beside
-   `image.bin`. From the extracted package, with `WATCH` set to where the watch's drive is
-   mounted:
+2. In `Apps/ImageInstaller/` on the watch, back up and then remove any older installer,
+   `Install_*.uapp` or `wrist-rs-installer_*.uapp`, and any `ARM_INSTALL` and old logs.
+   Copy the **wrist-rs Setup** app, the package's `first-install/Apps/ImageInstaller/`,
+   into it: exactly `wrist-rs-installer_VERSION.uapp` and `image.bin`. Neither `app.bin`
+   nor `image.bin` is an `.ota`. From the extracted package, with `WATCH` set to where the
+   watch's drive is mounted:
 
    ```sh
    WATCH="/run/media/$USER/<drive>"    # macOS: WATCH="/Volumes/<drive>"
-   cp INSTALL-CRC.txt "$WATCH/Apps/ImageInstaller/ARM_INSTALL"
+   mkdir -p "$WATCH/Apps/ImageInstaller"
+   cp first-install/Apps/ImageInstaller/* "$WATCH/Apps/ImageInstaller/"
+   ls "$WATCH/Apps/ImageInstaller"
    ```
 
-   It must hold exactly this build's eight hex digits. **Creating this file is the
-   decision**: the next time the carousel starts, the installer installs. Eject safely,
-   unplug, and open the carousel when you are ready.
-6. The Install tile freezes for a second or so while it stages the image, the backlight
-   flashes, and the watch restarts into wrist-rs. Do not interrupt its power. `refused -N`
-   means the stock firmware was not replaced: plug in, save `install.log` and
-   `stage.log`, remove `ARM_INSTALL`, and stop. If no face appears after a few minutes, go back to stock
-   (below).
+3. Eject the drive safely, unplug, and restart the watch: stock finds a newly copied app
+   only when it starts. Then open **wrist-rs Setup** from the launcher, on battery. It
+   reads `Checking` while it runs its dry run, which checks the image and tests flash
+   without replacing anything. A passing dry run shows eight hex digits, the wrist-rs
+   image's CRC-32, and "Dry run passed": they should be the digits in `INSTALL-CRC.txt`.
+   Anything else is a refusal
+   ([`apps/image-installer/README.md`](../apps/image-installer/README.md), "What the
+   screen says"). **Back** leaves without installing.
+4. Plug in and copy `Apps/ImageInstaller/install.log` to your computer. Check it against
+   `manifest.json`: the CRC and size, a plan within bank 1 pages 48 to 115, staging in
+   bank 2 pages 128 to 195, a successful unlock test and flash test, and `dry run passed`.
+   If the log is missing, anything mismatches, or it refused: stop, remove the installer's
+   files from the watch, and keep the logs.
+5. Only once the dry run is right: eject, unplug, and open **wrist-rs Setup** again. It
+   runs the dry run again, and installs only from a dry run that passes in the same run. When it
+   shows the CRC from `INSTALL-CRC.txt`, **press and hold Select**, which the screen
+   marks in amber. The screen reads "Hold
+   to install" and counts 3, 2, 1 while a ring fills; keep holding until it reads
+   `Installing`, after 3 seconds. **The hold is the decision.** Letting go early cancels
+   it.
+6. The screen reads `Installing` for some seconds while it stages the image, then the watch
+   restarts into wrist-rs. Do not interrupt its power. `Refused -N` means the stock
+   firmware was not replaced: plug in, save `install.log` and `stage.log`, and stop. If no
+   face appears after a few minutes, go back to stock (below).
 7. Plug the cable back in. wrist-rs is a serial console, not a USB drive. Set up the tools
    (next), run `.venv/bin/python tools/wrist-cmd.py "boot;version"` until `boot` says
    **`state boot`**, check that the build is `manifest.json`'s `build_id`, and set the
@@ -139,7 +146,8 @@ report.
    port you know carry data. If the file is refused, check its source, size and SHA-256
    again.
 3. Stock starts and reports its version. Compare apps, settings and data with your backup.
-   Remove any leftover `ARM_INSTALL` before opening the carousel again.
+   The installer's files can stay in `Apps/ImageInstaller/`: it does nothing until it is
+   opened and the hold confirms it.
 
 The long hold clears the watch's clock. **Factory Reset** is not this: it returns the watch
 to its original firmware, losing every release since. Do not use it for recovery.

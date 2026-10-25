@@ -305,7 +305,7 @@ firmware image.
 | A write to `FLASH_NSCR` while `LOCK` is set is discarded with no flag and no fault, so `hw.rs` reads `NSCR` back after each command | CONFIRMED by test |
 | `PNB` is `NSCR[10:3]` and `BKER` is bit 11, so a page number of 256 or more silently selects the other bank; `hw.rs` sets `BKER` itself and checks it | CONFIRMED |
 | With the instruction cache on, data reads of flash are cached too (RM0456 8.7.1), and embassy-stm32's U5 flash driver does not invalidate it after an erase or a program, so the image invalidates it before reading flash it has written | MEASURED |
-| The stock kernel starts every glance service at once when the carousel opens, so the installer arms from a file rather than from being shown; glances, unlike utility apps, are not limited by the launcher's app slots | CONFIRMED by test |
+| The stock kernel starts every glance service at once when the carousel opens, so nothing destructive can sit behind a glance being shown | CONFIRMED by test |
 
 ## DMA channels the image uses
 

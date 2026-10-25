@@ -8,12 +8,12 @@ its own licence, and none of it may be linked into wrist-rs on terms incompatibl
 AGPL; in particular, TouchGFX (SLA0048) must stay out of anything wrist-rs ships.
 
 `licenses/` collects the license and notice files of every Cargo dependency, of what the
-installer links from the SDK and the GNU Arm toolchain, and of the font; collecting them is
+installer links from the SDK and the GNU Arm toolchain, and of the fonts; collecting them is
 not legal clearance, and host-only dependencies may be over-included.
 
 Known bundled material:
 
-- **The UNA SDK**, linked into the installer (`Install_*.uapp`); the repository does not
+- **The UNA SDK**, linked into the installer (`wrist-rs-installer_*.uapp`); the repository does not
   contain it. MIT covers UNA's own code only; its `THIRD-PARTY-LICENSES.md` excludes its
   third-party components. Of those, the installer links coreJSON (MIT) and no TouchGFX
   (SLA0048), which is restricted to ST processors and must not be relicensed.
@@ -28,6 +28,10 @@ Known bundled material:
   `licenses/gnu-arm-toolchain/license.txt`. Rust's `core` and compiler builtins are under
   `licenses/rust-toolchain/`.
 - **InscribedDisc**: MIT.
+- **IncisedText** draws the installer's text. Its code is MIT OR Apache-2.0; its glyph data
+  is rendered from Poppins and Atkinson Hyperlegible Next, which makes it a Modified Version
+  of each under the SIL Open Font License 1.1, whose texts are in
+  `licenses/root/incised-text-*/Fonts/`.
 - **`wrist-glass`'s 5×7 glyphs** derive from the font table in SparkFun's Nokia 5110
   example (MIT, Copyright (c) 2016 SparkFun Electronics), with changes; its licence is
   `licenses/wrist-glass-font/LICENSE`.

@@ -80,7 +80,7 @@ def build_installer(execute, env, sdk, version, nightly, build, root=ROOT):
             f'-DCMAKE_C_FLAGS={flags}', f'-DCMAKE_CXX_FLAGS={flags}',
             f'-DWRIST_RUSTFLAGS=-C relocation-model=pic {env["RUSTFLAGS"]}', env=env)
     execute('cmake', '--build', build, '--parallel', '2', env=env)
-    return build/f'Install_{version}.uapp'
+    return build/f'wrist-rs-installer_{version}.uapp'
 
 
 if __name__ == '__main__':
