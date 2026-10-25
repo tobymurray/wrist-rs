@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""Run tools/release-build.py in the build image that release/toolchain.json pins, as CI does.
-
-CI's firmware.yml runs this too, so the mounts, user, environment and the paths the
-binaries see are the same on every host. Arguments it does not know, such as --version,
---allow-dirty and --skip-checks, go to the recipe. --local-image builds release/Dockerfile
-instead, for working on the image; its builds are not expected to match CI's.
-"""
+"""Run tools/release-build.py in release/toolchain.json's build_image, passing on the arguments it does not know."""
 import argparse
 import hashlib
 import json
@@ -17,16 +11,16 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 LOCAL_IMAGE = 'wrist-rs-build:local'
-# The label toolchain.yml puts on the image: the sha256 of the release/Dockerfile it built.
+# Set by .github/workflows/toolchain.yml to the sha256 of the release/Dockerfile it built.
 DOCKERFILE_LABEL = 'io.github.tobymurray.wrist-rs.dockerfile-sha256'
-# Inside the container. CARGO_HOME is a fresh, throwaway one in every run.
+# Inside the container, whose /tmp is new in every run.
 ENVIRONMENT = {'HOME': '/tmp', 'CARGO_HOME': '/tmp/wrist-rs-cargo'}
 SCRIPT = ('umask 022; git config --global --add safe.directory /src; '
           'git config --global --add safe.directory /sdk; exec python3 tools/release-build.py "$@"')
 
 
 def pinned_image(config):
-    """toolchain.json's build_image, refused unless it names a published digest."""
+    """toolchain.json's build_image; ValueError unless it is pinned by digest."""
     image = config.get('build_image', '')
     if not re.fullmatch(r'[a-z0-9.-]+(?:/[a-z0-9._-]+)+@sha256:[0-9a-f]{64}', image):
         raise ValueError(f'release/toolchain.json build_image {image!r} is not a published image digest: '
@@ -36,15 +30,11 @@ def pinned_image(config):
 
 
 def sdk_repository(config):
-    """The GitHub owner/name of toolchain.json's sdk_url, which CI checks out."""
+    """The GitHub owner/name of toolchain.json's sdk_url."""
     m = re.fullmatch(r'https://github\.com/([\w.-]+/[\w.-]+?)(?:\.git)?/?', config['sdk_url'])
     if not m:
         raise ValueError(f'release/toolchain.json sdk_url {config["sdk_url"]!r} is not a GitHub repository')
     return m[1]
-
-
-def dockerfile_sha256(root=ROOT):
-    return hashlib.sha256((root/'release/Dockerfile').read_bytes()).hexdigest()
 
 
 def command(image, sdk, out, recipe_args, container_id, uid, gid, root=ROOT):
@@ -96,7 +86,7 @@ def main():
         docker('pull', '--platform', 'linux/amd64', image)
         built = docker('image', 'inspect', '--format', f'{{{{index .Config.Labels "{DOCKERFILE_LABEL}"}}}}', image,
                        capture=True)
-        if built != dockerfile_sha256():
+        if built != hashlib.sha256((ROOT/'release/Dockerfile').read_bytes()).hexdigest():
             raise ValueError('build_image was not built from this release/Dockerfile: publish it with '
                              'toolchain.yml and pin the new digest, or use --local-image')
     out.parent.mkdir(parents=True, exist_ok=True)

@@ -26,7 +26,6 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
           path: source
-      # release/toolchain.json pins both; the build image must be a published digest.
       - name: Read the pinned build image and SDK
         id: pins
         run: |
@@ -65,7 +64,6 @@ jobs:
           commit=$(git -C source rev-parse HEAD)
           version="0.0.0-candidate.${commit:0:12}"
           if [ "$REF_TYPE" = tag ]; then version="${REF_NAME#v}"; fi
-          # As the runner's user, so actions/cache can read the bind-mounted target directories.
           python3 source/tools/release-docker.py --sdk "$PWD/sdk" --out "$RUNNER_TEMP/firmware" --version "$version"
       # Every candidate is attested, so the gate can check the zips it installs; publish
       # releases these same zips.

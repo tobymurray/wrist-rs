@@ -34,11 +34,9 @@ python3 tools/release-docker.py --sdk /tmp/wrist-sdk --out /tmp/wrist-stage/cand
   --version 0.0.0-local --allow-dirty
 ```
 
-[`tools/release-docker.py`](../tools/release-docker.py) pulls `build_image` and runs the
-recipe in it, as the [firmware workflow](../.github/workflows/firmware.yml) does: the
-checkout at `/src`, the SDK read-only at `/sdk` and the output's parent at `/stage`, as
-your user, with `HOME=/tmp` and a new, empty `CARGO_HOME`. It passes `--version`,
-`--allow-dirty` and `--skip-checks` on to the recipe. Use a new output directory each time.
+[`tools/release-docker.py`](../tools/release-docker.py) runs the recipe in `build_image`
+as your user, the same way the [firmware workflow](../.github/workflows/firmware.yml) does,
+and passes the arguments it does not know on to the recipe. Use a new output directory each time.
 The image is `linux/amd64`; on Apple silicon Docker runs it under emulation. To rebuild a
 CI candidate, check out its commit cleanly and pass its version,
 `0.0.0-candidate.<commit12>`.
@@ -67,24 +65,13 @@ commit built a zip, not that it is safe.
 
 ## Reproducibility
 
-In the same image, a commit rebuilds byte for byte: two clean builds of one commit, from
-different checkout paths, with new target directories and `CARGO_HOME`, one of them on two
-CPUs, gave identical `app.bin`, `loader.bin`, `image.bin`, `.uapp`, `INSTALL-CRC.txt` and
-zips. What keeps them so:
+In the same build image, a clean build of a commit is meant to rebuild byte for byte, from
+any checkout path: the recipe fixes the paths, time and timezone the binaries embed
+(`environment` in [`tools/firmware_build.py`](../tools/firmware_build.py)), and the zips
+their timestamps, modes and order.
 
-- The container's paths are fixed, and the recipe remaps the checkout, `CARGO_HOME`,
-  `RUSTUP_HOME` and the home directory in what rustc embeds, and the checkout and SDK in
-  what GCC's macros embed.
-- `SOURCE_DATE_EPOCH` is the last commit to change an input, `TZ=UTC`, the image's locale
-  is `C.UTF-8` and the umask is `022`. The zips carry fixed timestamps and modes, in sorted
-  order.
-- Rust output does not depend on the number of jobs, and `app.bin` and `loader.bin` build
-  as one codegen unit each; CMake sorts the installer's sources.
-
-The build image is what makes this hold across hosts and months, and why it is pinned by
-digest: [`Dockerfile`](Dockerfile) narrows a rebuild (a base digest, an Ubuntu snapshot,
-rustup by checksum, exact Rust toolchains), but a rebuild is a new image, not this one.
-Not demonstrated: a build on macOS, and a local build against a CI run's.
+The image is pinned by digest because building [`Dockerfile`](Dockerfile) again gives a new
+image, however closely its pins narrow it.
 
 A build also fetches what the image does not hold: the crates in the lock files, the
 Embassy commit in [`apps/standalone-boot/Cargo.lock`](../apps/standalone-boot/Cargo.lock),
@@ -101,8 +88,7 @@ The image changes only by a reviewed commit:
    Dependabot's runs cannot write packages, so on its branch, run the workflow by hand.
    The run's summary prints the digest.
 3. That branch sets `build_image` in [`toolchain.json`](toolchain.json) to the digest.
-   Until then, its builds stop: the recipe runs only in an image labelled with the hash of
-   the `Dockerfile` beside it.
+   Until then, `tools/release-docker.py` refuses to build.
 4. Both files are build-ID inputs ([`build-inputs.txt`](build-inputs.txt)), so the build ID
    and the image change, and the [gate](GATE.md) runs again on the new candidate.
 

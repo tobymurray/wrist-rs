@@ -6,9 +6,8 @@
 - An `objcopy`: the `llvm-tools` rustup component, `arm-none-eabi-objcopy`, or
   `cargo objcopy` from `cargo-binutils`.
 - Python 3 with [`tools/requirements.txt`](tools/requirements.txt), for the host tools.
-- For the stock installer and the release zip: Docker and the UNA SDK. Release builds run
-  in a build image pinned by digest; [release/README.md](release/README.md#build-locally)
-  has the command, and [what it reproduces](release/README.md#reproducibility).
+- For the stock installer and the release zip: Docker and the UNA SDK, as
+  [release/README.md](release/README.md#build-locally) describes.
 
 ## The image
 

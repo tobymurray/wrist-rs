@@ -1,7 +1,5 @@
 name: Build image
-# Publishes release/Dockerfile as ghcr.io/OWNER/wrist-rs-build, for release/toolchain.json
-# to pin by the digest this prints (release/README.md, "Moving the image forward"). Every
-# version a tag's toolchain.json names stays published.
+# Publishes release/Dockerfile for release/toolchain.json to pin (release/README.md, "Moving the image forward").
 on:
   # Any branch, so a branch that changes the Dockerfile can pin its own image; never a tag.
   push:
@@ -31,7 +29,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      # tools/release-docker.py refuses a build_image whose label is not this file's hash.
+      # Checked by DOCKERFILE_LABEL in tools/release-docker.py.
       - name: Hash the Dockerfile
         id: dockerfile
         run: echo "sha256=$(sha256sum release/Dockerfile | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
@@ -70,8 +68,7 @@ jobs:
             echo "\`$image\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # Keeps the base fetchable if Docker Hub loses it. The copy keeps its digest, so
-  # switching release/Dockerfile's FROM to it changes no byte of the image.
+  # Keeps the base fetchable if Docker Hub loses it.
   mirror:
     if: ${{ inputs.mirror_base }}
     runs-on: ubuntu-24.04
