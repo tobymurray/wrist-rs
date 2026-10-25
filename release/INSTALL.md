@@ -37,7 +37,7 @@ tobymurray/wrist-rs` shows which workflow and commit built it.
 
 ## Stock to wrist-rs
 
-<img src="images/stock-to-wrist-rs.svg" width="480" alt="From the stock firmware to wrist-rs">
+<img src="images/stock-to-wrist-rs.svg" width="720" alt="From the stock firmware to wrist-rs: open wrist-rs Setup, its dry run reads Checking, then the image CRC; hold Select 3 s; Installing; wrist-rs">
 
 1. Connect the data cable. Stock firmware shows the watch's storage as a USB drive (not
    `UNA BOOT`, which is the recovery's drive).
@@ -63,6 +63,10 @@ tobymurray/wrist-rs` shows which workflow and commit built it.
    Anything else is a refusal
    ([`apps/image-installer/README.md`](../apps/image-installer/README.md), "What the
    screen says"). **Back** leaves without installing.
+
+   <img src="images/installer-checking.png" width="160" alt="Checking: reading the wrist-rs image and testing flash, nothing is replaced">
+   <img src="images/installer-ready.png" width="160" alt="The dry run passed: the wrist-rs image's CRC-32 in large digits, to compare with INSTALL-CRC.txt; Select lit amber">
+   <img src="images/installer-no-image.png" width="160" alt="A refusal: No image, the wrist-rs image.bin is missing, empty or unreadable">
 4. Plug in and copy `Apps/ImageInstaller/install.log` to your computer. Check it against
    `manifest.json`: the CRC and size, a plan within bank 1 pages 48 to 115, staging in
    bank 2 pages 128 to 195, a successful unlock test and flash test, and `dry run passed`.
@@ -75,10 +79,15 @@ tobymurray/wrist-rs` shows which workflow and commit built it.
    to install" and counts 3, 2, 1 while a ring fills; keep holding until it reads
    `Installing`, after 3 seconds. **The hold is the decision.** Letting go early cancels
    it.
+
+   <img src="images/installer-hold.png" width="160" alt="Hold to install wrist-rs: the countdown at 2 over the CRC, the ring a little under half round">
 6. The screen reads `Installing` for some seconds while it stages the image, then the watch
    restarts into wrist-rs. Do not interrupt its power. `Refused -N` means the stock
    firmware was not replaced: plug in, save `install.log` and `stage.log`, and stop. If no
    face appears after a few minutes, go back to stock (below).
+
+   <img src="images/installer-installing.png" width="160" alt="Installing: replacing the stock firmware with wrist-rs, do not interrupt power">
+   <img src="images/installer-refused.png" width="160" alt="Refused -3: stock is unchanged, keep install.log and stage.log">
 7. Plug the cable back in. wrist-rs is a serial console, not a USB drive. Set up the tools
    (next), run `.venv/bin/python tools/wrist-cmd.py "boot;version"` until `boot` says
    **`state boot`**, check that the build is `manifest.json`'s `build_id`, and set the
@@ -135,7 +144,7 @@ report.
 
 ## Back to stock, and out of any failure
 
-<img src="images/wrist-rs-to-stock.svg" width="480" alt="From wrist-rs back to the stock firmware">
+<img src="images/wrist-rs-to-stock.svg" width="600" alt="From wrist-rs back to the stock firmware: hold Select 16 s, copy the .ota to UNA BOOT, unplug and choose Continue">
 
 1. Have the checked `.ota` and your backup ready. Hold **Select** for about 16 seconds,
    which resets the watch's power, and keep holding until the bootloader's USB screen.

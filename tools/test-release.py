@@ -183,7 +183,9 @@ class Packaging(unittest.TestCase):
         root = Path(__file__).resolve().parent.parent
         texts = [r.package_links((root/'release'/src).read_text(), 'abc') for src in r.PACKAGED_DOCS]
         images = r.packaged_images(texts)
-        self.assertEqual(images, ['images/stock-to-wrist-rs.svg', 'images/wrist-rs-to-stock.svg'])
+        screens = ['checking', 'hold', 'installing', 'no-image', 'ready', 'refused']
+        self.assertEqual(images, [f'images/installer-{s}.png' for s in screens]
+                         + ['images/stock-to-wrist-rs.svg', 'images/wrist-rs-to-stock.svg'])
         for image in images:
             self.assertTrue((root/'release'/image).is_file(), image)
         packaged = set(r.PACKAGED_DOCS.values()) | {'LICENSE'} | {'tools/' + t for t in r.PACKAGED_TOOLS} | set(images)

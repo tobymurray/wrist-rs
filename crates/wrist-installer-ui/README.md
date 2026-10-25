@@ -19,3 +19,9 @@ library; the C++ shell in its `GUI/` only carries the kernel's messages to it.
 The text is [IncisedText](https://crates.io/crates/incised-text)'s Poppins, with Atkinson
 Hyperlegible Next for the headline and the CRC. Both are under the SIL Open Font License 1.1,
 whose texts the release collects from the crate.
+
+The PNGs in [`release/images`](../../release/images) are drawn by this code:
+
+```sh
+cargo run -p wrist-installer-ui --features preview --example screens -- release/images
+```

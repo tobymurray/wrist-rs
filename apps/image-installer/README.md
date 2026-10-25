@@ -45,6 +45,16 @@ the person installing to be there, and to have seen the CRC.
 
 ## What the screen says
 
+<p>
+<img src="../../release/images/installer-checking.png" width="160" alt="Checking: reading the wrist-rs image and testing flash, nothing is replaced; Back to exit">
+<img src="../../release/images/installer-ready.png" width="160" alt="Ready: the wrist-rs image's CRC-32, dry run passed, compare with INSTALL-CRC.txt; Hold Select to install">
+<img src="../../release/images/installer-hold.png" width="160" alt="Hold to install wrist-rs: the countdown at 2 over the CRC, the ring filling">
+</p>
+<p>
+<img src="../../release/images/installer-installing.png" width="160" alt="Installing: replacing the stock firmware with wrist-rs, do not interrupt power">
+<img src="../../release/images/installer-no-image.png" width="160" alt="No image: the wrist-rs image.bin is missing, empty or unreadable; Back to exit">
+<img src="../../release/images/installer-refused.png" width="160" alt="Refused -3: stock is unchanged, keep install.log and stage.log; Back to exit">
+</p>
 
 | Screen | Meaning |
 | --- | --- |
@@ -59,7 +69,9 @@ the person installing to be there, and to have seen the CRC.
 | `Installing` | Confirmed: staging, then the commit. |
 | (the watch restarts) | It installed. |
 
-None of the others has touched the stock firmware.
+None of the others has touched the stock firmware. The pictures are drawn on the host by the
+code the watch runs, with a made-up CRC:
+`cargo run -p wrist-installer-ui --features preview --example screens -- release/images`.
 
 ## How it stays safe
 
