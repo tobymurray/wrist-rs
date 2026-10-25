@@ -135,8 +135,10 @@ strap's link wakes the radio twice a second.
 
 The watch takes one central at a time unless `ble multi on`: then it advertises again
 while connected, so a second central (a rower or a bike for heart rate, while the computer
-holds the console) can connect. The second may read and subscribe to heart rate, never the
-console. It costs current while it advertises.
+holds the console) can connect. The console belongs to one link, and the other gets heart
+rate only. The console moves to the second central when it encrypts and the first has not
+(a rower that came first, unpaired, then a bonded phone), or when the first leaves.
+Advertising beside a connection costs current.
 
 The strap, the relay and `ble multi` are saved as they are set, so they come back after a
 reset or an update: the watch looks for a saved strap each time the radio starts, and gives
