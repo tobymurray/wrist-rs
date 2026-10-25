@@ -122,6 +122,16 @@ pub(super) fn relay_subscribed(bit: u8, on: bool) {
     }
 }
 
+/// The phone link and the second central traded places (`console_moves`): so do their
+/// heart-rate subscriptions.
+pub(super) fn swap_relay_links() {
+    let s = RELAY_SUBSCRIBERS.load(Ordering::Relaxed);
+    let phone = s & SUB_PHONE != 0;
+    let second = s & SUB_SECOND != 0;
+    let rest = s & !(SUB_PHONE | SUB_SECOND);
+    RELAY_SUBSCRIBERS.store(rest | if second { SUB_PHONE } else { 0 } | if phone { SUB_SECOND } else { 0 }, Ordering::Relaxed);
+}
+
 /// What `ble <args>` meant to the central side.
 pub(super) enum Parsed {
     /// None of its words.

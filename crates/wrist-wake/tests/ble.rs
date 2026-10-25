@@ -1,7 +1,7 @@
 //! The BLE loop's deadlines: idle costs no wake, and everything it does by time has one.
 
 use wrist_wake::ble::{
-    advertising_ladder, connect_timeout_ms, due, fits, reconnect_after_ms, scan, satisfies, sensor, timing, Console, Power, State, Transfer, ADVERTISE_FASTEST,
+    advertising_ladder, connect_timeout_ms, console_moves, due, fits, reconnect_after_ms, scan, satisfies, sensor, timing, Console, Power, State, Transfer, ADVERTISE_FASTEST,
     GIVE_UP_MS,
 };
 use wrist_wake::earliest;
@@ -312,4 +312,16 @@ fn a_link_that_already_fits_is_left_alone() {
     assert!(!satisfies(idle, 12, 0), "15 ms costs too much once the transfer ends");
     assert!(satisfies(idle, 156, 8) && satisfies(idle, 156, 0));
     assert!(!satisfies(idle, 156, 9));
+}
+
+#[test]
+fn the_console_goes_to_an_encrypted_link() {
+    // A rower first, unencrypted; a bonded phone second, encrypted.
+    assert!(console_moves(true, false, true));
+    // A phone first, encrypted: it keeps the console, whatever the second does.
+    assert!(!console_moves(true, true, true) && !console_moves(true, true, false));
+    // Neither encrypted: the first keeps it.
+    assert!(!console_moves(true, false, false));
+    // The first left: the second takes it, encrypted or not.
+    assert!(console_moves(false, false, false) && console_moves(false, true, true));
 }

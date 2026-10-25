@@ -67,7 +67,8 @@ use wrist_aci::{address, config, permission, role, vendor, Address, AttributeMod
 use wrist_profiles::heart_rate;
 use wrist_settings::{Key, Value};
 use wrist_wake::ble::{
-    advertise_every, satisfies, timing, Outbox, PairAsk, Power, Radio, Timing, ADVERTISE_FAST_MS, ADVERTISE_IDLE,
+    advertise_every, console_moves, satisfies, timing, Outbox, PairAsk, Power, Radio, Timing, ADVERTISE_FAST_MS,
+    ADVERTISE_IDLE,
 };
 
 use crate::console::Target;
@@ -516,7 +517,9 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
             console_at: Instant::from_ticks(0),
             outbox: Outbox::default(),
             pair_ask: PairAsk::default(),
+            peer: Address::default(),
             hrs: None,
+            second: Second::default(),
             advertised_relay: false,
             advertised_every: 0,
             central: central::Central::default(),
@@ -542,6 +545,18 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
         uart.write_line("[ble] off: chip held in reset");
         on = false;
     }
+}
+
+/// What the image keeps of a second central (`ble multi`).
+#[derive(Clone, Copy, Default)]
+struct Second {
+    peer: Address,
+    interval: u16,
+    latency: u16,
+    /// The ATT MTU its own exchange settled; 0 until then.
+    mtu: usize,
+    encrypted: bool,
+    subscribed: bool,
 }
 
 // Each flag is one piece of work an event left for the loop.
@@ -586,8 +601,13 @@ struct Link<'d> {
     console_at: Instant,
     outbox: Outbox<NUS_VALUE_LEN>,
     pair_ask: PairAsk,
+    /// The central on the console link, as its connection reported it.
+    peer: Address,
     /// The Heart Rate Service: service, measurement and body sensor location handles.
     hrs: Option<(u16, u16, u16)>,
+    /// The second central (`SECOND`), as the first's state above, for when the console moves
+    /// to it: its address, interval and latency, encryption, and TX's CCCD.
+    second: Second,
     /// Advertising carries the Heart Rate Service (the relay was on when it started).
     advertised_relay: bool,
     /// The interval advertising actually runs at (0.625 ms units), which beside a sensor link
@@ -1438,14 +1458,15 @@ impl Link<'_> {
                 self.central.connected(handle, peer, interval, self.uart);
             }
             Event::ConnectFailed { status } => self.central.connect_failed(status, self.uart),
-            Event::Connected { handle, central: false, .. } if STATE.load(Ordering::Relaxed) == STATE_CONNECTED => {
-                self.second_connected(handle);
+            Event::Connected { handle, central: false, peer, interval } if STATE.load(Ordering::Relaxed) == STATE_CONNECTED => {
+                self.second_connected(handle, peer, interval);
             }
-            Event::Connected { handle, central: false, interval, .. } => self.phone_connected(handle, interval),
+            Event::Connected { handle, central: false, peer, interval } => self.phone_connected(handle, peer, interval),
             Event::ConnectionUpdate { handle, interval, .. } if self.central.handle() == Some(handle) => {
                 self.sensor_interval(interval);
             }
-            Event::ConnectionUpdate { handle, interval, .. } if handle == SECOND.load(Ordering::Relaxed) => {
+            Event::ConnectionUpdate { handle, interval, latency } if handle == SECOND.load(Ordering::Relaxed) => {
+                (self.second.interval, self.second.latency) = (interval, latency);
                 self.uart.write_str("[ble] the second central's interval ");
                 write_interval(self.uart, interval);
                 self.uart.write_line("");
@@ -1466,9 +1487,22 @@ impl Link<'_> {
                 self.other_disconnected(handle, reason);
             }
             Event::Disconnected { reason, .. } => self.phone_disconnected(reason),
-            // Only the peripheral link's encryption unlocks the console.
+            // Only the console link's encryption unlocks the console; a second central's may
+            // move the console to it.
             Event::Encryption { handle, on } if handle != CONN_HANDLE.load(Ordering::Relaxed) => {
-                self.uart.write_line(if on != 0 { "[ble] another link encrypted" } else { "[ble] another link's encryption off" });
+                let second = handle != 0 && handle == SECOND.load(Ordering::Relaxed);
+                if second {
+                    self.second.encrypted = on != 0;
+                }
+                self.uart.write_line(match (second, on != 0) {
+                    (true, true) => "[ble] the second central's link encrypted",
+                    (true, false) => "[ble] the second central's encryption off",
+                    (false, true) => "[ble] another link encrypted",
+                    (false, false) => "[ble] another link's encryption off",
+                });
+                if second && console_moves(true, ENCRYPTED.load(Ordering::Relaxed), self.second.encrypted) {
+                    self.swap_links("the first central has no encryption");
+                }
             }
             Event::Encryption { on, .. } => {
                 let on = on != 0;
@@ -1495,10 +1529,11 @@ impl Link<'_> {
     }
 
     /// The first central connected: the console's link.
-    fn phone_connected(&mut self, handle: u16, interval: Option<(u16, u16)>) {
+    fn phone_connected(&mut self, handle: u16, peer: Address, interval: Option<(u16, u16)>) {
         ADVERTISING_CONNECTED.store(false, Ordering::Relaxed);
         CONN_HANDLE.store(handle, Ordering::Relaxed);
         self.pair_ask.connected(Instant::now().as_ticks(), embassy_time::TICK_HZ);
+        self.peer = peer;
         if let Some((iv, lat)) = interval {
             INTERVAL.store(iv, Ordering::Relaxed);
             LATENCY.store(lat, Ordering::Relaxed);
@@ -1536,19 +1571,73 @@ impl Link<'_> {
         self.uart.write_str("[ble] disconnected, reason ");
         self.uart.write_hex8(reason);
         self.uart.write_line(" (13 = the central hung up)");
-        self.readvertise = !still_advertising;
         note_activity();
+        if SECOND.load(Ordering::Relaxed) != 0 && console_moves(false, false, self.second.encrypted) {
+            // Advertising beside the second, now the only link, goes on as it was.
+            ADVERTISING_CONNECTED.store(still_advertising, Ordering::Relaxed);
+            self.swap_links("the first central left");
+            self.readvertise = MULTI.load(Ordering::Relaxed) && !still_advertising;
+            return;
+        }
+        self.readvertise = !still_advertising;
     }
 
-    /// A second central while the first is connected (`ble multi`): heart rate only.
-    fn second_connected(&mut self, handle: u16) {
+    /// The second central takes the console's link, and the first, if still connected,
+    /// becomes the second: heart rate only. Their state trades places with them.
+    fn swap_links(&mut self, why: &str) {
+        let first_up = STATE.load(Ordering::Relaxed) == STATE_CONNECTED;
+        let first = Second {
+            peer: self.peer,
+            interval: INTERVAL.load(Ordering::Relaxed),
+            latency: LATENCY.load(Ordering::Relaxed),
+            mtu: self.mtu,
+            encrypted: ENCRYPTED.load(Ordering::Relaxed),
+            subscribed: self.subscribed,
+        };
+        let handle = SECOND.swap(if first_up { CONN_HANDLE.load(Ordering::Relaxed) } else { 0 }, Ordering::Relaxed);
+        let next = self.second;
+        self.second = if first_up { first } else { Second::default() };
+        // A first that left has already dropped its subscription.
+        central::swap_relay_links();
+        CONN_HANDLE.store(handle, Ordering::Relaxed);
+        STATE.store(STATE_CONNECTED, Ordering::Relaxed);
+        self.peer = next.peer;
+        INTERVAL.store(next.interval, Ordering::Relaxed);
+        LATENCY.store(next.latency, Ordering::Relaxed);
+        ENCRYPTED.store(next.encrypted, Ordering::Relaxed);
+        if next.encrypted && !PROVEN.swap(true, Ordering::Relaxed) {
+            PROVEN_NOW.signal(());
+        }
+        self.subscribed = next.subscribed;
+        // Nothing is asked of the link: an ATT or SMP request from the watch crossing a bonded
+        // central's encryption start ends its link (MIC failure), so the MTU is the one its own
+        // exchange settled, and an unencrypted central pairs if it wants the console.
+        self.mtu = next.mtu.max(DEFAULT_MTU);
+        self.asked = None;
+        self.pair_ask.settled();
+        self.request_interval = None;
+        self.confirm_for = None;
+        clear_prompt();
+        OUT.clear();
+        self.outbox.clear();
+        self.set_mirror();
+        self.uart.write_str("[ble] the console moves to the second central (");
+        self.uart.write_str(why);
+        self.uart.write_line(if first_up { "); the first is heart rate only now" } else { ")" });
+    }
+
+    /// A second central while the first is connected (`ble multi`): heart rate only, until
+    /// the console moves to it ([`console_moves`]).
+    fn second_connected(&mut self, handle: u16, peer: Address, interval: Option<(u16, u16)>) {
         // Advertising stopped with this connection; one more is all `ble multi` takes.
         ADVERTISING_CONNECTED.store(false, Ordering::Relaxed);
         SECOND.store(handle, Ordering::Relaxed);
+        let (interval, latency) = interval.unwrap_or((0, 0));
+        self.second = Second { peer, interval, latency, mtu: 0, encrypted: false, subscribed: false };
         self.uart.write_str("[ble] a second central connected, handle ");
         self.uart.write_hex8((handle >> 8) as u8);
         self.uart.write_hex8((handle & 0xFF) as u8);
-        self.uart.write_line(": heart rate only, never the console");
+        self.uart.write_line(": heart rate only, unless it encrypts and the first has not, or the first leaves");
     }
 
     /// A link other than the first central's and the sensor link went down.
@@ -1557,6 +1646,7 @@ impl Link<'_> {
             return self.uart.write_line("[ble] a link we did not know went down");
         }
         central::relay_subscribed(central::SUB_SECOND, false);
+        self.second = Second::default();
         self.uart.write_str("[ble] the second central disconnected, reason ");
         self.uart.write_hex8(reason);
         self.uart.write_line("");
@@ -1589,6 +1679,10 @@ impl Link<'_> {
             return;
         };
         if !phone {
+            // Kept for when the console moves to this link.
+            if attr == tx + 2 && conn == SECOND.load(Ordering::Relaxed) {
+                self.second.subscribed = data.first().is_some_and(|b| b & 0x01 != 0);
+            }
             if attr == rx + 1 || attr == tx + 2 {
                 UNSECURED.fetch_add(1, Ordering::Relaxed);
                 self.uart.write_line("[ble] a write to the console over another link: dropped");
@@ -1682,12 +1776,15 @@ impl Link<'_> {
             }
             vendor::GAP_SLAVE_SECURITY_INITIATED => self.uart.write_line("[ble] security request sent"),
             vendor::GAP_BOND_LOST => self.rebond_for = Some(CONN_HANDLE.load(Ordering::Relaxed)),
-            // The first link's MTU only: a second central's exchange is the stack's business.
             vendor::ATT_EXCHANGE_MTU_RESP if rest.len() >= 4 && handle(rest) == CONN_HANDLE.load(Ordering::Relaxed) => {
                 self.mtu = usize::from(wrist_aci::att_mtu(rest).unwrap_or(0)).clamp(DEFAULT_MTU, 247);
                 self.uart.write_str("[ble] ATT MTU ");
                 self.uart.write_u32(u32::try_from(self.mtu).unwrap_or(0));
                 self.uart.write_line("");
+            }
+            // Kept for when the console moves to the second central.
+            vendor::ATT_EXCHANGE_MTU_RESP if rest.len() >= 4 && handle(rest) == SECOND.load(Ordering::Relaxed) => {
+                self.second.mtu = usize::from(wrist_aci::att_mtu(rest).unwrap_or(0)).clamp(DEFAULT_MTU, 247);
             }
             // The phone link runs no client procedure of ours, so an end, error or timeout here
             // needs nothing, nor TX buffers coming free, nor a client confirming one of our

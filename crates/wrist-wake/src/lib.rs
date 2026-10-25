@@ -248,6 +248,15 @@ pub mod ble {
         interval >= want.interval_min && interval <= want.interval_max && latency <= want.latency
     }
 
+    /// With a second central connected (`ble multi`), whether the console moves to it: when
+    /// the first leaves, or when the second encrypts and the first has not. The console
+    /// belongs to an encrypted link, so a rower that connected first without pairing does not
+    /// keep it from a bonded phone that connected second.
+    #[must_use]
+    pub const fn console_moves(first_up: bool, first_encrypted: bool, second_encrypted: bool) -> bool {
+        !first_up || (!first_encrypted && second_encrypted)
+    }
+
     /// How long (ms) the watch keeps advertising at [`timing`]'s interval after the radio
     /// starts, a central leaves or a button is pressed.
     pub const ADVERTISE_FAST_MS: u64 = 2 * 60 * 1000;
