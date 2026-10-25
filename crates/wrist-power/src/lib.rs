@@ -141,3 +141,56 @@ pub const fn hibernating(status2: u16) -> bool {
 pub fn tte_seconds(raw: u16) -> Option<u32> {
     (raw != 0xFFFF).then(|| u32::from(raw) * 45 / 8)
 }
+
+/// The PCA9420's `MODECFG_0_0`; mode `n`'s four registers start `4 * n` after it.
+pub const MODECFG_BASE: u8 = 0x22;
+
+/// One PCA9420 mode's `MODECFG_n_0` to `MODECFG_n_3`, decoded (datasheet rev 4.2, Tables 44 to 51).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rails {
+    pub ship: bool,
+    /// The mode is chosen by the `MODESEL` pins rather than `TOP_CNTL3`'s bits.
+    pub by_pin: bool,
+    pub sw1_mv: u16,
+    pub sw2_mv: u16,
+    pub ldo1_mv: u16,
+    pub ldo2_mv: u16,
+    /// SW1, SW2, LDO1 and LDO2 enabled.
+    pub enabled: [bool; 4],
+    /// `None` when off.
+    pub watchdog_s: Option<u8>,
+}
+
+impl Rails {
+    #[must_use]
+    pub fn decode(r: [u8; 4]) -> Self {
+        let sw1 = r[0] & 0x3F;
+        let sw1_mv = match sw1 {
+            0x3F => 1800,
+            0..=0x28 => 500 + 25 * u16::from(sw1),
+            _ => 1500,
+        };
+        let offset = |bit: bool| if bit { 1200 } else { 0 };
+        let wide = |lsb: u8| 1500 + 25 * u16::from(lsb.min(0x18));
+        Self {
+            ship: r[0] & 0x80 != 0,
+            by_pin: r[0] & 0x40 != 0,
+            sw1_mv,
+            sw2_mv: wide(r[1] & 0x1F) + offset(r[1] & 0x20 != 0),
+            ldo1_mv: 1700 + 25 * u16::from((r[2] >> 4).min(8)),
+            ldo2_mv: wide(r[3] & 0x1F) + offset(r[3] & 0x20 != 0),
+            enabled: [r[2] & 8 != 0, r[2] & 4 != 0, r[2] & 2 != 0, r[2] & 1 != 0],
+            watchdog_s: match r[3] >> 6 {
+                0 => None,
+                n => Some(8 << n),
+            },
+        }
+    }
+}
+
+/// The mode in force from `TOP_CNTL3`'s `MODE1_I2C:MODE0_I2C`, when the mode's own `by_pin` is
+/// clear (datasheet Table 20).
+#[must_use]
+pub const fn i2c_mode(top_cntl3: u8) -> u8 {
+    (top_cntl3 >> 3) & 3
+}

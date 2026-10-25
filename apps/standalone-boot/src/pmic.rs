@@ -1,7 +1,11 @@
 //! The PMIC and the fuel gauge, read only (`HARDWARE.md`, "Power and reset domain").
 
+use core::cell::Cell;
+
 use embassy_stm32::i2c::{Error, I2c, Master};
 use embassy_stm32::mode::Async;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::blocking_mutex::Mutex;
 
 use crate::uart::Uart;
 
@@ -22,7 +26,6 @@ pub struct Snapshot {
     pub chg_status0: Option<u8>,
     pub chg_status1: Option<u8>,
     pub reg_status: Option<u8>,
-    pub modecfg0_3: Option<u8>,
     pub reset_monitor: Option<u8>,
     pub vcell_raw: Option<u16>,
     pub soc_raw: Option<u16>,
@@ -38,7 +41,7 @@ pub struct Snapshot {
 }
 
 /// (chip, register, two bytes wide), in [`Snapshot`]'s order.
-const READS: [(u8, u8, bool); 20] = [
+const READS: [(u8, u8, bool); 19] = [
     (PCA9420, 0x00, false),
     (PCA9420, 0x09, false),
     (PCA9420, 0x0A, false),
@@ -47,7 +50,6 @@ const READS: [(u8, u8, bool); 20] = [
     (PCA9420, 0x18, false),
     (PCA9420, 0x19, false),
     (PCA9420, 0x20, false),
-    (PCA9420, 0x25, false),
     (PCA9420, 0x71, false),
     (MAX17262, 0x09, true),
     (MAX17262, 0x06, true),
@@ -72,18 +74,17 @@ fn assemble(v: &[Option<u16>; READS.len()]) -> Snapshot {
         chg_status0: b(5),
         chg_status1: b(6),
         reg_status: b(7),
-        modecfg0_3: b(8),
-        reset_monitor: b(9),
-        vcell_raw: v[10],
-        soc_raw: v[11],
-        temp_raw: v[12],
-        current_raw: v[13],
-        avg_current_raw: v[14],
-        tte_raw: v[15],
-        status2: v[16],
-        hib_cfg: v[17],
-        full_cap_raw: v[18],
-        design_cap_raw: v[19],
+        reset_monitor: b(8),
+        vcell_raw: v[9],
+        soc_raw: v[10],
+        temp_raw: v[11],
+        current_raw: v[12],
+        avg_current_raw: v[13],
+        tte_raw: v[14],
+        status2: v[15],
+        hib_cfg: v[16],
+        full_cap_raw: v[17],
+        design_cap_raw: v[18],
     }
 }
 
@@ -254,12 +255,8 @@ pub fn write_report(uart: Uart, s: &Snapshot) {
         uart.write_str("  ON long press ");
         uart.write_u32(4 * (1 + u32::from(c3 & 3)));
         uart.write_str(" s, mode ");
-        uart.write_u32(u32::from((c3 >> 3) & 3));
+        uart.write_u32(u32::from(wrist_power::i2c_mode(c3)));
         uart.write_line("");
-    }
-    if let Some(m) = s.modecfg0_3 {
-        uart.write_str("  mode 0 WD_TIMER: ");
-        uart.write_line(["disabled", "16 s", "32 s", "64 s"][usize::from(m >> 6)]);
     }
     if let Some(r) = s.reg_status {
         uart.write_str("  REG_STATUS ");
@@ -288,6 +285,58 @@ pub fn write_report(uart: Uart, s: &Snapshot) {
             if m & (1 << bit) != 0 {
                 uart.write_str(name);
             }
+        }
+        uart.write_line("");
+    }
+}
+
+/// The PCA9420's four mode settings, `MODECFG_0_0` to `MODECFG_3_3`, in one read.
+pub type Modes = [u8; 16];
+
+/// Read once at boot: nothing writes them while the image runs.
+static MODES: Mutex<CriticalSectionRawMutex, Cell<Option<Modes>>> = Mutex::new(Cell::new(None));
+
+pub fn read_modes_blocking(bus: &mut AsyncBus) {
+    let mut regs = [0u8; 16];
+    let read = bus.blocking_write_read(PCA9420, &[wrist_power::MODECFG_BASE], &mut regs).ok().map(|()| regs);
+    MODES.lock(|m| m.set(read));
+}
+
+/// Each mode's rails as read at boot, marking the one in force when `TOP_CNTL3` chooses it.
+pub fn write_rails(uart: Uart, top_cntl3: Option<u8>) {
+    let Some(regs) = MODES.lock(Cell::get) else {
+        return uart.write_line("  MODECFG: no answer at boot");
+    };
+    for (mode, r) in regs.as_chunks::<4>().0.iter().enumerate() {
+        let rails = wrist_power::Rails::decode(*r);
+        let mode = u8::try_from(mode).unwrap_or(0);
+        uart.write_str("  mode ");
+        uart.write_u32(u32::from(mode));
+        uart.write_str(if top_cntl3.map(wrist_power::i2c_mode) == Some(mode) { "*" } else { " " });
+        for b in r {
+            uart.write_str(" ");
+            uart.write_hex8(*b);
+        }
+        for (name, mv, on) in [
+            (" SW1 ", rails.sw1_mv, rails.enabled[0]),
+            (" SW2 ", rails.sw2_mv, rails.enabled[1]),
+            (" LDO1 ", rails.ldo1_mv, rails.enabled[2]),
+            (" LDO2 ", rails.ldo2_mv, rails.enabled[3]),
+        ] {
+            uart.write_str(name);
+            uart.write_u32(u32::from(mv));
+            uart.write_str(if on { "mV" } else { "mV(off)" });
+        }
+        if rails.by_pin {
+            uart.write_str(" by-pin");
+        }
+        if rails.ship {
+            uart.write_str(" SHIP");
+        }
+        if let Some(s) = rails.watchdog_s {
+            uart.write_str(" wd ");
+            uart.write_u32(u32::from(s));
+            uart.write_str("s");
         }
         uart.write_line("");
     }

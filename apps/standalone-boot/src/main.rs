@@ -335,6 +335,8 @@ fn main() -> ! {
     let power = pmic::snapshot_blocking(&mut bus);
     uart.write_line("[10] I2C1 up; power chips read:");
     pmic::write_report(uart, &power);
+    pmic::read_modes_blocking(&mut bus);
+    pmic::write_rails(uart, power.top_cntl3);
     pmic::write_summary(uart, &power);
     uart.write_str("[10b] input-power interrupt on PWR_INT_L (PG7): ");
     match crate::power::arm_input_interrupt(&mut bus) {
