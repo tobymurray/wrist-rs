@@ -34,7 +34,13 @@ From 0.1.0:
 
 ## Checked on the watch
 
-To be written from this release's gate run ([GATE.md](GATE.md), step 21).
+With this build's package, updating from 0.1.0: updates over USB, including a pulled cable
+and a killed tool, which leave the watch on its current version; the rollback of an image
+no computer keeps; the clock across restarts and daylight-saving changes; every button and
+every page; and deep sleep on battery.
+
+The first install from stock firmware 1.6.1, and the way back, are 0.1.0's: the installer
+and the loader are byte for byte the ones that round trip ran.
 
 ## Limits
 
@@ -45,4 +51,6 @@ To be written from this release's gate run ([GATE.md](GATE.md), step 21).
   the clock, run the tool again. It knows no zone names.
 - A short press lights the face for 3 s, or turns off a light switched on from the console.
   Back and Select only light it; Up and Down also move between pages.
+- After a cable is pulled during an update, the next update can get no answer from the
+  watch. Run it again.
 - No stock apps, notifications, sensors, Bluetooth or activity storage.

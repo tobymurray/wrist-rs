@@ -1,11 +1,11 @@
 {
   "stock_version": "1.6.1",
-  "hardware_install_numbers": [111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125],
+  "hardware_install_numbers": [181, 182, 183, 184],
   "round_trip_validated": true,
   "round_trip_release": "0.1.0",
   "round_trip_fingerprint": "8303de867cd8341c3d091a71aeb88070c09d372a01daa05cbc6df61daf565f79",
   "license_distribution_approved": true,
   "notices_reviewed": true,
   "github_candidate_run_verified": true,
-  "image_crc32": ""
+  "image_crc32": "E227C689"
 }
