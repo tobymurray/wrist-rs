@@ -1,5 +1,6 @@
-//! `flash survey`: which pages hold anything, and what the flash controller's status and
-//! option registers say. Read-only; the image's console does the reads, this decodes them.
+//! `flash survey`: which pages hold anything, a CRC of each region, and what the flash
+//! controller's status and option registers say. The image's console does the reads; this
+//! decodes them, names the regions, and decides which ECC errors its NMI may return from.
 
 use crate::plan::PAGE_SIZE;
 
@@ -18,18 +19,31 @@ pub fn blank(words: &[u32]) -> bool {
     words.iter().all(|&w| w == u32::MAX)
 }
 
-/// A bank's pages, one bit each, set when the page holds anything.
+/// A bank's pages, one bit each: those that hold anything, and those whose read raised an
+/// ECC error.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Map([u64; PAGES_PER_BANK / 64]);
+pub struct Map {
+    used: [u64; PAGES_PER_BANK / 64],
+    ecc: [u64; PAGES_PER_BANK / 64],
+}
 
 impl Map {
     pub fn set(&mut self, page: usize) {
-        self.0[page / 64] |= 1 << (page % 64);
+        self.used[page / 64] |= 1 << (page % 64);
+    }
+
+    pub fn set_ecc(&mut self, page: usize) {
+        self.ecc[page / 64] |= 1 << (page % 64);
     }
 
     #[must_use]
     pub fn used(&self, page: usize) -> bool {
-        self.0[page / 64] & (1 << (page % 64)) != 0
+        self.used[page / 64] & (1 << (page % 64)) != 0
+    }
+
+    #[must_use]
+    pub fn ecc(&self, page: usize) -> bool {
+        self.ecc[page / 64] & (1 << (page % 64)) != 0
     }
 
     /// How many of `pages` hold anything.
@@ -38,12 +52,67 @@ impl Map {
         pages.filter(|&p| self.used(p)).count()
     }
 
-    /// `#` for a page that holds anything, `.` for a blank one, starting at `first`.
+    /// How many of `pages` raised an ECC error.
+    #[must_use]
+    pub fn count_ecc(&self, pages: core::ops::Range<usize>) -> usize {
+        pages.filter(|&p| self.ecc(p)).count()
+    }
+
+    /// `!` for a page that raised an ECC error, `#` for one that holds anything, `.` for a
+    /// blank one, starting at `first`.
     pub fn line(&self, first: usize, out: &mut [u8; PAGES_PER_LINE]) {
         for (i, c) in out.iter_mut().enumerate() {
-            *c = if self.used(first + i) { b'#' } else { b'.' };
+            *c = if self.ecc(first + i) {
+                b'!'
+            } else if self.used(first + i) {
+                b'#'
+            } else {
+                b'.'
+            };
         }
     }
+}
+
+/// Where an ECC error was, as `FLASH_ECCR` says: `BK_ECC` and `SYSF_ECC`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Area {
+    Bank1,
+    Bank2,
+    /// ST's system flash, from `0x0BF90000`, where its ECC test words are.
+    System,
+}
+
+/// A run of pages the survey names, and gives a CRC of.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Region {
+    pub area: Area,
+    pub pages: core::ops::Range<u16>,
+    pub name: &'static str,
+}
+
+const fn region(area: Area, pages: core::ops::Range<u16>, name: &'static str) -> Region {
+    Region { area, pages, name }
+}
+
+/// Every region the survey reports, in the order it reads them: bank 1 from the loader up
+/// (the vendor bootloader's 0 to 47 are never read), then bank 2 (`apps/wrist-loader/LAYOUT.md`).
+pub const REGIONS: [Region; 10] = [
+    region(Area::Bank1, 48..52, "loader"),
+    region(Area::Bank1, 52..116, "active"),
+    region(Area::Bank1, 116..181, "dfu"),
+    region(Area::Bank1, 181..182, "state"),
+    region(Area::Bank1, 182..256, "unused"),
+    region(Area::Bank2, 0..24, "stock spill"),
+    region(Area::Bank2, 48..116, "reserve"),
+    region(Area::Bank2, 116..128, "settings"),
+    region(Area::Bank2, 128..196, "staging"),
+    region(Area::Bank2, 196..256, "glyph store"),
+];
+
+/// The index in [`REGIONS`] of the region `page` of `area` lies in.
+#[must_use]
+pub fn region_at(area: Area, page: u16) -> Option<usize> {
+    REGIONS.iter().position(|r| r.area == area && r.pages.contains(&page))
 }
 
 /// The non-secure flash registers the survey reads (RM0456 7.9).
@@ -106,14 +175,81 @@ impl Interrupted {
     }
 }
 
-/// An ECC error `ECCR` holds: whether it was corrected, the bank and the offset in it. The
-/// console prints the raw register too, for `SYSF_ECC`.
+/// `FLASH_ECCR.ECCD`: a double error, which raises the NMI (RM0456 7.9.11). Write 1 to clear.
+pub const ECCD: u32 = 1 << 31;
+/// `FLASH_ECCR.ECCC`: a corrected error. Write 1 to clear.
+pub const ECCC: u32 = 1 << 30;
+/// `FLASH_ECCR.ECCIE`: the corrected-error interrupt enable, the register's one writable bit.
+pub const ECCIE: u32 = 1 << 24;
+/// `FLASH_ECCR.SYSF_ECC`: the error was in system flash.
+pub const SYSF_ECC: u32 = 1 << 22;
+/// `FLASH_ECCR.BK_ECC`: the error was in bank 2.
+pub const BK_ECC: u32 = 1 << 21;
+
+/// What to write to `FLASH_ECCR` to clear `ECCD` alone, as the NMI does: `ECCC` stays, and
+/// `ECCIE` keeps its value.
+#[must_use]
+pub const fn eccr_clearing_double(eccr: u32) -> u32 {
+    (eccr & ECCIE) | ECCD
+}
+
+/// What to write to `FLASH_ECCR` to clear both flags, as a read that looks for errors does
+/// first, since the hardware records a new error only when both are clear.
+#[must_use]
+pub const fn eccr_clearing_both(eccr: u32) -> u32 {
+    (eccr & ECCIE) | ECCD | ECCC
+}
+
+/// An ECC error `ECCR` holds: whether it was corrected, where, and the offset there.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Ecc {
     pub corrected: bool,
     pub double: bool,
-    pub bank2: bool,
+    pub area: Area,
     pub offset: u32,
+}
+
+impl Ecc {
+    /// The page the error was on, within its area.
+    #[must_use]
+    pub const fn page(&self) -> u32 {
+        self.offset / crate::plan::PAGE_SIZE_U32
+    }
+}
+
+/// The error `eccr` records, if either flag is set.
+#[must_use]
+pub const fn ecc(eccr: u32) -> Option<Ecc> {
+    let corrected = eccr & ECCC != 0;
+    let double = eccr & ECCD != 0;
+    if !corrected && !double {
+        return None;
+    }
+    let area = if eccr & SYSF_ECC != 0 {
+        Area::System
+    } else if eccr & BK_ECC != 0 {
+        Area::Bank2
+    } else {
+        Area::Bank1
+    };
+    Some(Ecc { corrected, double, area, offset: eccr & ADDR_MASK })
+}
+
+/// The NMI's catch armed for one page of `area`: a double error there is returned from.
+/// 0 is disarmed.
+#[must_use]
+pub const fn arm(area: Area, page: u32) -> u32 {
+    (1 << 31) | ((area as u32) << 16) | (page & 0xFFFF)
+}
+
+/// Whether the NMI may clear the error `eccr` records and return: a double error in the
+/// page `armed` names. Anything else, a corrected error included, is not this catch's.
+#[must_use]
+pub const fn catches(armed: u32, eccr: u32) -> bool {
+    match ecc(eccr) {
+        Some(e) => armed != 0 && e.double && arm(e.area, e.page()) == armed,
+        None => false,
+    }
 }
 
 impl Registers {
@@ -176,17 +312,7 @@ impl Registers {
 
     #[must_use]
     pub const fn ecc(&self) -> Option<Ecc> {
-        let corrected = self.eccr & (1 << 30) != 0;
-        let double = self.eccr & (1 << 31) != 0;
-        if !corrected && !double {
-            return None;
-        }
-        Some(Ecc {
-            corrected,
-            double,
-            bank2: self.eccr & (1 << 21) != 0,
-            offset: self.eccr & ADDR_MASK,
-        })
+        ecc(self.eccr)
     }
 
     /// Each write-protection area as its first and last page, or `None` when it is empty
@@ -239,6 +365,70 @@ mod tests {
         assert_eq!(line[63], b'#');
         map.line(0, &mut line);
         assert_eq!((line[0], line[1], line[63]), (b'#', b'.', b'#'));
+    }
+
+    #[test]
+    fn an_ecc_page_draws_over_its_contents() {
+        let mut map = Map::default();
+        map.set(3);
+        map.set_ecc(3);
+        map.set_ecc(4);
+        assert_eq!(map.count_ecc(0..PAGES_PER_BANK), 2);
+        assert_eq!(map.count(0..PAGES_PER_BANK), 1);
+        let mut line = [0; PAGES_PER_LINE];
+        map.line(0, &mut line);
+        assert_eq!(&line[..6], b"...!!.");
+    }
+
+    #[test]
+    fn the_regions_are_ordered_apart_and_inside_their_banks() {
+        for r in &REGIONS {
+            assert!(r.area != Area::System, "{r:?}");
+            assert!(r.pages.start < r.pages.end && usize::from(r.pages.end) <= PAGES_PER_BANK, "{r:?}");
+        }
+        assert!(REGIONS[0].pages.start >= 48, "the vendor bootloader's pages are never read");
+        for w in REGIONS.windows(2) {
+            let ordered = w[0].area == w[1].area && w[0].pages.end <= w[1].pages.start;
+            assert!(ordered || (w[0].area, w[1].area) == (Area::Bank1, Area::Bank2), "{w:?}");
+        }
+        assert_eq!(REGIONS.iter().filter(|r| r.area == Area::Bank1).map(|r| r.pages.len()).sum::<usize>(), 208);
+    }
+
+    #[test]
+    fn region_at_finds_each_page_s_region() {
+        assert_eq!(region_at(Area::Bank1, 47), None);
+        assert_eq!(region_at(Area::Bank1, 48).map(|i| REGIONS[i].name), Some("loader"));
+        assert_eq!(region_at(Area::Bank1, 181).map(|i| REGIONS[i].name), Some("state"));
+        assert_eq!(region_at(Area::Bank2, 30), None);
+        assert_eq!(region_at(Area::Bank2, 255).map(|i| REGIONS[i].name), Some("glyph store"));
+        assert_eq!(region_at(Area::System, 8), None);
+    }
+
+    #[test]
+    fn the_catch_takes_only_a_double_error_in_its_page() {
+        let bank2_page = |page: u32| ECCD | BK_ECC | (page * 8192 + 0x10);
+        let armed = arm(Area::Bank2, 200);
+        assert!(catches(armed, bank2_page(200)));
+        assert!(!catches(0, bank2_page(200)), "disarmed");
+        assert!(!catches(armed, bank2_page(201)), "the next page");
+        assert!(!catches(armed, bank2_page(200) & !BK_ECC), "bank 1");
+        assert!(!catches(armed, (bank2_page(200) & !ECCD) | ECCC), "corrected only");
+        assert!(!catches(armed, 0));
+        let test_word = ECCD | SYSF_ECC | 0x1_1F80;
+        assert!(catches(arm(Area::System, 8), test_word), "ST's 2-bit test word");
+        assert!(!catches(arm(Area::Bank1, 8), test_word));
+        assert!(catches(arm(Area::Bank2, 255), ECCD | BK_ECC | 0x1F_FFF0), "the top of a bank");
+    }
+
+    #[test]
+    fn clearing_keeps_the_interrupt_enable_and_writes_no_reserved_bit() {
+        for eccr in [0, u32::MAX, ECCD | ECCC | 0x18_8000, ECCIE | ECCD | BK_ECC] {
+            let one = eccr_clearing_double(eccr);
+            let both = eccr_clearing_both(eccr);
+            assert_eq!(one & ECCIE, eccr & ECCIE, "{eccr:08X}");
+            assert_eq!(one & !ECCIE, ECCD, "only ECCD cleared, {eccr:08X}");
+            assert_eq!(both & !ECCIE, ECCD | ECCC, "{eccr:08X}");
+        }
     }
 
     /// Reset values (RM0456 7.9) with the option bytes as an unprotected dual-bank part.
@@ -308,8 +498,10 @@ mod tests {
     fn an_ecc_error_decodes() {
         let r = Registers { eccr: (1 << 31) | (1 << 21) | 0x1_0010, ..reset() };
         let e = r.ecc().unwrap();
-        assert!(e.double && !e.corrected && e.bank2);
+        assert!(e.double && !e.corrected);
+        assert_eq!(e.area, Area::Bank2);
         assert_eq!(e.offset, 0x1_0010);
+        assert_eq!(ecc(ECCC | SYSF_ECC | BK_ECC | 0x1_1F00).unwrap().area, Area::System, "SYSF_ECC wins");
     }
 
     #[test]
