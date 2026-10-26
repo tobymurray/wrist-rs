@@ -1,11 +1,5 @@
-//! `flash survey`: every page from the loader up, blank or not, a CRC of each region, and
-//! the flash controller's status and option registers (`wrist_flash::survey`). It never
-//! writes flash; it clears `FLASH_ECCR`'s flags so each page's read can raise its own. The
-//! vendor bootloader's pages, bank 1 0 to 47, are not read.
-//!
-//! Also the NMI's catch: a double ECC error in the one page a read has armed is cleared and
-//! returned from, so a damaged page is reported instead of resetting the watch. `flash
-//! ecc-test` proves the path on ST's test words in system flash.
+//! `flash survey` and `flash ecc-test`, which never write flash, and the NMI's catch for a
+//! double ECC error in the page a read has armed.
 use crate::{
     mmio::{read32, write32, FLASH_BASE},
     uart::Uart,
@@ -28,8 +22,7 @@ const SYSTEM_FLASH_BASE: u32 = 0x0BF9_0000;
 const TEST_WORD_CORRECTED: u32 = 0x0BFA_1F00;
 const TEST_WORD_DOUBLE: u32 = 0x0BFA_1F80;
 
-/// A page is read 256 bytes a turn of the executor: the CRC is bitwise, about 1.6 ms a
-/// kibibyte on the watch, so a turn costs under half a millisecond.
+/// Bytes read a turn of the executor, since the CRC is bitwise.
 const CHUNK: usize = 256;
 
 /// The page the NMI's catch is armed for (`wrist_flash::survey::arm`), or 0.
@@ -38,8 +31,8 @@ static ARMED: AtomicU32 = AtomicU32::new(0);
 static CAUGHT: AtomicU32 = AtomicU32::new(0);
 static LAST_CAUGHT: AtomicU32 = AtomicU32::new(0);
 
-/// From the NMI. True when it was a double ECC error in the armed page, now cleared, so the
-/// handler returns. Every other NMI still resets.
+/// From the NMI: whether it was a double ECC error in the armed page, now cleared, so the
+/// handler may return.
 pub fn nmi_caught() -> bool {
     let eccr = eccr();
     if !catches(ARMED.load(Relaxed), eccr) {
@@ -61,7 +54,6 @@ fn eccr() -> u32 {
     unsafe { read32(FLASH_BASE + offset::ECCR) }
 }
 
-/// Both flags clear, so the next error is recorded.
 fn clear_ecc() {
     unsafe { write32(FLASH_BASE + offset::ECCR, eccr_clearing_both(eccr())) };
 }
@@ -69,7 +61,6 @@ fn clear_ecc() {
 /// Reads ST's corrected word, then its double-error word with the catch armed for it.
 fn ecc_test(uart: Uart) {
     if eccr() & ECCIE != 0 {
-        // A corrected error would raise the flash interrupt, which nothing here handles.
         uart.write_line("[flash] ecc-test: ECCIE is set; not reading");
         return;
     }
@@ -126,8 +117,7 @@ fn registers() -> Registers {
     }
 }
 
-/// One line of the raw registers, then one that names what is wrong, then a decoded line for
-/// each thing that is.
+/// The raw registers on one line, the verdict, then a decoded line for each problem.
 fn write_registers(uart: Uart, r: &Registers) {
     uart.write_str("[flash] registers nssr ");
     uart.write_hex32(r.nssr);
@@ -324,8 +314,7 @@ pub async fn survey(uart: Uart) {
     uart.write_str(" double errors caught (");
     uart.write_u32(CAUGHT.load(Relaxed));
     uart.write_line(" since boot)");
-    // The registers as they were before the reads, and the reads' own errors; what the
-    // pages hold is in the lines above, and is not a fault.
+    // Pages in use are not a fault, so the verdict leaves them out.
     uart.write_str("[flash] survey: registers ");
     uart.write_str(if before.clean() { "clean" } else { "NOT clean" });
     uart.write_line(if ecc_pages == 0 { ", no ECC errors in the reads" } else { ", ECC ERRORS in the reads" });

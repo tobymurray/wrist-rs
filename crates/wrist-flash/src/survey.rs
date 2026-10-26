@@ -1,6 +1,5 @@
-//! `flash survey`: which pages hold anything, a CRC of each region, and what the flash
-//! controller's status and option registers say. The image's console does the reads; this
-//! decodes them, names the regions, and decides which ECC errors its NMI may return from.
+//! What `flash survey` reports, decoded on the host: the page map, the regions, the flash
+//! registers, and which ECC errors the NMI may return from.
 
 use crate::plan::PAGE_SIZE;
 
@@ -13,9 +12,8 @@ pub const PAGES_PER_LINE: usize = 64;
 /// Words in a page, as the console reads them.
 pub const PAGE_WORDS: usize = PAGE_SIZE / 4;
 
-/// Whether every word reads `0xFFFFFFFF`, as erased flash does. Not the same as erased: a
-/// quadword programmed with all ones reads the same, and cannot be programmed again until its
-/// page is erased. So this says a page holds nothing, never that it is ready to program.
+/// Whether every word reads `0xFFFFFFFF`, which a quadword programmed with all ones does too,
+/// so it is no check that the page can be programmed (RM0456 7.3.7).
 #[must_use]
 pub fn blank(words: &[u32]) -> bool {
     words.iter().all(|&w| w == u32::MAX)
@@ -80,7 +78,7 @@ impl Map {
 pub enum Area {
     Bank1,
     Bank2,
-    /// ST's system flash, from `0x0BF90000`, where its ECC test words are.
+    /// ST's system flash, where its ECC test words are.
     System,
 }
 
@@ -96,8 +94,7 @@ const fn region(area: Area, pages: core::ops::Range<u16>, name: &'static str) ->
     Region { area, pages, name }
 }
 
-/// Every region the survey reports, in the order it reads them: bank 1 from the loader up
-/// (the vendor bootloader's 0 to 47 are never read), then bank 2 (`apps/wrist-loader/LAYOUT.md`).
+/// Every region the survey reports, in the order it reads them (`apps/wrist-loader/LAYOUT.md`).
 pub const REGIONS: [Region; 10] = [
     region(Area::Bank1, 48..52, "loader"),
     region(Area::Bank1, 52..116, "active"),
@@ -179,22 +176,21 @@ impl Interrupted {
 pub const ECCD: u32 = 1 << 31;
 /// `FLASH_ECCR.ECCC`: a corrected error. Write 1 to clear.
 pub const ECCC: u32 = 1 << 30;
-/// `FLASH_ECCR.ECCIE`: the corrected-error interrupt enable, the register's one writable bit.
+/// `FLASH_ECCR.ECCIE`: the corrected-error interrupt enable.
 pub const ECCIE: u32 = 1 << 24;
 /// `FLASH_ECCR.SYSF_ECC`: the error was in system flash.
 pub const SYSF_ECC: u32 = 1 << 22;
 /// `FLASH_ECCR.BK_ECC`: the error was in bank 2.
 pub const BK_ECC: u32 = 1 << 21;
 
-/// What to write to `FLASH_ECCR` to clear `ECCD` alone, as the NMI does: `ECCC` stays, and
-/// `ECCIE` keeps its value.
+/// What to write to `FLASH_ECCR` to clear `ECCD` alone, keeping `ECCIE`.
 #[must_use]
 pub const fn eccr_clearing_double(eccr: u32) -> u32 {
     (eccr & ECCIE) | ECCD
 }
 
-/// What to write to `FLASH_ECCR` to clear both flags, as a read that looks for errors does
-/// first, since the hardware records a new error only when both are clear.
+/// What to write to `FLASH_ECCR` to clear both flags, keeping `ECCIE`; neither is set again
+/// until both are clear (RM0456 7.9.11).
 #[must_use]
 pub const fn eccr_clearing_both(eccr: u32) -> u32 {
     (eccr & ECCIE) | ECCD | ECCC
@@ -235,15 +231,13 @@ pub const fn ecc(eccr: u32) -> Option<Ecc> {
     Some(Ecc { corrected, double, area, offset: eccr & ADDR_MASK })
 }
 
-/// The NMI's catch armed for one page of `area`: a double error there is returned from.
-/// 0 is disarmed.
+/// The NMI's catch armed for one page of `area`; never 0, which means disarmed.
 #[must_use]
 pub const fn arm(area: Area, page: u32) -> u32 {
     (1 << 31) | ((area as u32) << 16) | (page & 0xFFFF)
 }
 
-/// Whether the NMI may clear the error `eccr` records and return: a double error in the
-/// page `armed` names. Anything else, a corrected error included, is not this catch's.
+/// Whether the NMI may clear `eccr`'s error and return: a double error in the page `armed` names.
 #[must_use]
 pub const fn catches(armed: u32, eccr: u32) -> bool {
     match ecc(eccr) {
@@ -306,11 +300,7 @@ impl Registers {
         })
     }
 
-    /// What is wrong, by name: a write-protected area (`wrp`), the banks swapped
-    /// (`swap_bank`), the controller unlocked or busy, an ECC error recorded (`ecc`), or an
-    /// operation a reset interrupted (`opsr`). Unlocked and busy should never be seen, since
-    /// every flash operation finishes inside one blocking call; they are a canary for a
-    /// leaked unlock.
+    /// What is wrong, by the names the survey prints.
     pub fn problems(&self) -> impl Iterator<Item = &'static str> {
         [
             (self.protected().iter().any(Option::is_some), "wrp"),
@@ -324,7 +314,6 @@ impl Registers {
         .filter_map(|(found, name)| found.then_some(name))
     }
 
-    /// No [`Registers::problems`]: what the glyph store's survey (M2) passes on.
     #[must_use]
     pub fn clean(&self) -> bool {
         self.problems().next().is_none()
