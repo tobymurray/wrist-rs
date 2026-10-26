@@ -993,6 +993,7 @@ dependencies = [
  "wrist-glass",
  "wrist-pages",
  "wrist-power",
+ "wrist-store",
  "wrist-time",
  "wrist-vcom",
 ]
@@ -1249,6 +1250,13 @@ version = "0.0.0"
 [[package]]
 name = "wrist-power"
 version = "0.0.0"
+
+[[package]]
+name = "wrist-store"
+version = "0.0.0"
+dependencies = [
+ "wrist-flash",
+]
 
 [[package]]
 name = "wrist-time"

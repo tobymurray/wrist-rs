@@ -1,5 +1,5 @@
 //! `flash survey` and `flash ecc-test`, which never write flash, and the NMI's catch for a
-//! double ECC error in the page a read has armed.
+//! double ECC error in the page a read has armed or in the glyph store.
 use crate::{
     mmio::{read32, write32, FLASH_BASE},
     uart::Uart,
@@ -15,6 +15,7 @@ use wrist_flash::{
         Registers, ECCC, ECCD, ECCIE, PAGES_PER_BANK, PAGES_PER_LINE, REGIONS, SYSF_ECC,
     },
 };
+use wrist_store::nmi_in_store;
 
 /// Where system flash begins, as `ECCR`'s offsets count (HARDWARE.md, `flash ecc-test`).
 const SYSTEM_FLASH_BASE: u32 = 0x0BF9_0000;
@@ -31,11 +32,11 @@ static ARMED: AtomicU32 = AtomicU32::new(0);
 static CAUGHT: AtomicU32 = AtomicU32::new(0);
 static LAST_CAUGHT: AtomicU32 = AtomicU32::new(0);
 
-/// From the NMI: whether it was a double ECC error in the armed page, now cleared, so the
-/// handler may return.
+/// From the NMI: whether it was a double ECC error in the armed page or the glyph store, now
+/// cleared, so the handler may return.
 pub fn nmi_caught() -> bool {
     let eccr = eccr();
-    if !catches(ARMED.load(Relaxed), eccr) {
+    if !(catches(ARMED.load(Relaxed), eccr) || nmi_in_store(eccr)) {
         return false;
     }
     unsafe { write32(FLASH_BASE + offset::ECCR, eccr_clearing_double(eccr)) };
