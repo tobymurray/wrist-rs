@@ -354,5 +354,81 @@ class GatedImage(unittest.TestCase):
         self.assertFalse(self.publish(GATE, '0A1B2C3D', 'e' * 64))
 
 
+spec = importlib.util.spec_from_file_location('gate', Path(__file__).with_name('gate.py'))
+gate = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(gate)
+
+DRY_RUN = """una-rs image-installer
+image      : image.bin, 164788 bytes
+crc32      : 28E7EE86
+target     : 08060000
+plan code  : 0
+first page : 48 (bank 1)
+pages      : 21
+padded len : 164800
+staging    : bank 2 pages 128-195, 0 of 68 not blank now
+ARM_INSTALL       : no (dry run)
+unlock test: 3 (unlock OK, re-unlock OK)
+dry run only, nothing written
+
+-- flash forensics --
+  image crc  : 28E7EE86
+  OUTCOME 1: erase+program+verify all SUCCEEDED
+witness page (bank 1, 45): ours
+"""
+
+
+class GateScript(unittest.TestCase):
+    """tools/gate.py's reading of install.log and power."""
+
+    def failed(self, log, crc='28E7EE86', size=164788, armed=False):
+        return [what for ok, what in gate.check_install_log(log, crc, size, armed) if not ok]
+
+    def test_a_good_dry_run(self):
+        self.assertEqual(gate.plan_pages(), (48, 115))
+        self.assertEqual(self.failed(DRY_RUN), [])
+        self.assertTrue(all(ok for ok, _ in gate.witness_checks(DRY_RUN, '28E7EE86')))
+
+    def test_what_install_md_refuses(self):
+        self.assertEqual(self.failed(DRY_RUN, crc='28E7EE87'), ['CRC 28E7EE87'])
+        self.assertEqual(self.failed(DRY_RUN, size=1), ['image.bin, 1 bytes'])
+        self.assertEqual(self.failed(DRY_RUN.replace('pages      : 21', 'pages      : 69')),
+                         ['a plan within bank 1 pages 48 to 115'])
+        self.assertEqual(self.failed(DRY_RUN.replace('dry run only, nothing written', 'refused, nothing written')),
+                         ['no refusal', 'dry run only'])
+        self.assertEqual(self.failed(DRY_RUN.replace('unlock test: 3', 'unlock test: 1')), ['unlock and re-unlock'])
+        self.assertIn('installing', self.failed(DRY_RUN, armed=True))
+        self.assertFalse(all(ok for ok, _ in gate.witness_checks(DRY_RUN, '00000000')))
+
+    def test_wake_rate(self):
+        power = ('[power] last on battery: 11 min, mean -560 uA over 12 readings\n'
+                 '[sleep] policy=auto input=external stop1_wakes=0 stop2_wakes=432 stop_ms=705028')
+        self.assertAlmostEqual(gate.wake_rate(power), 432 / 11)
+        self.assertIsNone(gate.wake_rate('[power] no stretch on battery finished since boot'))
+
+    def test_park_bits(self):
+        bits = gate.mmio_bits()
+        self.assertEqual(bits['RCC_AHB2ENR1_SDMMC1EN'], 1 << 27)
+        report = ('PWR_CR2 = 0x00FF1670\nPWR_CR4 = 0x0FFF7DFF\nICACHE_CR   = 0x00000005\n'
+                  'RCC_AHB2ENR1= 0xC000C3FF\n')
+        self.assertTrue(all(ok for ok, _ in gate.park_checks(report)))
+        self.assertEqual([w for ok, w in gate.park_checks(report.replace('C000C3FF', 'C800C3FF')) if not ok],
+                         ['RCC_AHB2ENR1_SDMMC1EN clear'])
+        self.assertEqual([w for ok, w in gate.park_checks(report.replace('00FF1670', '00FF1600')) if not ok],
+                         ["PWR_CR2 holds mmio.rs's SRAM bits"])
+
+    def test_presses(self):
+        log = ('[button] short press SW3/Down: face lit for 3 s\n[page] battery\n'
+               "[button] short press SW4/Back: the console's light off\n")
+        self.assertRegex(log, gate.press('Down', '[page] battery'))
+        self.assertRegex(log, gate.press('Back', "the console's light off"))
+        self.assertNotRegex(log, gate.press('Up', '[page] battery'))
+        self.assertNotRegex('[button] injected short press SW3/Down: face lit for 3 s\n[page] battery\n',
+                            gate.press('Down', '[page] battery'))
+
+    def test_steps(self):
+        self.assertEqual(gate.steps('4-6,11'), {4, 5, 6, 11})
+
+
 if __name__ == '__main__':
     unittest.main()
