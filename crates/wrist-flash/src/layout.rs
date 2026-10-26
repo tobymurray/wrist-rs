@@ -8,7 +8,7 @@ pub const PAGES_PER_BANK: u16 = 256;
 pub mod bank1 {
     use core::ops::Range;
 
-    /// The vendor bootloader's partition, never written by wrist-rs.
+    /// The vendor bootloader's partition; wrist-rs writes only [`RECORD_PAGE`] in it.
     pub const BOOTLOADER: Range<u16> = 0..48;
     /// The installer's outcome record.
     pub const RECORD_PAGE: u16 = 45;
@@ -28,15 +28,19 @@ pub mod bank2 {
 
     /// The stock kernel's pages in bank 2, as `plan::STOCK_KERNEL_BANK2_PAGES` bounds them.
     pub const STOCK_SPILL: Range<u16> = 0..24;
+    /// Never erased, being opposite the bootloader, either side of the self-test.
+    pub const UNERASED_LOW: Range<u16> = 24..34;
+    pub const UNERASED_HIGH: Range<u16> = 35..48;
     /// The installer's erase self-test, the one erased page opposite the bootloader, so `hw.rs`
     /// reads the bank select back before it erases.
     pub const SELF_TEST: u16 = 34;
     /// Unused; a lost bank select here would break the image, never the bootloader.
     pub const RESERVE: Range<u16> = 48..116;
-    /// Settings, written only once an image has kept itself, when the DFU slot opposite
-    /// holds nothing needed.
+    /// Settings, written only while the DFU slot opposite holds nothing needed: once the
+    /// running image has kept itself, and never while an update is received or waits to swap.
     pub const SETTINGS: Range<u16> = 116..128;
-    /// The installer's staged image, under stock; a stale copy stays after an install.
+    /// The installer's staged image, written under stock, opposite the running stock kernel;
+    /// a stale copy stays after an install.
     pub const STAGING: Range<u16> = 128..196;
     /// Language packs, never executed, on pages fixed for good since nothing records where
     /// they are.
@@ -69,36 +73,33 @@ const _: () = assert!(bank1::UNUSED.end == PAGES_PER_BANK);
 const _: () = assert!(len(&bank1::DFU) == len(&bank1::ACTIVE) + 1);
 const _: () = assert!(bank1::RECORD_PAGE < bank1::BOOTLOADER.end);
 
-/// Every bank 2 region, for the disjointness check.
-const BANK2: [Range<u16>; 6] = [
+/// Every bank 2 region, in page order.
+const BANK2: [Range<u16>; 8] = [
     bank2::STOCK_SPILL,
+    bank2::UNERASED_LOW,
     page(bank2::SELF_TEST),
+    bank2::UNERASED_HIGH,
     bank2::RESERVE,
     bank2::SETTINGS,
     bank2::STAGING,
     bank2::GLYPH_STORE,
 ];
 
-const fn all_disjoint() -> bool {
+/// Whether the regions cover the bank, each page once.
+const fn tiles(regions: &[Range<u16>]) -> bool {
+    let mut next = 0;
     let mut i = 0;
-    while i < BANK2.len() {
-        let mut j = i + 1;
-        while j < BANK2.len() {
-            if !disjoint(&BANK2[i], &BANK2[j]) {
-                return false;
-            }
-            j += 1;
-        }
-        if BANK2[i].end > PAGES_PER_BANK {
+    while i < regions.len() {
+        if regions[i].start != next || regions[i].end <= next {
             return false;
         }
+        next = regions[i].end;
         i += 1;
     }
-    true
+    next == PAGES_PER_BANK
 }
 
-const _: () = assert!(all_disjoint());
-const _: () = assert!(bank2::GLYPH_STORE.start >= bank2::STAGING.end);
+const _: () = assert!(tiles(&BANK2));
 const _: () = assert!(bank2::GLYPH_STORE.end == PAGES_PER_BANK);
 const _: () = assert!(len(&bank2::STAGING) == len(&bank1::LOADER) + len(&bank1::ACTIVE));
 
@@ -121,9 +122,11 @@ const _: () = assert!(bank2::STAGING.start >= bank1::BOOTLOADER.end);
 const _: () = assert!(bank2::RESERVE.start >= bank1::BOOTLOADER.end);
 /// The self-test is the one exception, and it is a single page.
 const _: () = assert!(bank2::SELF_TEST < bank1::BOOTLOADER.end);
+const _: () = assert!(within(&bank2::UNERASED_LOW, &bank1::BOOTLOADER));
+const _: () = assert!(within(&bank2::UNERASED_HIGH, &bank1::BOOTLOADER));
 
-/// Whether erasing bank 2 `pages` could, with a lost bank select, erase the vendor
-/// bootloader, the loader, the active slot or the state page.
+/// Whether erasing bank 2 `pages` under wrist-rs could, with a lost bank select, erase the
+/// vendor bootloader, the loader, the active slot or the state page.
 #[must_use]
 pub const fn mirror_endangers_boot(pages: &Range<u16>) -> bool {
     !(disjoint(pages, &bank1::BOOTLOADER)
@@ -142,8 +145,7 @@ mod tests {
         assert!(!mirror_endangers_boot(&bank2::SETTINGS));
         assert!(mirror_endangers_boot(&page(bank2::SELF_TEST)));
         assert!(mirror_endangers_boot(&bank2::RESERVE));
-        // Staging's first pages lie opposite the DFU slot, its last opposite the state page
-        // and unused bank 1.
+        // Written only under stock, but under wrist-rs it would reach the state page.
         assert!(mirror_endangers_boot(&bank2::STAGING));
         assert!(!mirror_endangers_boot(&(bank2::STAGING.start..bank1::STATE)));
     }
