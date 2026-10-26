@@ -25,11 +25,25 @@ GATE_FLAGS = ['round_trip_validated', 'license_distribution_approved', 'notices_
               'github_candidate_run_verified']
 
 
-def gate_open(gate, crc):
+def round_trip_fingerprint(uapp, loader):
+    """SHA-256 of what the stock round trip runs besides the application: the installer's
+    `.uapp` without its version and CRC, and the loader. Equal fingerprints let a release
+    carry an earlier release's round trip (GATE.md, section D)."""
+    unversioned = uapp[:8] + bytes(4) + uapp[12:-4]
+    return hashlib.sha256(unversioned + loader).hexdigest()
+
+
+def gate_open(gate, crc, fingerprint):
     """Why `gate` does not release the image whose CRC is `crc`; empty when it does. The gate
     tested one image, and the build ID makes a later commit of anything else rebuild it
-    byte for byte, so the CRC must be the gate's."""
+    byte for byte, so the CRC must be the gate's. The round trip may be an earlier
+    release's, run on the same installer and loader."""
     reasons = [f'release gate open: {k}' for k in GATE_FLAGS if gate.get(k) is not True]
+    if not gate.get('round_trip_fingerprint'):
+        reasons.append('no round-trip fingerprint')
+    elif gate['round_trip_fingerprint'] != fingerprint:
+        reasons.append(f'installer or loader {fingerprint[:12]} is not the round trip\'s '
+                       f'{gate["round_trip_fingerprint"][:12]}: run GATE.md section D')
     if not gate.get('hardware_install_numbers'):
         reasons.append('the round trip has no numbered hardware evidence')
     if not gate.get('stock_version'):
@@ -265,7 +279,10 @@ def verify_archive(path, debug=False):
             first = 'first-install/Apps/ImageInstaller/'
             crc = validate_image(z.read('loader.bin'), z.read('app.bin'), z.read(first+'image.bin'))
             require(z.read('INSTALL-CRC.txt').decode() == crc + '\n', 'arm CRC text mismatch')
-            validate_uapp(z.read(first+'Install_'+manifest['version']+'.uapp'), manifest['version'])
+            uapp = z.read(first+'Install_'+manifest['version']+'.uapp')
+            validate_uapp(uapp, manifest['version'])
+            require(manifest['round_trip_fingerprint'] == round_trip_fingerprint(uapp, z.read('loader.bin')),
+                    'round-trip fingerprint mismatch')
             for name in ['START-HERE.md', 'LICENSE', 'NOTICES.md', 'RELEASE-NOTES.md', 'tools/requirements.txt',
                          'tools/wrist-update.py', 'tools/wrist-cmd.py', 'tools/wrist-time.py', 'tools/wrist-crash.py',
                          'tools/wrist_port.py', 'tools/60-wrist-rs.rules', 'licenses/wrist-glass-font/LICENSE',
@@ -386,7 +403,8 @@ def main():
                     copy(p, licenses/'rust-toolchain'/compiler/'licenses'/p.relative_to(doc/'licenses'))
     require(not list(first.rglob('ARM_INSTALL')), 'armed package')
     gate = json.loads((ROOT/'release/gate.json').read_text())
-    blockers = gate_open(gate, crc)
+    fingerprint = round_trip_fingerprint(uapp.read_bytes(), (user/'loader.bin').read_bytes())
+    blockers = gate_open(gate, crc, fingerprint)
     for reason in blockers:
         print('Not releasable:', reason)
     require(not release or not blockers, f'v{a.version} is not the gated build: ' + '; '.join(blockers))
@@ -402,7 +420,7 @@ def main():
                     'python': [sys.executable, '--version']}.items()},
                 'commands': commands, 'environment': normalize_paths(
                     {k: env[k] for k in ['RUSTFLAGS', 'SOURCE_DATE_EPOCH', 'TZ']}, replacements),
-                'installer': abi, 'ram_commit_functions_checked': commit_functions, 'image_crc32': crc, 'reproducibility': 'built in toolchain.json build_image' if a.container_id == CONFIG['build_image'] else 'not built in toolchain.json build_image; not expected to match CI',
+                'installer': abi, 'ram_commit_functions_checked': commit_functions, 'image_crc32': crc, 'round_trip_fingerprint': fingerprint, 'reproducibility': 'built in toolchain.json build_image' if a.container_id == CONFIG['build_image'] else 'not built in toolchain.json build_image; not expected to match CI',
                 'files': {str(p.relative_to(a.out)): {'bytes': p.stat().st_size, 'sha256': sha(p)}
                           for tree in [user, debug] for p in sorted(tree.rglob('*')) if p.is_file()}}
     for tree in [user, debug]:

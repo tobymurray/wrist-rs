@@ -301,21 +301,34 @@ class BuildImage(unittest.TestCase):
 
 GATE = {'stock_version': '1.6.1', 'hardware_install_numbers': [1], 'round_trip_validated': True,
         'license_distribution_approved': True, 'notices_reviewed': True, 'github_candidate_run_verified': True,
-        'image_crc32': '0A1B2C3D'}
+        'image_crc32': '0A1B2C3D', 'round_trip_release': '1.2.2', 'round_trip_fingerprint': 'f' * 64}
 
 
 class GatedImage(unittest.TestCase):
     """A release is the image the gate installed: its CRC is gate.json's."""
 
     def test_recipe(self):
-        self.assertEqual(r.gate_open(GATE, '0A1B2C3D'), [])
-        self.assertEqual(r.gate_open(GATE, '0A1B2C3E'), ['image CRC 0A1B2C3E is not the gated 0A1B2C3D'])
+        fp = 'f' * 64
+        self.assertEqual(r.gate_open(GATE, '0A1B2C3D', fp), [])
+        self.assertEqual(r.gate_open(GATE, '0A1B2C3E', fp), ['image CRC 0A1B2C3E is not the gated 0A1B2C3D'])
         for crc in ['', None]:
-            self.assertEqual(r.gate_open(dict(GATE, image_crc32=crc), '0A1B2C3D'), ['no gated image CRC'])
-        self.assertTrue(r.gate_open(dict(GATE, notices_reviewed=False), '0A1B2C3D'))
-        self.assertIn('image_crc32', json.loads((r.ROOT/'release/gate.json').read_text()))
+            self.assertEqual(r.gate_open(dict(GATE, image_crc32=crc), '0A1B2C3D', fp), ['no gated image CRC'])
+        self.assertTrue(r.gate_open(dict(GATE, notices_reviewed=False), '0A1B2C3D', fp))
+        self.assertEqual(len(r.gate_open(GATE, '0A1B2C3D', 'e' * 64)), 1)
+        self.assertEqual(r.gate_open(dict(GATE, round_trip_fingerprint=''), '0A1B2C3D', fp), ['no round-trip fingerprint'])
+        gate = json.loads((r.ROOT/'release/gate.json').read_text())
+        self.assertIn('image_crc32', gate)
+        self.assertEqual(len(gate['round_trip_fingerprint']), 64)
 
-    def publish(self, gate, crc):
+    def test_round_trip_fingerprint_ignores_only_the_version(self):
+        loader = raw(0x08060000)
+        fp = r.round_trip_fingerprint(uapp(0x010203), loader)
+        self.assertEqual(r.round_trip_fingerprint(uapp(0x000200), loader), fp)
+        self.assertNotEqual(r.round_trip_fingerprint(uapp(0x010203), loader + b'\0'), fp)
+        changed = bytearray(uapp(0x010203)); changed[60] ^= 1
+        self.assertNotEqual(r.round_trip_fingerprint(bytes(changed), loader), fp)
+
+    def publish(self, gate, crc, fingerprint='f' * 64):
         """Run firmware.yml's publish checks on one archive built with `crc`; True when they pass."""
         workflow = (r.ROOT/'.github/workflows/firmware.yml').read_text()
         job = workflow[workflow.index('\n  publish:'):]
@@ -326,7 +339,7 @@ class GatedImage(unittest.TestCase):
             (d/'release').mkdir(); (d/'assets').mkdir()
             (d/'release/gate.json').write_text(json.dumps(gate))
             manifest = {'release_ready': True, 'checks_skipped': False, 'dirty': False, 'source_commit': 'abc',
-                        'version': '1.2.3', 'image_crc32': crc}
+                        'version': '1.2.3', 'image_crc32': crc, 'round_trip_fingerprint': fingerprint}
             with zipfile.ZipFile(d/'assets/wrist-rs-1.2.3.zip', 'w') as z:
                 z.writestr('manifest.json', json.dumps(manifest))
             env = dict(os.environ, SOURCE_SHA='abc', RELEASE_TAG='v1.2.3')
@@ -338,6 +351,7 @@ class GatedImage(unittest.TestCase):
         self.assertFalse(self.publish(GATE, '0A1B2C3E'))
         self.assertFalse(self.publish(dict(GATE, image_crc32=''), '0A1B2C3D'))
         self.assertFalse(self.publish(dict(GATE, image_crc32=''), ''))
+        self.assertFalse(self.publish(GATE, '0A1B2C3D', 'e' * 64))
 
 
 if __name__ == '__main__':
