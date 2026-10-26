@@ -57,7 +57,8 @@ cargo clippy --release
 
 `python3 tools/test-release.py`, which needs `pyelftools`, tests the release recipe, and
 `cargo test -p wrist-glass --features preview` renders the face to PNGs under
-`target/tmp/wrist-glass/`.
+`target/tmp/wrist-glass/`. `cargo run -p wrist-installer-ui --features preview --example
+screens -- release/images` redraws the installer's screens that the install guide shows.
 
 [`tools/extract_pinmap.py`](tools/extract_pinmap.py), which needs `pdftotext`, regenerates
 [`crates/wrist-board/src/pins.rs`](crates/wrist-board/src/pins.rs) from the UNAcore schematic.

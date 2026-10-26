@@ -44,7 +44,7 @@ CI candidate, check out its commit cleanly and pass its version,
 `--local-image` builds [`Dockerfile`](Dockerfile) as `wrist-rs-build:local` and uses that
 instead, for working on the image. Its builds are not expected to match CI's, and their
 manifest says so. Natively, with the same rustup toolchains, the GNU Arm tools, CMake 3.21
-or newer, make, Python 3.10 or newer and `pyelftools`, the binaries differ from CI's too:
+or newer, make, Python 3.10 or newer, `pyelftools` and Pillow, the binaries differ from CI's too:
 
 ```sh
 python3 tools/release-build.py --sdk /tmp/wrist-sdk --version 0.0.0-local \

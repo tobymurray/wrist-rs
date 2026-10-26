@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <initializer_list>
 
 #include "SDK/Messages/CommandMessages.hpp"
 #include "SDK/Messages/MessageGuard.hpp"
@@ -52,31 +53,35 @@ Service::Service(SDK::Kernel& kernel)
 void Service::run()
 {
     LOG_INFO("Started\n");
+    const uint32_t started = mKernel.sys.getTimeMs();
 
     while (true) {
         SDK::MessageBase* msg;
-        if (!mKernel.comm.getMessage(msg)) {
+        if (!mKernel.comm.getMessage(msg, 1000)) {
+            // Only the launcher brings the GUI, so a service started any other way does nothing.
+            if (!mChecked && mKernel.sys.getTimeMs() - started >= kNoGuiGraceMs) {
+                LOG_INFO("no GUI: leaving without checking anything\n");
+                return;
+            }
             continue;
         }
 
         switch (msg->getType()) {
-            case SDK::MessageType::EVENT_GLANCE_START:
-                if (configGui()) {
-                    createGuiControls();
-                    install();
-                } else {
-                    mKernel.comm.releaseMessage(msg);
-                    mKernel.sys.exit(0);
-                }
-                break;
-
             case SDK::MessageType::COMMAND_APP_STOP:
-            case SDK::MessageType::EVENT_GLANCE_STOP:
+            case SDK::MessageType::COMMAND_APP_NOTIF_GUI_STOP:
                 mKernel.comm.releaseMessage(msg);
                 return;
 
-            case SDK::MessageType::EVENT_GLANCE_TICK:
-                onGlanceTick();
+            case SDK::MessageType::COMMAND_APP_NOTIF_GUI_RUN:
+                if (!mChecked) {
+                    report();
+                    dryRun();
+                }
+                report();
+                break;
+
+            case InstallerMessage::CONFIRM:
+                install(static_cast<InstallerMessage::Confirm*>(msg)->crc);
                 break;
 
             default:
@@ -87,24 +92,28 @@ void Service::run()
     }
 }
 
-void Service::install()
+void Service::report()
 {
-    if (mRan) {
-        return;
-    }
-    mRan = true;
+    SDK::send_msg<InstallerMessage::Report>(mKernel, mVerdict);
+}
+
+void Service::dryRun()
+{
+    using InstallerMessage::State;
+    mChecked = true;
 
     const IsolationGate::Verdict verdict = IsolationGate::check();
     if (verdict != IsolationGate::Verdict::Allowed) {
         LOG_INFO("refused: firmware isolates apps (%u)\n", static_cast<unsigned>(verdict));
-        mGlanceValue.setText("refused");
+        mVerdict.state = State::Isolated;
+        mVerdict.code  = static_cast<int32_t>(verdict);
         return;
     }
 
     const size_t length = imageSize();
     if (length == 0) {
         LOG_INFO("no usable %s\n", kImageFile);
-        mGlanceValue.setText("no image");
+        mVerdict.state = State::NoImage;
         return;
     }
 
@@ -114,23 +123,33 @@ void Service::install()
     uint32_t crc = 0;
     if (planCode == 0 && !crcImage(length, crc)) {
         LOG_INFO("%s could not be read\n", kImageFile);
-        mGlanceValue.setText("no image");
+        mVerdict.state = State::NoImage;
         return;
     }
 
-    uint32_t       armCrc = 0;
-    const ArmState arm    = readArm(crc, armCrc);
-
-    const int32_t selftest = wrist_flash_unlock_selftest();
+    const int32_t selftest    = wrist_flash_unlock_selftest();
+    const int32_t eraseTest   = wrist_flash_erase_selftest();
+    const bool    unlockOk    = selftest == kUnlockPassed;
+    const bool    flashTestOk = eraseTest >= 0 && (eraseTest & kFlashTestPassed) == kFlashTestPassed;
 
     const uint32_t stagingUsed = wrist_flash_staging_used();
 
-    const char* armText = "no (dry run)";
-    switch (arm) {
-        case ArmState::Absent:      armText = "no (dry run)"; break;
-        case ArmState::Unparseable: armText = "PRESENT BUT UNREADABLE"; break;
-        case ArmState::Mismatch:    armText = "PRESENT BUT NAMES ANOTHER IMAGE"; break;
-        case ArmState::Confirmed:   armText = "YES, crc confirmed"; break;
+    mVerdict.code      = 0;
+    mVerdict.crc       = crc;
+    mVerdict.length    = static_cast<uint32_t>(length);
+    mVerdict.firstPage = plan.firstPage;
+    mVerdict.pages     = plan.pages;
+    if (planCode != 0) {
+        mVerdict.state = State::Refused;
+        mVerdict.code  = planCode;
+    } else if (!unlockOk) {
+        mVerdict.state = State::UnlockFailed;
+        mVerdict.code  = selftest;
+    } else if (!flashTestOk) {
+        mVerdict.state = State::FlashTestFailed;
+        mVerdict.code  = eraseTest;
+    } else {
+        mVerdict.state = State::Ready;
     }
 
     const int written = snprintf(
@@ -145,9 +164,8 @@ void Service::install()
         "padded len : %lu\n"
         "quadwords  : %lu\n"
         "staging    : bank 2 pages %u-%u, %lu of %u not blank now\n"
-        "%s       : %s\n"
-        "arm names  : %08lX\n"
         "unlock test: %ld %s\n"
+        "flash test : %08lX %s\n"
         "%s\n",
         kImageFile, static_cast<unsigned>(length),
         static_cast<unsigned long>(crc),
@@ -160,14 +178,13 @@ void Service::install()
         static_cast<unsigned>(kStagingFirstPage),
         static_cast<unsigned>(kStagingFirstPage + kStagingPages - 1u),
         static_cast<unsigned long>(stagingUsed), static_cast<unsigned>(kStagingPages),
-        kArmFile, armText,
-        static_cast<unsigned long>(armCrc),
         static_cast<long>(selftest),
-        selftest == 3 ? "(unlock OK, re-unlock OK)" : "(FAILED -- will not commit)",
-        planCode != 0                     ? "refused, nothing written"
-        : arm == ArmState::Confirmed      ? "installing: staging in bank 2, then the vendor kernel is replaced"
-        : arm == ArmState::Absent         ? "dry run only, nothing written"
-                                          : "refused: arm file does not confirm this image");
+        unlockOk ? "(unlock OK, re-unlock OK)" : "(FAILED -- will not commit)",
+        static_cast<unsigned long>(eraseTest),
+        flashTestOk ? "(passed)" : "(FAILED -- will not commit)",
+        planCode != 0                    ? "refused, nothing written"
+        : mVerdict.state != State::Ready ? "refused: a self-test failed, nothing replaced"
+                                         : "dry run passed; installs only on the confirm on screen");
     int total = (written > 0) ? written : 0;
     if (total > 0 && static_cast<size_t>(total) < sizeof(gLog)) {
         const int extra = describeFlash(gLog + total, sizeof(gLog) - static_cast<size_t>(total));
@@ -181,8 +198,8 @@ void Service::install()
             }
         }
         if (static_cast<size_t>(total) < sizeof(gLog)) {
-            const int prot =
-                describeProtection(gLog + total, sizeof(gLog) - static_cast<size_t>(total));
+            const int prot = describeProtection(gLog + total, sizeof(gLog) - static_cast<size_t>(total),
+                                                eraseTest);
             if (prot > 0) {
                 total += prot;
             }
@@ -193,43 +210,55 @@ void Service::install()
                                                                  : sizeof(gLog) - 1);
     }
 
-    if (planCode != 0) {
-        LOG_INFO("refused, plan code %ld\n", static_cast<long>(planCode));
-        mGlanceValue.print("refused %ld", static_cast<long>(planCode));
+    LOG_INFO("dry run: state %u, code %ld, page %u, %u page(s), crc %08lX\n",
+             static_cast<unsigned>(mVerdict.state), static_cast<long>(mVerdict.code),
+             static_cast<unsigned>(plan.firstPage), static_cast<unsigned>(plan.pages),
+             static_cast<unsigned long>(crc));
+}
+
+void Service::install(uint32_t confirmedCrc)
+{
+    using InstallerMessage::State;
+
+    // One confirm per run: whatever it leads to, the next one needs the app opened again.
+    if (mConfirmed) {
+        return;
+    }
+    mConfirmed = true;
+
+    if (!mChecked || mVerdict.state != State::Ready || confirmedCrc != mVerdict.crc) {
+        LOG_INFO("refused: confirm for %08lX, dry run state %u for %08lX\n",
+                 static_cast<unsigned long>(confirmedCrc), static_cast<unsigned>(mVerdict.state),
+                 static_cast<unsigned long>(mVerdict.crc));
+        mVerdict.state = State::Refused;
+        mVerdict.code  = kErrNotConfirmed;
+        report();
         return;
     }
 
-    if (arm == ArmState::Absent) {
-        LOG_INFO("dry run: page %u, %u page(s), crc %08lX\n",
-                 static_cast<unsigned>(plan.firstPage), static_cast<unsigned>(plan.pages),
-                 static_cast<unsigned long>(crc));
-        mGlanceValue.print("ready %08lX", static_cast<unsigned long>(crc));
+    const IsolationGate::Verdict isolation = IsolationGate::check();
+    if (isolation != IsolationGate::Verdict::Allowed) {
+        LOG_INFO("refused: firmware isolates apps (%u)\n", static_cast<unsigned>(isolation));
+        mVerdict.state = State::Isolated;
+        mVerdict.code  = static_cast<int32_t>(isolation);
+        report();
         return;
     }
 
-    if (arm != ArmState::Confirmed) {
-        LOG_INFO("refused: %s %s (names %08lX, image is %08lX)\n", kArmFile, armText,
-                 static_cast<unsigned long>(armCrc), static_cast<unsigned long>(crc));
-        mGlanceValue.setText(arm == ArmState::Mismatch ? "arm mismatch" : "arm unreadable");
+    const uint32_t crc    = mVerdict.crc;
+    const size_t   length = imageSize();
+    if (length != mVerdict.length) {
+        LOG_INFO("refused: %s changed since the dry run\n", kImageFile);
+        mVerdict.state = State::Refused;
+        mVerdict.code  = kErrImageChanged;
+        report();
         return;
     }
 
-    // Removed before committing: a success never returns, and an arm file that survived would install again.
-    const bool consumed = mKernel.fs.remove(kArmFile);
-    if (selftest != 3) {
-        LOG_INFO("refusing to commit: unlock self-test returned %ld\n",
-                 static_cast<long>(selftest));
-        mGlanceValue.print("unlock %ld", static_cast<long>(selftest));
-        return;
-    }
-
-    LOG_INFO("%s %s; staging %u bytes for %08lX\n", kArmFile,
-             consumed ? "consumed" : "COULD NOT BE REMOVED", static_cast<unsigned>(length),
+    mVerdict.state = State::Installing;
+    report();
+    LOG_INFO("confirmed; staging %u bytes for %08lX\n", static_cast<unsigned>(length),
              static_cast<unsigned long>(kKernelBase));
-    if (!consumed) {
-        mGlanceValue.setText("arm stuck");
-        return;
-    }
 
     // Staged while the kernel's filesystem, which the commit erases, is still here.
     const int32_t  staged    = stageImage(length, crc);
@@ -251,7 +280,9 @@ void Service::install()
     writeFile(kStageLogFile, gLog, static_cast<size_t>(stageLen));
     if (staged != 0) {
         LOG_INFO("staging refused, code %ld\n", static_cast<long>(staged));
-        mGlanceValue.print("refused %ld", static_cast<long>(staged));
+        mVerdict.state = State::Refused;
+        mVerdict.code  = staged;
+        report();
         return;
     }
 
@@ -264,7 +295,9 @@ void Service::install()
     if (again > 0 && static_cast<size_t>(stageLen + again) < sizeof(gLog)) {
         writeFile(kStageLogFile, gLog, static_cast<size_t>(stageLen + again));
     }
-    mGlanceValue.print("refused %ld", static_cast<long>(code));
+    mVerdict.state = State::Refused;
+    mVerdict.code  = code;
+    report();
 }
 
 int Service::describeDebugPath(char* out, size_t capacity)
@@ -317,10 +350,8 @@ int Service::describeDebugPath(char* out, size_t capacity)
                     pc4Idr);
 }
 
-int Service::describeProtection(char* out, size_t capacity)
+int Service::describeProtection(char* out, size_t capacity, int32_t st_erase)
 {
-    // Writes flash: a scratch page in bank 2 (crates/wrist-flash).
-    const int32_t st_erase = wrist_flash_erase_selftest();
 
     const volatile uint32_t* f = reinterpret_cast<const volatile uint32_t*>(kFlashBase);
     const uint32_t nssr   = f[0x20 / 4];
@@ -457,65 +488,6 @@ int Service::describeFlash(char* out, size_t capacity)
                     static_cast<unsigned long>(kn[0]), static_cast<unsigned long>(kn[1]));
 }
 
-Service::ArmState Service::readArm(uint32_t expectedCrc, uint32_t& found)
-{
-    auto f = mKernel.fs.file(kArmFile);
-    if (!f || !f->exist()) {
-        return ArmState::Absent;
-    }
-
-    // Anything but exactly one 8-digit CRC refuses, so a typo or a truncated write never installs.
-    const size_t size = f->size();
-    if (size == 0 || size > kArmFileMax) {
-        return ArmState::Unparseable;
-    }
-    if (!f->open(false, false)) {
-        return ArmState::Unparseable;
-    }
-    char   buffer[kArmFileMax + 1] = {};
-    size_t read                    = 0;
-    const bool ok                  = f->read(buffer, size, read);
-    f->close();
-    if (!ok || read == 0) {
-        return ArmState::Unparseable;
-    }
-    buffer[read] = '\0';
-
-    const char* p = buffer;
-    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') {
-        ++p;
-    }
-    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
-        p += 2;
-    }
-
-    uint32_t value  = 0;
-    unsigned digits = 0;
-    for (; *p != '\0'; ++p) {
-        uint32_t nibble;
-        if (*p >= '0' && *p <= '9') {
-            nibble = static_cast<uint32_t>(*p - '0');
-        } else if (*p >= 'a' && *p <= 'f') {
-            nibble = static_cast<uint32_t>(*p - 'a') + 10u;
-        } else if (*p >= 'A' && *p <= 'F') {
-            nibble = static_cast<uint32_t>(*p - 'A') + 10u;
-        } else {
-            break;
-        }
-        if (digits == 8u) {
-            return ArmState::Unparseable;
-        }
-        value = (value << 4) | nibble;
-        ++digits;
-    }
-    if (digits != 8u) {
-        return ArmState::Unparseable;
-    }
-
-    found = value;
-    return (value == expectedCrc) ? ArmState::Confirmed : ArmState::Mismatch;
-}
-
 size_t Service::imageSize()
 {
     auto f = mKernel.fs.file(kImageFile);
@@ -596,47 +568,4 @@ bool Service::writeFile(const char* name, const char* text, size_t length)
     f->flush();
     f->close();
     return ok && written == length;
-}
-
-void Service::onGlanceTick()
-{
-    if (mGlanceUI.isInvalid()) {
-        if (auto upd = SDK::make_msg<SDK::Message::RequestGlanceUpdate>(mKernel)) {
-            upd->name           = APP_NAME;
-            upd->controls       = mGlanceUI.data();
-            upd->controlsNumber = static_cast<uint32_t>(mGlanceUI.size());
-            upd.send(100);
-        }
-        mGlanceUI.setValid();
-    }
-}
-
-bool Service::configGui()
-{
-    if (auto gc = SDK::make_msg<SDK::Message::RequestGlanceConfig>(mKernel)) {
-        if (gc.send(100) && gc.ok() && gc->maxControls >= 2) {
-            mGlanceUI.setWidth(gc->width);
-            mGlanceUI.setHeight(gc->height);
-            return true;
-        }
-    }
-    return false;
-}
-
-void Service::createGuiControls()
-{
-    mGlanceTitle = mGlanceUI.createText();
-    mGlanceTitle.pos({kTitleX, kTitleY}, {kTitleW, kTitleH})
-        .font(GlanceFont_t::GLANCE_FONT_POPPINS_SEMIBOLD_20)
-        .color(GlanceColor_t::GLANCE_COLOR_TEAL)
-        .setText("Install")
-        .alignment(GlanceAlignH_t::GLANCE_ALIGN_H_CENTER);
-
-    mGlanceValue = mGlanceUI.createText();
-    // The largest Poppins SemiBold in which `ready` and eight hex digits fit kValueW.
-    mGlanceValue.pos({kValueX, kValueY}, {kValueW, kValueH})
-        .font(GlanceFont_t::GLANCE_FONT_POPPINS_SEMIBOLD_20)
-        .color(GlanceColor_t::GLANCE_COLOR_WHITE)
-        .setText("...")
-        .alignment(GlanceAlignH_t::GLANCE_ALIGN_H_CENTER);
 }
