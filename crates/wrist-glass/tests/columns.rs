@@ -1,4 +1,4 @@
-use wrist_glass::pages::{compose, render, Clock, Date, Status};
+use wrist_glass::pages::{compose, render, Clock, Date, Status, EN_GB};
 use wrist_glass::text::Glass;
 use wrist_glass::{HEIGHT, WIDTH};
 
@@ -11,7 +11,7 @@ fn glass(h: u8, m: u8, day: u8, soc_pct: Option<u8>) -> Glass {
         date: Some(Date { year: 2026, month: 10, day }),
         soc_pct,
     };
-    compose(&status).0
+    compose(&status, &EN_GB).0
 }
 
 fn pixels(g: &Glass) -> Vec<u8> {

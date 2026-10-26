@@ -2,7 +2,7 @@
 
 use inscribed_disc::audit::off_glass;
 use inscribed_disc::{Abgr2222, Clip, Surface};
-use wrist_glass::pages::{compose, compose_about, compose_battery, render, About, Battery, Clock, Date, Short, Status};
+use wrist_glass::pages::{compose, compose_about, compose_battery, render, About, Battery, Clock, Date, Short, Status, EN_GB};
 use wrist_glass::text::Glass;
 use wrist_glass::{ring, HEIGHT, MARGIN, RING_INSET, RING_STROKE, WIDTH};
 
@@ -45,14 +45,14 @@ fn typical() -> Status {
 
 /// Every page at its extremes: the face's cases, then the battery and about pages'.
 fn every_page() -> Vec<(String, (Glass, Short))> {
-    let mut all: Vec<_> = cases().into_iter().map(|(name, s)| (format!("face-{name}"), compose(&s))).collect();
+    let mut all: Vec<_> = cases().into_iter().map(|(name, s)| (format!("face-{name}"), compose(&s, &EN_GB))).collect();
     let batteries = [
         ("max", Battery { soc_pct: Some(u8::MAX), cell_mv: Some(65_535), external: Some(false) }),
         ("min", Battery { soc_pct: Some(0), cell_mv: Some(0), external: Some(true) }),
         ("none", Battery::default()),
     ];
     for (name, b) in batteries {
-        all.push((format!("battery-{name}"), compose_battery(&b)));
+        all.push((format!("battery-{name}"), compose_battery(&b, &EN_GB)));
     }
     let abouts = [
         ("release", About { version: "0.1.0", build: "5784ec72019b" }),
@@ -62,7 +62,7 @@ fn every_page() -> Vec<(String, (Glass, Short))> {
         ("long-build", About { version: "0.1.0", build: "a-name-longer-than-two-lines" }),
     ];
     for (name, a) in abouts {
-        all.push((format!("about-{name}"), compose_about(&a)));
+        all.push((format!("about-{name}"), compose_about(&a, &EN_GB)));
     }
     all
 }
@@ -102,7 +102,7 @@ fn lines_do_not_overlap() {
 
 #[test]
 fn the_face_is_centred() {
-    let (glass, _) = compose(&typical());
+    let (glass, _) = compose(&typical(), &EN_GB);
     let lines = glass.lines();
     let top = lines.iter().map(|l| l.top).min().unwrap();
     let bottom = lines.iter().map(|l| l.top + 7 * l.scale as i32).max().unwrap();
@@ -161,39 +161,39 @@ fn a_wrong_sized_buffer_draws_nothing() {
 
 #[test]
 fn the_face_reads_right() {
-    let (glass, _) = compose(&typical());
+    let (glass, _) = compose(&typical(), &EN_GB);
     assert_eq!(texts(&glass), ["Sat 17 Oct", "16:27", "100 %"]);
     assert_eq!(glass.lines()[1].scale, 7);
-    let (glass, _) = compose(&Status::default());
+    let (glass, _) = compose(&Status::default(), &EN_GB);
     assert_eq!(texts(&glass), ["set time", "--:--", "-- %"]);
     let a_second_later = Status { clock: Some(Clock { h: 16, m: 27, s: 34 }), ..typical() };
-    assert_eq!(compose(&typical()).0, compose(&a_second_later).0);
+    assert_eq!(compose(&typical(), &EN_GB).0, compose(&a_second_later, &EN_GB).0);
 }
 
 #[test]
 fn the_pages_read_right() {
-    let (glass, _) = compose_battery(&Battery { soc_pct: Some(87), cell_mv: Some(4012), external: Some(false) });
+    let (glass, _) = compose_battery(&Battery { soc_pct: Some(87), cell_mv: Some(4012), external: Some(false) }, &EN_GB);
     assert_eq!(texts(&glass), ["BATTERY", "87 %", "4012 mV", "input cell"]);
-    let (glass, _) = compose_battery(&Battery::default());
+    let (glass, _) = compose_battery(&Battery::default(), &EN_GB);
     assert_eq!(texts(&glass), ["BATTERY", "-- %", "-- mV", "input ?"]);
-    let (glass, _) = compose_about(&About { version: "0.1.0", build: "5784ec72019b" });
+    let (glass, _) = compose_about(&About { version: "0.1.0", build: "5784ec72019b" }, &EN_GB);
     assert_eq!(texts(&glass), ["ABOUT", "wrist-rs", "0.1.0", "5784EC72019B"]);
-    let (glass, _) = compose_about(&About { version: "0.1.0", build: "5784ec72019b-dirty" });
+    let (glass, _) = compose_about(&About { version: "0.1.0", build: "5784ec72019b-dirty" }, &EN_GB);
     assert_eq!(texts(&glass), ["ABOUT", "wrist-rs", "0.1.0", "5784EC72019B", "DIRTY"]);
-    let (glass, _) = compose_about(&About { version: "0.1.0", build: "gate-test" });
+    let (glass, _) = compose_about(&About { version: "0.1.0", build: "gate-test" }, &EN_GB);
     assert_eq!(texts(&glass), ["ABOUT", "wrist-rs", "0.1.0", "GATE-TEST"]);
 }
 
 #[test]
 fn a_version_too_long_is_cut_and_says_so() {
-    let (glass, short) = compose_about(&About { version: "0.10.0-rc.10", build: "5784ec72019b" });
+    let (glass, short) = compose_about(&About { version: "0.10.0-rc.10", build: "5784ec72019b" }, &EN_GB);
     assert_eq!(texts(&glass)[2], "0.10.0-rc.1");
     assert_ne!(short, 0);
 }
 
 #[test]
 fn a_build_name_too_long_is_cut_and_says_so() {
-    let (glass, short) = compose_about(&About { version: "0.1.0", build: "a-name-longer-than-two-lines" });
+    let (glass, short) = compose_about(&About { version: "0.1.0", build: "a-name-longer-than-two-lines" }, &EN_GB);
     assert_eq!(texts(&glass)[3..], ["A-NAME-LONGE", "R-THAN-TWO-L"]);
     assert_ne!(short, 0);
 }

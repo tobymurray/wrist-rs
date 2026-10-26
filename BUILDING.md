@@ -60,6 +60,9 @@ cargo clippy --release
 `target/tmp/wrist-glass/`. `cargo run -p wrist-installer-ui --features preview --example
 screens -- release/images` redraws the installer's screens that the install guide shows.
 
+After editing [`l10n/`](l10n), `cargo run -p wrist-l10n-gen` regenerates the messages
+and locale tables; `cargo test --workspace` fails until it has been run.
+
 [`tools/extract_pinmap.py`](tools/extract_pinmap.py), which needs `pdftotext`, regenerates
 [`crates/wrist-board/src/pins.rs`](crates/wrist-board/src/pins.rs) from the UNAcore schematic.
 

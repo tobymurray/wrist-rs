@@ -871,17 +871,24 @@ async fn display(mut bus: pmic::AsyncBus, mut pwr_int: ExtiInput<'static, Async>
 }
 
 fn compose_page(page: Page, soc_pct: Option<u8>, cell_mv: Option<u32>) -> (Glass, pages::Short) {
+    let locale = &pages::EN_GB;
     match page {
-        Page::Face => pages::compose(&glass::status(soc_pct)),
-        Page::Battery => pages::compose_battery(&pages::Battery {
-            soc_pct,
-            cell_mv,
-            external: power::external_input(),
-        }),
-        Page::About => pages::compose_about(&pages::About {
-            version: version::VERSION,
-            build: version::BUILD_ID,
-        }),
+        Page::Face => pages::compose(&glass::status(soc_pct), locale),
+        Page::Battery => pages::compose_battery(
+            &pages::Battery {
+                soc_pct,
+                cell_mv,
+                external: power::external_input(),
+            },
+            locale,
+        ),
+        Page::About => pages::compose_about(
+            &pages::About {
+                version: version::VERSION,
+                build: version::BUILD_ID,
+            },
+            locale,
+        ),
     }
 }
 

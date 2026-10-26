@@ -40,6 +40,18 @@ pub const fn capacity_at(top: i32, scale: u32) -> usize {
     ((chord as u32 + scale) / (6 * scale)) as usize
 }
 
+/// The most glyphs a line at `top` and `scale` can hold: what the glass allows there, up to
+/// [`MAX_COLS`].
+#[must_use]
+pub const fn room_at(top: i32, scale: u32) -> usize {
+    let c = capacity_at(top, scale);
+    if c < MAX_COLS {
+        c
+    } else {
+        MAX_COLS
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Overflow {
     /// The whole content's length.
@@ -68,39 +80,40 @@ impl<const N: usize> Line<N> {
         }
     }
 
-    /// # Errors
-    /// [`Overflow`] when it did not all fit; what fitted is kept.
-    pub fn push(&mut self, s: &str) -> Result<(), Overflow> {
+    /// Words come only through [`wrist_l10n::Sink`].
+    fn push(&mut self, s: &str) -> Result<(), Overflow> {
         push_into(&mut self.buf, &mut self.len, s.as_bytes())
     }
 
     /// # Errors
-    /// As [`Line::push`].
+    /// [`Overflow`] when it did not all fit; what fitted is kept.
     pub fn push_i32(&mut self, value: i32) -> Result<(), Overflow> {
         let mut digits = [0u8; 11];
         self.push(fmt_i32(&mut digits, value))
     }
 
     /// # Errors
-    /// As [`Line::push`].
+    /// As [`Line::push_i32`].
     pub fn push_u32(&mut self, value: u32) -> Result<(), Overflow> {
         let mut digits = [0u8; 11];
         self.push(fmt_u32(&mut digits, value))
     }
 
+    /// Data, not words.
+    ///
     /// # Errors
-    /// As [`Line::push`].
-    pub fn push_bytes(&mut self, s: &[u8]) -> Result<(), Overflow> {
+    /// As [`Line::push_i32`].
+    pub fn push_verbatim(&mut self, s: &[u8]) -> Result<(), Overflow> {
         push_into(&mut self.buf, &mut self.len, s)
     }
 
     /// `v % 100` as exactly two digits.
     ///
     /// # Errors
-    /// As [`Line::push`].
+    /// As [`Line::push_i32`].
     pub fn push_two_digits(&mut self, v: u8) -> Result<(), Overflow> {
         let v = v % 100;
-        self.push_bytes(&[b'0' + v / 10, b'0' + v % 10])
+        self.push_verbatim(&[b'0' + v / 10, b'0' + v % 10])
     }
 
     #[must_use]
@@ -155,6 +168,22 @@ pub fn fmt_i32(buf: &mut [u8; 11], value: i32) -> &str {
         buf[i] = b'-';
     }
     core::str::from_utf8(&buf[i..]).unwrap_or("?")
+}
+
+impl<const N: usize> wrist_l10n::Sink for Line<N> {
+    type Error = Overflow;
+
+    fn text(&mut self, s: &str) -> Result<(), Overflow> {
+        self.push(s)
+    }
+
+    fn number(&mut self, n: u32) -> Result<(), Overflow> {
+        self.push_u32(n)
+    }
+
+    fn two_digits(&mut self, n: u8) -> Result<(), Overflow> {
+        self.push_two_digits(n)
+    }
 }
 
 pub const MAX_LINES: usize = 8;
