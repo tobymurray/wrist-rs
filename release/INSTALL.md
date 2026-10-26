@@ -37,13 +37,13 @@ tobymurray/wrist-rs` shows which workflow and commit built it.
 
 ## Stock to wrist-rs
 
-<img src="images/stock-to-wrist-rs.svg" width="720" alt="From the stock firmware to wrist-rs: open wrist-rs Setup, its dry run reads Checking, then the image CRC; hold Select 3 s; Installing; wrist-rs">
+<img src="images/stock-to-wrist-rs.svg" width="720" alt="From the stock firmware to wrist-rs: open Wrist-rs, its dry run reads Checking, then the image CRC; hold Select 3 s; Installing; wrist-rs">
 
 1. Connect the data cable. Stock firmware shows the watch's storage as a USB drive (not
    `UNA BOOT`, which is the recovery's drive).
 2. In `Apps/ImageInstaller/` on the watch, back up and then remove any older installer,
    `Install_*.uapp` or `wrist-rs-installer_*.uapp`, and any `ARM_INSTALL` and old logs.
-   Copy the **wrist-rs Setup** app, the package's `first-install/Apps/ImageInstaller/`,
+   Copy the **Wrist-rs** app, the package's `first-install/Apps/ImageInstaller/`,
    into it: exactly `wrist-rs-installer_VERSION.uapp` and `image.bin`. Neither `app.bin`
    nor `image.bin` is an `.ota`. From the extracted package, with `WATCH` set to where the
    watch's drive is mounted:
@@ -56,7 +56,7 @@ tobymurray/wrist-rs` shows which workflow and commit built it.
    ```
 
 3. Eject the drive safely, unplug, and restart the watch: stock finds a newly copied app
-   only when it starts. Then open **wrist-rs Setup** from the launcher, on battery. It
+   only when it starts. Then open **Wrist-rs** from the launcher, on battery. It
    reads `Checking` while it runs its dry run, which checks the image and tests flash
    without replacing anything. A passing dry run shows eight hex digits, the wrist-rs
    image's CRC-32, and "Dry run passed": they should be the digits in `INSTALL-CRC.txt`.
@@ -72,7 +72,7 @@ tobymurray/wrist-rs` shows which workflow and commit built it.
    bank 2 pages 128 to 195, a successful unlock test and flash test, and `dry run passed`.
    If the log is missing, anything mismatches, or it refused: stop, remove the installer's
    files from the watch, and keep the logs.
-5. Only once the dry run is right: eject, unplug, and open **wrist-rs Setup** again. It
+5. Only once the dry run is right: eject, unplug, and open **Wrist-rs** again. It
    runs the dry run again, and installs only from a dry run that passes in the same run. When it
    shows the CRC from `INSTALL-CRC.txt`, **press and hold Select**, which the screen
    marks in amber. The screen reads "Hold

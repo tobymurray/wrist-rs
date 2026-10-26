@@ -27,7 +27,7 @@ def raw(addr, size=64):
 def uapp(version=0x010203, flags=0x01, icons=b'\x41', gui=16):
     """A utility .uapp: header, 60x60 and 30x30 icons, an 8-byte service, then the GUI."""
     b = struct.pack('<QIIII16sII', 0x854CD3EFBD7BA411, version, 3, 8, flags,
-                    b'wrist-rs Setup', 3600, 900) + icons * 3600 + icons * 900 + b'UAPP' + bytes(4) \
+                    b'Wrist-rs', 3600, 900) + icons * 3600 + icons * 900 + b'UAPP' + bytes(4) \
         + (b'UAPP' + bytes(gui - 4) if gui else b'')
     return b + struct.pack('<I', zlib.crc32(b))
 

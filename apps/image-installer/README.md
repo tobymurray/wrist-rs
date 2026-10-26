@@ -5,7 +5,7 @@ and application, the image [`tools/combine-image.py`](../../tools/combine-image.
 [release/README.md](../../release/README.md) builds it, and
 [release/INSTALL.md](../../release/INSTALL.md) is how to use it.
 
-It appears in the launcher as **wrist-rs Setup**, and its file is
+It appears in the launcher as **Wrist-rs**, and its file is
 `wrist-rs-installer_VERSION.uapp`. Its one input is `image.bin`, in this app's folder on the
 watch beside the `.uapp`.
 
@@ -19,7 +19,7 @@ rules, the text of each verdict and the drawing, all tested on the host. It runs
 SDK's CustomGUI entry point, behind the C++ shell in [`GUI/`](GUI), which carries the kernel's
 messages to it and sends the confirm it asks for.
 
-1. **Opening wrist-rs Setup from the launcher** starts the service, then the GUI. Once the GUI is
+1. **Opening Wrist-rs from the launcher** starts the service, then the GUI. Once the GUI is
    up, the service runs the dry run: the isolation gate, reading `image.bin` and its
    CRC-32, the plan, the flash unlock self-test and an erase-and-program self-test on a
    scratch page in bank 2. It writes `install.log` and reports to the screen.
@@ -97,5 +97,5 @@ The release recipe builds it against the SDK commit in
 [`release/toolchain.json`](../../release/toolchain.json). Its CMake builds the two Rust
 halves as static libraries from the repository's workspace, `wrist-flash` for the service and
 `wrist-installer-ui` for the GUI, each with its own panic handler.
-[`Resources/make-icons.py`](Resources/make-icons.py) draws the launcher icons a utility app
-needs.
+[`Resources/make-icons.py`](Resources/make-icons.py) renders the launcher icons a utility app
+needs from the project's mark, [`release/images/icon.svg`](../../release/images/icon.svg).

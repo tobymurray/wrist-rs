@@ -127,7 +127,7 @@ def validate_uapp(data, version):
     major, minor, patch = map(int, version.split('-')[0].split('.'))
     require(appid == 0x854CD3EFBD7BA411 and ver == major << 16 | minor << 8 | patch,
             'uapp identity/version mismatch')
-    require(abi == 3 and flags == UAPP_TYPE_UTILITY and name.rstrip(b'\0') == b'wrist-rs Setup',
+    require(abi == 3 and flags == UAPP_TYPE_UTILITY and name.rstrip(b'\0') == b'Wrist-rs',
             'uapp ABI/type mismatch')
     require(large == 3600 and small == 900, 'uapp icon sizes mismatch')
     require(any(data[48:48 + large]) and any(data[48 + large:48 + large + small]), 'uapp without icons')

@@ -72,12 +72,13 @@ bool Gui::act(uint32_t reply, uint32_t crc)
         mKernel.sys.exit(0);
         return true;
     }
+    // Drawn before the confirm goes: staging starts on it and can keep this frame off the glass.
+    if ((reply & WRIST_INSTALLER_UI_REDRAW) != 0u) {
+        renderAndPush();
+    }
     if ((reply & WRIST_INSTALLER_UI_CONFIRM) != 0u) {
         LOG_INFO("confirm sent for %08lX\n", static_cast<unsigned long>(crc));
         SDK::send_msg<InstallerMessage::Confirm>(mKernel, crc);
-    }
-    if ((reply & WRIST_INSTALLER_UI_REDRAW) != 0u) {
-        renderAndPush();
     }
     return false;
 }

@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.21)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/build")
 
 set(APP_NAME "ImageInstaller")
-set(APP_USER_NAME "wrist-rs Setup")
+set(APP_USER_NAME "Wrist-rs")
 set(APP_FILE_NAME "wrist-rs-installer")
 # A utility app is started from the launcher, so its service runs only when someone opens it,
 # and its GUI asks for the confirm on screen.

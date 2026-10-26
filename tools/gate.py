@@ -524,8 +524,8 @@ class Gate:
         self.eject(step, drive)
         self.do(step, 'unplug and restart the watch, then open the launcher on battery')
         crc = self.m['image_crc32']
-        self.ask(step, 'the launcher lists wrist-rs Setup?')
-        self.do(step, 'open wrist-rs Setup and wait for Checking to end')
+        self.ask(step, 'the launcher lists Wrist-rs?')
+        self.do(step, 'open Wrist-rs and wait for Checking to end')
         self.ask(step, f'the screen shows {crc} and "Dry run passed"?')
         self.do(step, 'press Back to leave, then plug the cable in')
         drive = self.drive(step, lambda v: (v / 'Apps/ImageInstaller/install.log').is_file())
@@ -540,11 +540,11 @@ class Gate:
         drive = drive or self.drive(step, lambda v: (v / 'Apps/ImageInstaller').is_dir())
         self.eject(step, drive)
         crc = self.m['image_crc32']
-        self.do(step, f'unplug, open wrist-rs Setup, and once it shows {crc}, hold Select until it reads Installing')
+        self.do(step, f'unplug, open Wrist-rs, and once it shows {crc}, hold Select until it reads Installing')
         shown = input(f'\n>>> step {step}: how many seconds did Installing stay on screen? ').strip()
         self.log(f'  step {step}: Installing on screen {shown} s')
         self.do(step, 'plug the cable back in once wrist-rs shows its face')
-        self.installed(step, 'the candidate from stock, with wrist-rs Setup\'s hold')
+        self.installed(step, 'the candidate from stock, with Wrist-rs\'s hold')
         self.version_is(step, self.m['build_id'])
 
     def step13(self):
@@ -557,11 +557,11 @@ class Gate:
         drive = self.drive14 or self.drive(15, lambda v: (v / 'Apps/ImageInstaller').is_dir())
         self.eject(15, drive)
         crc = self.m['image_crc32']
-        self.do(15, f'unplug, and open wrist-rs Setup until it shows {crc}')
+        self.do(15, f'unplug, and open Wrist-rs until it shows {crc}')
         for what in ['click Select once',
                      'hold Select for about two seconds and let go',
                      'hold Select, and press Back during the countdown',
-                     'press Back to leave; then hold Select from the launcher, opening wrist-rs Setup, '
+                     'press Back to leave; then hold Select from the launcher, opening Wrist-rs, '
                      'and keep holding through Checking until the ready screen appears']:
             self.do(15, what)
             self.ask(15, f'it did not install: the screen is back to {crc} and "Hold Select to install"?')

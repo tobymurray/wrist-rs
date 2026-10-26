@@ -110,7 +110,7 @@ are byte for byte the ones it ran, and the recipe holds the image to the install
 13. Back to that stock version, as in INSTALL.md ("Back to stock"). Stock starts and
     reports it.
 14. The dry run: INSTALL.md steps 1 to 4, with every check there passing. The launcher
-    lists **wrist-rs Setup**, and the screen shows `INSTALL-CRC.txt`'s digits.
+    lists **Wrist-rs**, and the screen shows `INSTALL-CRC.txt`'s digits.
 15. The confirm's refusals, each from a passing dry run: a click of Select; Select held for
     about two seconds and let go; Select held with Back pressed during the countdown; and
     Select held from the launcher, through `Checking`, until the ready screen appears.
