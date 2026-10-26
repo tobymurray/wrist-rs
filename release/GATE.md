@@ -61,9 +61,13 @@ The watch runs an earlier wrist-rs.
    `cmd page`: the longest time a task kept the executor is a few milliseconds at most.
 8. Buttons. A short press of each of Up, Down, Back and Select lights the face. `cmd "page
    light on"`, then a short press: the light goes off, and the next press lights the face
-   for 3 s. Hold Back until the watch restarts, then let go: it comes back to the face with
-   the time still right, and `report` shows `reset flags` naming only that reset, with no
-   `IWDG`. Select held on through a restart would continue into the bootloader's USB mode.
+   for 3 s. Pages: from the face, Down shows the battery (the charge, the voltage, `input
+   USB`), Down again about (the version and `build_id` in upper case), and Down again the
+   face; Up goes the other way, and Back returns to the face from either page. Left on the
+   battery page, the face comes back within 10 s. Hold Back until the watch restarts, then
+   let go: it comes back to the face with the time still right, and `report` shows `reset
+   flags` naming only that reset, with no `IWDG`. Select held on through a restart would
+   continue into the bootloader's USB mode.
 
 ### B. On battery
 
@@ -86,11 +90,11 @@ The watch runs an earlier wrist-rs.
 ### C. The update safety net
 
 12. `.venv/bin/python tools/wrist-update.py gate-test.bin --no-reset`, then unplug. Hold
-    Back until the watch restarts: the loader swaps `gate-test` in, and it starts on
-    battery with no computer to keep it. Once the face is back, wait 30 s, then hold Back
-    until it restarts again: the loader puts the previous image back. Plug in. `cmd
-    version` shows `build_id`, not `gate-test`, and `boot` shows
-    `state boot`.
+    Back until the watch restarts: the loader swaps `gate-test` in, and it starts on battery
+    with no computer to keep it. Once the face is back, Up shows about with `GATE-TEST`;
+    wait 30 s, then hold Back until it restarts again: the loader puts the previous image
+    back. Plug in. `cmd version` shows `build_id`, not `gate-test`, and `boot` shows `state
+    boot`.
 
 ### D. Stock and back: the full-size installer's round trip
 

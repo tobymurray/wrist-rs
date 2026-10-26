@@ -1,4 +1,4 @@
-# wrist-rs 0.1.0
+# wrist-rs 0.2.0
 
 | | |
 |---|---|
@@ -7,10 +7,20 @@
 | **Install guide** | [INSTALL.md](INSTALL.md) |
 
 A watch face for the UNA Watch that shows the time, the day and date, and the battery's
-charge, in place of the stock firmware. `manifest.json`, in the release zip, names this
-build's version and source commit.
+charge, with pages for the battery and the build, in place of the stock firmware.
+`manifest.json`, in the release zip, names this build's version and source commit.
 
 ## In this release
+
+New since 0.1.0:
+
+- Pages: Down steps from the face to the battery (charge, cell voltage, and whether it runs
+  from USB or the cell), then to about (the version and build ID), then back to the face. Up
+  steps the other way, Back returns to the face, and so do 10 s without a press.
+- The console no longer cuts the end off a line now and then, once every 8 KB of output.
+- The loader is unchanged: no loader update is needed.
+
+From 0.1.0:
 
 - The face, lit by a short press of any button.
 - Time kept across restarts and updates, set from a computer with
@@ -24,11 +34,7 @@ build's version and source commit.
 
 ## Checked on the watch
 
-On stock 1.6.1, with this build's package: the dry run, the install, and the way back to
-stock and in again; updates over USB, including a pulled cable and a killed tool, which
-leave the watch on its current version; the rollback of an image no computer keeps;
-the clock across restarts and daylight-saving changes; every button; and deep sleep on
-battery, at about 40 wakes a minute.
+To be written from this release's gate run ([GATE.md](GATE.md), step 21).
 
 ## Limits
 
@@ -38,4 +44,5 @@ battery, at about 40 wakes a minute.
   after a change of zone, or after a 16-second hold of Select, which clears the zone with
   the clock, run the tool again. It knows no zone names.
 - A short press lights the face for 3 s, or turns off a light switched on from the console.
+  Back and Select only light it; Up and Down also move between pages.
 - No stock apps, notifications, sensors, Bluetooth or activity storage.
