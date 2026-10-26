@@ -159,12 +159,11 @@ impl Interrupted {
     pub const fn name(&self) -> &'static str {
         match self.code {
             1 => "single write",
-            2 => "OTP write",
-            3 => "burst write",
-            4 => "page erase",
-            5 => "bank erase",
-            6 => "mass erase",
-            7 => "option change",
+            2 => "burst write",
+            3 => "page erase",
+            4 => "bank erase",
+            5 => "mass erase",
+            6 => "option change",
             _ => "reserved",
         }
     }
@@ -477,7 +476,7 @@ mod tests {
 
     #[test]
     fn an_interrupted_erase_names_its_bank_and_page() {
-        let r = Registers { opsr: (4 << 29) | (1 << 21) | 0x1_8800, ..reset() };
+        let r = Registers { opsr: (3 << 29) | (1 << 21) | 0x1_8800, ..reset() };
         let op = r.interrupted().unwrap();
         assert_eq!(op.name(), "page erase");
         assert!(op.bank2 && !op.system_flash);
