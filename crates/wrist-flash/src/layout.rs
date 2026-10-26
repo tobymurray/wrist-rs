@@ -28,7 +28,7 @@ pub mod bank2 {
 
     /// The stock kernel's pages in bank 2, as `plan::STOCK_KERNEL_BANK2_PAGES` bounds them.
     pub const STOCK_SPILL: Range<u16> = 0..24;
-    /// Never erased, being opposite the bootloader, either side of the self-test.
+    /// Never erased by wrist-rs, being opposite the bootloader, either side of the self-test.
     pub const UNERASED_LOW: Range<u16> = 24..34;
     pub const UNERASED_HIGH: Range<u16> = 35..48;
     /// The installer's erase self-test, the one erased page opposite the bootloader, so `hw.rs`

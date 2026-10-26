@@ -20,17 +20,18 @@ fn only_store_pages_are_store_pages() {
 #[test]
 fn every_length_fits_the_empty_store_up_to_the_maximum() {
     let blank = [Page::Blank; PAGES];
-    assert_eq!(plan_write(0, &blank), Err(Refusal::Empty));
+    let bytes = vec![0; MAX_PACK + 1];
+    assert_eq!(plan_write(&[], &blank), Err(Refusal::Empty));
     for len in (1..=MAX_PACK).step_by(7).chain([MAX_PACK]) {
-        let p = plan_write(len, &blank).unwrap();
+        let p = plan_write(&bytes[..len], &blank).unwrap();
         assert_eq!(p.first.index(), 0);
         assert_eq!(usize::from(p.pages), pages_for(len));
         assert!(p.pack_range().end <= usize::from(p.pages) * PAGE_SIZE, "{len}");
         assert_eq!(p.padded_len % QUADWORD, 0);
         assert!(p.padded_len >= len && p.padded_len < len + QUADWORD);
     }
-    assert_eq!(plan_write(MAX_PACK + 1, &blank), Err(Refusal::TooLarge));
-    assert_eq!(usize::from(plan_write(MAX_PACK, &blank).unwrap().pages), PAGES);
+    assert_eq!(plan_write(&bytes, &blank), Err(Refusal::TooLarge));
+    assert_eq!(usize::from(plan_write(&bytes[..MAX_PACK], &blank).unwrap().pages), PAGES);
 }
 
 /// A deterministic stream for occupancy patterns.
@@ -50,7 +51,7 @@ fn every_plan_stays_on_blank_store_pages_and_never_mirrors_the_boot_path() {
             }
         }
         let len = usize::try_from(lcg(&mut seed)).unwrap() % (12 * PAGE_SIZE) + 1;
-        match plan_write(len, &map) {
+        match plan_write(&vec![0; len], &map) {
             Ok(p) => {
                 let pages: Vec<StorePage> = p.erase_order().collect();
                 assert_eq!(pages.len(), usize::from(p.pages));
@@ -175,15 +176,19 @@ fn opsr(code: u32, bank2: bool, offset: u32) -> u32 {
 #[test]
 fn boot_erases_only_store_pages_it_was_told_of() {
     let page200 = 200 * 8192;
-    for code in [1, 3, 4] {
+    for code in [1, 2, 3] {
         let a = boot_actions(opsr(code, true, page200), 0, None);
         assert_eq!(a.erase_interrupted, StorePage::new(200));
         assert!(!a.interrupted_elsewhere);
     }
-    for o in [opsr(4, false, page200), opsr(4, true, 130 * 8192), opsr(3, false, 0x1000), opsr(7, true, page200), opsr(5, true, page200)] {
+    for o in [opsr(4, false, page200), opsr(3, true, 130 * 8192), opsr(3, false, 0x1000), opsr(7, true, page200)] {
         let a = boot_actions(o, 0, None);
         assert_eq!(a.erase_interrupted, None, "{o:08X}");
-        assert!(a.interrupted_elsewhere, "{o:08X}");
+        assert!(a.interrupted_elsewhere && !a.erase_store, "{o:08X}");
+    }
+    for o in [opsr(4, true, page200), opsr(4, true, 0), opsr(5, false, 0)] {
+        let a = boot_actions(o, 0, None);
+        assert!(a.erase_store && a.interrupted_elsewhere && a.erase_interrupted.is_none(), "{o:08X}");
     }
     assert_eq!(boot_actions(0, 0, None), BootActions::default());
     assert_eq!(boot_actions(0, 0, Some(210)).erase_quarantined, StorePage::new(210));
@@ -279,7 +284,7 @@ impl Step {
                 let at = p.index() * PAGE_SIZE;
                 f.0[at..at + PAGE_SIZE / 2].fill(0xFF);
                 f.1 = Some(*p);
-                opsr(4, true, p.bank_offset())
+                opsr(3, true, p.bank_offset())
             }
             Step::Program(at, bytes) => {
                 let half = bytes.len() / 2 / QUADWORD * QUADWORD;
@@ -300,7 +305,7 @@ const CHUNK: usize = 4096;
 
 /// The steps of writing `pack`, planned on `map` as the firmware would.
 fn write(map: &[Page; PAGES], pack: &[u8], locale: u8) -> Vec<Step> {
-    let plan = plan_write(pack.len(), map).unwrap();
+    let plan = plan_write(pack, map).unwrap();
     let base = plan.first.index() * PAGE_SIZE;
     let mut padded = pack.to_vec();
     padded.resize(plan.padded_len, 0xFF);
@@ -355,7 +360,7 @@ fn recovers(mut f: Flash, pack: &[u8], locale: u8) {
         (0..PAGES).filter(|&i| mounted(&map, i)).map(|i| if let Page::Pack(p) = map[i] { usize::from(p.record.pages) } else { 0 }).sum();
     assert_eq!(held, owned, "every page held belongs to a mounted pack");
     let before = packs(&map);
-    if plan_write(pack.len(), &map) == Err(Refusal::NoSpace) {
+    if plan_write(pack, &map) == Err(Refusal::NoSpace) {
         run(&mut f, &retire(&map, locale));
         let steps = reclaim(&f.map());
         run(&mut f, &steps);
@@ -415,7 +420,7 @@ fn replacing_a_pack_in_a_full_store_never_shows_half_and_never_brings_the_old_ba
     let steps = write(&flash.map(), &filler, 9);
     run(&mut flash, &steps);
     assert_eq!(flash.mounted(), [(4, crc32(&old)), (9, crc32(&filler))]);
-    assert_eq!(plan_write(new.len(), &flash.map()), Err(Refusal::NoSpace));
+    assert_eq!(plan_write(&new, &flash.map()), Err(Refusal::NoSpace));
 
     // Retire the old pack, reclaim its pages, and write the new one there.
     let mut sim = flash.clone();
@@ -445,30 +450,33 @@ fn replacing_a_pack_in_a_full_store_never_shows_half_and_never_brings_the_old_ba
 }
 
 #[test]
-fn a_record_inside_a_pack_is_never_read() {
-    // The image of a store page holding a small pack, as it would sit at store page `at`.
-    let image = |at: usize| {
-        let inner = vec![0x5A; 1000];
-        let first = StorePage::nth(at).unwrap();
-        let record = CommitRecord { locale: 7, pages: 1, len: 1000, sequence: 99, pack_crc: crc32(&inner) };
-        let mut img = vec![0xFF; COMMIT_AREA];
-        img[..RECORD_LEN].copy_from_slice(&record.encode(first));
-        img.extend(inner);
-        img
+fn a_pack_that_would_begin_a_page_as_a_record_does_is_refused() {
+    let blank = [Page::Blank; PAGES];
+    let inner = vec![0x5A; 1000];
+    let record = CommitRecord { locale: 7, pages: 1, len: 1000, sequence: u32::MAX, pack_crc: crc32(&inner) };
+    // A store page's image, record then pack, at pack offset `at`.
+    let outer = |at: usize, page: usize| {
+        let mut b = vec![0x11; 3 * PAGE_SIZE];
+        b[at..at + RECORD_LEN].copy_from_slice(&record.encode(StorePage::nth(page).unwrap()));
+        b[at + COMMIT_AREA..at + COMMIT_AREA + inner.len()].copy_from_slice(&inner);
+        b
     };
-    // The outer pack's bytes from `COMMIT_AREA` on start store page 1.
-    for at in [1, 0] {
-        let mut outer = vec![0x11; PAGE_SIZE - COMMIT_AREA];
-        outer.extend(image(at));
-        outer.resize(3 * PAGE_SIZE, 0x22);
-        let mut f = Flash::new();
-        let steps = write(&f.map(), &outer, 3);
-        run(&mut f, &steps);
-        assert_eq!(f.mounted(), [(3, crc32(&outer))], "the image for page {at}");
-        // With the outer record gone, an image copied from another page still does not count.
-        if at == 0 {
-            f.erase(StorePage::nth(0).unwrap());
-            assert_eq!(f.mounted(), []);
-        }
+    for page in 1..3 {
+        let at = page * PAGE_SIZE - COMMIT_AREA;
+        assert_eq!(plan_write(&outer(at, page), &blank), Err(Refusal::RecordAtPageStart), "page {page}");
     }
+    let mut cut = vec![0x11; PAGE_SIZE - COMMIT_AREA];
+    cut.extend(b"WGS");
+    assert!(plan_write(&cut, &blank).is_ok(), "a magic cut short by the pack's end");
+
+    // Off a page start the same bytes are pack data, and stay so once the pack's record is gone.
+    let off = outer(PAGE_SIZE - COMMIT_AREA + QUADWORD, 1);
+    let genuine = vec![0x77; 100];
+    let mut f = Flash::new();
+    let steps = write(&f.map(), &off, 3);
+    run(&mut f, &steps);
+    let steps = write(&f.map(), &genuine, 7);
+    run(&mut f, &steps);
+    f.erase(StorePage::nth(0).unwrap());
+    assert_eq!(f.mounted(), [(7, crc32(&genuine))]);
 }

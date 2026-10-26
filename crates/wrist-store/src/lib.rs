@@ -78,6 +78,7 @@ pub enum Refusal {
     TooLarge,
     /// No run of blank pages long enough.
     NoSpace,
+    RecordAtPageStart,
     CrossesStoreEnd,
     /// An offset or length that is not a whole quad-word.
     Unaligned,
@@ -118,16 +119,20 @@ impl WritePlan {
     }
 }
 
-/// Plan a write of `len` bytes into the first run of blank pages of `map`.
+/// Plan a write of `pack` into the first run of blank pages of `map`.
 ///
 /// # Errors
 /// The first [`Refusal`] that applies.
-pub fn plan_write(len: usize, map: &[Page; PAGES]) -> Result<WritePlan, Refusal> {
+pub fn plan_write(pack: &[u8], map: &[Page; PAGES]) -> Result<WritePlan, Refusal> {
+    let len = pack.len();
     if len == 0 {
         return Err(Refusal::Empty);
     }
     if len > MAX_PACK {
         return Err(Refusal::TooLarge);
+    }
+    if (PAGE_SIZE - COMMIT_AREA..len).step_by(PAGE_SIZE).any(|o| pack[o..].starts_with(&MAGIC)) {
+        return Err(Refusal::RecordAtPageStart);
     }
     let need = pages_for(len);
     let mut run = 0;
@@ -289,7 +294,7 @@ pub enum Page {
 }
 
 /// The store, first page to last. `read` is called for each page no valid pack before it
-/// covers, so a pack's own bytes are never read as a record.
+/// covers, and [`plan_write`] keeps a record's magic off every later page of a pack.
 pub fn scan(mut read: impl FnMut(StorePage) -> Head) -> [Page; PAGES] {
     let mut map = [Page::Blank; PAGES];
     let mut i = 0;
@@ -380,7 +385,9 @@ pub struct BootActions {
     /// The first page of the pack whose validation ended in a reset, to erase unread; its
     /// other pages are then orphans.
     pub erase_quarantined: Option<StorePage>,
-    /// `OPSR` named an operation outside the store: reported, not acted on.
+    /// `OPSR` named a bank 2 or mass erase: every store page, to erase unread.
+    pub erase_store: bool,
+    /// `OPSR` named an operation reaching outside the store: reported, not acted on there.
     pub interrupted_elsewhere: bool,
     /// `ECCR` holds an error, corrected or not, in the store; its pack fails validation if it
     /// still does.
@@ -392,11 +399,13 @@ pub struct BootActions {
 pub fn boot_actions(opsr: u32, eccr: u32, quarantine: Option<u8>) -> BootActions {
     let mut a = BootActions::default();
     if let Some(op) = interrupted(opsr) {
-        // Single write, burst write and page erase are the store's own operations.
-        let store_op = matches!(op.code, 1 | 3 | 4) && op.bank2 && !op.system_flash;
-        match u8::try_from(op.page()).ok().and_then(StorePage::new).filter(|_| store_op) {
-            Some(p) => a.erase_interrupted = Some(p),
-            None => a.interrupted_elsewhere = true,
+        let page = u8::try_from(op.page()).ok().and_then(StorePage::new);
+        match op.code {
+            // Single write, burst write and page erase are the store's own operations.
+            1..=3 if op.bank2 && !op.system_flash && page.is_some() => a.erase_interrupted = page,
+            4 if op.bank2 => (a.erase_store, a.interrupted_elsewhere) = (true, true),
+            5 => (a.erase_store, a.interrupted_elsewhere) = (true, true),
+            _ => a.interrupted_elsewhere = true,
         }
     }
     a.erase_quarantined = quarantine.and_then(StorePage::new);
