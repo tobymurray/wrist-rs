@@ -947,6 +947,7 @@ async fn read_power(uart: Uart, bus: &mut pmic::AsyncBus, n: u32) -> (Option<u8>
     let s = pmic::snapshot(bus).await;
     if n.is_multiple_of(6) {
         pmic::write_report(uart, &s);
+        pmic::write_rails(uart, s.top_cntl3);
     }
     pmic::write_summary(uart, &s);
     power::note_reading(&s);
