@@ -13,7 +13,9 @@ pub const PAGES_PER_LINE: usize = 64;
 /// Words in a page, as the console reads them.
 pub const PAGE_WORDS: usize = PAGE_SIZE / 4;
 
-/// Erased flash reads as all ones.
+/// Whether every word reads `0xFFFFFFFF`, as erased flash does. Not the same as erased: a
+/// quadword programmed with all ones reads the same, and cannot be programmed again until its
+/// page is erased. So this says a page holds nothing, never that it is ready to program.
 #[must_use]
 pub fn blank(words: &[u32]) -> bool {
     words.iter().all(|&w| w == u32::MAX)
@@ -118,7 +120,6 @@ pub fn region_at(area: Area, page: u16) -> Option<usize> {
 /// The non-secure flash registers the survey reads (RM0456 7.9).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Registers {
-    pub acr: u32,
     pub nssr: u32,
     pub nscr: u32,
     pub eccr: u32,
@@ -130,7 +131,6 @@ pub struct Registers {
 
 /// RM0456 7.9, Table 79.
 pub mod offset {
-    pub const ACR: u32 = 0x00;
     pub const NSSR: u32 = 0x20;
     pub const NSCR: u32 = 0x28;
     pub const ECCR: u32 = 0x30;
@@ -271,25 +271,6 @@ impl Registers {
         self.optr & (1 << 21) != 0
     }
 
-    /// `ACR.LATENCY`, in wait states.
-    #[must_use]
-    pub const fn latency(&self) -> u32 {
-        self.acr & 0xF
-    }
-
-    /// `ACR.PRFTEN`.
-    #[must_use]
-    pub const fn prefetch(&self) -> bool {
-        self.acr & (1 << 8) != 0
-    }
-
-    /// Whether ES0553 2.2.13's flash conditions hold for a low-power entry run from flash:
-    /// prefetch on and at least four wait states.
-    #[must_use]
-    pub const fn low_power_hang_possible(&self) -> bool {
-        self.prefetch() && self.latency() >= 4
-    }
-
     /// `NSSR.BSY | WDW`.
     #[must_use]
     pub const fn busy(&self) -> bool {
@@ -325,16 +306,28 @@ impl Registers {
         })
     }
 
-    /// No area protected, no bank swap, the controller locked and idle, and no ECC error or
-    /// interrupted operation recorded: what the glyph store's survey (M2) passes on.
+    /// What is wrong, by name: a write-protected area (`wrp`), the banks swapped
+    /// (`swap_bank`), the controller unlocked or busy, an ECC error recorded (`ecc`), or an
+    /// operation a reset interrupted (`opsr`). Unlocked and busy should never be seen, since
+    /// every flash operation finishes inside one blocking call; they are a canary for a
+    /// leaked unlock.
+    pub fn problems(&self) -> impl Iterator<Item = &'static str> {
+        [
+            (self.protected().iter().any(Option::is_some), "wrp"),
+            (self.swapped(), "swap_bank"),
+            (!self.locked(), "unlocked"),
+            (self.busy(), "busy"),
+            (self.ecc().is_some(), "ecc"),
+            (self.interrupted().is_some(), "opsr"),
+        ]
+        .into_iter()
+        .filter_map(|(found, name)| found.then_some(name))
+    }
+
+    /// No [`Registers::problems`]: what the glyph store's survey (M2) passes on.
     #[must_use]
     pub fn clean(&self) -> bool {
-        self.protected().iter().all(Option::is_none)
-            && !self.swapped()
-            && self.locked()
-            && !self.busy()
-            && self.ecc().is_none()
-            && self.interrupted().is_none()
+        self.problems().next().is_none()
     }
 }
 
@@ -434,7 +427,6 @@ mod tests {
     /// Reset values (RM0456 7.9) with the option bytes as an unprotected dual-bank part.
     fn reset() -> Registers {
         Registers {
-            acr: 0x0000_0001,
             nssr: 0,
             nscr: 0x8000_0000,
             eccr: 0,
@@ -455,20 +447,25 @@ mod tests {
     }
 
     #[test]
-    fn each_finding_spoils_a_clean_survey() {
-        let spoil: [fn(&mut Registers); 6] = [
-            |r| r.wrp[2] = 0x00FF_00C4,
-            |r| r.optr |= 1 << 20,
-            |r| r.nscr = 0,
-            |r| r.nssr = 1 << 17,
-            |r| r.eccr = 1 << 30,
-            |r| r.opsr = 4 << 29,
+    fn each_finding_is_named_and_spoils_a_clean_survey() {
+        /// A change to the reset state, and the problem it should be named as.
+        type Spoil = (fn(&mut Registers), &'static str);
+        let spoil: [Spoil; 6] = [
+            (|r| r.wrp[2] = 0x00FF_00C4, "wrp"),
+            (|r| r.optr |= 1 << 20, "swap_bank"),
+            (|r| r.nscr = 0, "unlocked"),
+            (|r| r.nssr = 1 << 17, "busy"),
+            (|r| r.eccr = 1 << 30, "ecc"),
+            (|r| r.opsr = 4 << 29, "opsr"),
         ];
-        for f in spoil {
+        for (f, name) in spoil {
             let mut r = reset();
             f(&mut r);
             assert!(!r.clean(), "{r:?}");
+            assert_eq!(r.problems().collect::<Vec<_>>(), [name], "{r:?}");
         }
+        let r = Registers { eccr: ECCD, opsr: 4 << 29, ..reset() };
+        assert_eq!(r.problems().collect::<Vec<_>>(), ["ecc", "opsr"]);
     }
 
     #[test]
@@ -502,16 +499,5 @@ mod tests {
         assert_eq!(e.area, Area::Bank2);
         assert_eq!(e.offset, 0x1_0010);
         assert_eq!(ecc(ECCC | SYSF_ECC | BK_ECC | 0x1_1F00).unwrap().area, Area::System, "SYSF_ECC wins");
-    }
-
-    #[test]
-    fn the_low_power_hang_needs_prefetch_and_four_wait_states() {
-        let mut r = reset();
-        r.acr = 4;
-        assert!(!r.low_power_hang_possible());
-        r.acr = (1 << 8) | 3;
-        assert!(!r.low_power_hang_possible());
-        r.acr = (1 << 8) | 4;
-        assert!(r.low_power_hang_possible());
     }
 }

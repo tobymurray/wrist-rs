@@ -116,7 +116,6 @@ pub fn command(args: &[u8], uart: Uart) {
 fn registers() -> Registers {
     let at = |off| unsafe { read32(FLASH_BASE + off) };
     Registers {
-        acr: at(offset::ACR),
         nssr: at(offset::NSSR),
         nscr: at(offset::NSCR),
         eccr: at(offset::ECCR),
@@ -126,58 +125,63 @@ fn registers() -> Registers {
     }
 }
 
-fn write_on_off(uart: Uart, label: &str, on: bool) {
-    uart.write_str(label);
-    uart.write_str(if on { "on" } else { "off" });
-}
-
+/// One line of the raw registers, then one that names what is wrong, then a decoded line for
+/// each thing that is.
 fn write_registers(uart: Uart, r: &Registers) {
-    uart.write_str("[flash] acr ");
-    uart.write_hex32(r.acr);
-    uart.write_str(" latency ");
-    uart.write_u32(r.latency());
-    write_on_off(uart, " prefetch ", r.prefetch());
-    uart.write_line(if r.low_power_hang_possible() { " (ES0553 2.2.13 applies)" } else { "" });
-
-    uart.write_str("[flash] nssr ");
+    uart.write_str("[flash] registers nssr ");
     uart.write_hex32(r.nssr);
     uart.write_str(" nscr ");
     uart.write_hex32(r.nscr);
-    uart.write_str(if r.locked() { " locked" } else { " UNLOCKED" });
-    uart.write_line(if r.busy() { " busy" } else { " idle" });
-
-    uart.write_str("[flash] optr ");
+    uart.write_str(" optr ");
     uart.write_hex32(r.optr);
-    write_on_off(uart, " dualbank ", r.dual_bank());
-    write_on_off(uart, " swap_bank ", r.swapped());
-    uart.write_line("");
-
-    uart.write_str("[flash] wrp");
-    for (raw, area) in r.wrp.iter().zip(r.protected()) {
+    uart.write_str(" wrp");
+    for raw in r.wrp {
         uart.write_str(" ");
-        uart.write_hex32(*raw);
-        if let Some((first, last)) = area {
-            uart.write_str("=");
-            uart.write_u32(u32::from(first));
-            uart.write_str("-");
-            uart.write_u32(u32::from(last));
-        }
+        uart.write_hex32(raw);
     }
-    uart.write_line(if r.protected().iter().all(Option::is_none) { " (none)" } else { " (PROTECTED)" });
-
-    uart.write_str("[flash] opsr ");
+    uart.write_str(" opsr ");
     uart.write_hex32(r.opsr);
-    match r.interrupted() {
-        None => uart.write_line(" (no interrupted operation)"),
-        Some(op) => {
-            uart.write_str(" interrupted ");
-            uart.write_str(op.name());
-            uart.write_str(if op.system_flash { " system flash" } else if op.bank2 { " bank2 page " } else { " bank1 page " });
-            uart.write_u32(op.page());
+    uart.write_str(" eccr ");
+    uart.write_hex32(r.eccr);
+    uart.write_line("");
+    write_verdict(uart, r);
+
+    for (i, area) in r.protected().iter().enumerate() {
+        if let Some((first, last)) = area {
+            uart.write_str(["[flash] wrp WRP1A", "[flash] wrp WRP1B", "[flash] wrp WRP2A", "[flash] wrp WRP2B"][i]);
+            uart.write_str(" protects pages ");
+            uart.write_u32(u32::from(*first));
+            uart.write_str("-");
+            uart.write_u32(u32::from(*last));
             uart.write_line("");
         }
     }
-    write_eccr(uart, "[flash] eccr ", r.eccr);
+    if let Some(op) = r.interrupted() {
+        uart.write_str("[flash] opsr: a reset interrupted a ");
+        uart.write_str(op.name());
+        uart.write_str(if op.system_flash { " in system flash" } else if op.bank2 { " on bank2 page " } else { " on bank1 page " });
+        if !op.system_flash {
+            uart.write_u32(op.page());
+        }
+        uart.write_line("");
+    }
+    if r.ecc().is_some() {
+        write_eccr(uart, "[flash] eccr ", r.eccr);
+    }
+}
+
+/// `[flash] registers clean`, or `[flash] registers NOT clean: ecc, opsr`.
+fn write_verdict(uart: Uart, r: &Registers) {
+    if r.clean() {
+        uart.write_line("[flash] registers clean");
+        return;
+    }
+    uart.write_str("[flash] registers NOT clean:");
+    for (i, name) in r.problems().enumerate() {
+        uart.write_str(if i == 0 { " " } else { ", " });
+        uart.write_str(name);
+    }
+    uart.write_line("");
 }
 
 fn write_eccr(uart: Uart, label: &str, eccr: u32) {
@@ -319,6 +323,9 @@ pub async fn survey(uart: Uart) {
     uart.write_str(" double errors caught (");
     uart.write_u32(CAUGHT.load(Relaxed));
     uart.write_line(" since boot)");
-    uart.write_str("[flash] survey ");
-    uart.write_line(if before.clean() && ecc_pages == 0 { "clean" } else { "NOT clean" });
+    // The registers as they were before the reads, and the reads' own errors; what the
+    // pages hold is in the lines above, and is not a fault.
+    uart.write_str("[flash] survey: registers ");
+    uart.write_str(if before.clean() { "clean" } else { "NOT clean" });
+    uart.write_line(if ecc_pages == 0 { ", no ECC errors in the reads" } else { ", ECC ERRORS in the reads" });
 }
