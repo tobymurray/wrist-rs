@@ -99,6 +99,7 @@ jobs:
           assert g['hardware_install_numbers'], 'the round trip has no numbered hardware evidence'
           assert g['stock_version'], 'no stock version validated for the installer'
           assert g['image_crc32'], 'no gated image CRC'
+          assert g['round_trip_fingerprint'], 'no round-trip fingerprint'
           for k in ['round_trip_validated', 'license_distribution_approved', 'notices_reviewed', 'github_candidate_run_verified']:
               assert g[k] is True, f'release gate open: {k}'
           PY
@@ -117,7 +118,8 @@ jobs:
           (cd assets && sha256sum -c SHA256SUMS)
           python3 - <<'PY'
           import json, os, pathlib, zipfile
-          gated = json.load(open('release/gate.json'))['image_crc32']
+          gate = json.load(open('release/gate.json'))
+          gated = gate['image_crc32']
           zips = list(pathlib.Path('assets').glob('*.zip'))
           assert zips, 'no release archives'
           for path in zips:
@@ -128,6 +130,8 @@ jobs:
               assert 'v' + m['version'] == os.environ['RELEASE_TAG']
               # The image the gate installed, which the build ID carries through the gate's commit.
               assert gated and m['image_crc32'] == gated, f"{path.name}: image {m['image_crc32']} is not the gated {gated}"
+              # The installer and loader the round trip ran, perhaps in an earlier release.
+              assert m['round_trip_fingerprint'] == gate['round_trip_fingerprint'], f"{path.name}: installer or loader not the round trip's"
           PY
           # List first: authentication/network failures fail closed, not "not found".
           gh api --paginate "repos/$GH_REPO/releases" --jq '.[].tag_name' > /tmp/release-tags

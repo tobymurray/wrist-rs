@@ -16,10 +16,14 @@ that writes flash is a numbered install in the validation records, failures incl
 `cmd` below is `.venv/bin/python tools/wrist-cmd.py`, set up as in [INSTALL.md](INSTALL.md)
 (the package's `START-HERE.md`), "The tools".
 
+[`tools/gate.py`](../tools/gate.py), run from a checkout at the candidate's commit, walks
+this checklist: it does the console and drive work, checks what it can read, asks for each
+press, hold and unplug, and keeps every step's output under one directory.
+
 ### Prepare
 
 1. Beside the zips, `sha256sum -c SHA256SUMS` (macOS: `shasum -a 256 -c SHA256SUMS`).
-   Note `build_id` and `image_crc32` from `manifest.json`.
+   Note `build_id`, `image_crc32` and `round_trip_fingerprint` from `manifest.json`.
 2. Download the stock `.ota` of the version the release notes name and check it as
    INSTALL.md says. Charge the watch above 50 %.
 3. Build a second copy of the image that names itself `gate-test` in place of the build
@@ -98,6 +102,11 @@ The watch runs an earlier wrist-rs.
 
 ### D. Stock and back: the full-size installer's round trip
 
+Run this section when the candidate's `round_trip_fingerprint` is not `gate.json`'s, when
+the stock version changes, or when INSTALL.md's "Stock to wrist-rs" or "Back to stock"
+changes. Otherwise the round trip of `round_trip_release` stands: the installer and loader
+are byte for byte the ones it ran, and the recipe holds the image to the installer's plan.
+
 13. Back to that stock version, as in INSTALL.md ("Back to stock"). Stock starts and
     reports it.
 14. The dry run: INSTALL.md steps 1 to 4, with every check there passing.
@@ -113,9 +122,10 @@ The watch runs an earlier wrist-rs.
 
 18. Write each install into the validation records, with its output; failures too.
 19. On `main`, add anything learned to HARDWARE.md.
-20. In [`gate.json`](gate.json): the install numbers, `stock_version` as the version steps 13 to 17
-    used, `image_crc32` as step 1 noted it, and `round_trip_validated` true only if steps 4
-    to 17 all passed.
+20. In [`gate.json`](gate.json): the install numbers, `image_crc32` as step 1 noted it, and
+    `round_trip_validated` true only if steps 4 to 12 passed, and 13 to 17 when they ran.
+    After a round trip: `stock_version` as the version it used, `round_trip_release` as this
+    version and `round_trip_fingerprint` as step 1 noted it.
 21. In [NOTES.md](NOTES.md): what this release was checked to do, and on which stock
     version.
 
