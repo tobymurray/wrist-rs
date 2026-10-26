@@ -28,8 +28,9 @@ const SYSTEM_FLASH_BASE: u32 = 0x0BF9_0000;
 const TEST_WORD_CORRECTED: u32 = 0x0BFA_1F00;
 const TEST_WORD_DOUBLE: u32 = 0x0BFA_1F80;
 
-/// A page is read a kibibyte a turn of the executor, since the CRC is bitwise.
-const CHUNK: usize = 1024;
+/// A page is read 256 bytes a turn of the executor: the CRC is bitwise, about 1.6 ms a
+/// kibibyte on the watch, so a turn costs under half a millisecond.
+const CHUNK: usize = 256;
 
 /// The page the NMI's catch is armed for (`wrist_flash::survey::arm`), or 0.
 static ARMED: AtomicU32 = AtomicU32::new(0);
@@ -247,7 +248,7 @@ fn write_region(uart: Uart, r: &Region, map: &Map, crc: u32) {
     uart.write_line("");
 }
 
-/// Reads a page a kibibyte a turn with the catch armed for it, carrying `crc` through it:
+/// Reads a page [`CHUNK`] bytes a turn with the catch armed for it, carrying `crc` through it:
 /// whether it is blank, and whether its read raised an ECC error.
 async fn read_page(area: Area, page: u16, address: u32, crc: &mut u32) -> (bool, bool) {
     clear_ecc();
@@ -257,7 +258,7 @@ async fn read_page(area: Area, page: u16, address: u32, crc: &mut u32) -> (bool,
     let mut is_blank = true;
     for chunk in 0..PAGE_SIZE / CHUNK {
         let at = address as usize + chunk * CHUNK;
-        // SAFETY: a word-aligned kibibyte of memory-mapped flash inside the page, read only.
+        // SAFETY: a word-aligned chunk of memory-mapped flash inside the page, read only.
         let bytes = unsafe { core::slice::from_raw_parts(at as *const u8, CHUNK) };
         let words = unsafe { core::slice::from_raw_parts(at as *const u32, CHUNK / 4) };
         is_blank &= blank(words);
