@@ -2,36 +2,12 @@
 
 use inscribed_disc::{Abgr2222, Surface};
 
-use crate::text::{Glass, Line, Overflow};
+use wrist_l10n::Msg;
+
+use crate::text::{room_at, Glass, Line, Overflow};
 use crate::{ring, HEIGHT, WIDTH};
 
-/// A 24-hour time of day; any values print, modulo 100.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Clock {
-    pub h: u8,
-    pub m: u8,
-    pub s: u8,
-}
-
-/// A month outside 1 to 12 or a day outside 1 to 31 prints as `?`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Date {
-    pub year: u16,
-    pub month: u8,
-    pub day: u8,
-}
-
-impl Date {
-    /// 0 Monday to 6 Sunday, by Sakamoto's method.
-    #[must_use]
-    pub const fn weekday(self) -> u8 {
-        const T: [u16; 12] = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
-        let m = if self.month >= 1 && self.month <= 12 { self.month } else { 1 };
-        let y = if m < 3 { self.year.saturating_sub(1) } else { self.year } as u32;
-        let sunday0 = (y + y / 4 - y / 100 + y / 400 + T[(m - 1) as usize] as u32 + self.day as u32) % 7;
-        ((sunday0 + 6) % 7) as u8
-    }
-}
+pub use wrist_l10n::{Clock, Date, Locale, BUILT_IN, EN_GB};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Status {
@@ -74,38 +50,27 @@ impl Builder {
     }
 }
 
-const WEEKDAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
 const FACE_DATE_TOP: i32 = 66;
-/// `Sat 17 Oct`.
-const FACE_DATE_W: usize = 10;
+const FACE_DATE_W: usize = room_at(FACE_DATE_TOP, 3);
 const FACE_TIME_TOP: i32 = 94;
 const FACE_TIME_SCALE: u32 = 7;
-/// `23:59`.
-const FACE_TIME_W: usize = 5;
+const FACE_TIME_W: usize = room_at(FACE_TIME_TOP, FACE_TIME_SCALE);
 const FACE_BATT_TOP: i32 = 152;
-/// `255 %`.
-const FACE_BATT_W: usize = 5;
+const FACE_BATT_W: usize = room_at(FACE_BATT_TOP, 3);
 
 #[must_use]
-pub fn compose(s: &Status) -> (Glass, Short) {
+pub fn compose(status: &Status, locale: &Locale) -> (Glass, Short) {
     let mut b = Builder::new();
-    b.at::<FACE_DATE_TOP, 3, FACE_DATE_W>(|l| match s.date {
-        Some(d) => push_date(l, d),
-        None => l.push("set time"),
+    b.at::<FACE_DATE_TOP, 3, FACE_DATE_W>(|l| match status.date {
+        Some(d) if d.named() => locale.date(l, d),
+        Some(_) => locale.message(l, Msg::FaceDateInvalid),
+        None => locale.message(l, Msg::FaceSetTime),
     });
-    b.at::<FACE_TIME_TOP, FACE_TIME_SCALE, FACE_TIME_W>(|l| match s.clock {
-        Some(c) => push_hm(l, c),
-        None => l.push("--:--"),
+    b.at::<FACE_TIME_TOP, FACE_TIME_SCALE, FACE_TIME_W>(|l| match status.clock {
+        Some(c) => locale.time(l, c),
+        None => locale.message(l, Msg::FaceTimeUnset),
     });
-    b.at::<FACE_BATT_TOP, 3, FACE_BATT_W>(|l| {
-        match s.soc_pct {
-            Some(pct) => l.push_u32(u32::from(pct))?,
-            None => l.push("--")?,
-        }
-        l.push(" %")
-    });
+    b.at::<FACE_BATT_TOP, 3, FACE_BATT_W>(|l| push_percent(l, locale, status.soc_pct));
     (b.glass, b.short)
 }
 
@@ -127,19 +92,16 @@ pub struct About<'a> {
 }
 
 const TITLE_TOP: i32 = 58;
-/// `BATTERY`.
-const TITLE_W: usize = 7;
+const TITLE_W: usize = room_at(TITLE_TOP, 3);
 const BATT_PCT_TOP: i32 = 88;
 const BATT_PCT_SCALE: u32 = 5;
+const BATT_PCT_W: usize = room_at(BATT_PCT_TOP, BATT_PCT_SCALE);
 const BATT_MV_TOP: i32 = 136;
-/// `65535 mV`.
-const BATT_MV_W: usize = 8;
+const BATT_MV_W: usize = room_at(BATT_MV_TOP, 3);
 const BATT_INPUT_TOP: i32 = 164;
-/// `input cell`.
-const BATT_INPUT_W: usize = 10;
+const BATT_INPUT_W: usize = room_at(BATT_INPUT_TOP, 3);
 const ABOUT_NAME_TOP: i32 = 88;
-/// `wrist-rs`.
-const ABOUT_NAME_W: usize = 8;
+const ABOUT_NAME_W: usize = room_at(ABOUT_NAME_TOP, 3);
 const ABOUT_VERSION_TOP: i32 = 116;
 /// `100.100.100`.
 const ABOUT_VERSION_W: usize = 11;
@@ -151,41 +113,35 @@ const ABOUT_DIRTY_W: usize = 12;
 
 /// The charge, the cell's voltage and the input.
 #[must_use]
-pub fn compose_battery(s: &Battery) -> (Glass, Short) {
+pub fn compose_battery(battery: &Battery, locale: &Locale) -> (Glass, Short) {
     let mut b = Builder::new();
-    b.at::<TITLE_TOP, 3, TITLE_W>(|l| l.push("BATTERY"));
-    b.at::<BATT_PCT_TOP, BATT_PCT_SCALE, FACE_BATT_W>(|l| {
-        match s.soc_pct {
-            Some(pct) => l.push_u32(u32::from(pct))?,
-            None => l.push("--")?,
-        }
-        l.push(" %")
-    });
-    b.at::<BATT_MV_TOP, 3, BATT_MV_W>(|l| {
-        match s.cell_mv {
-            Some(mv) => l.push_u32(mv)?,
-            None => l.push("--")?,
-        }
-        l.push(" mV")
+    b.at::<TITLE_TOP, 3, TITLE_W>(|l| locale.message(l, Msg::BatteryTitle));
+    b.at::<BATT_PCT_TOP, BATT_PCT_SCALE, BATT_PCT_W>(|l| push_percent(l, locale, battery.soc_pct));
+    b.at::<BATT_MV_TOP, 3, BATT_MV_W>(|l| match battery.cell_mv {
+        Some(mv) => locale.message(l, Msg::BatteryCellMv { mv }),
+        None => locale.message(l, Msg::BatteryCellUnset),
     });
     b.at::<BATT_INPUT_TOP, 3, BATT_INPUT_W>(|l| {
-        l.push(match s.external {
-            Some(true) => "input USB",
-            Some(false) => "input cell",
-            None => "input ?",
-        })
+        locale.message(
+            l,
+            match battery.external {
+                Some(true) => Msg::BatteryInputUsb,
+                Some(false) => Msg::BatteryInputCell,
+                None => Msg::BatteryInputUnknown,
+            },
+        )
     });
     (b.glass, b.short)
 }
 
-/// The version and the build ID, upper case since the font has no small `b`; a suffix after
-/// the ID's first twelve characters goes on a line of its own.
+/// The version, and the build ID in upper case; a suffix after the ID's first twelve characters
+/// goes on a line of its own.
 #[must_use]
-pub fn compose_about(a: &About<'_>) -> (Glass, Short) {
+pub fn compose_about(a: &About<'_>, locale: &Locale) -> (Glass, Short) {
     let mut b = Builder::new();
-    b.at::<TITLE_TOP, 3, TITLE_W>(|l| l.push("ABOUT"));
-    b.at::<ABOUT_NAME_TOP, 3, ABOUT_NAME_W>(|l| l.push("wrist-rs"));
-    b.at::<ABOUT_VERSION_TOP, 3, ABOUT_VERSION_W>(|l| l.push(a.version));
+    b.at::<TITLE_TOP, 3, TITLE_W>(|l| locale.message(l, Msg::AboutTitle));
+    b.at::<ABOUT_NAME_TOP, 3, ABOUT_NAME_W>(|l| locale.message(l, Msg::AboutProduct));
+    b.at::<ABOUT_VERSION_TOP, 3, ABOUT_VERSION_W>(|l| l.push_verbatim(a.version.as_bytes()));
     let build = a.build.as_bytes();
     let (id, rest) = build.split_at(build.len().min(ABOUT_BUILD_W));
     b.at::<ABOUT_BUILD_TOP, 2, ABOUT_BUILD_W>(|l| push_upper(l, id));
@@ -201,7 +157,7 @@ fn push_upper<const N: usize>(line: &mut Line<N>, s: &[u8]) -> Result<(), Overfl
     for (dst, src) in buf.iter_mut().zip(s) {
         *dst = src.to_ascii_uppercase();
     }
-    line.push_bytes(&buf[..n])?;
+    line.push_verbatim(&buf[..n])?;
     if s.len() > N {
         return Err(Overflow { needed: s.len() });
     }
@@ -235,24 +191,9 @@ pub fn draw_line(fb: &mut [u8], glass: &Glass, i: usize) -> bool {
     true
 }
 
-/// `hh:mm`, each field modulo 100.
-///
-/// # Errors
-/// `Overflow` when the line has room for fewer than five glyphs.
-pub fn push_hm<const N: usize>(line: &mut Line<N>, c: Clock) -> Result<(), Overflow> {
-    line.push_two_digits(c.h)?;
-    line.push(":")?;
-    line.push_two_digits(c.m)
-}
-
-fn push_date<const N: usize>(line: &mut Line<N>, d: Date) -> Result<(), Overflow> {
-    let named = (1..=12).contains(&d.month) && (1..=31).contains(&d.day);
-    if !named {
-        return line.push("?");
+fn push_percent<const N: usize>(line: &mut Line<N>, locale: &Locale, pct: Option<u8>) -> Result<(), Overflow> {
+    match pct {
+        Some(pct) => locale.message(line, Msg::ChargePercent { pct: u32::from(pct) }),
+        None => locale.message(line, Msg::ChargeUnset),
     }
-    line.push(WEEKDAYS[d.weekday() as usize % 7])?;
-    line.push(" ")?;
-    line.push_u32(u32::from(d.day))?;
-    line.push(" ")?;
-    line.push(MONTHS[usize::from(d.month - 1)])
 }

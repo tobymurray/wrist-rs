@@ -1,0 +1,11 @@
+# The locales the image carries. `tag` is the CLDR locale whose dates, times and
+# plural rules the generator takes from ICU4X; `catalogue` is the Fluent file of
+# its messages, which must have every message en.ftl has.
+#
+# `plural` is the locale's CLDR cardinal rules (common/supplemental/plurals.xml),
+# category then condition; `other` is implied.
+
+[[locale]]
+tag = "en-GB"
+catalogue = "en.ftl"
+plural = { one = "i = 1 and v = 0" }
