@@ -1,10 +1,11 @@
 //! What `flash survey` reports, decoded on the host: the page map, the regions, the flash
 //! registers, and which ECC errors the NMI may return from.
 
+use crate::layout::{bank1, bank2};
 use crate::plan::PAGE_SIZE;
 
 /// Pages in each bank.
-pub const PAGES_PER_BANK: usize = 256;
+pub const PAGES_PER_BANK: usize = crate::layout::PAGES_PER_BANK as usize;
 
 /// Pages a map line covers.
 pub const PAGES_PER_LINE: usize = 64;
@@ -94,18 +95,21 @@ const fn region(area: Area, pages: core::ops::Range<u16>, name: &'static str) ->
     Region { area, pages, name }
 }
 
-/// Every region the survey reports, in the order it reads them (`apps/wrist-loader/LAYOUT.md`).
-pub const REGIONS: [Region; 10] = [
-    region(Area::Bank1, 48..52, "loader"),
-    region(Area::Bank1, 52..116, "active"),
-    region(Area::Bank1, 116..181, "dfu"),
-    region(Area::Bank1, 181..182, "state"),
-    region(Area::Bank1, 182..256, "unused"),
-    region(Area::Bank2, 0..24, "stock spill"),
-    region(Area::Bank2, 48..116, "reserve"),
-    region(Area::Bank2, 116..128, "settings"),
-    region(Area::Bank2, 128..196, "staging"),
-    region(Area::Bank2, 196..256, "glyph store"),
+/// Every region the survey reports, in the order it reads them, as [`crate::layout`] names them.
+pub const REGIONS: [Region; 13] = [
+    region(Area::Bank1, bank1::LOADER, "loader"),
+    region(Area::Bank1, bank1::ACTIVE, "active"),
+    region(Area::Bank1, bank1::DFU, "dfu"),
+    region(Area::Bank1, bank1::STATE..bank1::STATE + 1, "state"),
+    region(Area::Bank1, bank1::UNUSED, "unused"),
+    region(Area::Bank2, bank2::STOCK_SPILL, "stock spill"),
+    region(Area::Bank2, bank2::UNERASED_LOW, "unerased"),
+    region(Area::Bank2, bank2::SELF_TEST..bank2::SELF_TEST + 1, "self-test"),
+    region(Area::Bank2, bank2::UNERASED_HIGH, "unerased"),
+    region(Area::Bank2, bank2::RESERVE, "reserve"),
+    region(Area::Bank2, bank2::SETTINGS, "settings"),
+    region(Area::Bank2, bank2::STAGING, "staging"),
+    region(Area::Bank2, bank2::GLYPH_STORE, "glyph store"),
 ];
 
 /// The index in [`REGIONS`] of the region `page` of `area` lies in.
@@ -231,6 +235,21 @@ pub const fn ecc(eccr: u32) -> Option<Ecc> {
     Some(Ecc { corrected, double, area, offset: eccr & ADDR_MASK })
 }
 
+/// The operation `opsr` says a reset interrupted, if any.
+#[must_use]
+pub const fn interrupted(opsr: u32) -> Option<Interrupted> {
+    let code = (opsr >> 29) as u8;
+    if code == 0 {
+        return None;
+    }
+    Some(Interrupted {
+        code,
+        bank2: opsr & (1 << 21) != 0,
+        system_flash: opsr & (1 << 22) != 0,
+        offset: opsr & ADDR_MASK,
+    })
+}
+
 /// The NMI's catch armed for one page of `area`; never 0, which means disarmed.
 #[must_use]
 pub const fn arm(area: Area, page: u32) -> u32 {
@@ -273,16 +292,7 @@ impl Registers {
 
     #[must_use]
     pub const fn interrupted(&self) -> Option<Interrupted> {
-        let code = (self.opsr >> 29) as u8;
-        if code == 0 {
-            return None;
-        }
-        Some(Interrupted {
-            code,
-            bank2: self.opsr & (1 << 21) != 0,
-            system_flash: self.opsr & (1 << 22) != 0,
-            offset: self.opsr & ADDR_MASK,
-        })
+        interrupted(self.opsr)
     }
 
     #[must_use]
@@ -368,12 +378,13 @@ mod tests {
             assert!(r.area != Area::System, "{r:?}");
             assert!(r.pages.start < r.pages.end && usize::from(r.pages.end) <= PAGES_PER_BANK, "{r:?}");
         }
-        assert!(REGIONS[0].pages.start >= 48, "the vendor bootloader's pages are never read");
+        assert!(REGIONS[0].pages.start >= bank1::BOOTLOADER.end, "the vendor bootloader's pages are never read");
         for w in REGIONS.windows(2) {
             let ordered = w[0].area == w[1].area && w[0].pages.end <= w[1].pages.start;
             assert!(ordered || (w[0].area, w[1].area) == (Area::Bank1, Area::Bank2), "{w:?}");
         }
         assert_eq!(REGIONS.iter().filter(|r| r.area == Area::Bank1).map(|r| r.pages.len()).sum::<usize>(), 208);
+        assert_eq!(REGIONS.iter().filter(|r| r.area == Area::Bank2).map(|r| r.pages.len()).sum::<usize>(), PAGES_PER_BANK);
     }
 
     #[test]
@@ -381,7 +392,7 @@ mod tests {
         assert_eq!(region_at(Area::Bank1, 47), None);
         assert_eq!(region_at(Area::Bank1, 48).map(|i| REGIONS[i].name), Some("loader"));
         assert_eq!(region_at(Area::Bank1, 181).map(|i| REGIONS[i].name), Some("state"));
-        assert_eq!(region_at(Area::Bank2, 30), None);
+        assert_eq!(region_at(Area::Bank2, 34).map(|i| REGIONS[i].name), Some("self-test"));
         assert_eq!(region_at(Area::Bank2, 255).map(|i| REGIONS[i].name), Some("glyph store"));
         assert_eq!(region_at(Area::System, 8), None);
     }
