@@ -123,7 +123,7 @@ class Packaging(unittest.TestCase):
             self.assertEqual(sorted(p.relative_to(d/'out').as_posix() for p in (d/'out').rglob('*') if p.is_file()), [
                 'gnu-arm-toolchain/license.txt', 'sdk/LICENSE', 'sdk/THIRD-PARTY-LICENSES.md',
                 'sdk/ThirdParty/coreJSON/LICENSE', 'sdk/libstdc++/GCC-exception-3.1.txt',
-                'sdk/libstdc++/GPL-3.0-or-later.txt', 'wrist-glass-font/LICENSE'])
+                'sdk/libstdc++/GPL-3.0-or-later.txt'])
             for args in [(d/'sdk', [d/'missing'], str(gcc)), (d/'sdk', [d/'rust'], None),
                          (d/'sdk', [d/'rust'], str(d/'rust/MIT.txt')), (d/'rust', [d/'rust'], str(gcc))]:
                 with self.assertRaises(ValueError):
