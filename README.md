@@ -31,6 +31,8 @@ stock version is not supported until they name it.
 - Installs updates over USB into a second slot, and goes back to the previous version if
   the watch restarts before the new one has run a while with the computer connected.
 - Turns off everything the face doesn't use, and sleeps on battery.
+- Optionally, in a build with the `ble` feature: the console and updates over Bluetooth, for a
+  computer it is bonded to. The radio stays off until you turn it on ([BUILDING.md](BUILDING.md#bluetooth)).
 - Never writes UNA's bootloader code, so the stock firmware is always one recovery away.
   The installer records its outcome in a blank page at the end of the bootloader's partition.
 

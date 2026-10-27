@@ -1,0 +1,12 @@
+[package]
+name = "wrist-aci"
+version = "0.0.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "The BlueNRG-2's HCI and ST ACI packets as bytes: SPI headers, command packets, and events decoded into types. From ST's public ACI documentation. no_std, no allocation, host-tested"
+publish = false
+
+[dependencies]
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }

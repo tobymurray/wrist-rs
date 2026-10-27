@@ -20,7 +20,8 @@ rustup component add llvm-tools
 ```
 
 `cargo build --release --features usb-log` also keeps `embassy-usb`'s own log of the link,
-which the console's `usblog` prints.
+which the console's `usblog` prints. `--features ble` adds the console and updates over
+Bluetooth ([below](#bluetooth)); release images are built without it.
 
 The console's `version` prints the image's build ID: 12 hex digits hashing the tracked
 files that go into the binaries, listed in [release/build-inputs.txt](release/build-inputs.txt),
@@ -97,6 +98,29 @@ render, pass the example what the watch was showing (it prints its usage for the
 cargo run -p wrist-glass --example face -- 09:11 2026-10-23 100 host.raw
 .venv/bin/python tools/wrist-frame.py --raw face.raw --compare host.raw face.png
 ```
+
+## Bluetooth
+
+A `--features ble` image keeps the radio in reset until `ble on` on the console; `ble off`
+puts it back, and the choice survives a reset. The console answers over the air only to a
+bonded computer, over an encrypted link, and takes application updates but never the
+loader. On battery the radio advertises about once a second and keeps an idle link slow;
+`ble profile battery|cable|auto` forces one timing for testing.
+
+From Linux, with the watch also on USB, pairing needs no button: the tool confirms the
+watch's number over the USB console.
+
+```sh
+.venv/bin/pip install bleak
+.venv/bin/python tools/wrist-cmd.py "ble on"
+.venv/bin/python tools/wrist-ble.py --pair
+.venv/bin/python tools/wrist-ble.py "ble;boot"
+.venv/bin/python tools/wrist-ble.py --update app.bin   # waits, over the air, for state boot
+```
+
+An update that arrived over the air is kept once USB is configured or an encrypted
+Bluetooth link is up. BlueZ keeps a bonded watch's services: after a build that changes
+them, `bluetoothctl remove <address>` and pair again.
 
 ## Working on InscribedDisc
 
