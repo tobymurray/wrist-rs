@@ -1,4 +1,5 @@
 use wrist_glass::pages::{compose, compose_about, compose_battery, render, About, Battery, Clock, Date, Faces, Status, ATKINSON, EN_GB, POPPINS};
+use wrist_glass::stress::{compose_stress, Stress};
 use wrist_glass::text::{Glass, Line};
 use wrist_glass::{HEIGHT, WIDTH};
 
@@ -54,6 +55,7 @@ fn a_partial_redraw_is_the_full_redraw() {
         frames.push(compose_about(&About { version: "0.2.0", build: "5784ec72019b-dirty" }, &EN_GB, faces).0);
         frames.push(compose_about(&About { version: "0.2.0", build: "5784ec72019b" }, &EN_GB, faces).0);
         frames.push(glass(faces, 9, 41, 30, Some(55)));
+        frames.extend(Stress::ALL.into_iter().flat_map(|k| (0..12).map(move |step| compose_stress(k, step, faces).0)));
         for pair in frames.windows(2) {
             assert!(partial_redraw(&pair[0], &pair[1]) == pixels(&pair[1]), "{}: {:?} -> {:?}", faces.name, pair[0], pair[1]);
         }

@@ -1,7 +1,7 @@
 //! The face's status, what was last drawn, and the console's `page`.
 
 use core::cell::RefCell;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex;
@@ -9,6 +9,7 @@ use embassy_sync::signal::Signal;
 use embassy_time::{Instant, Timer};
 use wrist_glass::dump::{self, MAX_ROW_CODE, MAX_ROW_HEX};
 use wrist_glass::pages::{Clock, Date, Status};
+use wrist_glass::stress::Stress;
 use wrist_glass::text::Glass;
 
 use crate::uart::{Lines, Uart};
@@ -155,7 +156,70 @@ pub fn command(args: &[u8], uart: Uart) {
             crate::backlight(false);
             uart.write_line("[glass] front light off");
         }
-        _ => uart.write_line("[glass] usage: page [lag [seconds] | vcom [auto|low|high] | light on|off | dump]"),
+        "stress" => write_stress(&mut uart.lines()),
+        s if s.starts_with("stress ") => stress_command(s[7..].trim(), uart),
+        _ => uart.write_line("[glass] usage: page [lag [seconds] | vcom [auto|low|high] | light on|off | dump | stress ...]"),
+    }
+}
+
+/// 0 while off, else 1 + the screen's index in `Stress::ALL`.
+static STRESS: AtomicU8 = AtomicU8::new(0);
+static STRESS_STEP: AtomicU32 = AtomicU32::new(0);
+/// `u32::MAX` holds the step.
+static STRESS_EVERY_MS: AtomicU32 = AtomicU32::new(u32::MAX);
+
+/// The stress screen in place of the page, its step, and how often it steps.
+pub fn stress() -> Option<(Stress, u32, Option<u32>)> {
+    let kind = Stress::ALL.get(usize::from(STRESS.load(Ordering::Relaxed)).checked_sub(1)?)?;
+    let every = STRESS_EVERY_MS.load(Ordering::Relaxed);
+    Some((*kind, STRESS_STEP.load(Ordering::Relaxed), (every != u32::MAX).then_some(every)))
+}
+
+pub fn stress_stepped() {
+    STRESS_STEP.fetch_add(1, Ordering::Relaxed);
+}
+
+fn stress_command(args: &str, uart: Uart) {
+    let mut words = args.split_whitespace();
+    let kind = words.next().unwrap_or("");
+    let index = Stress::ALL.iter().position(|k| k.name() == kind);
+    match (kind, index, words.next(), words.next().map(str::parse::<u32>)) {
+        ("off", ..) => STRESS.store(0, Ordering::Relaxed),
+        (_, Some(i), Some("run"), every) => {
+            STRESS_EVERY_MS.store(every.and_then(Result::ok).unwrap_or(0).min(u32::MAX - 1), Ordering::Relaxed);
+            STRESS.store(u8::try_from(i + 1).unwrap_or(0), Ordering::Relaxed);
+        }
+        (_, Some(i), step, None) => {
+            STRESS_STEP.store(step.and_then(|s| s.parse().ok()).unwrap_or(0), Ordering::Relaxed);
+            STRESS_EVERY_MS.store(u32::MAX, Ordering::Relaxed);
+            STRESS.store(u8::try_from(i + 1).unwrap_or(0), Ordering::Relaxed);
+        }
+        _ => {
+            uart.write_line("[glass] usage: page stress [off | glyphs|churn|edge|full|pages [STEP | run [MS]]]");
+            return;
+        }
+    }
+    crate::wake_display();
+    write_stress(&mut uart.lines());
+}
+
+fn write_stress(out: &mut Lines) {
+    match stress() {
+        None => out.write_line("[glass] stress off"),
+        Some((kind, step, every)) => {
+            out.write_str("[glass] stress ");
+            out.write_str(kind.name());
+            out.write_str(" step ");
+            out.write_u32(step);
+            match every {
+                None => out.write_line(", held"),
+                Some(ms) => {
+                    out.write_str(", every ");
+                    out.write_u32(ms);
+                    out.write_line(" ms");
+                }
+            }
+        }
     }
 }
 
@@ -321,6 +385,7 @@ fn write_page(uart: Uart) {
         }
     }
     uart.write_line(" (`page lag [seconds]` arms it; from boot for 60 s)");
+    write_stress(uart);
     crate::busy::write(uart);
     let lags = LAGS.lock(|l| core::mem::take(&mut *l.borrow_mut()));
     if lags.iter().any(|&(at, _)| at != 0) {

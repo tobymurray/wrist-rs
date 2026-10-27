@@ -5,6 +5,7 @@ use wrist_glass::pages::{
     ATKINSON, BUILT_IN, EN_GB, POPPINS,
 };
 use wrist_glass::scene::Scene;
+use wrist_glass::stress::{compose_stress, Stress};
 use wrist_glass::text::{strips, Glass, Line};
 use wrist_glass::{HEIGHT, WIDTH};
 
@@ -97,6 +98,15 @@ fn between_every_page_and_locale() {
         }
         frames.push(Glass::new());
         frames.push(face(faces, 12, 0, 1, Some(50)));
+        walk(faces.name, &frames);
+    }
+}
+
+#[test]
+fn through_every_stress_screen() {
+    for faces in FAMILIES {
+        let frames: Vec<_> =
+            Stress::ALL.into_iter().flat_map(|k| (0..40).map(move |step| compose_stress(k, step, faces).0)).collect();
         walk(faces.name, &frames);
     }
 }

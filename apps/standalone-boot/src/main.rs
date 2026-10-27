@@ -898,6 +898,10 @@ async fn display(mut bus: pmic::AsyncBus, mut pwr_int: ExtiInput<'static, Async>
         if !power::on_battery() {
             due = due.min(next_reading);
         }
+        if let Some((_, _, Some(ms))) = glass::stress() {
+            glass::stress_stepped();
+            due = due.min(Instant::now() + Duration::from_millis(u64::from(ms)));
+        }
         if line_low {
             due = due.min(power.retry_at());
         }
@@ -912,7 +916,11 @@ async fn display(mut bus: pmic::AsyncBus, mut pwr_int: ExtiInput<'static, Async>
     }
 }
 
+/// The page, or the stress screen the console put in its place.
 fn compose_page(page: Page, soc_pct: Option<u8>, cell_mv: Option<u32>) -> (Glass, pages::Short) {
+    if let Some((kind, step, _)) = glass::stress() {
+        return wrist_glass::stress::compose_stress(kind, step, pages::FACES);
+    }
     let locale = &pages::EN_GB;
     match page {
         Page::Face => pages::compose(&glass::status(soc_pct), locale, pages::FACES),

@@ -6,6 +6,7 @@ mod blit;
 pub mod dump;
 pub mod pages;
 pub mod scene;
+pub mod stress;
 pub mod text;
 
 use embedded_graphics::prelude::*;

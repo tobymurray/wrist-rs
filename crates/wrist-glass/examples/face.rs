@@ -3,10 +3,12 @@
 //!     cargo run -p wrist-glass --example face -- 09:11 2026-10-23 100 face.raw
 //!     cargo run -p wrist-glass --example face -- battery 100 4405 usb battery.raw
 //!     cargo run -p wrist-glass --example face -- about 0.1.0 5784ec72019b about.raw
+//!     cargo run -p wrist-glass --example face -- stress churn 7 stress.raw
 //!
 //! `-` for any reading draws it unset.
 
 use wrist_glass::pages::{compose, compose_about, compose_battery, render, About, Battery, Clock, Date, Status, EN_GB, FACES};
+use wrist_glass::stress::{compose_stress, Stress};
 use wrist_glass::{HEIGHT, WIDTH};
 
 fn arg(s: &str) -> Option<&str> {
@@ -15,7 +17,13 @@ fn arg(s: &str) -> Option<&str> {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let stress = matches!(args.first().map(String::as_str), Some("stress"));
     let (glass, short) = match args.as_slice() {
+        [page, kind, step, _] if page == "stress" => compose_stress(
+            Stress::parse(kind).expect("glyphs, churn, edge, full or pages"),
+            step.parse().expect("a step"),
+            FACES,
+        ),
         [page, soc, mv, input, _] if page == "battery" => compose_battery(
             &Battery {
                 soc_pct: arg(soc).map(|s| s.parse().expect("a percentage")),
@@ -44,10 +52,11 @@ fn main() {
             eprintln!("usage: face HH:MM YYYY-MM-DD PERCENT OUT.raw");
             eprintln!("       face battery PERCENT MV usb|cell OUT.raw");
             eprintln!("       face about VERSION BUILD OUT.raw   ('-' for unset)");
+            eprintln!("       face stress KIND STEP OUT.raw");
             std::process::exit(2);
         }
     };
-    assert_eq!(short, 0, "a line did not fit");
+    assert!(stress || short == 0, "a line did not fit");
     let mut fb = vec![0u8; (WIDTH * HEIGHT) as usize];
     assert!(render(&mut fb, &glass));
     std::fs::write(args.last().expect("an output path"), fb).expect("write the frame");
