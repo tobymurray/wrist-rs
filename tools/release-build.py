@@ -324,9 +324,10 @@ def verify_archive(path, debug=False):
                          'licenses/sdk/libstdc++/GPL-3.0-or-later.txt', 'licenses/sdk/libstdc++/GCC-exception-3.1.txt',
                          'licenses/gnu-arm-toolchain/license.txt']:
                 require(name in names, 'missing user asset: ' + name)
-            for font in FONT_LICENSES:
-                require(any(re.fullmatch(r'licenses/root/incised-text-[^/]+/Fonts/' + re.escape(font), n)
-                            for n in names), 'missing user asset: the installer\'s font licence ' + font)
+            for tree in ['root', 'app']:
+                for font in FONT_LICENSES:
+                    require(any(re.fullmatch(r'licenses/' + tree + r'/incised-text-[^/]+/Fonts/' + re.escape(font), n)
+                                for n in names), 'missing user asset: the ' + tree + ' tree\'s font licence ' + font)
 
 
 def main():

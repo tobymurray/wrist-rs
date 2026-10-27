@@ -138,15 +138,16 @@ class Packaging(unittest.TestCase):
             self.assertEqual([p.as_posix() for p in r.package_licenses(d)],
                              ['COPYRIGHT', 'Fonts/OFL-Poppins.txt', 'LICENSE-MIT'])
 
-    def test_the_installer_ships_its_font_licences(self):
-        metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--locked', '--format-version=1'],
-                                                      cwd=r.ROOT))
-        incised = [p for p in metadata['packages'] if p['name'] == 'incised-text']
-        self.assertEqual(len(incised), 1)
-        base = Path(incised[0]['manifest_path']).parent
-        shipped = [p.as_posix() for p in r.package_licenses(base)]
-        for font in r.FONT_LICENSES:
-            self.assertIn('Fonts/' + font, shipped)
+    def test_the_installer_and_the_image_ship_their_font_licences(self):
+        for cwd in [r.ROOT, r.ROOT/'apps/standalone-boot']:
+            metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--locked', '--format-version=1'],
+                                                          cwd=cwd))
+            incised = [p for p in metadata['packages'] if p['name'] == 'incised-text']
+            self.assertEqual(len(incised), 1)
+            base = Path(incised[0]['manifest_path']).parent
+            shipped = [p.as_posix() for p in r.package_licenses(base)]
+            for font in r.FONT_LICENSES:
+                self.assertIn('Fonts/' + font, shipped)
 
     def test_tag_matches_app_versions(self):
         r.require_app_versions(r.app_version((r.ROOT/'apps/standalone-boot/Cargo.toml').read_text()))

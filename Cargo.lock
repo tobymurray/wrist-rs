@@ -968,6 +968,7 @@ name = "wrist-glass"
 version = "0.0.0"
 dependencies = [
  "embedded-graphics",
+ "incised-text",
  "inscribed-disc",
  "wrist-l10n",
 ]

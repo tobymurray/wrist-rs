@@ -6,7 +6,7 @@
 //!
 //! `-` for any reading draws it unset.
 
-use wrist_glass::pages::{compose, compose_about, compose_battery, render, About, Battery, Clock, Date, Status, EN_GB};
+use wrist_glass::pages::{compose, compose_about, compose_battery, render, About, Battery, Clock, Date, Status, EN_GB, FACES};
 use wrist_glass::{HEIGHT, WIDTH};
 
 fn arg(s: &str) -> Option<&str> {
@@ -23,8 +23,9 @@ fn main() {
                 external: arg(input).map(|s| s == "usb"),
             },
             &EN_GB,
+            FACES,
         ),
-        [page, version, build, _] if page == "about" => compose_about(&About { version, build }, &EN_GB),
+        [page, version, build, _] if page == "about" => compose_about(&About { version, build }, &EN_GB, FACES),
         [time, date, soc, _] => {
             let nums = |s: &str, sep| -> Vec<u16> { s.split(sep).map(|n| n.parse().expect("a number")).collect() };
             let byte = |n: u16| u8::try_from(n).expect("a field under 256");
@@ -37,7 +38,7 @@ fn main() {
                 Date { year: d[0], month: byte(d[1]), day: byte(d[2]) }
             });
             let soc_pct = arg(soc).map(|s| s.parse().expect("a percentage"));
-            compose(&Status { clock, date, soc_pct }, &EN_GB)
+            compose(&Status { clock, date, soc_pct }, &EN_GB, FACES)
         }
         _ => {
             eprintln!("usage: face HH:MM YYYY-MM-DD PERCENT OUT.raw");

@@ -47,8 +47,9 @@ translation has every message and uses only the English message's variables.
 
 1. Add it to `en.ftl` with a note.
 2. `cargo run -p wrist-l10n-gen`, then draw it with `Msg::YourMessage { .. }`.
-3. Use only characters the face's font draws (`crates/wrist-glass/src/font.rs`); a test
-   fails on any other, in a message or in a locale's CLDR names.
+3. Use only characters that every line it can appear on draws, in both typefaces (`Faces` in
+   `crates/wrist-glass/src/pages.rs`): a test fails on any other, in a message or in a
+   locale's CLDR names, and another on any value too wide for its line.
 4. Never build a sentence from pieces in code: make the whole sentence one message with
    placeholders, so a translation can reorder it.
 

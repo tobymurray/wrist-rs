@@ -232,15 +232,15 @@ fn write_page(uart: Uart) {
         None => uart.write_line("[glass] nothing sent to the panel yet"),
         Some(glass) => {
             uart.write_line("[glass] on the glass:");
-            for (i, l) in glass.lines().iter().enumerate() {
+            for (i, l) in glass.lines().enumerate() {
                 uart.write_str("[glass]   ");
                 uart.write_u32(u32::try_from(i).unwrap_or(0));
-                uart.write_str(" (row ");
-                uart.write_u32(u32::try_from(l.top).unwrap_or(0));
-                uart.write_str(", x");
-                uart.write_u32(l.scale);
-                uart.write_str(") \"");
-                uart.write_str(core::str::from_utf8(l.text()).unwrap_or("?"));
+                uart.write_str(" (baseline ");
+                uart.write_u32(u32::try_from(l.baseline).unwrap_or(0));
+                uart.write_str(", ");
+                uart.write_u32(u32::from(l.face.px));
+                uart.write_str(" px) \"");
+                uart.write_str(l.text());
                 uart.write_line("\"");
             }
         }

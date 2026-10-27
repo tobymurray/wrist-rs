@@ -1,7 +1,10 @@
-//! Every byte a built-in locale can put on a line has a glyph, so each byte is one glyph wide.
+//! Every string a built-in locale can put in a slot is in that slot's face, in both typefaces.
 
-use wrist_glass::font::glyph;
-use wrist_l10n::{DatePiece, Piece, TimePiece, BUILT_IN};
+use incised_text::Face;
+use wrist_glass::pages::{Faces, ATKINSON, POPPINS};
+use wrist_l10n::{DatePiece, Locale, Msg, Piece, TimePiece, BUILT_IN};
+
+const DIGITS: &str = "0123456789";
 
 fn texts(pieces: &'static [Piece], out: &mut Vec<&'static str>) {
     for p in pieces {
@@ -18,20 +21,46 @@ fn texts(pieces: &'static [Piece], out: &mut Vec<&'static str>) {
     }
 }
 
+fn message(l: &Locale, msg: Msg, out: &mut Vec<&'static str>) {
+    texts(l.messages[msg.parts().0], out);
+}
+
+fn assert_covers(slot: &str, face: &Face, strings: &[&str]) {
+    for s in strings {
+        let missing: String = face.uncovered(s).collect();
+        assert!(missing.is_empty(), "{slot}: {s:?} lacks {missing:?}");
+    }
+}
+
+/// A version's characters, and a build ID's once upper-cased.
+const VERSION: &str = "0123456789.-+ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+const ID: &str = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ.-_+";
+
 #[test]
-fn every_built_in_string_is_in_the_font() {
-    for l in BUILT_IN {
-        let mut all: Vec<&'static str> = Vec::new();
-        for m in l.messages {
-            texts(m, &mut all);
+fn every_built_in_string_is_in_its_slot_s_face() {
+    for faces in [&POPPINS, &ATKINSON] {
+        let Faces { name, words, id, charge, time } = faces;
+        for l in BUILT_IN {
+            let mut all = vec![DIGITS];
+            for m in l.messages {
+                texts(m, &mut all);
+            }
+            all.extend(l.weekdays);
+            all.extend(l.months);
+            all.extend(l.date.iter().filter_map(|p| if let DatePiece::Text(t) = p { Some(*t) } else { None }));
+            assert_covers(&format!("{} {name} words", l.tag), words, &all);
+
+            let mut clock = vec![DIGITS];
+            clock.extend(l.time.iter().filter_map(|p| if let TimePiece::Text(t) = p { Some(*t) } else { None }));
+            message(l, Msg::FaceTimeUnset, &mut clock);
+            assert_covers(&format!("{} {name} time", l.tag), time, &clock);
+
+            let mut pct = vec![DIGITS];
+            message(l, Msg::ChargePercent { pct: 0 }, &mut pct);
+            message(l, Msg::ChargeUnset, &mut pct);
+            assert_covers(&format!("{} {name} charge", l.tag), charge, &pct);
         }
-        all.extend(l.weekdays);
-        all.extend(l.months);
-        all.extend(l.date.iter().filter_map(|p| if let DatePiece::Text(t) = p { Some(*t) } else { None }));
-        all.extend(l.time.iter().filter_map(|p| if let TimePiece::Text(t) = p { Some(*t) } else { None }));
-        all.push("0123456789");
-        for s in all {
-            assert!(s.bytes().all(|b| b == b' ' || glyph(b) != [0; 5]), "{}: {s:?} has a byte the font cannot draw", l.tag);
-        }
+        assert_covers(&format!("{name} version"), words, &[VERSION]);
+        assert_covers(&format!("{name} id"), id, &[ID]);
     }
 }
