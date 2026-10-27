@@ -34,7 +34,8 @@ const EXTERNAL: u8 = 2;
 
 static INPUT: AtomicU8 = AtomicU8::new(UNKNOWN);
 
-static CHANGES: Watch<CriticalSectionRawMutex, u8, 2> = Watch::new();
+/// The heartbeat, the USB console and the radio each take one.
+static CHANGES: Watch<CriticalSectionRawMutex, u8, 3> = Watch::new();
 
 /// The stretch on battery in progress, and the last one finished.
 type Runs = (Option<BatteryRun>, Option<BatteryRun>);
@@ -43,7 +44,7 @@ static RUNS: Mutex<CriticalSectionRawMutex, RefCell<Runs>> = Mutex::new(RefCell:
 static STOP_INPUT: Mutex<CriticalSectionRawMutex, RefCell<StopInput>> = Mutex::new(RefCell::new(StopInput::new()));
 
 /// `None` once every receiver is handed out.
-pub type Changes = Option<Receiver<'static, CriticalSectionRawMutex, u8, 2>>;
+pub type Changes = Option<Receiver<'static, CriticalSectionRawMutex, u8, 3>>;
 
 /// `None` while neither chip has answered.
 pub fn external_input() -> Option<bool> {

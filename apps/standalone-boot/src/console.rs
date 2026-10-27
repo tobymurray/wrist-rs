@@ -175,6 +175,8 @@ static OUT: Pipe<CriticalSectionRawMutex, 8192> = Pipe::new();
 
 /// Queues what fits of `bytes` and drops the rest, which it returns.
 pub fn tee(bytes: &[u8]) -> &[u8] {
+    #[cfg(feature = "ble")]
+    crate::ble::tee(bytes);
     let mut rest = bytes;
     while let Ok(n @ 1..) = OUT.try_write(rest) {
         rest = &rest[n..];
@@ -472,7 +474,7 @@ pub fn command(cmd: &[u8], flash: &'static FlashMutex) {
     match cmd.strip_suffix(b" ").unwrap_or(cmd) {
         b"help" | b"?" => {
             uart.write_line(
-                "[usb] commands: help ping uptime version boot reset report usblog time [set YYYY-MM-DD HH:MM:SS|zone <min> [<utc s> <min>]...] power [sleep on|off|status|clear-crash] page [lag [s]|vcom [auto|low|high]|light on|off|dump] press <up|down|back|select> [long] modules [force view] flash survey|ecc-test staging <len>|<off> <n> update <len> <crc32> loader <len> <crc32>",
+                "[usb] commands: help ping uptime version boot reset report usblog time [set YYYY-MM-DD HH:MM:SS|zone <min> [<utc s> <min>]...] power [sleep on|off|status|clear-crash] page [lag [s]|vcom [auto|low|high]|light on|off|dump] press <up|down|back|select> [long] modules [force view|link1] flash survey|ecc-test staging <len>|<off> <n> update <len> <crc32> loader <len> <crc32>",
             );
             uart.write_line("[usb]   boot: the loader's state word; update: stream a new application (tools/wrist-update.py)");
             uart.write_line("[usb]   time set: the calendar in local time (tools/wrist-time.py sends the host's)");
@@ -483,10 +485,16 @@ pub fn command(cmd: &[u8], flash: &'static FlashMutex) {
             uart.write_line("[usb]   page: the face as last drawn, frame and executor-latency figures; vcom and the light");
             uart.write_line("[usb]   page dump: the frame last drawn, as run-length rows (tools/wrist-frame.py)");
             uart.write_line("[usb]   press: a debounced press, as if from the button; never a hold");
-            uart.write_line("[usb]   modules: what the display and GNSS slots' EEPROMs say");
+            uart.write_line("[usb]   modules: what the display, link1 and GNSS slots' EEPROMs say");
             uart.write_line("[usb]   flash survey: which pages hold anything or raise ECC errors, a CRC per region, and the flash controller's status; never writes flash");
             uart.write_line("[usb]   flash ecc-test: reads ST's 1-bit and 2-bit ECC test words; the NMI must catch the second");
+            #[cfg(feature = "ble")]
+            uart.write_line("[usb]   ble [on|off|version|yes|no|bonds|forget|disconnect|profile auto|cable|battery|interval now <min> <max>]: the radio; off until `ble on`, which persists; `ble yes` confirms a pairing");
         }
+        #[cfg(feature = "ble")]
+        b"ble" => crate::ble::command(b"", uart),
+        #[cfg(feature = "ble")]
+        rest if rest.starts_with(b"ble ") => crate::ble::command(&rest[4..], uart),
         b"usblog" => crate::REPORT.signal(crate::Report::UsbLog),
         b"report" => crate::REPORT.signal(crate::Report::Full),
         rest if rest == b"modules" || rest.starts_with(b"modules ") => crate::modules::command(&rest[7..], uart),

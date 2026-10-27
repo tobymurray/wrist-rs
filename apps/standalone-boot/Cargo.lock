@@ -987,6 +987,7 @@ dependencies = [
  "embassy-usb",
  "log",
  "static_cell",
+ "wrist-aci",
  "wrist-board",
  "wrist-eeprom",
  "wrist-flash",
@@ -995,6 +996,7 @@ dependencies = [
  "wrist-power",
  "wrist-time",
  "wrist-vcom",
+ "wrist-wake",
 ]
 
 [[package]]
@@ -1220,6 +1222,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "wrist-aci"
+version = "0.0.0"
+
+[[package]]
 name = "wrist-board"
 version = "0.0.0"
 
@@ -1261,4 +1267,8 @@ version = "0.0.0"
 
 [[package]]
 name = "wrist-vcom"
+version = "0.0.0"
+
+[[package]]
+name = "wrist-wake"
 version = "0.0.0"

@@ -269,9 +269,14 @@ impl Uart {
     }
 
     fn write_raw(self, bytes: &[u8]) {
-        // On battery nobody can hear it (`power.rs`), and draining it would
+        if bytes.is_empty() {
+            return;
+        }
+        // On battery no cable hears it (`power.rs`), and draining it would
         // keep the core out of Stop2.
-        if bytes.is_empty() || (self.0 == Mode::Queued && crate::power::on_battery()) {
+        if self.0 == Mode::Queued && crate::power::on_battery() {
+            #[cfg(feature = "ble")]
+            crate::ble::tee(bytes);
             return;
         }
         crate::console::tee(bytes);
