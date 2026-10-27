@@ -209,11 +209,18 @@ the pixel axis 2×. With that, the eight-colour test pattern rendered in screen 
 white, red, green,
 blue, yellow, cyan, magenta, black top to bottom, red bar left, blue bar right. A frame takes
 about 1.2 s at a 4 MHz core with 2 µs `BCK` half-periods, and about 500 ms at 48 MHz. The
-image writes only the gate lines under glyphs that changed, with 1 µs `BCK`
-half-periods, and fast-forwards the rest with 2 µs `GCK` half-periods and no `GEN`: the
-datasheet's partial update (Figure 6-5-4, Note 6-3-1: a reference, not guaranteed), with
-`INTB` still high for `thwINTB`'s 30.3 ms. `page` counted 35 of 240 columns for a minute,
-and by eye a 7 turned to an 8 with no leftover pixels or garbled columns.
+image writes only the gate lines under glyphs that changed and fast-forwards the rest with
+`GCK` half-periods of at least 2 µs and no `GEN`: the datasheet's partial update (Figure
+6-5-4, Note 6-3-1: a reference, not guaranteed), with `INTB` still high for `thwINTB`'s
+30.3 ms. `page` counted 35 of 240 columns for a minute, and by eye a 7 turned to an 8 with
+no leftover pixels or garbled columns. **MEASURED**: `cortex_m::asm::delay` takes three
+cycles an iteration on this core, so the driver's nominal 1 µs `BCK` half-periods were about
+3.2 µs and a full frame took 395 ms. The driver now paces every wait on the cycle counter
+from the edge before it, never shorter than [`wrist-panel`](crates/wrist-panel)'s minimums:
+data held 300 ns after a `BCK` edge and set up 300 ns before the next (Table 6-3-3: 200 ns),
+which comes to about 1.1 µs a half-period with the loop's own cycles, 216 of the 240 lines in
+87 ms of which 81 ms is the CPU's, and a minute's 40 lines in 16 ms of CPU inside the 31 ms
+`INTB` holds. By eye at this rate the pages draw cleanly.
 **Labels 122 and 123 latch too, into pixels past the 240 the datasheet counts, and this
 watch shows them** (MEASURED under a 200X microscope with a
 single-row sweep: a lit row 238 or 239, the last pair, drew a second, shorter line beyond

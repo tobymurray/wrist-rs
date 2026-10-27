@@ -32,6 +32,7 @@ wrist-time = { path = "../../crates/wrist-time" }
 wrist-eeprom = { path = "../../crates/wrist-eeprom" }
 wrist-power = { path = "../../crates/wrist-power" }
 wrist-vcom = { path = "../../crates/wrist-vcom" }
+wrist-panel = { path = "../../crates/wrist-panel" }
 
 [features]
 # embassy-usb's own log of the link, printed by `usblog`.

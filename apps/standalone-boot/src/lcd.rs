@@ -1,9 +1,11 @@
 //! The Sharp LS012B7DD06A memory LCD, LCP-2619063C Rev C: pixels bit-banged from GPIO a
-//! column at a time, `VCOM` from two LPTIMs on the LSE.
+//! column at a time on the cycle counter, `VCOM` from two LPTIMs on the LSE.
+#![allow(clippy::inline_always)]
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 
 use embassy_time::{Duration, Instant, Timer};
+use wrist_panel::{timing, Clock, Pace};
 use wrist_vcom::{Mode, Rate};
 
 use crate::uart::Uart;
@@ -30,35 +32,19 @@ const VA: (u32, u32) = (GPIOD_BASE, 14); // XFRP
 const AF_LPTIM1_CH1: u32 = 1;
 const AF_LPTIM3_CH1: u32 = 14;
 
-// Port E: `0` is the odd pixel of a pair, `1` the even one.
-const R0: u32 = 0;
-const R1: u32 = 8;
-const G0: u32 = 2;
-const G1: u32 = 10;
-const B0: u32 = 4;
-const B1: u32 = 12;
-const DATA_MASK: u32 = (1 << R0) | (1 << R1) | (1 << G0) | (1 << G1) | (1 << B0) | (1 << B1);
-const BLACK_WORD: u32 = DATA_MASK << 16;
-
 pub const WIDTH: u32 = 240;
 pub const HEIGHT: u32 = 240;
-const LINES: usize = WIDTH as usize;
-const PAIRS: usize = (HEIGHT / 2) as usize;
-const BCK_EDGES: u32 = 123;
+const LINES: usize = wrist_panel::LINES;
+const PAIRS: usize = wrist_panel::PAIRS;
 const GCK_EDGES: u32 = 483;
+/// Kept lines fast-forwarded between yields.
+const FAST_RUN: u32 = 32;
 
 /// At `rcc_config`'s 48 MHz system clock.
-const CYCLES_PER_US: u32 = 48;
-
-/// Table 6-3-3's minimum is 0.4 us.
-const BCK_HALF_US: u32 = 1;
-/// A `GCK` half-period without a line written: Table 6-3-2's minimum is 62.67 us, or 1.0 us
-/// for the lines a partial update fast-forwards (Note 6-3-1, Figure 6-5-4: a reference, not
-/// guaranteed).
-const GCK_US: u32 = 70;
-const GCK_FAST_US: u32 = 2;
-/// Table 6-3-2's `thwINTB`, 30.3 ms, which a partial frame is shorter than.
-const INTB_HIGH: Duration = Duration::from_millis(31);
+const fn cycles(ns: u32) -> u32 {
+    (ns * 48).div_ceil(1000)
+}
+const INTB_HIGH: Duration = Duration::from_millis(timing::INTB_HIGH_MS as u64);
 
 /// LSE ticks a `VCOM` period: 0.5 Hz, Table 6-3-3's reflective minimum, and about 31 Hz,
 /// its transmissive row, while the light is on.
@@ -206,90 +192,76 @@ pub fn write_vcom_status(uart: Uart) {
     uart.write_line("");
 }
 
-fn delay_us(us: u32) {
-    cortex_m::asm::delay(us * CYCLES_PER_US);
+struct Cycles;
+
+impl Clock for Cycles {
+    #[inline(always)]
+    fn cycles(&mut self) -> u32 {
+        crate::busy::cycles()
+    }
+
+    #[inline(always)]
+    fn masked<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        cortex_m::interrupt::free(|_| f(self))
+    }
 }
 
+#[inline(always)]
+fn pace() -> Pace<Cycles> {
+    Pace::new(Cycles)
+}
+
+#[inline(always)]
 fn set(pin: (u32, u32), high: bool) {
     let bit = if high { 1 << pin.1 } else { 1 << (pin.1 + 16) };
     unsafe { write32(pin.0 + GPIO_BSRR, bit) };
 }
 
-/// Two bits per channel, packed `0b00RRGGBB`.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub struct Rgb2(pub u8);
-
-impl Rgb2 {
-    pub const BLACK: Self = Self(0b00_00_00);
-
-    pub const fn from_abgr2222(byte: u8) -> Self {
-        let r = byte & 0b11;
-        let g = (byte >> 2) & 0b11;
-        let b = (byte >> 4) & 0b11;
-        Self((r << 4) | (g << 2) | b)
-    }
-
-    fn bit(self, shift: u32, plane: u32) -> u32 {
-        (u32::from(self.0) >> shift >> plane) & 1
-    }
+#[inline(always)]
+fn put_data(word: u32) {
+    unsafe { write32(GPIOE_BASE + GPIO_BSRR, word) };
 }
 
-/// Port E's `BSRR` word for one pixel pair; `plane` 0 is the LSB.
-fn data_word(odd: Rgb2, even: Rgb2, plane: u32) -> u32 {
-    let set = (odd.bit(4, plane) << R0)
-        | (even.bit(4, plane) << R1)
-        | (odd.bit(2, plane) << G0)
-        | (even.bit(2, plane) << G1)
-        | (odd.bit(0, plane) << B0)
-        | (even.bit(0, plane) << B1);
-    set | ((!set & DATA_MASK) << 16)
-}
-
-/// Both planes' words for screen column `x`, top pair first; `None` is black.
-fn column_words(fb: Option<&[u8]>, x: usize, words: &mut [[u32; PAIRS]; 2]) {
-    let [lsb, msb] = words;
-    for (pair, (lsb, msb)) in lsb.iter_mut().zip(msb).enumerate() {
-        let (odd, even) = fb.map_or((Rgb2::BLACK, Rgb2::BLACK), |fb| {
-            let at = |y: usize| Rgb2::from_abgr2222(fb[y * WIDTH as usize + x]);
-            (at(2 * pair), at(2 * pair + 1))
-        });
-        *lsb = data_word(odd, even, 0);
-        *msb = data_word(odd, even, 1);
+/// Screen column `x`'s port E words, LSB plane then MSB: its pairs top first, then a black pair
+/// for the last `BCK` labels, which latch too (`HARDWARE.md`).
+fn line_words(fb: Option<&[u8]>, x: usize) -> [[u32; PAIRS + 1]; 2] {
+    let mut words = [[wrist_panel::BLACK; PAIRS + 1]; 2];
+    let w = WIDTH as usize;
+    if let Some(fb) = fb.filter(|fb| x < w && fb.len() == w * HEIGHT as usize) {
+        let [lsb, msb] = &mut words;
+        for ((rows, lsb), msb) in fb.chunks_exact(2 * w).zip(lsb.iter_mut()).zip(msb.iter_mut()) {
+            let (odd, even) = (rows[x], rows[w + x]);
+            *lsb = wrist_panel::word(odd, even, 0);
+            *msb = wrist_panel::word(odd, even, 1);
+        }
     }
+    words
 }
 
-/// Figure 6-3-3, whose labels count `BCK` half-periods (`HARDWARE.md`).
-fn write_line(words: &[u32; PAIRS]) {
+/// One plane of a line, timed as Figure 6-3-3.
+fn write_line(words: &[u32; PAIRS + 1]) {
+    let (hold, setup) = (cycles(timing::DATA_HOLD), cycles(timing::DATA_SETUP));
     set(BSP, true);
-    delay_us(BCK_HALF_US);
-    let mut bck = false;
-    for edge in 1..=BCK_EDGES {
-        let word = match edge {
-            2..=121 => Some(words[(edge - 2) as usize]),
-            // Labels 122 and 123 latch too, into pixels the glass shows (`HARDWARE.md`).
-            122 => Some(BLACK_WORD),
-            _ => None,
-        };
-        if let Some(word) = word {
-            unsafe { write32(GPIOE_BASE + GPIO_BSRR, word) };
-        }
-        delay_us(BCK_HALF_US);
-        bck = !bck;
-        set(BCK, bck);
-        if edge == 1 {
-            // tlsBSP.
-            delay_us(1);
-            set(BSP, false);
-        }
+    let mut pace = pace();
+    pace.after(cycles(timing::BSP_SETUP), || set(BCK, true));
+    let mut bck = 1 << BCK.1;
+    for (i, &word) in words.iter().enumerate() {
+        pace.after(hold, || {
+            if i == 0 {
+                set(BSP, false);
+            }
+            put_data(word);
+        });
+        bck ^= (1 << BCK.1) | (1 << (BCK.1 + 16));
+        pace.after(setup, || unsafe { write32(BCK.0 + GPIO_BSRR, bck) });
     }
+    bck ^= (1 << BCK.1) | (1 << (BCK.1 + 16));
+    pace.after(hold + setup, || unsafe { write32(BCK.0 + GPIO_BSRR, bck) });
     // An odd edge count leaves `BCK` high; the figure parks it low before `GEN`.
-    delay_us(BCK_HALF_US);
-    set(BCK, false);
-    delay_us(1);
-    set(GEN, true);
-    delay_us(11);
-    set(GEN, false);
-    delay_us(5);
+    pace.after(hold + setup, || set(BCK, false));
+    pace.after(cycles(timing::GEN_SETUP), || set(GEN, true));
+    pace.after(cycles(timing::GEN_HIGH), || set(GEN, false));
+    pace.wait(cycles(timing::GEN_HOLD));
 }
 
 /// The CPU's part of the last frame written, in cycles.
@@ -324,8 +296,8 @@ impl Lcd {
             set((base, pin), false);
             configure_output(base, pin);
         }
-        write32(GPIOE_BASE + GPIO_BSRR, DATA_MASK << 16);
-        for pin in [R0, R1, G0, G1, B0, B1] {
+        put_data(wrist_panel::BLACK);
+        for pin in (0..16).filter(|pin| wrist_panel::DATA_MASK & (1 << pin) != 0) {
             configure_output(GPIOE_BASE, pin);
         }
         Self(())
@@ -343,9 +315,8 @@ impl Lcd {
         self.scan(Some(fb), &lines).await
     }
 
-    /// One frame (Figure 6-3-2, or 6-5-4 for a partial one). Gate line `n` is screen column
-    /// `WIDTH - 1 - n` (`HARDWARE.md`); a line not in `dirty` is fast-forwarded without `GEN`
-    /// and keeps its pixels.
+    /// One frame (Figure 6-3-2, or 6-5-4 for a partial one); a line not in `dirty` is
+    /// fast-forwarded without `GEN` and keeps its pixels.
     async fn scan(&mut self, fb: Option<&[u8]>, dirty: &[bool; LINES]) -> (u32, Cost) {
         let mut cost = Cost::default();
         if !dirty.contains(&true) {
@@ -354,44 +325,54 @@ impl Lcd {
         let mut step = crate::busy::cycles();
         let start = Instant::now();
         set(INTB, true);
-        delay_us(12);
-        set(GSP, true);
-        delay_us(12);
+        let mut pace = pace();
+        pace.after(cycles(timing::GSP_SETUP), || set(GSP, true));
+        pace.wait(cycles(timing::GSP_SETUP));
         let mut gck = false;
-        let mut words = [[0u32; PAIRS]; 2];
         let mut written = 0;
+        let mut words = [[wrist_panel::BLACK; PAIRS + 1]; 2];
+        let mut fast = 0;
         for edge in 1..=GCK_EDGES {
             gck = !gck;
             set(GCK, gck);
             if edge == 2 {
-                delay_us(12);
-                set(GSP, false);
+                pace = self::pace();
+                pace.after(cycles(timing::GSP_SETUP), || set(GSP, false));
             }
             let line = (edge as usize).wrapping_sub(2) / 2;
             if (2..=481).contains(&edge) && dirty[line] {
                 // The MSB plane, on the even edge, comes first.
                 let plane = usize::from(edge % 2 == 0);
                 if plane == 1 {
-                    column_words(fb, LINES - 1 - line, &mut words);
+                    words = line_words(fb, LINES - 1 - line);
                     written += 1;
                 }
                 write_line(&words[plane]);
                 cost.end_step(step);
                 embassy_futures::yield_now().await;
                 step = crate::busy::cycles();
-            } else if matches!(edge, 1 | 2 | GCK_EDGES) {
-                delay_us(GCK_US);
-            } else {
-                delay_us(GCK_FAST_US);
+                continue;
+            }
+            pace = self::pace();
+            if matches!(edge, 1 | 2 | GCK_EDGES) {
+                pace.wait(cycles(timing::GCK_HALF));
+                continue;
+            }
+            pace.wait(cycles(timing::GCK_FAST));
+            fast += 1;
+            if fast % FAST_RUN == 0 {
+                cost.end_step(step);
+                embassy_futures::yield_now().await;
+                step = crate::busy::cycles();
             }
         }
-        // thhINTB and thwINTB, then tlwINTB (Table 6-3-2).
-        delay_us(GCK_US);
+        // `GCK` 483's half-period and thhINTB, then thwINTB and tlwINTB (Table 6-3-2).
+        pace.wait(2 * cycles(timing::GCK_HALF));
         cost.end_step(step);
         Timer::at(start + INTB_HIGH).await;
         step = crate::busy::cycles();
         set(INTB, false);
-        delay_us(12);
+        self::pace().wait(cycles(timing::INTB_LOW));
         cost.end_step(step);
         (written, cost)
     }
