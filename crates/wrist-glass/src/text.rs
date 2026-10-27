@@ -5,7 +5,7 @@ use core::ops::Range;
 
 use embedded_graphics::draw_target::DrawTarget;
 use incised_text::{chars, Face, Style};
-use inscribed_disc::geometry::band_chord;
+use inscribed_disc::geometry::lit_start;
 use inscribed_disc::{Abgr2222, Surface};
 
 use crate::{HEIGHT, MARGIN, WIDTH};
@@ -163,10 +163,26 @@ impl Font {
         }
     }
 
-    fn measure(&self, c: char, figure: bool) -> incised_text::Measure {
+    /// `Face::measure` of `c` alone, read straight from its glyph when it has one.
+    fn measure(&self, c: char, figure: bool) -> Metrics {
         let (face, c) = self.source(c, figure);
-        let mut buf = [0u8; 4];
-        face.measure(c.encode_utf8(&mut buf))
+        match face.glyph(c) {
+            Some(n) if n.w > 0 => {
+                let (left, top) = (i32::from(n.left), -i32::from(n.top));
+                Metrics {
+                    advance: i32::from(n.adv),
+                    ink_left: left,
+                    ink_right: left + i32::from(n.w),
+                    ink_top: top,
+                    ink_bottom: top + i32::from(n.h),
+                }
+            }
+            Some(n) => Metrics { advance: i32::from(n.adv), ..Metrics::default() },
+            None => {
+                let mut buf = [0u8; 4];
+                face.measure(c.encode_utf8(&mut buf)).into()
+            }
+        }
     }
 
     /// A figure's cell: the widest of the figures' digits.
@@ -180,6 +196,22 @@ impl Font {
             let (face, drawn) = self.source(c, false);
             face.glyph(drawn).is_none()
         })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Metrics {
+    advance: i32,
+    ink_left: i32,
+    ink_right: i32,
+    ink_top: i32,
+    ink_bottom: i32,
+}
+
+impl From<incised_text::Measure> for Metrics {
+    fn from(m: incised_text::Measure) -> Self {
+        let incised_text::Measure { advance, ink_left, ink_right, ink_top, ink_bottom, .. } = m;
+        Self { advance, ink_left, ink_right, ink_top, ink_bottom }
     }
 }
 
@@ -226,6 +258,17 @@ fn ink_rows(font: &Font, line: &Line) -> Range<i32> {
         .unwrap_or(0..0)
 }
 
+/// [`inscribed_disc::geometry::band_chord`] without a scan: chords narrow away from the centre,
+/// so a band's narrowest is at one of its ends.
+fn narrowest_chord(rows: Range<i32>) -> i32 {
+    let chord = |y: i32| (W - 2 * lit_start(y, W, H)).max(0);
+    if rows.is_empty() {
+        0
+    } else {
+        chord(rows.start).min(chord(rows.end - 1))
+    }
+}
+
 /// Whether `line` in `font`, centred on `baseline`, keeps all its ink [`MARGIN`] inside the glass
 /// on every row the ink takes.
 #[must_use]
@@ -236,7 +279,7 @@ pub fn fits(font: &Font, baseline: i32, line: &Line) -> bool {
         return true;
     };
     let rows = ink_rows(font, line);
-    let chord = band_chord(baseline + rows.start, baseline + rows.end, W, H) - 2 * MARGIN;
+    let chord = narrowest_chord(baseline + rows.start..baseline + rows.end) - 2 * MARGIN;
     let left = (W - chord) / 2;
     chord > 0 && ink_left >= left && ink_right <= left + chord
 }
@@ -387,4 +430,36 @@ pub fn strips(marked: &[bool; WIDTH as usize], widest: usize) -> impl Iterator<I
         let as_i32 = |v: usize| i32::try_from(v).unwrap_or(W);
         (x > start).then(|| as_i32(start)..as_i32(x))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use inscribed_disc::geometry::band_chord;
+
+    use super::{narrowest_chord, Metrics, H, W};
+    use crate::pages::{ATKINSON, POPPINS};
+
+    #[test]
+    fn a_character_measures_as_its_face_measures_it() {
+        let fonts = [&POPPINS, &ATKINSON].into_iter().flat_map(|f| [f.words, f.id, f.charge, f.time]);
+        for font in fonts {
+            for c in (0..0x2400).filter_map(char::from_u32) {
+                for figure in [false, true] {
+                    let (face, drawn) = font.source(c, figure);
+                    let mut buf = [0u8; 4];
+                    let want = Metrics::from(face.measure(drawn.encode_utf8(&mut buf)));
+                    assert_eq!(font.measure(c, figure), want, "{} px {c:?}", font.face.px);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_narrowest_chord_is_the_band_chord() {
+        for y0 in -20..H + 20 {
+            for y1 in y0 - 2..H + 20 {
+                assert_eq!(narrowest_chord(y0..y1), band_chord(y0, y1, W, H), "{y0}..{y1}");
+            }
+        }
+    }
 }
