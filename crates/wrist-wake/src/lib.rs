@@ -51,6 +51,8 @@ pub mod ble {
         pub console: Option<Console>,
         /// A transfer that has gone quiet is abandoned at this tick.
         pub abandon_at: Option<u64>,
+        /// An unencrypted central is asked to pair at this tick ([`PairAsk`]).
+        pub ask_at: Option<u64>,
     }
 
     /// When the loop must next run by time; `None` means only the chip's IRQ, a request or
@@ -60,7 +62,44 @@ pub mod ble {
         let now = s.now;
         let quiet = s.transfer == Transfer::Started;
         let console = s.console.and_then(|c| (c.pending && !quiet).then_some(c.next_at.max(now)));
-        earliest([s.work.then_some(now), s.confirm_by, console, s.abandon_at])
+        earliest([s.work.then_some(now), s.confirm_by, console, s.abandon_at, s.ask_at])
+    }
+
+    /// How long a link stays unencrypted before the watch asks its central to pair: well past a
+    /// bonded central's own encryption start (HARDWARE.md).
+    pub const ASK_TO_PAIR_AFTER_MS: u64 = 5_000;
+
+    /// Asking a central that has left its link unencrypted to pair: once a link, never at
+    /// connect, and not once the link is encrypted or a pairing has begun.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct PairAsk {
+        at: Option<u64>,
+    }
+
+    impl PairAsk {
+        /// A central connected at `now`, on a clock of `ticks_per_second`.
+        pub fn connected(&mut self, now: u64, ticks_per_second: u64) {
+            self.at = Some(now + ASK_TO_PAIR_AFTER_MS * ticks_per_second / 1_000);
+        }
+
+        /// Encrypted, a pairing begun or over, or disconnected: nothing to ask on this link.
+        pub fn settled(&mut self) {
+            self.at = None;
+        }
+
+        #[must_use]
+        pub fn due(&self) -> Option<u64> {
+            self.at
+        }
+
+        /// True once, when the time has come.
+        pub fn take(&mut self, now: u64) -> bool {
+            let due = self.at.is_some_and(|at| now >= at);
+            if due {
+                self.at = None;
+            }
+            due
+        }
     }
 
     /// Where the watch's power comes from, as the radio sees it.

@@ -39,6 +39,7 @@ pub mod opcode {
     pub const ACI_GAP_SET_AUTHENTICATION_REQUIREMENT: u16 = 0xFC86;
     pub const ACI_GAP_PASS_KEY_RESP: u16 = 0xFC88;
     pub const ACI_GAP_INIT: u16 = 0xFC8A;
+    pub const ACI_GAP_SLAVE_SECURITY_REQ: u16 = 0xFC8D;
     pub const ACI_GAP_TERMINATE: u16 = 0xFC93;
     pub const ACI_GAP_CLEAR_SECURITY_DB: u16 = 0xFC94;
     pub const ACI_GAP_ALLOW_REBOND: u16 = 0xFC95;
@@ -93,9 +94,7 @@ pub const fn static_random_address(uid: [u32; 3]) -> [u8; 6] {
     static_random(h)
 }
 
-/// `ACI_GATT_ADD_CHAR`'s security permissions (ST's `ble_defs.h`). ST's stack applies them to
-/// writes with response only; a write without response arrives whatever the link, so the
-/// application checks the link for those itself.
+/// `ACI_GATT_ADD_CHAR`'s security permissions (ST's `ble_defs.h`).
 pub mod permission {
     pub const NONE: u8 = 0x00;
     /// Writes only over a link encrypted with authenticated (MITM-protected) keys.
@@ -111,6 +110,8 @@ pub mod vendor {
     pub const HAL_EVENTS_LOST: u16 = 0x0002;
     pub const GAP_PAIRING_COMPLETE: u16 = 0x0401;
     pub const GAP_PASS_KEY_REQ: u16 = 0x0402;
+    /// A security request reached the central.
+    pub const GAP_SLAVE_SECURITY_INITIATED: u16 = 0x0404;
     pub const GAP_BOND_LOST: u16 = 0x0405;
     pub const GAP_NUMERIC_COMPARISON_VALUE: u16 = 0x0409;
     pub const GATT_ATTRIBUTE_MODIFIED: u16 = 0x0C01;

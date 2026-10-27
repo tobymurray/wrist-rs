@@ -6,7 +6,15 @@ use wrist_wake::earliest;
 const NOW: u64 = 1_000;
 
 fn idle() -> State {
-    State { now: NOW, work: false, confirm_by: None, transfer: Transfer::None, console: None, abandon_at: None }
+    State {
+        now: NOW,
+        work: false,
+        confirm_by: None,
+        transfer: Transfer::None,
+        console: None,
+        abandon_at: None,
+        ask_at: None,
+    }
 }
 
 #[test]
@@ -141,4 +149,31 @@ fn any_other_refusal_loses_the_chunk_and_a_detach_drops_the_held_one() {
     out.sent(chunk, n, 0x64).unwrap();
     out.clear();
     assert_eq!(out.next(8, |_| 0).1, 0);
+}
+
+#[test]
+fn nothing_is_asked_of_a_central_at_connect() {
+    use wrist_wake::ble::{PairAsk, ASK_TO_PAIR_AFTER_MS};
+    let mut ask = PairAsk::default();
+    ask.connected(NOW, 1_000);
+    assert!(!ask.take(NOW), "a request at connect crossed a bonded central's encryption");
+    assert!(!ask.take(NOW + 1_999));
+    assert_eq!(ask.due(), Some(NOW + ASK_TO_PAIR_AFTER_MS));
+    assert_eq!(due(&State { ask_at: ask.due(), ..idle() }), Some(NOW + ASK_TO_PAIR_AFTER_MS));
+    assert!(ask.take(NOW + ASK_TO_PAIR_AFTER_MS));
+    assert!(!ask.take(NOW + ASK_TO_PAIR_AFTER_MS + 1), "once a link");
+    assert_eq!(ask.due(), None);
+}
+
+#[test]
+fn an_encrypted_or_pairing_link_is_never_asked() {
+    use wrist_wake::ble::{PairAsk, ASK_TO_PAIR_AFTER_MS};
+    let mut ask = PairAsk::default();
+    ask.connected(NOW, 32_768);
+    ask.settled();
+    assert_eq!(ask.due(), None);
+    assert!(!ask.take(NOW + ASK_TO_PAIR_AFTER_MS * 33));
+    // The next link starts afresh, on the image's own tick.
+    ask.connected(NOW, 32_768);
+    assert_eq!(ask.due(), Some(NOW + ASK_TO_PAIR_AFTER_MS * 32_768 / 1_000));
 }

@@ -10,10 +10,11 @@
 //! central shows a number, `ble` on the USB console shows the same one, and `ble yes`
 //! answers it (`ble no`, or 60 s, rejects). With MITM required no unauthenticated key
 //! exists, so an encrypted link is a bonded central's. The console's RX characteristic asks
-//! the stack for an authenticated, encrypted link, which ST's stack checks on writes with
-//! response but not on writes without; so the watch checks too: nothing written over a link
-//! that is not encrypted is acted on, and the console's output is mirrored only to an
-//! encrypted link. The loader is never accepted over the air.
+//! the stack for an authenticated, encrypted link, and the watch checks too: nothing written
+//! over a link that is not encrypted is acted on, and the console's output is mirrored only to
+//! an encrypted link. The loader is never accepted over the air. The watch asks nothing of a
+//! central at connect, and asks it to pair only once it has left the link unencrypted for a
+//! while (`wrist_wake::ble::PairAsk`).
 //!
 //! Power. On a cable the radio is as responsive as the link allows; on battery it
 //! advertises about once a second and asks for a slow, latent link, fast only while a
@@ -53,14 +54,15 @@ use embassy_sync::signal::Signal;
 use embassy_time::{with_timeout, Duration, Instant, Timer};
 use wrist_aci::opcode::{
     ACI_GAP_ALLOW_REBOND, ACI_GAP_CLEAR_SECURITY_DB, ACI_GAP_GET_BONDED_DEVICES, ACI_GAP_INIT,
-    ACI_GAP_NUMERIC_COMPARISON_CONFIRM, ACI_GAP_PASS_KEY_RESP, ACI_GAP_SET_AUTHENTICATION_REQUIREMENT,
-    ACI_GAP_SET_DISCOVERABLE, ACI_GAP_SET_IO_CAPABILITY, ACI_GAP_SET_NON_DISCOVERABLE,
-    ACI_GAP_TERMINATE, ACI_GATT_ADD_CHAR, ACI_GATT_ADD_SERVICE, ACI_GATT_INIT,
+    ACI_GAP_NUMERIC_COMPARISON_CONFIRM, ACI_GAP_PASS_KEY_RESP,
+    ACI_GAP_SET_AUTHENTICATION_REQUIREMENT, ACI_GAP_SET_DISCOVERABLE, ACI_GAP_SET_IO_CAPABILITY,
+    ACI_GAP_SET_NON_DISCOVERABLE, ACI_GAP_SLAVE_SECURITY_REQ, ACI_GAP_TERMINATE, ACI_GATT_ADD_CHAR,
+    ACI_GATT_ADD_SERVICE, ACI_GATT_INIT,
     ACI_GATT_UPDATE_CHAR_VALUE, ACI_HAL_GET_FW_BUILD_NUMBER, ACI_HAL_SET_TX_POWER_LEVEL, ACI_HAL_WRITE_CONFIG_DATA,
     ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_REQ, HCI_LE_RAND, HCI_READ_LOCAL_VERSION, HCI_SET_EVENT_MASK,
 };
 use wrist_aci::{address, config, permission, vendor, AttributeModified, Event};
-use wrist_wake::ble::{timing, Outbox, Power, Radio, Timing};
+use wrist_wake::ble::{timing, Outbox, PairAsk, Power, Radio, Timing};
 
 use crate::console::Target;
 use crate::uart::Uart;
@@ -398,6 +400,7 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
             finish_transfer: false,
             console_at: Instant::from_ticks(0),
             outbox: Outbox::default(),
+            pair_ask: PairAsk::default(),
         };
         link.bring_up().await;
         if Radio::from_u8(STATE.load(Ordering::Relaxed)).start_failed() {
@@ -461,6 +464,7 @@ struct Link<'d> {
     /// The next console notification may go at this instant ([`CONSOLE_PACE`]).
     console_at: Instant,
     outbox: Outbox<NUS_VALUE_LEN>,
+    pair_ask: PairAsk,
 }
 
 impl Link<'_> {
@@ -531,6 +535,7 @@ impl Link<'_> {
             console: (self.nus.is_some() && MIRROR.load(Ordering::Relaxed))
                 .then(|| Console { pending: !OUT.is_empty() || self.outbox.holding(), next_at: tick(self.console_at) }),
             abandon_at: self.transfer.as_ref().map(|_| tick(self.last_data + TRANSFER_IDLE + one)),
+            ask_at: self.pair_ask.due(),
         };
         wrist_wake::ble::due(&state).map(Instant::from_ticks)
     }
@@ -630,9 +635,12 @@ impl Link<'_> {
     }
 
     /// Work raised by events: a finished transfer, a rebond, a passkey, a comparison's answer
-    /// (or its rejection after the timeout), a quiet transfer abandoned, re-advertising after a
-    /// disconnect.
+    /// (or its rejection after the timeout), a quiet transfer abandoned, an unencrypted central
+    /// asked to pair, re-advertising after a disconnect.
     async fn deferred(&mut self) {
+        if self.pair_ask.take(Instant::now().as_ticks()) {
+            self.ask_to_pair().await;
+        }
         if let Some((min, max)) = self.request_interval.take() {
             self.ask_connection(min, max, wrist_wake::ble::NOW_LATENCY, wrist_wake::ble::NOW_TIMEOUT).await;
         }
@@ -681,6 +689,25 @@ impl Link<'_> {
         if self.readvertise {
             self.readvertise = false;
             self.advertise().await;
+        }
+    }
+
+    async fn ask_to_pair(&mut self) {
+        if STATE.load(Ordering::Relaxed) != STATE_CONNECTED || ENCRYPTED.load(Ordering::Relaxed) {
+            return;
+        }
+        let h = CONN_HANDLE.load(Ordering::Relaxed).to_le_bytes();
+        match self.command(ACI_GAP_SLAVE_SECURITY_REQ, &h).await {
+            Ok(r) if r.status == 0 => self.uart.write_line("[ble] link still unencrypted: asked the central to pair"),
+            Ok(r) => {
+                self.uart.write_str("[ble] security request refused, status ");
+                self.uart.write_hex8(r.status);
+                self.uart.write_line("");
+            }
+            Err(why) => {
+                self.uart.write_str("[ble] security request: ");
+                self.uart.write_line(why);
+            }
         }
     }
 
@@ -1177,6 +1204,7 @@ impl Link<'_> {
             }
             Event::Connected { handle, interval } => {
                 CONN_HANDLE.store(handle, Ordering::Relaxed);
+                self.pair_ask.connected(Instant::now().as_ticks(), embassy_time::TICK_HZ);
                 if let Some((iv, lat)) = interval {
                     INTERVAL.store(iv, Ordering::Relaxed);
                     LATENCY.store(lat, Ordering::Relaxed);
@@ -1185,8 +1213,8 @@ impl Link<'_> {
                 ENCRYPTED.store(false, Ordering::Relaxed);
                 self.subscribed = false;
                 self.set_mirror();
-                // The central exchanges the MTU and starts encryption: an ATT or SMP request
-                // from the watch here ended a bonded macOS central's link (MIC failure).
+                // No request here: one crossing the central's own encryption start ended a
+                // bonded macOS central's link (HARDWARE.md).
                 self.mtu = DEFAULT_MTU;
                 self.asked = None;
                 self.advertised = None;
@@ -1209,6 +1237,7 @@ impl Link<'_> {
                 self.set_mirror();
                 self.confirm_for = None;
                 self.request_interval = None;
+                self.pair_ask.settled();
                 clear_prompt();
                 if let Some(session) = self.transfer.take() {
                     crate::update::abort(session);
@@ -1221,6 +1250,9 @@ impl Link<'_> {
             Event::Encryption { on } => {
                 let on = on != 0;
                 ENCRYPTED.store(on, Ordering::Relaxed);
+                if on {
+                    self.pair_ask.settled();
+                }
                 if on && !PROVEN.swap(true, Ordering::Relaxed) {
                     PROVEN_NOW.signal(());
                 }
@@ -1266,8 +1298,12 @@ impl Link<'_> {
         match ecode {
             vendor::BLUE_INITIALIZED => self.uart.write_line("[ble] chip initialised"),
             vendor::HAL_EVENTS_LOST => self.uart.write_line("[ble] the chip dropped events: the host read too slowly"),
-            vendor::GAP_PASS_KEY_REQ => self.passkey_for = Some(handle(rest)),
+            vendor::GAP_PASS_KEY_REQ => {
+                self.pair_ask.settled();
+                self.passkey_for = Some(handle(rest));
+            }
             vendor::GAP_NUMERIC_COMPARISON_VALUE if rest.len() >= 6 => {
+                self.pair_ask.settled();
                 let (conn, value) = wrist_aci::numeric_comparison(rest).unwrap_or_default();
                 PROMPT_VALUE.store(value, Ordering::Relaxed);
                 PROMPT_KIND.store(2, Ordering::Relaxed);
@@ -1282,6 +1318,7 @@ impl Link<'_> {
                 LAST_PAIRING.store(status.saturating_add(1), Ordering::Relaxed);
                 LAST_PAIRING_REASON.store(reason, Ordering::Relaxed);
                 self.confirm_for = None;
+                self.pair_ask.settled();
                 clear_prompt();
                 if status == 0 {
                     self.uart.write_line("[ble] paired and bonded");
@@ -1293,7 +1330,8 @@ impl Link<'_> {
                     self.uart.write_line(" (4 confirm failed, B DHKey check, C comparison refused)");
                 }
             }
-            vendor::GAP_BOND_LOST => self.rebond_for = Some(handle(rest)),
+            vendor::GAP_SLAVE_SECURITY_INITIATED => self.uart.write_line("[ble] security request sent"),
+            vendor::GAP_BOND_LOST => self.rebond_for = Some(CONN_HANDLE.load(Ordering::Relaxed)),
             vendor::ATT_EXCHANGE_MTU_RESP if rest.len() >= 4 => {
                 self.mtu = usize::from(wrist_aci::att_mtu(rest).unwrap_or(0)).clamp(DEFAULT_MTU, 247);
                 self.uart.write_str("[ble] ATT MTU ");
