@@ -5,6 +5,7 @@ use inscribed_disc::{Abgr2222, Surface};
 
 use wrist_l10n::Msg;
 
+use crate::scene::Scene;
 use crate::text::{Font, Glass, Line, Overflow};
 use crate::{ring, HEIGHT, WIDTH};
 
@@ -194,12 +195,13 @@ pub fn draw_line(fb: &mut [u8], glass: &Glass, i: usize) -> bool {
     true
 }
 
-/// One of [`Glass::pieces`] of line `i`; false for a buffer of the wrong size.
-pub fn draw_piece(fb: &mut [u8], glass: &Glass, i: usize, columns: core::ops::Range<i32>) -> bool {
-    let Some(mut surface) = Surface::<Abgr2222>::round(fb, WIDTH, HEIGHT) else {
+/// [`Scene::repaint`] in white; false, drawing nothing, for a buffer of the wrong size.
+pub fn repaint(fb: &mut [u8], bg: &[u8], scene: &Scene, before: Option<&Scene>, columns: core::ops::Range<i32>) -> bool {
+    let n = (WIDTH * HEIGHT) as usize;
+    if fb.len() != n || bg.len() != n {
         return false;
-    };
-    glass.draw_piece_with(&mut surface, i, columns, Abgr2222::WHITE);
+    }
+    scene.repaint(fb, bg, before, columns, Abgr2222::WHITE);
     true
 }
 

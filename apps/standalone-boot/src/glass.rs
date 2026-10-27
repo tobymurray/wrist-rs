@@ -30,14 +30,14 @@ impl Step {
 
 #[derive(Clone, Copy, Default)]
 pub struct Cost {
-    pub background: Step,
+    pub layout: Step,
     pub render: Step,
     pub changed: Step,
     pub write: Step,
 }
 
 static COST: Mutex<CriticalSectionRawMutex, RefCell<Cost>> = Mutex::new(RefCell::new(Cost {
-    background: Step { total: 0, longest: 0 },
+    layout: Step { total: 0, longest: 0 },
     render: Step { total: 0, longest: 0 },
     changed: Step { total: 0, longest: 0 },
     write: Step { total: 0, longest: 0 },
@@ -299,7 +299,7 @@ fn write_page(uart: Uart) {
     uart.write_line(" times (maxima since the last `page`)");
     let c = COST.lock(|s| *s.borrow());
     uart.write_str("[glass] last frame's CPU, total/longest step us:");
-    for (label, step) in [(" background ", c.background), (", render ", c.render), (", changed ", c.changed), (", write ", c.write)] {
+    for (label, step) in [(" layout ", c.layout), (", render ", c.render), (", changed ", c.changed), (", write ", c.write)] {
         uart.write_str(label);
         uart.write_u32(step.total / 48);
         uart.write_str("/");

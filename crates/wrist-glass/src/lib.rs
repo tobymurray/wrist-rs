@@ -2,8 +2,10 @@
 
 //! The watch face, as bytes for the panel driver.
 
+mod blit;
 pub mod dump;
 pub mod pages;
+pub mod scene;
 pub mod text;
 
 use embedded_graphics::prelude::*;

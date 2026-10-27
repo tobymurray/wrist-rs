@@ -164,15 +164,16 @@ fn the_stepwise_render_is_the_same_frame() {
         let mut whole = vec![BLACK; W * H];
         assert!(render(&mut whole, &glass));
         let mut steps = bg.clone();
-        let mut pieces = bg.clone();
         for i in 0..glass.len() {
             assert!(wrist_glass::pages::draw_line(&mut steps, &glass, i));
-            for columns in glass.pieces(i) {
-                assert!(wrist_glass::pages::draw_piece(&mut pieces, &glass, i, columns));
-            }
         }
         assert!(whole == steps, "{name}: the stepwise frame differs");
-        assert!(whole == pieces, "{name}: the frame drawn in pieces differs");
+        let mut strips = vec![0xA5; W * H];
+        let scene = wrist_glass::scene::Scene::of(&glass);
+        for x in (0..WI).step_by(9) {
+            assert!(wrist_glass::pages::repaint(&mut strips, &bg, &scene, None, x..x + 9));
+        }
+        assert!(whole == strips, "{name}: the frame repainted in strips differs");
     }
 }
 

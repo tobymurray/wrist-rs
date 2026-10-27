@@ -3,9 +3,7 @@
 
 use core::ops::Range;
 
-use embedded_graphics::draw_target::{DrawTarget, DrawTargetExt};
-use embedded_graphics::prelude::{Point, Size};
-use embedded_graphics::primitives::Rectangle;
+use embedded_graphics::draw_target::DrawTarget;
 use incised_text::{chars, Face, Style};
 use inscribed_disc::geometry::band_chord;
 use inscribed_disc::{Abgr2222, Surface};
@@ -155,7 +153,7 @@ impl Font {
 
     /// The face that draws `c`, and the character it draws: a figure dash the face lacks as its
     /// minus sign, which sits where figures do.
-    fn source(&self, c: char, figure: bool) -> (&'static Face, char) {
+    pub(crate) fn source(&self, c: char, figure: bool) -> (&'static Face, char) {
         if figure && self.figures.glyph(c).is_some() {
             (self.figures, c)
         } else if c == FIGURE_DASH && self.face.glyph(c).is_none() {
@@ -195,8 +193,8 @@ pub struct Glyph {
     /// Its inked columns; empty for a character with no ink.
     pub ink: (i32, i32),
     /// Where its face draws it from.
-    x: i32,
-    figure: bool,
+    pub(crate) x: i32,
+    pub(crate) figure: bool,
 }
 
 /// Each character of `line` in `font`, its advance centred on the panel.
@@ -357,38 +355,7 @@ impl Glass {
     /// both versions of any other line, and every column without `before`.
     #[must_use]
     pub fn changed_columns(&self, before: Option<&Self>) -> [bool; WIDTH as usize] {
-        let Some(before) = before else {
-            return [true; WIDTH as usize];
-        };
-        let mut changed = [false; WIDTH as usize];
-        let mut mark = |g: &Glyph| {
-            for x in (g.ink.0..g.ink.1).filter_map(|x| usize::try_from(x).ok()) {
-                if let Some(c) = changed.get_mut(x) {
-                    *c = true;
-                }
-            }
-        };
-        for (a, b) in before.lines.iter().zip(&self.lines) {
-            match (a, b) {
-                (Some(a), Some(b)) if a == b => {}
-                (Some(a), Some(b)) if a.font.same(&b.font) && a.baseline == b.baseline => {
-                    let (mut old, mut new) = (a.glyphs(), b.glyphs());
-                    loop {
-                        match (old.next(), new.next()) {
-                            (None, None) => break,
-                            (Some(o), Some(n)) if o == n => {}
-                            (o, n) => o.iter().chain(n.iter()).for_each(&mut mark),
-                        }
-                    }
-                }
-                (a, b) => {
-                    for line in [a, b].into_iter().flatten() {
-                        line.glyphs().for_each(|g| mark(&g));
-                    }
-                }
-            }
-        }
-        changed
+        crate::scene::Scene::of(self).changed_columns(before.map(crate::scene::Scene::of).as_ref())
     }
 
     pub fn draw_with(&self, surface: &mut Surface<'_, Abgr2222>, ink: Abgr2222) {
@@ -403,25 +370,21 @@ impl Glass {
             l.draw(surface, &(0..W), ink);
         }
     }
+}
 
-    /// Bands of columns that tile the panel, split where each character of line `i` after the
-    /// first starts, so the line can be drawn a character at a time.
-    pub fn pieces(&self, i: usize) -> impl Iterator<Item = Range<i32>> + '_ {
-        let pens = self.lines.get(i).and_then(Option::as_ref).into_iter().flat_map(|l| l.glyphs().skip(1));
-        let mut start = 0;
-        pens.map(|p| p.pen.clamp(0, W)).chain([W]).filter_map(move |end| {
-            let band = start..end.max(start);
-            start = band.end;
-            (!band.is_empty()).then_some(band)
-        })
-    }
-
-    /// The part of line `i` in `columns`; drawing every one of [`Glass::pieces`] draws the line.
-    pub fn draw_piece_with(&self, surface: &mut Surface<'_, Abgr2222>, i: usize, columns: Range<i32>, ink: Abgr2222) {
-        let width = u32::try_from(columns.end - columns.start).unwrap_or(0);
-        let area = Rectangle::new(Point::new(columns.start, 0), Size::new(width, HEIGHT));
-        if let Some(Some(l)) = self.lines.get(i) {
-            l.draw(&mut surface.clipped(&area), &columns, ink);
+/// The runs of marked columns, cut to at most `widest` columns each, left to right.
+pub fn strips(marked: &[bool; WIDTH as usize], widest: usize) -> impl Iterator<Item = Range<i32>> + '_ {
+    let widest = widest.max(1);
+    let mut x = 0;
+    core::iter::from_fn(move || {
+        while x < marked.len() && !marked[x] {
+            x += 1;
         }
-    }
+        let start = x;
+        while x < marked.len() && marked[x] && x - start < widest {
+            x += 1;
+        }
+        let as_i32 = |v: usize| i32::try_from(v).unwrap_or(W);
+        (x > start).then(|| as_i32(start)..as_i32(x))
+    })
 }

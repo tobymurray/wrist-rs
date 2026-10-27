@@ -46,6 +46,7 @@ use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::channel::Channel;
 use embassy_sync::signal::Signal;
 use wrist_glass::pages;
+use wrist_glass::scene::Scene;
 use wrist_glass::text::Glass;
 use wrist_pages::{Button, Nav, Page, Press};
 
@@ -459,7 +460,10 @@ static FRAMEBUFFER: ConstStaticCell<[u8; (lcd::WIDTH * lcd::HEIGHT) as usize]> =
     ConstStaticCell::new([0u8; (lcd::WIDTH * lcd::HEIGHT) as usize]);
 static BACKGROUND_BUF: ConstStaticCell<[u8; (lcd::WIDTH * lcd::HEIGHT) as usize]> =
     ConstStaticCell::new([0u8; (lcd::WIDTH * lcd::HEIGHT) as usize]);
-const FB_STEP: usize = (lcd::WIDTH * lcd::HEIGHT / 4) as usize;
+/// The scene on the glass and the one being drawn, by turns.
+static SCENES: ConstStaticCell<[Scene; 2]> = ConstStaticCell::new([Scene::new(), Scene::new()]);
+/// Columns repainted between yields.
+const STRIP: usize = 16;
 
 /// The clocks every Stop exit restores (`HARDWARE.md`, "Stop modes"), with
 /// the USB block's when `usb`.
@@ -817,6 +821,7 @@ async fn display(mut bus: pmic::AsyncBus, mut pwr_int: ExtiInput<'static, Async>
     }
     let fb = FRAMEBUFFER.take();
     let bg = BACKGROUND_BUF.take();
+    let scenes = SCENES.take();
     let t = Instant::now();
     pages::background(bg);
     uart.write_str("[glass] background (black and the ring) drawn once in ");
@@ -874,7 +879,8 @@ async fn display(mut bus: pmic::AsyncBus, mut pwr_int: ExtiInput<'static, Async>
             let t0 = Instant::now();
             let (composed, short) = compose_page(page, soc_pct, cell_mv);
             glass::note_max(&glass::MAX_COMPOSE_US, elapsed_us(t0));
-            show(panel, (fb, bg), uart, &mut drawn, (&composed, short)).await;
+            embassy_futures::yield_now().await;
+            show(panel, (fb, bg), scenes, uart, &mut drawn, (&composed, short)).await;
         }
         shown_page = page;
         if glass::dump_wanted() {
@@ -930,9 +936,11 @@ fn compose_page(page: Page, soc_pct: Option<u8>, cell_mv: Option<u32>) -> (Glass
     }
 }
 
+/// `scenes[0]` lays out `drawn` while it is `Some`.
 async fn show(
     panel: &mut lcd::Lcd,
     (fb, bg): (&mut [u8], &[u8]),
+    scenes: &mut [Scene; 2],
     uart: Uart,
     drawn: &mut Option<Glass>,
     (composed, short): (&Glass, pages::Short),
@@ -947,31 +955,31 @@ async fn show(
         uart.write_line("");
     }
     let mut cost = glass::Cost::default();
-    for (dst, src) in fb.chunks_mut(FB_STEP).zip(bg.chunks(FB_STEP)) {
+    let [shown, scene] = scenes;
+    for i in 0..composed.len().max(1) {
+        let c = busy::cycles();
+        scene.lay(composed, i);
+        cost.layout.add(c);
+        embassy_futures::yield_now().await;
+    }
+    let before = drawn.is_some().then_some(&*shown);
+    let c = busy::cycles();
+    let changed = scene.changed_columns(before);
+    cost.changed.add(c);
+    embassy_futures::yield_now().await;
+    for columns in wrist_glass::text::strips(&changed, STRIP) {
         let t = Instant::now();
         let c = busy::cycles();
-        dst.copy_from_slice(src);
-        cost.background.add(c);
+        pages::repaint(fb, bg, scene, before, columns);
+        cost.render.add(c);
         glass::note_max(&glass::MAX_RENDER_US, elapsed_us(t));
         embassy_futures::yield_now().await;
     }
-    for i in 0..composed.len() {
-        for columns in composed.pieces(i) {
-            let t = Instant::now();
-            let c = busy::cycles();
-            pages::draw_piece(fb, composed, i, columns);
-            cost.render.add(c);
-            glass::note_max(&glass::MAX_RENDER_US, elapsed_us(t));
-            embassy_futures::yield_now().await;
-        }
-    }
-    let c = busy::cycles();
-    let changed = composed.changed_columns(drawn.as_ref());
-    cost.changed.add(c);
     let start = glass::now_ms();
     let (columns, write) = panel.write_frame(fb, &changed).await;
     cost.write = glass::Step { total: write.busy, longest: write.longest };
     let ms = glass::now_ms().saturating_sub(start);
+    scenes.swap(0, 1);
     glass::LAST_FRAME_COLUMNS.store(columns, Ordering::Relaxed);
     *drawn = Some(*composed);
     glass::shown(composed);
