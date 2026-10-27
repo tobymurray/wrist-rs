@@ -1,5 +1,5 @@
 use wrist_glass::pages::{compose, compose_about, compose_battery, render, About, Battery, Clock, Date, Faces, Status, ATKINSON, EN_GB, POPPINS};
-use wrist_glass::text::Glass;
+use wrist_glass::text::{Glass, Line};
 use wrist_glass::{HEIGHT, WIDTH};
 
 const W: usize = WIDTH as usize;
@@ -19,10 +19,6 @@ fn pixels(g: &Glass) -> Vec<u8> {
     let mut fb = vec![0u8; W * H];
     assert!(render(&mut fb, g));
     fb
-}
-
-fn pixel_columns(a: &[u8], b: &[u8]) -> Vec<usize> {
-    (0..W).filter(|&x| (0..H).any(|y| a[y * W + x] != b[y * W + x])).collect()
 }
 
 fn marked_columns(before: Option<&Glass>, after: &Glass) -> Vec<usize> {
@@ -64,15 +60,42 @@ fn a_partial_redraw_is_the_full_redraw() {
     }
 }
 
+/// The ink columns, before and after, of the characters of line `i` that changed.
+fn turned_columns(before: &Glass, after: &Glass, i: usize) -> Vec<usize> {
+    let (a, b) = (before.lines().nth(i).unwrap(), after.lines().nth(i).unwrap());
+    assert_eq!(a.glyphs().count(), b.glyphs().count(), "{a:?} -> {b:?}");
+    let turned = a.glyphs().zip(b.glyphs()).filter(|(o, n)| o.ch != n.ch).flat_map(|(o, n)| [o.ink, n.ink]);
+    let mut columns: Vec<usize> = turned.flat_map(|(l, r)| l..r).map(|x| usize::try_from(x).unwrap()).collect();
+    columns.sort_unstable();
+    columns.dedup();
+    columns
+}
+
 #[test]
-fn a_minute_marks_only_the_digit_that_turned() {
+fn a_minute_marks_only_the_digits_that_turned() {
     for faces in FAMILIES {
-        let (a, b) = (glass(faces, 16, 27, 20, Some(100)), glass(faces, 16, 28, 20, Some(100)));
-        let marked = marked_columns(Some(&a), &b);
-        let changed = pixel_columns(&pixels(&a), &pixels(&b));
-        assert_ne!(changed, Vec::<usize>::new());
-        assert!(changed.first() >= marked.first() && changed.last() <= marked.last());
-        assert!(marked.len() < W / 4, "{}: {} columns", faces.name, marked.len());
+        let minutes: Vec<_> = (0..24).flat_map(|h| (0..60).map(move |m| (h, m))).collect();
+        for (&(h0, m0), &(h1, m1)) in minutes.iter().zip(minutes.iter().cycle().skip(1)) {
+            let (a, b) = (glass(faces, h0, m0, 20, Some(100)), glass(faces, h1, m1, 20, Some(100)));
+            assert_eq!(marked_columns(Some(&a), &b), turned_columns(&a, &b, 1), "{}: {h0}:{m0} -> {h1}:{m1}", faces.name);
+        }
+    }
+}
+
+#[test]
+fn a_reading_marks_only_the_digits_that_turned() {
+    for faces in FAMILIES {
+        for pct in 0..u8::MAX {
+            let (a, b) = (glass(faces, 16, 27, 20, Some(pct)), glass(faces, 16, 27, 20, Some(pct + 1)));
+            if a.lines().nth(2).unwrap().text().len() == b.lines().nth(2).unwrap().text().len() {
+                assert_eq!(marked_columns(Some(&a), &b), turned_columns(&a, &b, 2), "{}: {pct} %", faces.name);
+            }
+        }
+        let battery = |mv| compose_battery(&Battery { soc_pct: Some(87), cell_mv: Some(mv), external: Some(false) }, &EN_GB, faces).0;
+        for mv in 3000..4500 {
+            let (a, b) = (battery(mv), battery(mv + 1));
+            assert_eq!(marked_columns(Some(&a), &b), turned_columns(&a, &b, 2), "{}: {mv} mV", faces.name);
+        }
     }
 }
 
@@ -87,4 +110,22 @@ fn an_unchanged_face_marks_nothing() {
 #[test]
 fn without_a_previous_glass_every_column_is_marked() {
     assert_eq!(marked_columns(None, &glass(&POPPINS, 16, 27, 20, Some(100))).len(), W);
+}
+
+#[test]
+fn a_character_drawn_as_a_box_is_redrawn_where_it_is() {
+    for faces in FAMILIES {
+        for font in [faces.words, faces.time] {
+            let glass = |s: &str| {
+                let mut line = Line::new();
+                line.push_verbatim(s).unwrap();
+                let mut g = Glass::new();
+                let _ = g.put(font, 143, &line);
+                g
+            };
+            let (a, b) = (glass("1 2"), glass("1\u{2007}2"));
+            assert!(partial_redraw(&a, &b) == pixels(&b), "{}: {a:?} -> {b:?}", faces.name);
+            assert!(partial_redraw(&b, &a) == pixels(&a), "{}: {b:?} -> {a:?}", faces.name);
+        }
+    }
 }

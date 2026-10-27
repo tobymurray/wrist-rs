@@ -238,7 +238,7 @@ fn write_page(uart: Uart) {
                 uart.write_str(" (baseline ");
                 uart.write_u32(u32::try_from(l.baseline).unwrap_or(0));
                 uart.write_str(", ");
-                uart.write_u32(u32::from(l.face.px));
+                uart.write_u32(u32::from(l.font.face.px));
                 uart.write_str(" px) \"");
                 uart.write_str(l.text());
                 uart.write_line("\"");

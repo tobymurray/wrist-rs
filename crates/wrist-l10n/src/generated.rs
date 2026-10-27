@@ -11,8 +11,8 @@ pub enum Msg {
     // The date line before the clock has been set.
     /// `set time`
     FaceSetTime,
-    // The time before the clock has been set: two digits, a colon, two digits.
-    /// `--:--`
+    // The time before the clock has been set, its digits as figure dashes (U+2012).
+    /// `‒‒:‒‒`
     FaceTimeUnset,
     // A date the clock holds that is not a real day.
     /// `?`
@@ -20,8 +20,8 @@ pub enum Msg {
     // The charge in whole percent, 0 to 255.
     /// `{$pct} %`
     ChargePercent { pct: u32 },
-    // The charge before the gauge has a reading.
-    /// `-- %`
+    // The charge before the gauge has a reading, its digits as figure dashes.
+    /// `‒‒ %`
     ChargeUnset,
     // The page's title, in capitals like the English.
     /// `BATTERY`
@@ -29,7 +29,8 @@ pub enum Msg {
     // The cell's voltage in millivolts.
     /// `{$mv} mV`
     BatteryCellMv { mv: u32 },
-    /// `-- mV`
+    // Before the first reading, its four digits as figure dashes.
+    /// `‒‒‒‒ mV`
     BatteryCellUnset,
     // What is charging the watch, or that nothing is.
     /// `input USB`
@@ -81,19 +82,19 @@ pub static EN_GB: Locale = Locale {
         // face-set-time
         &[Piece::Text("set time")],
         // face-time-unset
-        &[Piece::Text("--:--")],
+        &[Piece::Text("‒‒:‒‒")],
         // face-date-invalid
         &[Piece::Text("?")],
         // charge-percent
         &[Piece::Arg(0), Piece::Text(" %")],
         // charge-unset
-        &[Piece::Text("-- %")],
+        &[Piece::Text("‒‒ %")],
         // battery-title
         &[Piece::Text("BATTERY")],
         // battery-cell-mv
         &[Piece::Arg(0), Piece::Text(" mV")],
         // battery-cell-unset
-        &[Piece::Text("-- mV")],
+        &[Piece::Text("‒‒‒‒ mV")],
         // battery-input-usb
         &[Piece::Text("input USB")],
         // battery-input-cell

@@ -52,6 +52,8 @@ translation has every message and uses only the English message's variables.
    locale's CLDR names, and another on any value too wide for its line.
 4. Never build a sentence from pieces in code: make the whole sentence one message with
    placeholders, so a translation can reorder it.
+5. Stand in for a number not yet known with figure dashes (`‒`, U+2012), one for each digit
+   it usually has: they are as wide as digits, so nothing moves when the number arrives.
 
 The console is not translated: it is the instrument, and its logs read the same everywhere.
 

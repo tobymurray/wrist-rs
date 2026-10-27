@@ -10,6 +10,7 @@ rim.
 | [`tests/drawable.rs`](tests/drawable.rs) | the same | every string a built-in locale can put on a line is in that line's face |
 | [`tests/on_the_glass.rs`](tests/on_the_glass.rs) | the same | the pages at their extremes: nothing under the ring, nothing lost to the disc's clip |
 | [`tests/columns.rs`](tests/columns.rs) | the same | rewriting only `Glass::changed_columns` gives the frame a full rewrite does |
+| [`tests/figures.rs`](tests/figures.rs) | the same | a line that changes keeps every character that did not where it was |
 | `--features preview` on those tests | on request | PNGs of each case under `target/tmp/wrist-glass/`, one folder per typeface |
 
 The text is [IncisedText](https://crates.io/crates/incised-text)'s. `pages::FACES` picks

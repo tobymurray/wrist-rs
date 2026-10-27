@@ -187,10 +187,10 @@ fn the_face_reads_right() {
     for faces in FAMILIES {
         let (glass, _) = compose(&typical(), &EN_GB, faces);
         assert_eq!(texts(&glass), ["Sat 17 Oct", "16:27", "100 %"]);
-        let faces_used: Vec<u8> = glass.lines().map(|l| l.face.px).collect();
-        assert_eq!(faces_used, [faces.words.px, faces.time.px, faces.words.px]);
+        let faces_used: Vec<u8> = glass.lines().map(|l| l.font.face.px).collect();
+        assert_eq!(faces_used, [faces.words.face.px, faces.time.face.px, faces.words.face.px]);
         let (glass, _) = compose(&Status::default(), &EN_GB, faces);
-        assert_eq!(texts(&glass), ["set time", "--:--", "-- %"]);
+        assert_eq!(texts(&glass), ["set time", "‒‒:‒‒", "‒‒ %"]);
         let a_second_later = Status { clock: Some(Clock { h: 16, m: 27, s: 34 }), ..typical() };
         assert_eq!(compose(&typical(), &EN_GB, faces).0, compose(&a_second_later, &EN_GB, faces).0);
     }
@@ -202,12 +202,12 @@ fn the_pages_read_right() {
         let battery = Battery { soc_pct: Some(87), cell_mv: Some(4012), external: Some(false) };
         let (glass, _) = compose_battery(&battery, &EN_GB, faces);
         assert_eq!(texts(&glass), ["BATTERY", "87 %", "4012 mV", "input cell"]);
-        assert_eq!(glass.lines().nth(1).unwrap().face.px, faces.charge.px);
+        assert_eq!(glass.lines().nth(1).unwrap().font.face.px, faces.charge.face.px);
         let (glass, _) = compose_battery(&Battery::default(), &EN_GB, faces);
-        assert_eq!(texts(&glass), ["BATTERY", "-- %", "-- mV", "input ?"]);
+        assert_eq!(texts(&glass), ["BATTERY", "‒‒ %", "‒‒‒‒ mV", "input ?"]);
         let (glass, _) = compose_about(&About { version: "0.1.0", build: "5784ec72019b" }, &EN_GB, faces);
         assert_eq!(texts(&glass), ["ABOUT", "wrist-rs", "0.1.0", "5784EC72019B"]);
-        assert_eq!(glass.lines().nth(3).unwrap().face.px, faces.id.px);
+        assert_eq!(glass.lines().nth(3).unwrap().font.face.px, faces.id.face.px);
         let (glass, _) = compose_about(&About { version: "0.1.0", build: "5784ec72019b-dirty" }, &EN_GB, faces);
         assert_eq!(texts(&glass), ["ABOUT", "wrist-rs", "0.1.0", "5784EC72019B", "DIRTY"]);
         let (glass, _) = compose_about(&About { version: "0.1.0", build: "gate-test" }, &EN_GB, faces);

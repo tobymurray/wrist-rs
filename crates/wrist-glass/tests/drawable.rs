@@ -1,7 +1,7 @@
 //! Every string a built-in locale can put in a slot is in that slot's face, in both typefaces.
 
-use incised_text::Face;
 use wrist_glass::pages::{Faces, ATKINSON, POPPINS};
+use wrist_glass::text::Font;
 use wrist_l10n::{DatePiece, Locale, Msg, Piece, TimePiece, BUILT_IN};
 
 const DIGITS: &str = "0123456789";
@@ -25,9 +25,9 @@ fn message(l: &Locale, msg: Msg, out: &mut Vec<&'static str>) {
     texts(l.messages[msg.parts().0], out);
 }
 
-fn assert_covers(slot: &str, face: &Face, strings: &[&str]) {
+fn assert_covers(slot: &str, font: &Font, strings: &[&str]) {
     for s in strings {
-        let missing: String = face.uncovered(s).collect();
+        let missing: String = font.uncovered(s).collect();
         assert!(missing.is_empty(), "{slot}: {s:?} lacks {missing:?}");
     }
 }
@@ -62,5 +62,15 @@ fn every_built_in_string_is_in_its_slot_s_face() {
         }
         assert_covers(&format!("{name} version"), words, &[VERSION]);
         assert_covers(&format!("{name} id"), id, &[ID]);
+    }
+}
+
+#[test]
+fn a_figure_space_is_uncovered_unless_its_face_has_it() {
+    for faces in [&POPPINS, &ATKINSON] {
+        for font in [faces.words, faces.id, faces.charge, faces.time] {
+            let missing = font.face.glyph('\u{2007}').is_none();
+            assert_eq!(font.uncovered("\u{2007}").count() == 1, missing, "{} {}", faces.name, font.face.px);
+        }
     }
 }

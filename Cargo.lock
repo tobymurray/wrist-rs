@@ -600,9 +600,9 @@ checksum = "a6d7d711f44237fa9300406ab6e521148594056862343370b5df265a0d15c088"
 
 [[package]]
 name = "incised-text"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1efb492d5585f94ee9f355fb59f80a436c759fe59602745341da3fc94893d89"
+checksum = "8214638e27a832e7bf5b40f131e40a668344abc625dba1a12b2b1c63b53413a0"
 dependencies = [
  "embedded-graphics",
  "inscribed-disc",

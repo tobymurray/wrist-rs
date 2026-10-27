@@ -1,11 +1,11 @@
 //! The watch face, composed from a [`Status`].
 
-use incised_text::{faces, Face};
+use incised_text::faces;
 use inscribed_disc::{Abgr2222, Surface};
 
 use wrist_l10n::Msg;
 
-use crate::text::{Glass, Line, Overflow};
+use crate::text::{Font, Glass, Line, Overflow};
 use crate::{ring, HEIGHT, WIDTH};
 
 pub use wrist_l10n::{Clock, Date, Locale, BUILT_IN, EN_GB};
@@ -19,36 +19,31 @@ pub struct Status {
     pub soc_pct: Option<u8>,
 }
 
-/// One typeface's face for each kind of line.
+/// One typeface's font for each kind of line.
 pub struct Faces {
     pub name: &'static str,
-    /// Words, dates and data.
-    pub words: &'static Face,
-    /// The build ID's twelve hex digits.
-    pub id: &'static Face,
-    /// The battery page's charge, its digits 35 rows tall.
-    pub charge: &'static Face,
-    /// The time, its digits 49 rows tall.
-    pub time: &'static Face,
+    pub words: Font,
+    pub id: Font,
+    pub charge: Font,
+    pub time: Font,
 }
 
 pub const POPPINS: Faces = Faces {
     name: "poppins",
-    words: &faces::POPPINS_SEMIBOLD_26_LATIN,
-    id: &faces::POPPINS_SEMIBOLD_20_ASCII,
-    charge: &faces::POPPINS_SEMIBOLD_47_NUMERIC,
-    time: &faces::POPPINS_SEMIBOLD_67_NUMERIC,
+    words: Font::new(&faces::POPPINS_SEMIBOLD_26_LATIN),
+    id: Font::new(&faces::POPPINS_SEMIBOLD_20_ASCII),
+    charge: Font::new(&faces::POPPINS_SEMIBOLD_47_NUMERIC),
+    time: Font::new(&faces::POPPINS_SEMIBOLD_67_NUMERIC),
 };
 
 pub const ATKINSON: Faces = Faces {
     name: "atkinson",
-    words: &faces::ATKINSON_BOLD_28_LATIN,
-    id: &faces::ATKINSON_BOLD_20_ASCII,
-    charge: &faces::ATKINSON_BOLD_52_NUMERIC,
-    time: &faces::ATKINSON_BOLD_72_NUMERIC,
+    words: Font { face: &faces::ATKINSON_BOLD_28_LATIN, figures: &faces::ATKINSON_BOLD_28_FIGURES },
+    id: Font::new(&faces::ATKINSON_BOLD_20_ASCII),
+    charge: Font::new(&faces::ATKINSON_BOLD_52_NUMERIC),
+    time: Font::new(&faces::ATKINSON_BOLD_72_NUMERIC),
 };
 
-/// The typeface the watch draws.
 pub const FACES: &Faces = &ATKINSON;
 
 /// Bit `i` set when line `i` of a [`compose`] was cut; 0 when none was.
@@ -65,10 +60,10 @@ impl Builder {
         Self { glass: Glass::new(), short: 0, n: 0 }
     }
 
-    fn at(&mut self, face: &'static Face, baseline: i32, f: impl FnOnce(&mut Line) -> Result<(), Overflow>) {
+    fn at(&mut self, font: Font, baseline: i32, f: impl FnOnce(&mut Line) -> Result<(), Overflow>) {
         let mut line = Line::new();
         let pushed = f(&mut line);
-        let placed = self.glass.put(face, baseline, &line);
+        let placed = self.glass.put(font, baseline, &line);
         if pushed.and(placed).is_err() {
             self.short |= 1 << self.n;
         }
