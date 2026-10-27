@@ -83,14 +83,21 @@ impl Line {
 
     /// Each character as the face looks it up, and whether it takes a figure's cell.
     fn chars(&self) -> impl Iterator<Item = (char, bool)> + '_ {
+        self.shown().map(|(c, figure, _)| (c, figure))
+    }
+
+    /// [`Line::chars`], each with what it shows once the line loses its last character: the
+    /// first of two characters composed into one, or nothing.
+    fn shown(&self) -> impl Iterator<Item = (char, bool, Option<(char, bool)>)> + '_ {
         let mut source = self.as_str().char_indices();
+        let figure = move |c: char, i: usize| (c.is_ascii_digit() && self.figures & (1 << i) != 0) || c == FIGURE_DASH;
         chars(self.as_str()).map(move |c| {
             let (i, first) = source.next().unwrap_or((0, c));
-            if first != c {
+            let base = (first != c).then(|| {
                 source.next();
-            }
-            let digit = c.is_ascii_digit() && self.figures & (1 << i) != 0;
-            (c, digit || c == FIGURE_DASH)
+                (first, figure(first, i))
+            });
+            (c, figure(c, i), base)
         })
     }
 }
@@ -273,15 +280,68 @@ fn narrowest_chord(rows: Range<i32>) -> i32 {
 /// on every row the ink takes.
 #[must_use]
 pub fn fits(font: &Font, baseline: i32, line: &Line) -> bool {
-    let Some((ink_left, ink_right)) =
-        layout(font, line).map(|g| g.ink).filter(|i| i.1 > i.0).reduce(|a, b| (a.0.min(b.0), a.1.max(b.1)))
-    else {
-        return true;
-    };
-    let rows = ink_rows(font, line);
-    let chord = narrowest_chord(baseline + rows.start..baseline + rows.end) - 2 * MARGIN;
-    let left = (W - chord) / 2;
-    chord > 0 && ink_left >= left && ink_right <= left + chord
+    Cells::of(font, line).fits(baseline)
+}
+
+/// A line's characters measured once, so it can be tried at shorter lengths without measuring
+/// it again: [`fits`] laid out from them.
+struct Cells {
+    at: [(Metrics, bool); LINE_BYTES],
+    /// What the character at the same index shows once the line loses its last character.
+    base: [Option<(char, bool)>; LINE_BYTES],
+    n: usize,
+    figure: i32,
+}
+
+impl Cells {
+    fn of(font: &Font, line: &Line) -> Self {
+        let mut cells = Self {
+            at: [(Metrics::default(), false); LINE_BYTES],
+            base: [None; LINE_BYTES],
+            n: 0,
+            figure: font.figure_width(),
+        };
+        for ((cell, base), (c, figure, first)) in cells.at.iter_mut().zip(&mut cells.base).zip(line.shown()) {
+            *cell = (font.measure(c, figure), figure);
+            *base = first;
+            cells.n += 1;
+        }
+        cells
+    }
+
+    /// As [`Line::pop`] leaves the line: its last character gone, or only the second of the two
+    /// it was composed from.
+    fn pop(&mut self, font: &Font) {
+        let Some(last) = self.n.checked_sub(1) else { return };
+        match self.base[last].take() {
+            Some((c, figure)) => self.at[last] = (font.measure(c, figure), figure),
+            None => self.n = last,
+        }
+    }
+
+    fn fits(&self, baseline: i32) -> bool {
+        let cells = &self.at[..self.n];
+        let advance = |&(m, figure): &(Metrics, bool)| if figure { self.figure } else { m.advance };
+        let mut pen = CENTRE - cells.iter().map(advance).sum::<i32>() / 2;
+        let mut ink: Option<(i32, i32, i32, i32)> = None;
+        for cell in cells {
+            let (m, figure) = *cell;
+            let x = if figure { pen + (advance(cell) - m.advance) / 2 } else { pen };
+            if m.ink_right > m.ink_left {
+                let (l, r) = (x + m.ink_left, x + m.ink_right);
+                ink = Some(ink.map_or((l, r, m.ink_top, m.ink_bottom), |(a, b, t, u)| {
+                    (a.min(l), b.max(r), t.min(m.ink_top), u.max(m.ink_bottom))
+                }));
+            }
+            pen += advance(cell);
+        }
+        let Some((ink_left, ink_right, top, bottom)) = ink else {
+            return true;
+        };
+        let chord = narrowest_chord(baseline + top..baseline + bottom) - 2 * MARGIN;
+        let left = (W - chord) / 2;
+        chord > 0 && ink_left >= left && ink_right <= left + chord
+    }
 }
 
 pub const MAX_LINES: usize = 8;
@@ -368,8 +428,10 @@ impl Glass {
     pub fn put(&mut self, font: Font, baseline: i32, line: &Line) -> Result<(), Overflow> {
         let mut line = *line;
         let mut cut = Ok(());
-        while !fits(&font, baseline, &line) {
+        let mut cells = Cells::of(&font, &line);
+        while !cells.fits(baseline) {
             line.pop();
+            cells.pop(&font);
             cut = Err(Overflow);
         }
         if let Some(slot) = self.lines.get_mut(self.n) {
@@ -436,7 +498,7 @@ pub fn strips(marked: &[bool; WIDTH as usize], widest: usize) -> impl Iterator<I
 mod tests {
     use inscribed_disc::geometry::band_chord;
 
-    use super::{narrowest_chord, Metrics, H, W};
+    use super::{fits, ink_rows, layout, narrowest_chord, Font, Line, Metrics, H, MARGIN, W};
     use crate::pages::{ATKINSON, POPPINS};
 
     #[test]
@@ -450,6 +512,53 @@ mod tests {
                     let want = Metrics::from(face.measure(drawn.encode_utf8(&mut buf)));
                     assert_eq!(font.measure(c, figure), want, "{} px {c:?}", font.face.px);
                 }
+            }
+        }
+    }
+
+    /// `fits` as it was, from a full layout every time.
+    fn laid_out_fits(font: &Font, baseline: i32, line: &Line) -> bool {
+        let Some((l, r)) = layout(font, line).map(|g| g.ink).filter(|i| i.1 > i.0).reduce(|a, b| (a.0.min(b.0), a.1.max(b.1))) else {
+            return true;
+        };
+        let rows = ink_rows(font, line);
+        let chord = band_chord(baseline + rows.start, baseline + rows.end, W, H) - 2 * MARGIN;
+        let left = (W - chord) / 2;
+        chord > 0 && l >= left && r <= left + chord
+    }
+
+    #[test]
+    fn a_line_cut_to_fit_is_cut_where_a_full_layout_cuts_it() {
+        use wrist_l10n::Sink;
+        let pieces = ["W", "i", "e\u{301}", "\u{2012}", " ", "Ångström", "m", "\u{301}", "%", ":"];
+        let mut seed = 0x9E37_79B9_u32;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed
+        };
+        let fonts = [&POPPINS, &ATKINSON].into_iter().flat_map(|f| [f.words, f.id, f.charge, f.time]);
+        for font in fonts {
+            for _ in 0..300 {
+                let mut line = Line::new();
+                while line.as_str().len() < 28 {
+                    let r = next();
+                    let pushed = if r % 4 == 0 { line.number(r % 10_000) } else { line.push_verbatim(pieces[(r as usize / 4) % pieces.len()]) };
+                    if pushed.is_err() {
+                        break;
+                    }
+                }
+                let baseline = i32::try_from(next() % 260).unwrap() - 10;
+                let mut want = line;
+                while !laid_out_fits(&font, baseline, &want) {
+                    want.pop();
+                }
+                let mut glass = super::Glass::new();
+                let _ = glass.put(font, baseline, &line);
+                let got = glass.lines().next().unwrap().text();
+                assert_eq!(got, want.as_str(), "{} px at {baseline}: {:?}", font.face.px, line.as_str());
+                assert_eq!(fits(&font, baseline, &line), laid_out_fits(&font, baseline, &line));
             }
         }
     }
