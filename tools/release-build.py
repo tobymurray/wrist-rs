@@ -392,6 +392,10 @@ def main():
         validate_elf(elf, *(layout()[0] if bin_name == 'loader' else layout()[1]))
         copy(elf, debug / (bin_name + '.elf'))
         copy(map_path, debug / (bin_name + '.map'))
+    if not a.skip_checks:
+        # The Bluetooth build is not packaged, but stays clean.
+        execute('cargo', 'clippy', '--locked', '--release', '--features', 'ble', '--', '-D', 'warnings',
+                cwd=ROOT/'apps'/'standalone-boot', env=env)
     first = user / 'first-install/Apps/ImageInstaller'
     first.mkdir(parents=True)
     firmware_build.combine(execute, env, user / 'loader.bin', user / 'app.bin', first / 'image.bin')
