@@ -14,7 +14,7 @@ preview = ["inscribed-disc/preview", "dep:png"]
 
 [dependencies]
 inscribed-disc = { version = "0.2.1", default-features = false, features = ["embedded-graphics", "abgr2222"] }
-incised-text = { version = "0.1.0", default-features = false, features = ["abgr2222", "atkinson"] }
+incised-text = { version = "0.2.0", default-features = false, features = ["abgr2222", "atkinson"] }
 # Square roots and the arcs' ends, to well under a pixel.
 libm = "0.2.16"
 # Indexed PNGs, which keep the screenshots a few kilobytes.

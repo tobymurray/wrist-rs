@@ -24,6 +24,9 @@ impl Sink for Text {
     fn two_digits(&mut self, n: u8) -> Result<(), ()> {
         write!(self.0, "{:02}", n % 100).map_err(|_| ())
     }
+    fn day(&mut self, d: u8) -> Result<(), ()> {
+        self.number(u32::from(d))
+    }
 }
 
 #[test]

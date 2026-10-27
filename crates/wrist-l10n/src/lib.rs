@@ -80,6 +80,11 @@ pub trait Sink {
     /// # Errors
     /// When the digits do not fit.
     fn two_digits(&mut self, n: u8) -> Result<(), Self::Error>;
+    /// A date's day of the month.
+    ///
+    /// # Errors
+    /// When the day does not fit.
+    fn day(&mut self, d: u8) -> Result<(), Self::Error>;
 }
 
 /// A date in the proleptic Gregorian calendar; any values hold, and the caller checks them.
@@ -151,7 +156,7 @@ impl Locale {
         for piece in self.date {
             match piece {
                 DatePiece::Weekday => sink.text(self.weekdays[usize::from(d.weekday() % 7)])?,
-                DatePiece::Day => sink.number(u32::from(d.day))?,
+                DatePiece::Day => sink.day(d.day)?,
                 DatePiece::Month => sink.text(self.months[usize::from(d.month.clamp(1, 12) - 1)])?,
                 DatePiece::Text(s) => sink.text(s)?,
             }
@@ -195,6 +200,9 @@ mod tests {
         }
         fn two_digits(&mut self, n: u8) -> Result<(), ()> {
             write!(self.0, "{:02}", n % 100).map_err(|_| ())
+        }
+        fn day(&mut self, d: u8) -> Result<(), ()> {
+            self.number(u32::from(d))
         }
     }
 

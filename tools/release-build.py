@@ -247,7 +247,6 @@ def collect_licenses(dest, sdk, rust_licenses, gcc):
     toolchain = Path(gcc).resolve().parents[1]/'share/doc/gcc-arm-none-eabi/license.txt'
     require(toolchain.is_file(), 'missing GNU Arm toolchain licence: ' + str(toolchain))
     copy(toolchain, dest/'gnu-arm-toolchain/license.txt')
-    copy(ROOT/'crates/wrist-glass/LICENSE-FONT', dest/'wrist-glass-font/LICENSE')
 
 
 def package_licenses(base):
@@ -320,13 +319,14 @@ def verify_archive(path, debug=False):
                     'round-trip fingerprint mismatch')
             for name in ['START-HERE.md', 'LICENSE', 'NOTICES.md', 'RELEASE-NOTES.md', 'tools/requirements.txt',
                          'tools/wrist-update.py', 'tools/wrist-cmd.py', 'tools/wrist-time.py', 'tools/wrist-crash.py',
-                         'tools/wrist_port.py', 'tools/60-wrist-rs.rules', 'licenses/wrist-glass-font/LICENSE',
+                         'tools/wrist_port.py', 'tools/60-wrist-rs.rules',
                          'licenses/sdk/libstdc++/GPL-3.0-or-later.txt', 'licenses/sdk/libstdc++/GCC-exception-3.1.txt',
                          'licenses/gnu-arm-toolchain/license.txt']:
                 require(name in names, 'missing user asset: ' + name)
-            for font in FONT_LICENSES:
-                require(any(re.fullmatch(r'licenses/root/incised-text-[^/]+/Fonts/' + re.escape(font), n)
-                            for n in names), 'missing user asset: the installer\'s font licence ' + font)
+            for tree in ['root', 'app']:
+                for font in FONT_LICENSES:
+                    require(any(re.fullmatch(r'licenses/' + tree + r'/incised-text-[^/]+/Fonts/' + re.escape(font), n)
+                                for n in names), 'missing user asset: the ' + tree + ' tree\'s font licence ' + font)
 
 
 def main():

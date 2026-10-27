@@ -600,9 +600,9 @@ checksum = "a6d7d711f44237fa9300406ab6e521148594056862343370b5df265a0d15c088"
 
 [[package]]
 name = "incised-text"
-version = "0.1.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f0c73e1f1c4c5da7b2d7188a77ff006f1d8271e9c4a7ee25618431507e9d1729"
+checksum = "8214638e27a832e7bf5b40f131e40a668344abc625dba1a12b2b1c63b53413a0"
 dependencies = [
  "embedded-graphics",
  "inscribed-disc",
@@ -968,6 +968,7 @@ name = "wrist-glass"
 version = "0.0.0"
 dependencies = [
  "embedded-graphics",
+ "incised-text",
  "inscribed-disc",
  "wrist-l10n",
 ]

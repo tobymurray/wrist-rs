@@ -1,10 +1,11 @@
 //! The watch face, composed from a [`Status`].
 
+use incised_text::faces;
 use inscribed_disc::{Abgr2222, Surface};
 
 use wrist_l10n::Msg;
 
-use crate::text::{room_at, Glass, Line, Overflow};
+use crate::text::{Font, Glass, Line, Overflow};
 use crate::{ring, HEIGHT, WIDTH};
 
 pub use wrist_l10n::{Clock, Date, Locale, BUILT_IN, EN_GB};
@@ -17,6 +18,33 @@ pub struct Status {
     /// Whole percent; any value.
     pub soc_pct: Option<u8>,
 }
+
+/// One typeface's font for each kind of line.
+pub struct Faces {
+    pub name: &'static str,
+    pub words: Font,
+    pub id: Font,
+    pub charge: Font,
+    pub time: Font,
+}
+
+pub const POPPINS: Faces = Faces {
+    name: "poppins",
+    words: Font::new(&faces::POPPINS_SEMIBOLD_26_LATIN),
+    id: Font::new(&faces::POPPINS_SEMIBOLD_20_ASCII),
+    charge: Font::new(&faces::POPPINS_SEMIBOLD_47_NUMERIC),
+    time: Font::new(&faces::POPPINS_SEMIBOLD_67_NUMERIC),
+};
+
+pub const ATKINSON: Faces = Faces {
+    name: "atkinson",
+    words: Font { face: &faces::ATKINSON_BOLD_28_LATIN, figures: &faces::ATKINSON_BOLD_28_FIGURES },
+    id: Font::new(&faces::ATKINSON_BOLD_20_ASCII),
+    charge: Font::new(&faces::ATKINSON_BOLD_52_NUMERIC),
+    time: Font::new(&faces::ATKINSON_BOLD_72_NUMERIC),
+};
+
+pub const FACES: &Faces = &ATKINSON;
 
 /// Bit `i` set when line `i` of a [`compose`] was cut; 0 when none was.
 pub type Short = u8;
@@ -32,45 +60,34 @@ impl Builder {
         Self { glass: Glass::new(), short: 0, n: 0 }
     }
 
-    fn note(&mut self, r: Result<(), Overflow>) {
-        if r.is_err() {
+    fn at(&mut self, font: Font, baseline: i32, f: impl FnOnce(&mut Line) -> Result<(), Overflow>) {
+        let mut line = Line::new();
+        let pushed = f(&mut line);
+        let placed = self.glass.put(font, baseline, &line);
+        if pushed.and(placed).is_err() {
             self.short |= 1 << self.n;
         }
         self.n += 1;
     }
-
-    fn at<const TOP: i32, const SCALE: u32, const N: usize>(
-        &mut self,
-        f: impl FnOnce(&mut Line<N>) -> Result<(), Overflow>,
-    ) {
-        let mut line = Line::<N>::new();
-        let r = f(&mut line);
-        self.glass.put::<TOP, SCALE, N>(&line);
-        self.note(r);
-    }
 }
 
-const FACE_DATE_TOP: i32 = 66;
-const FACE_DATE_W: usize = room_at(FACE_DATE_TOP, 3);
-const FACE_TIME_TOP: i32 = 94;
-const FACE_TIME_SCALE: u32 = 7;
-const FACE_TIME_W: usize = room_at(FACE_TIME_TOP, FACE_TIME_SCALE);
-const FACE_BATT_TOP: i32 = 152;
-const FACE_BATT_W: usize = room_at(FACE_BATT_TOP, 3);
+const FACE_DATE: i32 = 84;
+const FACE_TIME: i32 = 143;
+const FACE_BATT: i32 = 175;
 
 #[must_use]
-pub fn compose(status: &Status, locale: &Locale) -> (Glass, Short) {
+pub fn compose(status: &Status, locale: &Locale, faces: &Faces) -> (Glass, Short) {
     let mut b = Builder::new();
-    b.at::<FACE_DATE_TOP, 3, FACE_DATE_W>(|l| match status.date {
+    b.at(faces.words, FACE_DATE, |l| match status.date {
         Some(d) if d.named() => locale.date(l, d),
         Some(_) => locale.message(l, Msg::FaceDateInvalid),
         None => locale.message(l, Msg::FaceSetTime),
     });
-    b.at::<FACE_TIME_TOP, FACE_TIME_SCALE, FACE_TIME_W>(|l| match status.clock {
+    b.at(faces.time, FACE_TIME, |l| match status.clock {
         Some(c) => locale.time(l, c),
         None => locale.message(l, Msg::FaceTimeUnset),
     });
-    b.at::<FACE_BATT_TOP, 3, FACE_BATT_W>(|l| push_percent(l, locale, status.soc_pct));
+    b.at(faces.words, FACE_BATT, |l| push_percent(l, locale, status.soc_pct));
     (b.glass, b.short)
 }
 
@@ -91,37 +108,28 @@ pub struct About<'a> {
     pub build: &'a str,
 }
 
-const TITLE_TOP: i32 = 58;
-const TITLE_W: usize = room_at(TITLE_TOP, 3);
-const BATT_PCT_TOP: i32 = 88;
-const BATT_PCT_SCALE: u32 = 5;
-const BATT_PCT_W: usize = room_at(BATT_PCT_TOP, BATT_PCT_SCALE);
-const BATT_MV_TOP: i32 = 136;
-const BATT_MV_W: usize = room_at(BATT_MV_TOP, 3);
-const BATT_INPUT_TOP: i32 = 164;
-const BATT_INPUT_W: usize = room_at(BATT_INPUT_TOP, 3);
-const ABOUT_NAME_TOP: i32 = 88;
-const ABOUT_NAME_W: usize = room_at(ABOUT_NAME_TOP, 3);
-const ABOUT_VERSION_TOP: i32 = 116;
-/// `100.100.100`.
-const ABOUT_VERSION_W: usize = 11;
-const ABOUT_BUILD_TOP: i32 = 146;
+const TITLE: i32 = 79;
+const BATT_PCT: i32 = 123;
+const BATT_MV: i32 = 157;
+const BATT_INPUT: i32 = 185;
+const ABOUT_NAME: i32 = 109;
+const ABOUT_VERSION: i32 = 137;
+const ABOUT_BUILD: i32 = 160;
+const ABOUT_SUFFIX: i32 = 180;
 /// Twelve hex digits.
-const ABOUT_BUILD_W: usize = 12;
-const ABOUT_DIRTY_TOP: i32 = 166;
-const ABOUT_DIRTY_W: usize = 12;
+const ID_CHARS: usize = 12;
 
 /// The charge, the cell's voltage and the input.
 #[must_use]
-pub fn compose_battery(battery: &Battery, locale: &Locale) -> (Glass, Short) {
+pub fn compose_battery(battery: &Battery, locale: &Locale, faces: &Faces) -> (Glass, Short) {
     let mut b = Builder::new();
-    b.at::<TITLE_TOP, 3, TITLE_W>(|l| locale.message(l, Msg::BatteryTitle));
-    b.at::<BATT_PCT_TOP, BATT_PCT_SCALE, BATT_PCT_W>(|l| push_percent(l, locale, battery.soc_pct));
-    b.at::<BATT_MV_TOP, 3, BATT_MV_W>(|l| match battery.cell_mv {
+    b.at(faces.words, TITLE, |l| locale.message(l, Msg::BatteryTitle));
+    b.at(faces.charge, BATT_PCT, |l| push_percent(l, locale, battery.soc_pct));
+    b.at(faces.words, BATT_MV, |l| match battery.cell_mv {
         Some(mv) => locale.message(l, Msg::BatteryCellMv { mv }),
         None => locale.message(l, Msg::BatteryCellUnset),
     });
-    b.at::<BATT_INPUT_TOP, 3, BATT_INPUT_W>(|l| {
+    b.at(faces.words, BATT_INPUT, |l| {
         locale.message(
             l,
             match battery.external {
@@ -137,29 +145,24 @@ pub fn compose_battery(battery: &Battery, locale: &Locale) -> (Glass, Short) {
 /// The version, and the build ID in upper case; a suffix after the ID's first twelve characters
 /// goes on a line of its own.
 #[must_use]
-pub fn compose_about(a: &About<'_>, locale: &Locale) -> (Glass, Short) {
+pub fn compose_about(a: &About<'_>, locale: &Locale, faces: &Faces) -> (Glass, Short) {
     let mut b = Builder::new();
-    b.at::<TITLE_TOP, 3, TITLE_W>(|l| locale.message(l, Msg::AboutTitle));
-    b.at::<ABOUT_NAME_TOP, 3, ABOUT_NAME_W>(|l| locale.message(l, Msg::AboutProduct));
-    b.at::<ABOUT_VERSION_TOP, 3, ABOUT_VERSION_W>(|l| l.push_verbatim(a.version.as_bytes()));
-    let build = a.build.as_bytes();
-    let (id, rest) = build.split_at(build.len().min(ABOUT_BUILD_W));
-    b.at::<ABOUT_BUILD_TOP, 2, ABOUT_BUILD_W>(|l| push_upper(l, id));
+    b.at(faces.words, TITLE, |l| locale.message(l, Msg::AboutTitle));
+    b.at(faces.words, ABOUT_NAME, |l| locale.message(l, Msg::AboutProduct));
+    b.at(faces.words, ABOUT_VERSION, |l| l.push_verbatim(a.version));
+    let split = a.build.char_indices().nth(ID_CHARS).map_or(a.build.len(), |(i, _)| i);
+    let (id, rest) = a.build.split_at(split);
+    b.at(faces.id, ABOUT_BUILD, |l| push_upper(l, id));
     if !rest.is_empty() {
-        b.at::<ABOUT_DIRTY_TOP, 2, ABOUT_DIRTY_W>(|l| push_upper(l, rest.strip_prefix(b"-").unwrap_or(rest)));
+        b.at(faces.id, ABOUT_SUFFIX, |l| push_upper(l, rest.strip_prefix('-').unwrap_or(rest)));
     }
     (b.glass, b.short)
 }
 
-fn push_upper<const N: usize>(line: &mut Line<N>, s: &[u8]) -> Result<(), Overflow> {
-    let mut buf = [0u8; N];
-    let n = s.len().min(N);
-    for (dst, src) in buf.iter_mut().zip(s) {
-        *dst = src.to_ascii_uppercase();
-    }
-    line.push_verbatim(&buf[..n])?;
-    if s.len() > N {
-        return Err(Overflow { needed: s.len() });
+fn push_upper(line: &mut Line, s: &str) -> Result<(), Overflow> {
+    for c in s.chars() {
+        let mut buf = [0u8; 4];
+        line.push_verbatim(c.to_ascii_uppercase().encode_utf8(&mut buf))?;
     }
     Ok(())
 }
@@ -169,7 +172,7 @@ pub fn render(fb: &mut [u8], glass: &Glass) -> bool {
     if !background(fb) {
         return false;
     }
-    (0..glass.lines().len()).all(|i| draw_line(fb, glass, i))
+    (0..glass.len()).all(|i| draw_line(fb, glass, i))
 }
 
 /// False for a buffer of the wrong size.
@@ -191,7 +194,16 @@ pub fn draw_line(fb: &mut [u8], glass: &Glass, i: usize) -> bool {
     true
 }
 
-fn push_percent<const N: usize>(line: &mut Line<N>, locale: &Locale, pct: Option<u8>) -> Result<(), Overflow> {
+/// One of [`Glass::pieces`] of line `i`; false for a buffer of the wrong size.
+pub fn draw_piece(fb: &mut [u8], glass: &Glass, i: usize, columns: core::ops::Range<i32>) -> bool {
+    let Some(mut surface) = Surface::<Abgr2222>::round(fb, WIDTH, HEIGHT) else {
+        return false;
+    };
+    glass.draw_piece_with(&mut surface, i, columns, Abgr2222::WHITE);
+    true
+}
+
+fn push_percent(line: &mut Line, locale: &Locale, pct: Option<u8>) -> Result<(), Overflow> {
     match pct {
         Some(pct) => locale.message(line, Msg::ChargePercent { pct: u32::from(pct) }),
         None => locale.message(line, Msg::ChargeUnset),

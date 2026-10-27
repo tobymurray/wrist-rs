@@ -28,13 +28,11 @@ Known bundled material:
   `licenses/gnu-arm-toolchain/license.txt`. Rust's `core` and compiler builtins are under
   `licenses/rust-toolchain/`.
 - **InscribedDisc**: MIT.
-- **IncisedText** draws the installer's text. Its code is MIT OR Apache-2.0; its glyph data
-  is rendered from Poppins and Atkinson Hyperlegible Next, which makes it a Modified Version
-  of each under the SIL Open Font License 1.1, whose texts are in
-  `licenses/root/incised-text-*/Fonts/`.
-- **`wrist-glass`'s 5×7 glyphs** derive from the font table in SparkFun's Nokia 5110
-  example (MIT, Copyright (c) 2016 SparkFun Electronics), with changes; its licence is
-  `licenses/wrist-glass-font/LICENSE`.
+- **IncisedText** draws the installer's text and the face's. Its code is MIT OR Apache-2.0;
+  its glyph data is rendered from Poppins and Atkinson Hyperlegible Next, which makes it a
+  Modified Version of each under the SIL Open Font License 1.1, whose texts are in
+  `licenses/root/incised-text-*/Fonts/` for the installer and `licenses/app/incised-text-*/Fonts/`
+  for the image.
 - **Embassy**, including the vendored and patched HAL and USB driver: MIT OR Apache-2.0.
   Other Rust crates carry their own licences.
 - **pyserial** (BSD) is installed separately and not bundled.

@@ -8,14 +8,14 @@
 
 # The date line before the clock has been set.
 face-set-time = set time
-# The time before the clock has been set: two digits, a colon, two digits.
-face-time-unset = --:--
+# The time before the clock has been set, its digits as figure dashes (U+2012).
+face-time-unset = ‒‒:‒‒
 # A date the clock holds that is not a real day.
 face-date-invalid = ?
 # The charge in whole percent, 0 to 255.
 charge-percent = { $pct } %
-# The charge before the gauge has a reading.
-charge-unset = -- %
+# The charge before the gauge has a reading, its digits as figure dashes.
+charge-unset = ‒‒ %
 
 ## Battery
 
@@ -23,7 +23,8 @@ charge-unset = -- %
 battery-title = BATTERY
 # The cell's voltage in millivolts.
 battery-cell-mv = { $mv } mV
-battery-cell-unset = -- mV
+# Before the first reading, its four digits as figure dashes.
+battery-cell-unset = ‒‒‒‒ mV
 # What is charging the watch, or that nothing is.
 battery-input-usb = input USB
 battery-input-cell = input cell

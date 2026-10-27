@@ -865,7 +865,7 @@ async fn display(mut bus: pmic::AsyncBus, mut pwr_int: ExtiInput<'static, Async>
             let t0 = Instant::now();
             let (composed, short) = compose_page(page, soc_pct, cell_mv);
             glass::note_max(&glass::MAX_COMPOSE_US, elapsed_us(t0));
-            show(panel, (fb, bg), uart, &mut drawn, (composed, short)).await;
+            show(panel, (fb, bg), uart, &mut drawn, (&composed, short)).await;
         }
         shown_page = page;
         if glass::dump_wanted() {
@@ -900,7 +900,7 @@ async fn display(mut bus: pmic::AsyncBus, mut pwr_int: ExtiInput<'static, Async>
 fn compose_page(page: Page, soc_pct: Option<u8>, cell_mv: Option<u32>) -> (Glass, pages::Short) {
     let locale = &pages::EN_GB;
     match page {
-        Page::Face => pages::compose(&glass::status(soc_pct), locale),
+        Page::Face => pages::compose(&glass::status(soc_pct), locale, pages::FACES),
         Page::Battery => pages::compose_battery(
             &pages::Battery {
                 soc_pct,
@@ -908,6 +908,7 @@ fn compose_page(page: Page, soc_pct: Option<u8>, cell_mv: Option<u32>) -> (Glass
                 external: power::external_input(),
             },
             locale,
+            pages::FACES,
         ),
         Page::About => pages::compose_about(
             &pages::About {
@@ -915,6 +916,7 @@ fn compose_page(page: Page, soc_pct: Option<u8>, cell_mv: Option<u32>) -> (Glass
                 build: version::BUILD_ID,
             },
             locale,
+            pages::FACES,
         ),
     }
 }
@@ -924,9 +926,9 @@ async fn show(
     (fb, bg): (&mut [u8], &[u8]),
     uart: Uart,
     drawn: &mut Option<Glass>,
-    (composed, short): (Glass, pages::Short),
+    (composed, short): (&Glass, pages::Short),
 ) {
-    if drawn.as_ref() == Some(&composed) {
+    if drawn.as_ref() == Some(composed) {
         glass::UNCHANGED.fetch_add(1, Ordering::Relaxed);
         return;
     }
@@ -941,19 +943,21 @@ async fn show(
         glass::note_max(&glass::MAX_RENDER_US, elapsed_us(t));
         embassy_futures::yield_now().await;
     }
-    for i in 0..composed.lines().len() {
-        let t = Instant::now();
-        pages::draw_line(fb, &composed, i);
-        glass::note_max(&glass::MAX_RENDER_US, elapsed_us(t));
-        embassy_futures::yield_now().await;
+    for i in 0..composed.len() {
+        for columns in composed.pieces(i) {
+            let t = Instant::now();
+            pages::draw_piece(fb, composed, i, columns);
+            glass::note_max(&glass::MAX_RENDER_US, elapsed_us(t));
+            embassy_futures::yield_now().await;
+        }
     }
     let changed = composed.changed_columns(drawn.as_ref());
     let start = glass::now_ms();
     let columns = panel.write_frame(fb, &changed).await;
     let ms = glass::now_ms().saturating_sub(start);
     glass::LAST_FRAME_COLUMNS.store(columns, Ordering::Relaxed);
-    *drawn = Some(composed);
-    glass::shown(&composed);
+    *drawn = Some(*composed);
+    glass::shown(composed);
     glass::FRAMES.fetch_add(1, Ordering::Relaxed);
     glass::LAST_FRAME_MS.store(ms, Ordering::Relaxed);
     glass::note_max(&glass::MAX_FRAME_MS, ms);
