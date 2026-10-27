@@ -171,9 +171,25 @@ fn the_stepwise_render_is_the_same_frame() {
         let mut strips = vec![0xA5; W * H];
         let scene = wrist_glass::scene::Scene::of(&glass);
         for x in (0..WI).step_by(9) {
-            assert!(wrist_glass::pages::repaint(&mut strips, &bg, &scene, None, x..x + 9));
+            assert!(wrist_glass::pages::repaint(&mut strips, &scene, None, x..x + 9));
         }
         assert!(whole == strips, "{name}: the frame repainted in strips differs");
+    }
+}
+
+#[test]
+fn the_background_painted_box_by_box_is_the_background() {
+    let mut whole = vec![0x5A; W * H];
+    assert!(wrist_glass::pages::background(&mut whole));
+    for (bw, bh) in [(1, 1), (7, 30), (16, 240), (61, 13), (240, 1), (240, 240)] {
+        let mut boxes = vec![0xA5; W * H];
+        for y in (-5..HI).step_by(bh) {
+            for x in (-3..WI).step_by(bw) {
+                let (w, h) = (i32::try_from(bw).unwrap(), i32::try_from(bh).unwrap());
+                wrist_glass::pages::background_in(&mut boxes, y..y + h, x..x + w);
+            }
+        }
+        assert!(whole == boxes, "boxes of {bw} x {bh}");
     }
 }
 

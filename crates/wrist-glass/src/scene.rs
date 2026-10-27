@@ -30,8 +30,23 @@ impl Rows {
         }
     }
 
-    fn iter(&self) -> impl Iterator<Item = usize> + '_ {
-        (0..HEIGHT as usize).filter(|y| self.0[y / 32] & (1 << (y % 32)) != 0)
+    fn has(&self, y: i32) -> bool {
+        usize::try_from(y).is_ok_and(|y| self.0[y / 32] & (1 << (y % 32)) != 0)
+    }
+
+    /// The marked rows, as runs from the top.
+    fn runs(&self) -> impl Iterator<Item = Range<i32>> + '_ {
+        let mut y = 0;
+        core::iter::from_fn(move || {
+            while y < H && !self.has(y) {
+                y += 1;
+            }
+            let start = y;
+            while y < H && self.has(y) {
+                y += 1;
+            }
+            (y > start).then_some(start..y)
+        })
     }
 }
 
@@ -196,10 +211,16 @@ impl Scene {
         changed
     }
 
-    /// `columns` of `fb` as [`crate::pages::render`] draws the glass there over `bg`, in `ink`;
-    /// both are `WIDTH * HEIGHT` bytes. With `before`, the scene `fb` holds, only the rows a
-    /// character of either covers are put back to the background first.
-    pub fn repaint(&self, fb: &mut [u8], bg: &[u8], before: Option<&Self>, columns: Range<i32>, ink: Abgr2222) {
+    /// `columns` of `fb` as the glass draws there in `ink` over `background`, put back only on
+    /// the rows a character of this scene or of `before`, the one `fb` holds, covers.
+    pub fn repaint(
+        &self,
+        fb: &mut [u8],
+        mut background: impl FnMut(&mut [u8], Range<i32>, Range<i32>),
+        before: Option<&Self>,
+        columns: Range<i32>,
+        ink: Abgr2222,
+    ) {
         let columns = columns.start.max(0)..columns.end.min(W);
         if columns.is_empty() {
             return;
@@ -212,11 +233,8 @@ impl Scene {
             }
             None => rows.mark(0..H),
         }
-        #[allow(clippy::cast_sign_loss)]
-        let (a, z) = (columns.start as usize, columns.end as usize);
-        for y in rows.iter() {
-            let row = y * WIDTH as usize;
-            fb[row + a..row + z].copy_from_slice(&bg[row + a..row + z]);
+        for run in rows.runs() {
+            background(fb, run, columns.clone());
         }
         let ramp = [1, 2, 3].map(|level| ink.shade(Abgr2222::BLACK, level).0);
         for at in self.lines.iter().flatten() {

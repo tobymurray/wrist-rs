@@ -458,8 +458,6 @@ fn spawn<S>(spawner: embassy_executor::Spawner, name: &'static str, token: embas
 const _: () = assert!(lcd::WIDTH == wrist_glass::WIDTH && lcd::HEIGHT == wrist_glass::HEIGHT);
 static FRAMEBUFFER: ConstStaticCell<[u8; (lcd::WIDTH * lcd::HEIGHT) as usize]> =
     ConstStaticCell::new([0u8; (lcd::WIDTH * lcd::HEIGHT) as usize]);
-static BACKGROUND_BUF: ConstStaticCell<[u8; (lcd::WIDTH * lcd::HEIGHT) as usize]> =
-    ConstStaticCell::new([0u8; (lcd::WIDTH * lcd::HEIGHT) as usize]);
 /// The scene on the glass and the one being drawn, by turns.
 static SCENES: ConstStaticCell<[Scene; 2]> = ConstStaticCell::new([Scene::new(), Scene::new()]);
 /// Columns repainted between yields.
@@ -820,13 +818,7 @@ async fn display(mut bus: pmic::AsyncBus, mut pwr_int: ExtiInput<'static, Async>
         uart.write_line("[mod] panel not started: view holds another module (`modules force view` starts it)");
     }
     let fb = FRAMEBUFFER.take();
-    let bg = BACKGROUND_BUF.take();
     let scenes = SCENES.take();
-    let t = Instant::now();
-    pages::background(bg);
-    uart.write_str("[glass] background (black and the ring) drawn once in ");
-    uart.write_u32(elapsed_us(t));
-    uart.write_line(" us");
     let mut n: u32 = 0;
     let mut next_reading = Instant::now();
     let mut soc_pct = None;
@@ -880,7 +872,7 @@ async fn display(mut bus: pmic::AsyncBus, mut pwr_int: ExtiInput<'static, Async>
             let (composed, short) = compose_page(page, soc_pct, cell_mv);
             glass::note_max(&glass::MAX_COMPOSE_US, elapsed_us(t0));
             embassy_futures::yield_now().await;
-            show(panel, (fb, bg), scenes, uart, &mut drawn, (&composed, short)).await;
+            show(panel, fb, scenes, uart, &mut drawn, (&composed, short)).await;
         }
         shown_page = page;
         if glass::dump_wanted() {
@@ -947,7 +939,7 @@ fn compose_page(page: Page, soc_pct: Option<u8>, cell_mv: Option<u32>) -> (Glass
 /// `scenes[0]` lays out `drawn` while it is `Some`.
 async fn show(
     panel: &mut lcd::Lcd,
-    (fb, bg): (&mut [u8], &[u8]),
+    fb: &mut [u8],
     scenes: &mut [Scene; 2],
     uart: Uart,
     drawn: &mut Option<Glass>,
@@ -978,7 +970,7 @@ async fn show(
     for columns in wrist_glass::text::strips(&changed, STRIP) {
         let t = Instant::now();
         let c = busy::cycles();
-        pages::repaint(fb, bg, scene, before, columns);
+        pages::repaint(fb, scene, before, columns);
         cost.render.add(c);
         glass::note_max(&glass::MAX_RENDER_US, elapsed_us(t));
         embassy_futures::yield_now().await;

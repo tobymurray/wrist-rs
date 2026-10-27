@@ -1,7 +1,7 @@
 //! Repainting the columns that changed leaves the frame a full render draws, whatever was there.
 
 use wrist_glass::pages::{
-    background, compose, compose_about, compose_battery, render, repaint, About, Battery, Clock, Date, Faces, Status,
+    compose, compose_about, compose_battery, render, repaint, About, Battery, Clock, Date, Faces, Status,
     ATKINSON, BUILT_IN, EN_GB, POPPINS,
 };
 use wrist_glass::scene::Scene;
@@ -20,12 +20,6 @@ fn pixels(g: &Glass) -> Vec<u8> {
     fb
 }
 
-fn bg() -> Vec<u8> {
-    let mut bg = vec![0u8; W * H];
-    assert!(background(&mut bg));
-    bg
-}
-
 fn face(faces: &Faces, h: u8, m: u8, day: u8, soc_pct: Option<u8>) -> Glass {
     let status = Status { clock: Some(Clock { h, m, s: 0 }), date: Some(Date { year: 2026, month: 10, day }), soc_pct };
     compose(&status, &EN_GB, faces).0
@@ -33,7 +27,7 @@ fn face(faces: &Faces, h: u8, m: u8, day: u8, soc_pct: Option<u8>) -> Glass {
 
 /// `fb` repainted from `before` to `after`, a strip of at most `widest` columns at a time, with
 /// `after`'s scene laid over whatever `scene` held.
-fn step(fb: &mut [u8], bg: &[u8], scene: &mut Scene, before: Option<&Scene>, after: &Glass, widest: usize) {
+fn step(fb: &mut [u8], scene: &mut Scene, before: Option<&Scene>, after: &Glass, widest: usize) {
     for i in 0..after.len() {
         scene.lay(after, i);
     }
@@ -42,20 +36,19 @@ fn step(fb: &mut [u8], bg: &[u8], scene: &mut Scene, before: Option<&Scene>, aft
     }
     let changed = scene.changed_columns(before);
     for columns in strips(&changed, widest) {
-        assert!(repaint(fb, bg, scene, before, columns));
+        assert!(repaint(fb, scene, before, columns));
     }
 }
 
 fn walk(what: &str, frames: &[Glass]) {
-    let bg = bg();
     for widest in WIDTHS {
         let mut fb = vec![0xA5u8; W * H];
         let mut scene = Scene::of(&frames[frames.len() / 2]);
-        step(&mut fb, &bg, &mut scene, None, &frames[0], widest);
+        step(&mut fb, &mut scene, None, &frames[0], widest);
         assert!(fb == pixels(&frames[0]), "{what}: the first frame, strips of {widest}");
         for pair in frames.windows(2) {
             let before = scene.clone();
-            step(&mut fb, &bg, &mut scene, Some(&before), &pair[1], widest);
+            step(&mut fb, &mut scene, Some(&before), &pair[1], widest);
             assert!(fb == pixels(&pair[1]), "{what}: {:?} -> {:?}, strips of {widest}", pair[0], pair[1]);
             assert_eq!(scene.changed_columns(Some(&before)), pair[1].changed_columns(Some(&pair[0])));
         }
