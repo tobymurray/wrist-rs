@@ -56,11 +56,8 @@ def decode(lines):
 
 
 def read_console(port, seconds):
-    import serial
     import wrist_port
-    s = serial.Serial(wrist_port.find_or_exit(port), 115200, timeout=0.2)
-    time.sleep(0.3)
-    s.reset_input_buffer()
+    s = wrist_port.open_console(port)
     s.write(b'page dump\r\n')
     s.flush()
     buf, deadline = b'', time.time() + seconds

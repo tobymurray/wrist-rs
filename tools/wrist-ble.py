@@ -198,13 +198,9 @@ async def wait_kept(name, timeout):
 
 
 def usb_console(port):
-    import serial
     sys.path.insert(0, __file__.rsplit("/", 1)[0])
     import wrist_port
-    s = serial.Serial(wrist_port.find_or_exit(port), 115200, timeout=0.2)
-    time.sleep(0.3)
-    s.reset_input_buffer()
-    return s
+    return wrist_port.open_console(port)
 
 
 def usb_command(s, text, seconds=1.0):

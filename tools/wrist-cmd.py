@@ -17,8 +17,7 @@ ap.add_argument('--port')
 ap.add_argument('commands')
 ap.add_argument('seconds', nargs='?', type=float, default=3)
 args = ap.parse_args()
-s = serial.Serial(wrist_port.find_or_exit(args.port), 115200, timeout=0.2)
-time.sleep(0.3); s.reset_input_buffer()
+s = wrist_port.open_console(args.port)
 for c in args.commands.split(';'):
     data = (c.strip() + '\r\n').encode()
     for i in range(0, len(data), 60):
