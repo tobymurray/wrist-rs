@@ -125,3 +125,17 @@ fn the_mtu_exchange_decodes() {
     assert_eq!(att_mtu(&[0x01, 0x08, 0xDC, 0x00]), Some(220));
     assert_eq!(att_mtu(&[0x01, 0x08, 0xDC]), None);
 }
+
+#[test]
+fn pairing_is_secure_connections_only_with_mitm_and_16_byte_keys() {
+    let p = wrist_aci::PAIRING.params();
+    // Bonding, MITM, SC only, no keypress, key 16 to 16, no fixed pin (the host is asked), pin 0,
+    // public identity.
+    assert_eq!(p, [0x01, 0x01, 0x02, 0x00, 0x10, 0x10, 0x01, 0, 0, 0, 0, 0x00]);
+}
+
+#[test]
+fn a_fixed_pin_goes_little_endian_after_its_flag() {
+    let r = wrist_aci::AuthenticationRequirement { fixed_pin: Some(123_456), ..wrist_aci::PAIRING };
+    assert_eq!(r.params()[6..11], [0x00, 0x40, 0xE2, 0x01, 0x00]);
+}

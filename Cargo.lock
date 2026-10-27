@@ -1029,6 +1029,9 @@ version = "0.0.0"
 [[package]]
 name = "wrist-wake"
 version = "0.0.0"
+dependencies = [
+ "wrist-aci",
+]
 
 [[package]]
 name = "write16"

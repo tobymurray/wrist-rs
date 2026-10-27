@@ -58,7 +58,7 @@ use wrist_aci::opcode::{
     ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_REQ, HCI_LE_RAND, HCI_READ_LOCAL_VERSION, HCI_SET_EVENT_MASK,
 };
 use wrist_aci::{permission, vendor, AttributeModified, Event};
-use wrist_wake::ble::{timing, Power, Timing};
+use wrist_wake::ble::{timing, Outbox, Power, Radio, Timing};
 
 use crate::console::Target;
 use crate::uart::Uart;
@@ -145,12 +145,12 @@ static OUT: Pipe<CriticalSectionRawMutex, 2048> = Pipe::new();
 /// A central is subscribed to TX over an encrypted link.
 static MIRROR: AtomicBool = AtomicBool::new(false);
 
-const STATE_OFF: u8 = 0;
-const STATE_STARTING: u8 = 1;
-const STATE_IDLE: u8 = 2;
-const STATE_ADVERTISING: u8 = 3;
-const STATE_CONNECTED: u8 = 4;
-const STATE_FAILED: u8 = 5;
+const STATE_OFF: u8 = Radio::Off as u8;
+const STATE_STARTING: u8 = Radio::Starting as u8;
+const STATE_IDLE: u8 = Radio::Idle as u8;
+const STATE_ADVERTISING: u8 = Radio::Advertising as u8;
+const STATE_CONNECTED: u8 = Radio::Connected as u8;
+const STATE_FAILED: u8 = Radio::Failed as u8;
 static STATE: AtomicU8 = AtomicU8::new(STATE_OFF);
 static ENCRYPTED: AtomicBool = AtomicBool::new(false);
 /// An encrypted link was up at some point this boot: a way to send the next image.
@@ -245,7 +245,7 @@ pub fn command(args: &[u8], uart: Uart) {
             let text = core::str::from_utf8(&rest[12..]).unwrap_or("");
             let mut units = text.split_whitespace().map(|w| w.parse::<u16>().ok());
             match (units.next(), units.next()) {
-                (Some(Some(min)), Some(Some(max))) if (6..=max).contains(&min) && max < 2000 => {
+                (Some(Some(min)), Some(Some(max))) if wrist_wake::ble::interval_now(min, max) => {
                     Request::IntervalNow(min, max)
                 }
                 _ => return uart.write_line("[ble] usage: ble interval now <min> <max> (1.25 ms units, 6 to 1999)"),
@@ -395,10 +395,10 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
             last_data: Instant::from_ticks(0),
             finish_transfer: false,
             console_at: Instant::from_ticks(0),
-            held: None,
+            outbox: Outbox::default(),
         };
         link.bring_up().await;
-        if matches!(STATE.load(Ordering::Relaxed), STATE_STARTING | STATE_FAILED) {
+        if Radio::from_u8(STATE.load(Ordering::Relaxed)).start_failed() {
             STATE.store(STATE_FAILED, Ordering::Relaxed);
             link.rst.set_low();
             uart.write_line("[ble] start failed: chip held in reset; `ble on` retries");
@@ -458,8 +458,7 @@ struct Link<'d> {
     finish_transfer: bool,
     /// The next console notification may go at this instant ([`CONSOLE_PACE`]).
     console_at: Instant,
-    /// A console chunk the chip refused for want of TX buffers, sent again first.
-    held: Option<([u8; NUS_VALUE_LEN], usize)>,
+    outbox: Outbox<NUS_VALUE_LEN>,
 }
 
 impl Link<'_> {
@@ -528,7 +527,7 @@ impl Link<'_> {
                 Some(_) => Transfer::Claimed,
             },
             console: (self.nus.is_some() && MIRROR.load(Ordering::Relaxed))
-                .then(|| Console { pending: !OUT.is_empty() || self.held.is_some(), next_at: tick(self.console_at) }),
+                .then(|| Console { pending: !OUT.is_empty() || self.outbox.holding(), next_at: tick(self.console_at) }),
             abandon_at: self.transfer.as_ref().map(|_| tick(self.last_data + TRANSFER_IDLE + one)),
         };
         wrist_wake::ble::due(&state).map(Instant::from_ticks)
@@ -633,8 +632,7 @@ impl Link<'_> {
     /// disconnect.
     async fn deferred(&mut self) {
         if let Some((min, max)) = self.request_interval.take() {
-            // Latency 0, 5 s supervision timeout (10 ms units).
-            self.ask_connection(min, max, 0, 500).await;
+            self.ask_connection(min, max, wrist_wake::ble::NOW_LATENCY, wrist_wake::ble::NOW_TIMEOUT).await;
         }
         if self.finish_transfer {
             self.finish_transfer = false;
@@ -726,13 +724,7 @@ impl Link<'_> {
         let late: [(&str, u16, &[u8]); 3] = [
             ("device name", ACI_GATT_UPDATE_CHAR_VALUE, &name[..6 + DEVICE_NAME.len()]),
             ("IO capability", ACI_GAP_SET_IO_CAPABILITY, &[IO_CAP_DISPLAY_YES_NO]),
-            // Bonding, MITM required, Secure Connections only, no keypress notifications, key
-            // size 16, no fixed pin (the host is asked), public identity address.
-            (
-                "security requirements",
-                ACI_GAP_SET_AUTHENTICATION_REQUIREMENT,
-                &[0x01, 0x01, 0x02, 0x00, 0x10, 0x10, 0x01, 0, 0, 0, 0, 0x00],
-            ),
+            ("security requirements", ACI_GAP_SET_AUTHENTICATION_REQUIREMENT, &wrist_aci::PAIRING.params()),
         ];
         for (what, opcode, params) in late {
             if !self.step(what, opcode, params).await {
@@ -879,21 +871,15 @@ impl Link<'_> {
         {
             return;
         }
-        let (chunk, n) = self.held.take().unwrap_or_else(|| {
-            let mut chunk = [0u8; NUS_VALUE_LEN];
-            let most = (self.mtu.saturating_sub(3)).clamp(20, NUS_VALUE_LEN);
-            let n = OUT.try_read(&mut chunk[..most]).unwrap_or(0);
-            (chunk, n)
-        });
+        let most = (self.mtu.saturating_sub(3)).clamp(20, NUS_VALUE_LEN);
+        let (chunk, n) = self.outbox.next(most, |buf| OUT.try_read(buf).unwrap_or(0));
         if n == 0 {
             return;
         }
         let status = self.update_value(nus, tx, &chunk[..n]).await;
         self.console_at = Instant::now() + CONSOLE_PACE;
-        match status {
-            0 => {}
-            wrist_aci::status::INSUFFICIENT_RESOURCES => self.held = Some((chunk, n)),
-            _ => self.uart.write_line("[ble] a console notification was refused"),
+        if self.outbox.sent(chunk, n, status).is_err() {
+            self.uart.write_line("[ble] a console notification was refused");
         }
     }
 
@@ -902,7 +888,7 @@ impl Link<'_> {
         let on = self.subscribed && ENCRYPTED.load(Ordering::Relaxed);
         if on != MIRROR.swap(on, Ordering::Relaxed) {
             OUT.clear();
-            self.held = None;
+            self.outbox.clear();
             self.uart.write_line(if on {
                 "[ble] console attached over the air; 'help' lists commands"
             } else {

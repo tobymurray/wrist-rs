@@ -84,6 +84,60 @@ pub mod status {
     pub const INSUFFICIENT_RESOURCES: u8 = 0x64;
 }
 
+/// `ACI_GAP_SET_AUTHENTICATION_REQUIREMENT`'s parameters, in ST's order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct AuthenticationRequirement {
+    pub bonding: bool,
+    pub mitm: bool,
+    /// 0 not supported, 1 optional, 2 Secure Connections only.
+    pub secure_connections: u8,
+    pub keypress_notifications: bool,
+    pub min_key_size: u8,
+    pub max_key_size: u8,
+    /// `None`: the host is asked for a passkey (`GAP_PASS_KEY_REQ`).
+    pub fixed_pin: Option<u32>,
+    /// 0 public, 1 static random.
+    pub identity_address_type: u8,
+}
+
+impl AuthenticationRequirement {
+    #[must_use]
+    pub const fn params(&self) -> [u8; 12] {
+        let (use_fixed, pin) = match self.fixed_pin {
+            Some(pin) => (0x00, pin),
+            None => (0x01, 0),
+        };
+        let p = pin.to_le_bytes();
+        [
+            self.bonding as u8,
+            self.mitm as u8,
+            self.secure_connections,
+            self.keypress_notifications as u8,
+            self.min_key_size,
+            self.max_key_size,
+            use_fixed,
+            p[0],
+            p[1],
+            p[2],
+            p[3],
+            self.identity_address_type,
+        ]
+    }
+}
+
+/// The watch's pairing.
+pub const PAIRING: AuthenticationRequirement = AuthenticationRequirement {
+    bonding: true,
+    mitm: true,
+    secure_connections: 2,
+    keypress_notifications: false,
+    min_key_size: 16,
+    max_key_size: 16,
+    fixed_pin: None,
+    identity_address_type: 0,
+};
+
 /// An HCI command packet (`01`, opcode, length, parameters) into `out`;
 /// returns its length. Parameters past 255 bytes, or past `out`, are cut.
 pub fn command(opcode: u16, params: &[u8], out: &mut [u8]) -> usize {

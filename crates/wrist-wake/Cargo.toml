@@ -4,7 +4,10 @@ version = "0.0.0"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 publish = false
-description = "When an event-driven task next has timed work: the BLE task's deadlines and radio timing, without hardware"
+description = "The BLE task's decisions without hardware: when it next has timed work, the radio's timing, its states and the console's notifications"
+
+[dependencies]
+wrist-aci = { path = "../wrist-aci" }
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }

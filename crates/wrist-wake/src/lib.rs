@@ -12,7 +12,7 @@ pub fn earliest<I: IntoIterator<Item = Option<u64>>>(deadlines: I) -> Option<u64
     deadlines.into_iter().flatten().min()
 }
 
-/// The BLE task (`apps/standalone-boot/src/ble.rs`), as far as its timing goes.
+/// The BLE task (`apps/standalone-boot/src/ble.rs`): its deadlines, timing and decisions.
 pub mod ble {
     use super::earliest;
 
@@ -95,4 +95,100 @@ pub mod ble {
         }
     }
 
+    /// Whether a supervision timeout keeps to Core 6.B 4.5.2.
+    #[must_use]
+    pub const fn supervised(interval_max: u16, latency: u16, timeout: u16) -> bool {
+        // timeout x 10 ms > (1 + latency) x interval x 1.25 ms x 2
+        timeout as u32 * 4 > (1 + latency as u32) * interval_max as u32
+    }
+
+    /// `ble interval now`'s latency and supervision timeout (10 ms units).
+    pub const NOW_LATENCY: u16 = 0;
+    pub const NOW_TIMEOUT: u16 = 500;
+
+    /// `ble interval now <min> <max>`: a range the central may be asked for, at
+    /// [`NOW_LATENCY`] and [`NOW_TIMEOUT`].
+    #[must_use]
+    pub const fn interval_now(min: u16, max: u16) -> bool {
+        6 <= min && min <= max && max <= 3_200 && supervised(max, NOW_LATENCY, NOW_TIMEOUT)
+    }
+
+    /// Where the radio is, as `ble` reports it.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    #[repr(u8)]
+    pub enum Radio {
+        Off,
+        Starting,
+        Idle,
+        Advertising,
+        Connected,
+        Failed,
+    }
+
+    impl Radio {
+        #[must_use]
+        pub const fn from_u8(v: u8) -> Self {
+            match v {
+                0 => Self::Off,
+                1 => Self::Starting,
+                2 => Self::Idle,
+                3 => Self::Advertising,
+                4 => Self::Connected,
+                _ => Self::Failed,
+            }
+        }
+
+        /// After a start, whether it failed: it never reached advertising.
+        #[must_use]
+        pub const fn start_failed(self) -> bool {
+            matches!(self, Self::Starting | Self::Failed)
+        }
+    }
+
+    /// Console output to a subscribed central; a chunk refused for want of TX buffers goes again first.
+    pub struct Outbox<const N: usize> {
+        held: Option<([u8; N], usize)>,
+    }
+
+    impl<const N: usize> Default for Outbox<N> {
+        fn default() -> Self {
+            Self { held: None }
+        }
+    }
+
+    impl<const N: usize> Outbox<N> {
+        #[must_use]
+        pub fn holding(&self) -> bool {
+            self.held.is_some()
+        }
+
+        pub fn clear(&mut self) {
+            self.held = None;
+        }
+
+        /// The held chunk, else up to `most` bytes from `read`.
+        pub fn next(&mut self, most: usize, read: impl FnOnce(&mut [u8]) -> usize) -> ([u8; N], usize) {
+            self.held.take().unwrap_or_else(|| {
+                let mut chunk = [0u8; N];
+                let n = read(&mut chunk[..most.min(N)]);
+                (chunk, n)
+            })
+        }
+
+        /// The chip's status for a chunk from [`Outbox::next`]; `Err` with it when the chunk
+        /// is lost.
+        ///
+        /// # Errors
+        /// The status, for any refusal but `INSUFFICIENT_RESOURCES`.
+        pub fn sent(&mut self, chunk: [u8; N], n: usize, status: u8) -> Result<(), u8> {
+            match status {
+                0 => Ok(()),
+                wrist_aci::status::INSUFFICIENT_RESOURCES => {
+                    self.held = Some((chunk, n));
+                    Ok(())
+                }
+                _ => Err(status),
+            }
+        }
+    }
 }
