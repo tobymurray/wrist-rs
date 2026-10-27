@@ -51,6 +51,48 @@ pub mod opcode {
     pub const ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_REQ: u16 = 0xFD81;
 }
 
+/// `ACI_HAL_WRITE_CONFIG_DATA`'s offsets (ST's `bluenrg1_hal_aci.h`), written before any other command.
+pub mod config {
+    pub const PUBLIC_ADDRESS: u8 = 0x00;
+    pub const STATIC_RANDOM_ADDRESS: u8 = 0x2E;
+}
+
+/// Address types, own and identity.
+pub mod address {
+    pub const PUBLIC: u8 = 0x00;
+    pub const STATIC_RANDOM: u8 = 0x01;
+}
+
+/// A static random address (Core 6.B 1.3.2.1) from 64 bits, little-endian as the chip carries it.
+#[must_use]
+pub const fn static_random(bits: u64) -> [u8; 6] {
+    let b = bits.to_le_bytes();
+    let mut a = [b[0], b[1], b[2], b[3], b[4], b[5] | 0xC0];
+    let rest = bits & 0x3FFF_FFFF_FFFF;
+    if rest == 0 || rest == 0x3FFF_FFFF_FFFF {
+        a[0] ^= 1;
+    }
+    a
+}
+
+/// The watch's static random address from the MCU's 96-bit unique id (FNV-1a).
+#[must_use]
+pub const fn static_random_address(uid: [u32; 3]) -> [u8; 6] {
+    let mut h: u64 = 0xCBF2_9CE4_8422_2325;
+    let mut w = 0;
+    while w < 3 {
+        let bytes = uid[w].to_le_bytes();
+        let mut i = 0;
+        while i < 4 {
+            h ^= bytes[i] as u64;
+            h = h.wrapping_mul(0x0100_0000_01B3);
+            i += 1;
+        }
+        w += 1;
+    }
+    static_random(h)
+}
+
 /// `ACI_GATT_ADD_CHAR`'s security permissions (ST's `ble_defs.h`). ST's stack applies them to
 /// writes with response only; a write without response arrives whatever the link, so the
 /// application checks the link for those itself.
@@ -135,7 +177,7 @@ pub const PAIRING: AuthenticationRequirement = AuthenticationRequirement {
     min_key_size: 16,
     max_key_size: 16,
     fixed_pin: None,
-    identity_address_type: 0,
+    identity_address_type: address::STATIC_RANDOM,
 };
 
 /// An HCI command packet (`01`, opcode, length, parameters) into `out`;

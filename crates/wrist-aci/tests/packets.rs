@@ -130,12 +130,39 @@ fn the_mtu_exchange_decodes() {
 fn pairing_is_secure_connections_only_with_mitm_and_16_byte_keys() {
     let p = wrist_aci::PAIRING.params();
     // Bonding, MITM, SC only, no keypress, key 16 to 16, no fixed pin (the host is asked), pin 0,
-    // public identity.
-    assert_eq!(p, [0x01, 0x01, 0x02, 0x00, 0x10, 0x10, 0x01, 0, 0, 0, 0, 0x00]);
+    // static random identity.
+    assert_eq!(p, [0x01, 0x01, 0x02, 0x00, 0x10, 0x10, 0x01, 0, 0, 0, 0, 0x01]);
 }
 
 #[test]
 fn a_fixed_pin_goes_little_endian_after_its_flag() {
     let r = wrist_aci::AuthenticationRequirement { fixed_pin: Some(123_456), ..wrist_aci::PAIRING };
     assert_eq!(r.params()[6..11], [0x00, 0x40, 0xE2, 0x01, 0x00]);
+}
+
+#[test]
+fn the_address_is_static_random_and_never_changes() {
+    use wrist_aci::{static_random, static_random_address};
+    // Pinned: a different address would orphan every bond.
+    let uid = [0x0034_0021, 0x3133_5111, 0x3039_3533];
+    assert_eq!(static_random_address(uid), static_random_address(uid));
+    assert_eq!(static_random_address(uid), [0x2B, 0x1E, 0xCE, 0x05, 0x69, 0xFF]);
+    for x in 0..1_000u32 {
+        let a = static_random_address([x, x.rotate_left(7) ^ 0x5A5A, !x]);
+        assert_eq!(a[5] & 0xC0, 0xC0, "{a:02X?}");
+    }
+    // The other 46 bits are never all zero or all one.
+    assert_eq!(static_random(0), [0x01, 0, 0, 0, 0, 0xC0]);
+    assert_eq!(static_random(u64::MAX), [0xFE, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+    assert_eq!(static_random(0x0000_3FFF_FFFF_FFFF), [0xFE, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+}
+
+#[test]
+fn neighbouring_dies_get_different_addresses() {
+    let mut seen = std::collections::HashSet::new();
+    for x in 0..64u32 {
+        for y in 0..64u32 {
+            assert!(seen.insert(wrist_aci::static_random_address([(x << 16) | y, 0x3133_5111, 0x3039_3533])));
+        }
+    }
 }

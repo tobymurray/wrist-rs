@@ -32,8 +32,10 @@
 //! 3..4 of the reply say how many bytes wait, clock that many zeros, wait for IRQ low, CS high.
 //! IRQ high with CS high means an event is waiting. Reset is CS high, reset low 5 ms, high;
 //! the stack announces `ACI_BLUE_INITIALIZED` about 2 s later, and until then MISO only
-//! echoes MOSI. Pairing fails at the `DHKey` check until a public address has been written
-//! (`ACI_HAL_WRITE_CONFIG_DATA` offset 0), which ST's samples do first.
+//! echoes MOSI.
+//!
+//! Address. A static random address from the MCU's unique id
+//! (`wrist_aci::static_random_address`), so bonds survive updates.
 
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU8, Ordering};
 
@@ -57,7 +59,7 @@ use wrist_aci::opcode::{
     ACI_GATT_UPDATE_CHAR_VALUE, ACI_HAL_GET_FW_BUILD_NUMBER, ACI_HAL_SET_TX_POWER_LEVEL, ACI_HAL_WRITE_CONFIG_DATA,
     ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_REQ, HCI_LE_RAND, HCI_READ_LOCAL_VERSION, HCI_SET_EVENT_MASK,
 };
-use wrist_aci::{permission, vendor, AttributeModified, Event};
+use wrist_aci::{address, config, permission, vendor, AttributeModified, Event};
 use wrist_wake::ble::{timing, Outbox, Power, Radio, Timing};
 
 use crate::console::Target;
@@ -692,12 +694,16 @@ impl Link<'_> {
         for (slot, b) in ADDRESS.iter().zip(addr.iter()) {
             slot.store(*b, Ordering::Relaxed);
         }
-        let mut cfg = [0u8; 8];
-        cfg[0] = 0x00;
-        cfg[1] = 6;
-        cfg[2..].copy_from_slice(&addr);
-        let early: [(&str, u16, &[u8]); 4] = [
-            ("public address", ACI_HAL_WRITE_CONFIG_DATA, &cfg),
+        let mut random = [0u8; 8];
+        random[0] = config::STATIC_RANDOM_ADDRESS;
+        random[1] = 6;
+        random[2..].copy_from_slice(&addr);
+        let mut public = random;
+        public[0] = config::PUBLIC_ADDRESS;
+        let early: [(&str, u16, &[u8]); 5] = [
+            ("static random address", ACI_HAL_WRITE_CONFIG_DATA, &random),
+            // Pairing failed at the `DHKey` check until this slot had been written (HARDWARE.md).
+            ("public address slot", ACI_HAL_WRITE_CONFIG_DATA, &public),
             ("TX power", ACI_HAL_SET_TX_POWER_LEVEL, &[0x01, 0x04]),
             ("event mask", HCI_SET_EVENT_MASK, &[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xBF, 0x3D]),
             ("GATT init", ACI_GATT_INIT, &[]),
@@ -972,14 +978,14 @@ impl Link<'_> {
     }
 
     /// `ACI_GAP_SET_DISCOVERABLE`: connectable undirected at the power source's interval,
-    /// public address, no filter, name `UNA`, no UUIDs, no interval hint.
+    /// static random address, no filter, name `UNA`, no UUIDs, no interval hint.
     async fn advertise(&mut self) {
         let want = timing(power(), false);
         let mut p = [0u8; 20];
         p[0] = 0x00;
         p[1..3].copy_from_slice(&want.advertise.to_le_bytes());
         p[3..5].copy_from_slice(&want.advertise.to_le_bytes());
-        p[5] = 0x00;
+        p[5] = address::STATIC_RANDOM;
         p[6] = 0x00;
         p[7] = u8::try_from(1 + DEVICE_NAME.len()).unwrap_or(0);
         p[8] = 0x09;
@@ -1357,16 +1363,9 @@ fn write_interval(uart: Uart, units: u16) {
     uart.write_str(" ms");
 }
 
-/// A locally administered public address from the MCU's unique id: `02:80:E1` (ST's prefix
-/// with the local bit) and three bytes folded from the 96-bit id. Little-endian, as the chip
-/// and the air carry it.
 fn address_from_uid() -> [u8; 6] {
-    let w0 = unsafe { core::ptr::read_volatile(UID_BASE as *const u32) };
-    let w1 = unsafe { core::ptr::read_volatile((UID_BASE + 4) as *const u32) };
-    let w2 = unsafe { core::ptr::read_volatile((UID_BASE + 8) as *const u32) };
-    let fold = w0 ^ w1.rotate_left(11) ^ w2.rotate_left(22);
-    let b = fold.to_le_bytes();
-    [b[0], b[1], b[2], 0xE1, 0x80, 0x02]
+    let w = |i: u32| unsafe { core::ptr::read_volatile((UID_BASE + 4 * i) as *const u32) };
+    wrist_aci::static_random_address([w(0), w(1), w(2)])
 }
 
 fn write_six_digits(uart: Uart, v: u32) {
