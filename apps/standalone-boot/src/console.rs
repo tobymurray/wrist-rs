@@ -482,7 +482,7 @@ pub fn command(cmd: &[u8], flash: &'static FlashMutex) {
             uart.write_line("[usb]   report: the full report (clocks, RTC, USB registers and log), written in pieces");
             uart.write_line("[usb]   reset: software reset; hold Select through it for the bootloader's USB mode");
             uart.write_line("[usb]   power: the input, the last stretch on battery, sleep counters, the retained crash record");
-            uart.write_line("[usb]   page: the face as last drawn, frame and executor-latency figures; vcom and the light");
+            uart.write_line("[usb]   page: the face as last drawn; frame, executor-latency and per-task CPU figures; vcom and the light");
             uart.write_line("[usb]   page dump: the frame last drawn, as run-length rows (tools/wrist-frame.py)");
             uart.write_line("[usb]   press: a debounced press, as if from the button; never a hold");
             uart.write_line("[usb]   modules: what the display, link1 and GNSS slots' EEPROMs say");

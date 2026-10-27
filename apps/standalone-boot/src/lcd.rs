@@ -292,6 +292,21 @@ fn write_line(words: &[u32; PAIRS]) {
     delay_us(5);
 }
 
+/// The CPU's part of the last frame written, in cycles.
+#[derive(Clone, Copy, Default)]
+pub struct Cost {
+    pub busy: u32,
+    pub longest: u32,
+}
+
+impl Cost {
+    fn end_step(&mut self, from: u32) {
+        let took = crate::busy::cycles().wrapping_sub(from);
+        self.busy = self.busy.wrapping_add(took);
+        self.longest = self.longest.max(took);
+    }
+}
+
 pub struct Lcd(());
 
 impl Lcd {
@@ -318,12 +333,12 @@ impl Lcd {
 
     /// The all-black frame Figure 6-2 asks for before `VCOM`, then `VCOM`.
     pub async fn start(&mut self) {
-        self.scan(None, &[true; LINES]).await;
+        let _ = self.scan(None, &[true; LINES]).await;
         unsafe { start_vcom() };
     }
 
-    /// Writes the screen columns of `fb` marked in `columns`; how many.
-    pub async fn write_frame(&mut self, fb: &[u8], columns: &[bool; LINES]) -> u32 {
+    /// Writes the screen columns of `fb` marked in `columns`; how many, and what it cost.
+    pub async fn write_frame(&mut self, fb: &[u8], columns: &[bool; LINES]) -> (u32, Cost) {
         let lines = core::array::from_fn(|line| columns[LINES - 1 - line]);
         self.scan(Some(fb), &lines).await
     }
@@ -331,10 +346,12 @@ impl Lcd {
     /// One frame (Figure 6-3-2, or 6-5-4 for a partial one). Gate line `n` is screen column
     /// `WIDTH - 1 - n` (`HARDWARE.md`); a line not in `dirty` is fast-forwarded without `GEN`
     /// and keeps its pixels.
-    async fn scan(&mut self, fb: Option<&[u8]>, dirty: &[bool; LINES]) -> u32 {
+    async fn scan(&mut self, fb: Option<&[u8]>, dirty: &[bool; LINES]) -> (u32, Cost) {
+        let mut cost = Cost::default();
         if !dirty.contains(&true) {
-            return 0;
+            return (0, cost);
         }
+        let mut step = crate::busy::cycles();
         let start = Instant::now();
         set(INTB, true);
         delay_us(12);
@@ -359,7 +376,9 @@ impl Lcd {
                     written += 1;
                 }
                 write_line(&words[plane]);
+                cost.end_step(step);
                 embassy_futures::yield_now().await;
+                step = crate::busy::cycles();
             } else if matches!(edge, 1 | 2 | GCK_EDGES) {
                 delay_us(GCK_US);
             } else {
@@ -368,10 +387,13 @@ impl Lcd {
         }
         // thhINTB and thwINTB, then tlwINTB (Table 6-3-2).
         delay_us(GCK_US);
+        cost.end_step(step);
         Timer::at(start + INTB_HIGH).await;
+        step = crate::busy::cycles();
         set(INTB, false);
         delay_us(12);
-        written
+        cost.end_step(step);
+        (written, cost)
     }
 }
 

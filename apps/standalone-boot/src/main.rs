@@ -5,6 +5,7 @@
 
 #[cfg(feature = "ble")]
 mod ble;
+mod busy;
 mod console;
 mod crash;
 mod flash;
@@ -397,6 +398,7 @@ fn main() -> ! {
 
     sleep::init();
     uart::track_sleep();
+    busy::init();
     let executor = EXECUTOR.init(Executor::new());
     executor.run(|spawner| {
         let buttons = ButtonLines {
@@ -407,17 +409,19 @@ fn main() -> ! {
         };
         // Open-drain from the PMIC and the USB-PD controller, with no pull-up on the board.
         let pwr_int = ExtiInput::new(p.PG7, p.EXTI7, Pull::Up, ExtiIrqs);
-        spawner.spawn(button_watch(buttons).unwrap());
+        spawn(spawner, "buttons", button_watch(buttons).unwrap());
         glass::arm_lag_probe(glass::LAG_BOOT_S);
-        spawner.spawn(glass::lag_probe().unwrap());
-        spawner.spawn(heartbeat(flash).unwrap());
-        spawner.spawn(report(handoff, measured_hz, watchdog).unwrap());
-        spawner.spawn(display(bus, pwr_int).unwrap());
+        spawn(spawner, "lag", glass::lag_probe().unwrap());
+        spawn(spawner, "heartbeat", heartbeat(flash).unwrap());
+        spawn(spawner, "report", report(handoff, measured_hz, watchdog).unwrap());
+        spawn(spawner, "display", display(bus, pwr_int).unwrap());
         if let Some(pins) = usb {
-            spawner.spawn(console::service(pins, flash).unwrap());
+            spawn(spawner, "console", console::service(pins, flash).unwrap());
         }
         #[cfg(feature = "ble")]
-        spawner.spawn(
+        spawn(
+            spawner,
+            "ble",
             ble::run(
                 ble::Pins {
                     spi: p.SPI1,
@@ -444,6 +448,11 @@ bind_interrupts!(struct I2cIrqs {
 });
 
 static EXECUTOR: StaticCell<Executor> = StaticCell::new();
+
+fn spawn<S>(spawner: embassy_executor::Spawner, name: &'static str, token: embassy_executor::SpawnToken<S>) {
+    busy::name(token.id(), name);
+    spawner.spawn(token);
+}
 
 const _: () = assert!(lcd::WIDTH == wrist_glass::WIDTH && lcd::HEIGHT == wrist_glass::HEIGHT);
 static FRAMEBUFFER: ConstStaticCell<[u8; (lcd::WIDTH * lcd::HEIGHT) as usize]> =
@@ -937,27 +946,36 @@ async fn show(
         uart.write_hex8(short);
         uart.write_line("");
     }
+    let mut cost = glass::Cost::default();
     for (dst, src) in fb.chunks_mut(FB_STEP).zip(bg.chunks(FB_STEP)) {
         let t = Instant::now();
+        let c = busy::cycles();
         dst.copy_from_slice(src);
+        cost.background.add(c);
         glass::note_max(&glass::MAX_RENDER_US, elapsed_us(t));
         embassy_futures::yield_now().await;
     }
     for i in 0..composed.len() {
         for columns in composed.pieces(i) {
             let t = Instant::now();
+            let c = busy::cycles();
             pages::draw_piece(fb, composed, i, columns);
+            cost.render.add(c);
             glass::note_max(&glass::MAX_RENDER_US, elapsed_us(t));
             embassy_futures::yield_now().await;
         }
     }
+    let c = busy::cycles();
     let changed = composed.changed_columns(drawn.as_ref());
+    cost.changed.add(c);
     let start = glass::now_ms();
-    let columns = panel.write_frame(fb, &changed).await;
+    let (columns, write) = panel.write_frame(fb, &changed).await;
+    cost.write = glass::Step { total: write.busy, longest: write.longest };
     let ms = glass::now_ms().saturating_sub(start);
     glass::LAST_FRAME_COLUMNS.store(columns, Ordering::Relaxed);
     *drawn = Some(*composed);
     glass::shown(composed);
+    glass::cost(cost);
     glass::FRAMES.fetch_add(1, Ordering::Relaxed);
     glass::LAST_FRAME_MS.store(ms, Ordering::Relaxed);
     glass::note_max(&glass::MAX_FRAME_MS, ms);
