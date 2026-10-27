@@ -11,7 +11,7 @@ use wrist_glass::dump::{self, MAX_ROW_CODE, MAX_ROW_HEX};
 use wrist_glass::pages::{Clock, Date, Status};
 use wrist_glass::text::Glass;
 
-use crate::uart::Uart;
+use crate::uart::{Lines, Uart};
 
 /// Cycles a frame's stage took, in all and in its longest step.
 #[derive(Clone, Copy, Default)]
@@ -239,13 +239,13 @@ fn arm_lag_command(uart: Uart, seconds: u32) {
     uart.write_line(" s (10 ms wakes); `page` reads it");
 }
 
-fn write_ms(uart: Uart, label: &str, v: u32) {
+fn write_ms(uart: &mut Lines, label: &str, v: u32) {
     uart.write_str(label);
     uart.write_u32(v);
     uart.write_str(" ms");
 }
 
-fn write_us_as_ms(uart: Uart, label: &str, us: u32) {
+fn write_us_as_ms(uart: &mut Lines, label: &str, us: u32) {
     uart.write_str(label);
     uart.write_u32(us / 1000);
     uart.write_str(".");
@@ -254,6 +254,7 @@ fn write_us_as_ms(uart: Uart, label: &str, us: u32) {
 }
 
 fn write_page(uart: Uart) {
+    let uart = &mut uart.lines();
     let (page, back) = crate::nav_now();
     uart.write_str("[glass] page ");
     uart.write_str(page.name());

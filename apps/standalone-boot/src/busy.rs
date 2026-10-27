@@ -7,7 +7,7 @@ use cortex_m::peripheral::{DCB, DWT};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex;
 
-use crate::uart::Uart;
+use crate::uart::Lines;
 
 const CORE_MHZ: u32 = 48;
 const TASKS: usize = 12;
@@ -131,7 +131,7 @@ fn us(cycles: u32) -> u32 {
 }
 
 /// The figures since the last call, then zeroed.
-pub fn write(uart: Uart) {
+pub fn write(uart: &mut Lines) {
     let book = BOOK.lock(|b| {
         let mut b = b.borrow_mut();
         let copy = (b.tasks, b.awake, b.wakes, b.longest, b.longest_task, b.longest_at_ms);

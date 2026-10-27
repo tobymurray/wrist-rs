@@ -340,10 +340,10 @@ fn main() -> ! {
     let mut bus = I2c::new(p.I2C1, p.PB6, p.PB7, p.GPDMA1_CH0, p.GPDMA1_CH1, I2cIrqs, i2c_config);
     let power = pmic::snapshot_blocking(&mut bus);
     uart.write_line("[10] I2C1 up; power chips read:");
-    pmic::write_report(uart, &power);
+    pmic::write_report(&mut uart.lines(), &power);
     pmic::read_modes_blocking(&mut bus);
-    pmic::write_rails(uart, power.top_cntl3);
-    pmic::write_summary(uart, &power);
+    pmic::write_rails(&mut uart.lines(), power.top_cntl3);
+    pmic::write_summary(&mut uart.lines(), &power);
     uart.write_str("[10b] input-power interrupt on PWR_INT_L (PG7): ");
     match crate::power::arm_input_interrupt(&mut bus) {
         Some(mask) => {
@@ -1012,10 +1012,12 @@ fn minute_now() -> u32 {
 async fn read_power(uart: Uart, bus: &mut pmic::AsyncBus, n: u32) -> (Option<u8>, Option<u32>) {
     let s = pmic::snapshot(bus).await;
     if n.is_multiple_of(6) {
-        pmic::write_report(uart, &s);
-        pmic::write_rails(uart, s.top_cntl3);
+        pmic::write_report(&mut uart.lines(), &s);
+        embassy_futures::yield_now().await;
+        pmic::write_rails(&mut uart.lines(), s.top_cntl3);
+        embassy_futures::yield_now().await;
     }
-    pmic::write_summary(uart, &s);
+    pmic::write_summary(&mut uart.lines(), &s);
     power::note_reading(&s);
     (s.soc_raw.map(pmic::soc_percent), s.vcell_raw.map(pmic::vcell_mv))
 }
