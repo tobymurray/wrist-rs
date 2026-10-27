@@ -5,6 +5,7 @@
 
 #[cfg(feature = "ble")]
 mod ble;
+mod busy;
 mod console;
 mod crash;
 mod flash;
@@ -45,6 +46,7 @@ use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::channel::Channel;
 use embassy_sync::signal::Signal;
 use wrist_glass::pages;
+use wrist_glass::scene::Scene;
 use wrist_glass::text::Glass;
 use wrist_pages::{Button, Nav, Page, Press};
 
@@ -338,10 +340,10 @@ fn main() -> ! {
     let mut bus = I2c::new(p.I2C1, p.PB6, p.PB7, p.GPDMA1_CH0, p.GPDMA1_CH1, I2cIrqs, i2c_config);
     let power = pmic::snapshot_blocking(&mut bus);
     uart.write_line("[10] I2C1 up; power chips read:");
-    pmic::write_report(uart, &power);
+    pmic::write_report(&mut uart.lines(), &power);
     pmic::read_modes_blocking(&mut bus);
-    pmic::write_rails(uart, power.top_cntl3);
-    pmic::write_summary(uart, &power);
+    pmic::write_rails(&mut uart.lines(), power.top_cntl3);
+    pmic::write_summary(&mut uart.lines(), &power);
     uart.write_str("[10b] input-power interrupt on PWR_INT_L (PG7): ");
     match crate::power::arm_input_interrupt(&mut bus) {
         Some(mask) => {
@@ -397,6 +399,7 @@ fn main() -> ! {
 
     sleep::init();
     uart::track_sleep();
+    busy::init();
     let executor = EXECUTOR.init(Executor::new());
     executor.run(|spawner| {
         let buttons = ButtonLines {
@@ -407,17 +410,19 @@ fn main() -> ! {
         };
         // Open-drain from the PMIC and the USB-PD controller, with no pull-up on the board.
         let pwr_int = ExtiInput::new(p.PG7, p.EXTI7, Pull::Up, ExtiIrqs);
-        spawner.spawn(button_watch(buttons).unwrap());
+        spawn(spawner, "buttons", button_watch(buttons).unwrap());
         glass::arm_lag_probe(glass::LAG_BOOT_S);
-        spawner.spawn(glass::lag_probe().unwrap());
-        spawner.spawn(heartbeat(flash).unwrap());
-        spawner.spawn(report(handoff, measured_hz, watchdog).unwrap());
-        spawner.spawn(display(bus, pwr_int).unwrap());
+        spawn(spawner, "lag", glass::lag_probe().unwrap());
+        spawn(spawner, "heartbeat", heartbeat(flash).unwrap());
+        spawn(spawner, "report", report(handoff, measured_hz, watchdog).unwrap());
+        spawn(spawner, "display", display(bus, pwr_int).unwrap());
         if let Some(pins) = usb {
-            spawner.spawn(console::service(pins, flash).unwrap());
+            spawn(spawner, "console", console::service(pins, flash).unwrap());
         }
         #[cfg(feature = "ble")]
-        spawner.spawn(
+        spawn(
+            spawner,
+            "ble",
             ble::run(
                 ble::Pins {
                     spi: p.SPI1,
@@ -445,12 +450,18 @@ bind_interrupts!(struct I2cIrqs {
 
 static EXECUTOR: StaticCell<Executor> = StaticCell::new();
 
+fn spawn<S>(spawner: embassy_executor::Spawner, name: &'static str, token: embassy_executor::SpawnToken<S>) {
+    busy::name(token.id(), name);
+    spawner.spawn(token);
+}
+
 const _: () = assert!(lcd::WIDTH == wrist_glass::WIDTH && lcd::HEIGHT == wrist_glass::HEIGHT);
 static FRAMEBUFFER: ConstStaticCell<[u8; (lcd::WIDTH * lcd::HEIGHT) as usize]> =
     ConstStaticCell::new([0u8; (lcd::WIDTH * lcd::HEIGHT) as usize]);
-static BACKGROUND_BUF: ConstStaticCell<[u8; (lcd::WIDTH * lcd::HEIGHT) as usize]> =
-    ConstStaticCell::new([0u8; (lcd::WIDTH * lcd::HEIGHT) as usize]);
-const FB_STEP: usize = (lcd::WIDTH * lcd::HEIGHT / 4) as usize;
+/// The scene on the glass and the one being drawn, by turns.
+static SCENES: ConstStaticCell<[Scene; 2]> = ConstStaticCell::new([Scene::new(), Scene::new()]);
+/// Columns repainted between yields.
+const STRIP: usize = 16;
 
 /// The clocks every Stop exit restores (`HARDWARE.md`, "Stop modes"), with
 /// the USB block's when `usb`.
@@ -807,12 +818,7 @@ async fn display(mut bus: pmic::AsyncBus, mut pwr_int: ExtiInput<'static, Async>
         uart.write_line("[mod] panel not started: view holds another module (`modules force view` starts it)");
     }
     let fb = FRAMEBUFFER.take();
-    let bg = BACKGROUND_BUF.take();
-    let t = Instant::now();
-    pages::background(bg);
-    uart.write_str("[glass] background (black and the ring) drawn once in ");
-    uart.write_u32(elapsed_us(t));
-    uart.write_line(" us");
+    let scenes = SCENES.take();
     let mut n: u32 = 0;
     let mut next_reading = Instant::now();
     let mut soc_pct = None;
@@ -865,7 +871,8 @@ async fn display(mut bus: pmic::AsyncBus, mut pwr_int: ExtiInput<'static, Async>
             let t0 = Instant::now();
             let (composed, short) = compose_page(page, soc_pct, cell_mv);
             glass::note_max(&glass::MAX_COMPOSE_US, elapsed_us(t0));
-            show(panel, (fb, bg), uart, &mut drawn, (&composed, short)).await;
+            embassy_futures::yield_now().await;
+            show(panel, fb, scenes, uart, &mut drawn, (&composed, short)).await;
         }
         shown_page = page;
         if glass::dump_wanted() {
@@ -883,6 +890,10 @@ async fn display(mut bus: pmic::AsyncBus, mut pwr_int: ExtiInput<'static, Async>
         if !power::on_battery() {
             due = due.min(next_reading);
         }
+        if let Some((_, _, Some(ms))) = glass::stress() {
+            glass::stress_stepped();
+            due = due.min(Instant::now() + Duration::from_millis(u64::from(ms)));
+        }
         if line_low {
             due = due.min(power.retry_at());
         }
@@ -897,7 +908,11 @@ async fn display(mut bus: pmic::AsyncBus, mut pwr_int: ExtiInput<'static, Async>
     }
 }
 
+/// The page, or the stress screen the console put in its place.
 fn compose_page(page: Page, soc_pct: Option<u8>, cell_mv: Option<u32>) -> (Glass, pages::Short) {
+    if let Some((kind, step, _)) = glass::stress() {
+        return wrist_glass::stress::compose_stress(kind, step, pages::FACES);
+    }
     let locale = &pages::EN_GB;
     match page {
         Page::Face => pages::compose(&glass::status(soc_pct), locale, pages::FACES),
@@ -921,9 +936,11 @@ fn compose_page(page: Page, soc_pct: Option<u8>, cell_mv: Option<u32>) -> (Glass
     }
 }
 
+/// `scenes[0]` lays out `drawn` while it is `Some`.
 async fn show(
     panel: &mut lcd::Lcd,
-    (fb, bg): (&mut [u8], &[u8]),
+    fb: &mut [u8],
+    scenes: &mut [Scene; 2],
     uart: Uart,
     drawn: &mut Option<Glass>,
     (composed, short): (&Glass, pages::Short),
@@ -937,27 +954,36 @@ async fn show(
         uart.write_hex8(short);
         uart.write_line("");
     }
-    for (dst, src) in fb.chunks_mut(FB_STEP).zip(bg.chunks(FB_STEP)) {
+    let mut cost = glass::Cost::default();
+    let [shown, scene] = scenes;
+    for i in 0..composed.len().max(1) {
+        let c = busy::cycles();
+        scene.lay(composed, i);
+        cost.layout.add(c);
+        embassy_futures::yield_now().await;
+    }
+    let before = drawn.is_some().then_some(&*shown);
+    let c = busy::cycles();
+    let changed = scene.changed_columns(before);
+    cost.changed.add(c);
+    embassy_futures::yield_now().await;
+    for columns in wrist_glass::text::strips(&changed, STRIP) {
         let t = Instant::now();
-        dst.copy_from_slice(src);
+        let c = busy::cycles();
+        pages::repaint(fb, scene, before, columns);
+        cost.render.add(c);
         glass::note_max(&glass::MAX_RENDER_US, elapsed_us(t));
         embassy_futures::yield_now().await;
     }
-    for i in 0..composed.len() {
-        for columns in composed.pieces(i) {
-            let t = Instant::now();
-            pages::draw_piece(fb, composed, i, columns);
-            glass::note_max(&glass::MAX_RENDER_US, elapsed_us(t));
-            embassy_futures::yield_now().await;
-        }
-    }
-    let changed = composed.changed_columns(drawn.as_ref());
     let start = glass::now_ms();
-    let columns = panel.write_frame(fb, &changed).await;
+    let (columns, write) = panel.write_frame(fb, &changed).await;
+    cost.write = glass::Step { total: write.busy, longest: write.longest };
     let ms = glass::now_ms().saturating_sub(start);
+    scenes.swap(0, 1);
     glass::LAST_FRAME_COLUMNS.store(columns, Ordering::Relaxed);
     *drawn = Some(*composed);
     glass::shown(composed);
+    glass::cost(cost);
     glass::FRAMES.fetch_add(1, Ordering::Relaxed);
     glass::LAST_FRAME_MS.store(ms, Ordering::Relaxed);
     glass::note_max(&glass::MAX_FRAME_MS, ms);
@@ -986,10 +1012,12 @@ fn minute_now() -> u32 {
 async fn read_power(uart: Uart, bus: &mut pmic::AsyncBus, n: u32) -> (Option<u8>, Option<u32>) {
     let s = pmic::snapshot(bus).await;
     if n.is_multiple_of(6) {
-        pmic::write_report(uart, &s);
-        pmic::write_rails(uart, s.top_cntl3);
+        pmic::write_report(&mut uart.lines(), &s);
+        embassy_futures::yield_now().await;
+        pmic::write_rails(&mut uart.lines(), s.top_cntl3);
+        embassy_futures::yield_now().await;
     }
-    pmic::write_summary(uart, &s);
+    pmic::write_summary(&mut uart.lines(), &s);
     power::note_reading(&s);
     (s.soc_raw.map(pmic::soc_percent), s.vcell_raw.map(pmic::vcell_mv))
 }

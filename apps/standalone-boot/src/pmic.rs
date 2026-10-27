@@ -7,7 +7,7 @@ use embassy_stm32::mode::Async;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex;
 
-use crate::uart::Uart;
+use crate::uart::Lines;
 
 /// Blocking calls only before the first async transfer (`HARDWARE.md`, "Debug and boot").
 pub type AsyncBus = I2c<'static, Async, Master>;
@@ -117,7 +117,7 @@ pub async fn snapshot(bus: &mut AsyncBus) -> Snapshot {
     assemble(&v)
 }
 
-fn hex_or_dashes(uart: Uart, v: Option<u8>) {
+fn hex_or_dashes(uart: &mut Lines, v: Option<u8>) {
     match v {
         Some(b) => uart.write_hex8(b),
         None => uart.write_str("--"),
@@ -144,7 +144,7 @@ pub fn current_ua(raw: u16) -> i32 {
     i32::from(raw.cast_signed()) * 625 / 4
 }
 
-fn write_ua(uart: Uart, raw: Option<u16>) {
+fn write_ua(uart: &mut Lines, raw: Option<u16>) {
     match raw {
         Some(r) => {
             let ua = current_ua(r);
@@ -158,7 +158,7 @@ fn write_ua(uart: Uart, raw: Option<u16>) {
     }
 }
 
-pub fn write_summary(uart: Uart, s: &Snapshot) {
+pub fn write_summary(uart: &mut Lines, s: &Snapshot) {
     uart.write_str("[pwr] ");
     match s.vcell_raw {
         Some(raw) => {
@@ -228,7 +228,7 @@ pub fn write_summary(uart: Uart, s: &Snapshot) {
     uart.write_line(" mAh");
 }
 
-pub fn write_report(uart: Uart, s: &Snapshot) {
+pub fn write_report(uart: &mut Lines, s: &Snapshot) {
     uart.write_line("-- power chips on I2C1 (read only) --");
     uart.write_str("PCA9420 DEV_INFO ");
     hex_or_dashes(uart, s.dev_info);
@@ -303,7 +303,7 @@ pub fn read_modes_blocking(bus: &mut AsyncBus) {
 }
 
 /// Each mode's rails as read at boot, marking the one in force when `TOP_CNTL3` chooses it.
-pub fn write_rails(uart: Uart, top_cntl3: Option<u8>) {
+pub fn write_rails(uart: &mut Lines, top_cntl3: Option<u8>) {
     let Some(regs) = MODES.lock(Cell::get) else {
         return uart.write_line("  MODECFG: no answer at boot");
     };

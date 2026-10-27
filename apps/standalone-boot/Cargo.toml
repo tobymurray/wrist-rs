@@ -13,7 +13,7 @@ cortex-m-rt = "0.7.7"
 cortex-m = { version = "0.7.9", features = ["critical-section-single-core"] }
 # No `memory-x`: memory.x here places the image at its partition.
 embassy-stm32 = { version = "0.6.0", features = ["stm32u5a5qj", "time-driver-lptim4", "low-power", "executor-thread", "rt", "time", "exti"] }
-embassy-executor = "0.10.0"
+embassy-executor = { version = "0.10.0", features = ["trace"] }
 embassy-time = { version = "0.5.1", features = ["tick-hz-32_768"] }
 static_cell = "2.1.1"
 critical-section = "1.2"
@@ -32,6 +32,7 @@ wrist-time = { path = "../../crates/wrist-time" }
 wrist-eeprom = { path = "../../crates/wrist-eeprom" }
 wrist-power = { path = "../../crates/wrist-power" }
 wrist-vcom = { path = "../../crates/wrist-vcom" }
+wrist-panel = { path = "../../crates/wrist-panel" }
 
 [features]
 # embassy-usb's own log of the link, printed by `usblog`.
@@ -73,3 +74,15 @@ embassy-net-driver = { git = "https://github.com/embassy-rs/embassy", rev = "81c
 embassy-usb-driver = { git = "https://github.com/embassy-rs/embassy", rev = "81cabe7e5307c702d27e98577ac5e063c7796910" }
 embassy-usb-synopsys-otg = { path = "../../vendor/embassy-usb-synopsys-otg" }
 embassy-usb = { git = "https://github.com/embassy-rs/embassy", rev = "81cabe7e5307c702d27e98577ac5e063c7796910" }
+
+# What draws the face is built for speed rather than size.
+[profile.release.package.wrist-glass]
+opt-level = 3
+[profile.release.package.incised-text]
+opt-level = 3
+[profile.release.package.inscribed-disc]
+opt-level = 3
+[profile.release.package.wrist-panel]
+opt-level = 3
+[profile.release.package.wrist-l10n]
+opt-level = 3

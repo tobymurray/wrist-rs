@@ -63,15 +63,15 @@ impl Ring {
         self.head == self.tail
     }
 
-    /// `false` when full.
-    fn push(&mut self, b: u8) -> bool {
-        let next = (self.head + 1) % RING;
-        if next == self.tail {
-            return false;
-        }
-        self.buf[self.head] = b;
-        self.head = next;
-        true
+    /// As many of `bytes` as fit, in order; how many.
+    fn push_all(&mut self, bytes: &[u8]) -> usize {
+        let free = (self.tail + RING - self.head - 1) % RING;
+        let n = bytes.len().min(free);
+        let first = n.min(RING - self.head);
+        self.buf[self.head..self.head + first].copy_from_slice(&bytes[..first]);
+        self.buf[..n - first].copy_from_slice(&bytes[first..n]);
+        self.head = (self.head + n) % RING;
+        n
     }
 
     fn pop(&mut self) -> Option<u8> {
@@ -282,11 +282,7 @@ impl Uart {
         crate::console::tee(bytes);
         match self.0 {
             Mode::Queued => {
-                let lost = TX.lock(|ring| {
-                    let mut ring = ring.borrow_mut();
-                    let kept = bytes.iter().take_while(|&&b| ring.push(b)).count();
-                    bytes.len() - kept
-                });
+                let lost = TX.lock(|ring| bytes.len() - ring.borrow_mut().push_all(bytes));
                 Self::arm();
                 if lost > 0 {
                     DROPPED.fetch_add(u32::try_from(lost).unwrap_or(u32::MAX), Ordering::Relaxed);
@@ -339,26 +335,19 @@ impl Uart {
     }
 
     pub fn write_u32(self, value: u32) {
-        const DIGITS_MAX: usize = 10;
-        let mut buf = [0u8; DIGITS_MAX];
-        let mut len = 0usize;
-        let mut rest = value;
-        for slot in &mut buf {
-            *slot = b'0' + u8::try_from(rest % 10).unwrap_or(0);
-            len += 1;
-            rest /= 10;
-            if rest == 0 {
-                break;
-            }
-        }
-        buf[..len].reverse();
-        self.write_raw(&buf[..len]);
+        let mut buf = [0u8; 10];
+        self.write_raw(decimal(&mut buf, value));
     }
 
     pub fn write_reg(self, label: &str, value: u32) {
         self.write_str(label);
         self.write_hex32(value);
         self.write_str("\n");
+    }
+
+    /// Gathers output a line at a time.
+    pub fn lines(self) -> Lines {
+        Lines { uart: self, buf: [0; LINE], n: 0 }
     }
 
     /// Blocks until the backlog is on the wire: for rate changes, resets and
@@ -368,5 +357,76 @@ impl Uart {
         if !GAVE_UP.load(Ordering::Relaxed) && !Self::poll(USART_ISR_TC) {
             GAVE_UP.store(true, Ordering::Relaxed);
         }
+    }
+}
+
+fn decimal(buf: &mut [u8; 10], value: u32) -> &[u8] {
+    let mut len = 0usize;
+    let mut rest = value;
+    for slot in buf.iter_mut() {
+        *slot = b'0' + u8::try_from(rest % 10).unwrap_or(0);
+        len += 1;
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
+    }
+    buf[..len].reverse();
+    &buf[..len]
+}
+
+const LINE: usize = 160;
+
+/// Output queued a line at a time; whatever is left goes out when it is dropped.
+pub struct Lines {
+    uart: Uart,
+    buf: [u8; LINE],
+    n: usize,
+}
+
+impl Lines {
+    fn push(&mut self, bytes: &[u8]) {
+        if self.n + bytes.len() > LINE {
+            self.flush();
+        }
+        if bytes.len() > LINE {
+            self.uart.write_raw(bytes);
+            return;
+        }
+        self.buf[self.n..self.n + bytes.len()].copy_from_slice(bytes);
+        self.n += bytes.len();
+    }
+
+    fn flush(&mut self) {
+        if self.n > 0 {
+            self.uart.write_raw(&self.buf[..self.n]);
+            self.n = 0;
+        }
+    }
+
+    pub fn write_str(&mut self, s: &str) {
+        self.push(s.as_bytes());
+    }
+
+    pub fn write_u32(&mut self, value: u32) {
+        let mut buf = [0u8; 10];
+        self.push(decimal(&mut buf, value));
+    }
+
+    pub fn write_hex8(&mut self, value: u8) {
+        const DIGITS: &[u8; 16] = b"0123456789ABCDEF";
+        self.push(&[DIGITS[usize::from(value >> 4)], DIGITS[usize::from(value & 0xF)]]);
+    }
+
+    pub fn write_line(&mut self, s: &str) {
+        self.push(s.as_bytes());
+        self.push(b"\r\n");
+        self.flush();
+    }
+}
+
+impl Drop for Lines {
+    fn drop(&mut self) {
+        self.flush();
     }
 }

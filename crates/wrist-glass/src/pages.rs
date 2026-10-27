@@ -1,12 +1,20 @@
 //! The watch face, composed from a [`Status`].
 
+use core::ops::Range;
+
 use incised_text::faces;
 use inscribed_disc::{Abgr2222, Surface};
 
 use wrist_l10n::Msg;
 
+use crate::scene::Scene;
 use crate::text::{Font, Glass, Line, Overflow};
-use crate::{ring, HEIGHT, WIDTH};
+use crate::{ring, HEIGHT, RING_COLOR, RING_RUNS, WIDTH};
+
+#[allow(clippy::cast_possible_wrap)]
+const W: i32 = WIDTH as i32;
+#[allow(clippy::cast_possible_wrap)]
+const H: i32 = HEIGHT as i32;
 
 pub use wrist_l10n::{Clock, Date, Locale, BUILT_IN, EN_GB};
 
@@ -175,6 +183,27 @@ pub fn render(fb: &mut [u8], glass: &Glass) -> bool {
     (0..glass.len()).all(|i| draw_line(fb, glass, i))
 }
 
+/// [`background`] within `rows` and `columns` only, so no copy of it need be kept.
+pub fn background_in(fb: &mut [u8], rows: Range<i32>, columns: Range<i32>) {
+    let (rows, columns) = (rows.start.clamp(0, H)..rows.end.clamp(0, H), columns.start.clamp(0, W)..columns.end.clamp(0, W));
+    if fb.len() != (WIDTH * HEIGHT) as usize || columns.is_empty() {
+        return;
+    }
+    #[allow(clippy::cast_sign_loss)]
+    let (a, z) = (columns.start as usize, columns.end as usize);
+    #[allow(clippy::cast_sign_loss)]
+    for y in rows.start as usize..rows.end as usize {
+        let row = &mut fb[y * WIDTH as usize..(y + 1) * WIDTH as usize];
+        row[a..z].fill(Abgr2222::BLACK.0);
+        for &(from, to) in &RING_RUNS[y] {
+            let (from, to) = (usize::from(from).max(a), usize::from(to).min(z));
+            if from < to {
+                row[from..to].fill(RING_COLOR.0);
+            }
+        }
+    }
+}
+
 /// False for a buffer of the wrong size.
 pub fn background(fb: &mut [u8]) -> bool {
     let Some(mut surface) = Surface::<Abgr2222>::round(fb, WIDTH, HEIGHT) else {
@@ -194,12 +223,12 @@ pub fn draw_line(fb: &mut [u8], glass: &Glass, i: usize) -> bool {
     true
 }
 
-/// One of [`Glass::pieces`] of line `i`; false for a buffer of the wrong size.
-pub fn draw_piece(fb: &mut [u8], glass: &Glass, i: usize, columns: core::ops::Range<i32>) -> bool {
-    let Some(mut surface) = Surface::<Abgr2222>::round(fb, WIDTH, HEIGHT) else {
+/// [`Scene::repaint`] in white over [`background`]; false for a buffer of the wrong size.
+pub fn repaint(fb: &mut [u8], scene: &Scene, before: Option<&Scene>, columns: Range<i32>) -> bool {
+    if fb.len() != (WIDTH * HEIGHT) as usize {
         return false;
-    };
-    glass.draw_piece_with(&mut surface, i, columns, Abgr2222::WHITE);
+    }
+    scene.repaint(fb, background_in, before, columns, Abgr2222::WHITE);
     true
 }
 
