@@ -345,6 +345,7 @@ fn main() -> ! {
     uart.write_line("[10] I2C1 up; power chips read:");
     pmic::write_report(&mut uart.lines(), &power);
     pmic::read_modes_blocking(&mut bus);
+    pmic::read_gauge_config_blocking(&mut bus);
     pmic::write_rails(&mut uart.lines(), power.top_cntl3);
     pmic::write_summary(&mut uart.lines(), &power);
     match pmic::slow_gauge_hibernate(&mut bus) {
