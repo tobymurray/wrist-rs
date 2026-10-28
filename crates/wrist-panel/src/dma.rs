@@ -1,5 +1,6 @@
 //! A frame as two GPDMA linked lists on TIM3's ticks: `E` writes the data lines, `D` one
-//! register a tick of TIM3's compares (`BCK`, `GEN`), `GCK`, `GSP` and TIM1's one pulse (`BSP`).
+//! register a tick of TIM3's compares (`BCK`, `GEN`), `GCK`, `GSP`, TIM1's one pulse (`BSP`),
+//! and TIM3's stop.
 
 use crate::{timing, LINES, PAIRS};
 
@@ -82,7 +83,7 @@ pub const fn keeps_timer(bus: &Bus, lat: &Latency) -> bool {
     let first = 3 * h + edge;
     h >= cycles(400)
         && edge < h
-        && bus.ctrl + lat.d_write.1 <= h
+        && bus.ctrl + lat.d_write.1 < h
         && lat.e_link + 2 * lat.e_write.1 <= 2 * h
         && lat.d_link + 2 * lat.d_write.1 <= 2 * h
         && first >= late + rise + ns200
@@ -102,7 +103,8 @@ pub const GPIOA_BRR: u32 = 0x4202_0028;
 pub const GPIOB_BSRR: u32 = 0x4202_0418;
 pub const GPIOB_BRR: u32 = 0x4202_0428;
 pub const GPIOE_ODR: u32 = 0x4202_1014;
-pub const TIM3_CCR1: u32 = 0x4000_0434;
+pub const TIM3_CR1: u32 = 0x4000_0400;
+pub const TIM3_CCR1: u32 = TIM3_CR1 + 0x34;
 pub const TIM3_CCR2: u32 = TIM3_CCR1 + 4;
 pub const TIM3_CCR4: u32 = TIM3_CCR1 + 12;
 pub const TIM1_CR1: u32 = 0x4001_2C00;
@@ -196,6 +198,10 @@ impl Frame {
         (self.ticks + 1) * bus.half
     }
 }
+
+/// `E`'s transfers left once `D` is done: `D`'s last write stops TIM3 (RM0456 55.5.1) before
+/// the update `E`'s last transfer waits on, so a request either channel lost leaves another count.
+pub const E_LEFT: u32 = 1;
 
 /// A list ran out of room.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -336,6 +342,8 @@ impl<'a> Builder<'a> {
     /// # Errors
     /// [`Full`] if a list ran out of room.
     pub fn finish(mut self) -> Result<Frame, Full> {
+        self.idle(1);
+        self.d_item(TIM3_CR1, T_ZERO, 1, false);
         self.flush_idle();
         if self.full || self.ticks[0] != self.ticks[1] || self.d.next == 0 || self.e.next == 0 {
             return Err(Full);

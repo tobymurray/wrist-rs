@@ -21,6 +21,7 @@ use std::vec::Vec;
 use super::{
     cycles, Bus, Frame, Latency, Memory, BUS, DATA_HALFWORDS, D_BR2, D_TR1, D_TR2, D_TR3, D_WORDS, E_TR1, E_TR2,
     E_WORDS, CEN, GCK, GPIOA_BRR, GPIOA_BSRR, GPIOB_BRR, GPIOB_BSRR, GPIOE_ODR, GSP, LATENCY, OPM, TABLE_HALFWORDS, TIM1_CR1,
+    TIM3_CR1,
 };
 use crate::{word, DATA_MASK, LINES, PAIRS};
 
@@ -192,6 +193,8 @@ pub struct Setup {
     pub channels: Vec<Channel>,
     pub mem: Mem,
     pub ticks: u32,
+    /// A channel's request that never reaches it, by channel and request.
+    pub lost: Option<(usize, usize)>,
 }
 
 pub struct Run {
@@ -200,6 +203,8 @@ pub struct Run {
     pub rises: u32,
     pub pulses: u32,
     pub broken: Vec<String>,
+    /// Transfers each channel never made.
+    pub left: Vec<usize>,
 }
 
 /// TIM3 register `reg`, by the address a channel writes.
@@ -235,37 +240,53 @@ pub fn run(s: &Setup) -> Run {
         }
     }
     // Every channel's transfers in time, sharing the two master ports.
-    let request = |ch: &Channel, k: usize| match ch.request {
-        Request::Update => (k as u64 + 1) * h,
-        Request::Cc4 => k as u64 * h + u64::from(s.ctrl),
+    let request = |n: usize, k: usize| {
+        let k = (k + usize::from(s.lost.is_some_and(|(m, j)| m == n && k >= j))) as u64;
+        match s.channels[n].request {
+            Request::Update => (k + 1) * h,
+            Request::Cc4 => k * h + u64::from(s.ctrl),
+        }
     };
     let mut timing: Vec<Vec<(u64, u64)>> = decoded.iter().map(|v| Vec::with_capacity(v.len())).collect();
     let (mut next, mut free, mut port) = (vec![0usize; decoded.len()], vec![0u64; decoded.len()], [0u64; 2]);
+    // When a write stopping TIM3 lands; no request comes after it.
+    let mut stopped: Option<(u64, u64)> = None;
     loop {
         let ready = |n: usize| {
-            let (ch, k) = (&s.channels[n], next[n]);
+            let k = next[n];
             let sv = decoded[n].get(k)?;
-            Some(if sv.first && k > 0 { free[n].min(request(ch, k)) } else { request(ch, k) })
+            Some(if sv.first && k > 0 { free[n].min(request(n, k)) } else { request(n, k) })
         };
         let Some(n) = (0..decoded.len()).filter(|&n| ready(n).is_some()).min_by_key(|&n| ready(n)) else { break };
         let (ch, k) = (&s.channels[n], next[n]);
+        if let Some((_, late)) = stopped.filter(|&(early, _)| request(n, k) >= early) {
+            if request(n, k) <= late {
+                broken.push(format!("channel {n}: TIM3 stopped across request {k}"));
+            }
+            next[n] = decoded[n].len();
+            continue;
+        }
         let mut at = free[n];
         if decoded[n][k].first && k > 0 {
             let start = at.max(port[ch.lap]);
             port[ch.lap] = start + u64::from(ch.link);
             at = port[ch.lap];
         }
-        let start = request(ch, k).max(at).max(port[ch.dap]);
+        let start = request(n, k).max(at).max(port[ch.dap]);
         let done = start + u64::from(ch.write.1);
         port[ch.dap] = done;
         free[n] = done;
-        timing[n].push((request(ch, k) + u64::from(ch.write.0), done));
-        if done > request(ch, k + 1) {
+        timing[n].push((request(n, k) + u64::from(ch.write.0), done));
+        if let [(TIM3_CR1, 0, _)] = decoded[n][k].writes[..] {
+            stopped = Some((request(n, k) + u64::from(ch.write.0), done));
+        }
+        if done > request(n, k + 1) {
             broken.push(format!("channel {n}: request {} lost behind the last", k + 1));
         }
         next[n] += 1;
     }
     let last_done = free.iter().copied().max().unwrap_or(0);
+    let left = decoded.iter().zip(&timing).map(|(v, t)| v.len() - t.len()).collect();
     let mut tim1_starts = Vec::new();
     for n in 0..s.channels.len() {
         let mut data = 0u16;
@@ -291,6 +312,7 @@ pub fn run(s: &Setup) -> Run {
                 a if a == GPIOB_BSRR + 2 && v == u32::from(GSP) => change(Pin::Gsp, 0),
                 TIM1_CR1 if v & u32::from(CEN) != 0 => tim1_starts.push((early, done)),
                 TIM1_CR1 if v == u32::from(OPM) => {}
+                TIM3_CR1 if v == 0 => {}
                 a => match tim3_index(a) {
                     Some(3) if v == s.ctrl => {}
                     Some(i) if i < 3 => compares.push((early, done, i, v)),
@@ -365,7 +387,7 @@ pub fn run(s: &Setup) -> Run {
     changes.sort_by_key(|c| (c.early, c.pin));
     let end = (u64::from(s.ticks) + 1) * h;
     let latched = check(&changes, end.max(last_done), &mut broken);
-    Run { latched, cycles: end, rises, pulses, broken }
+    Run { latched, cycles: end, rises, pulses, broken, left }
 }
 
 fn ns(cycles: u64) -> u64 {
@@ -578,13 +600,14 @@ pub fn setup(bus: Bus, lat: Latency, p: Program) -> Setup {
         channels: vec![e, d],
         mem: p.mem,
         ticks: p.frame.ticks,
+        lost: None,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dma::{fill, keeps, RUN};
+    use crate::dma::{fill, keeps, E_LEFT, RUN};
 
     struct Lcg(u64);
 
@@ -617,6 +640,34 @@ mod tests {
 
     fn pattern(f: impl Fn(usize) -> bool) -> [bool; LINES] {
         core::array::from_fn(f)
+    }
+
+    /// `panel_dma::finish`'s verdict: what each channel has left once `D` is done, the counts,
+    /// and `BCK` and `GEN` low.
+    fn accepted(frame: &Frame, out: &Run) -> bool {
+        out.left == [E_LEFT as usize, 0]
+            && (out.rises, out.pulses) == (frame.rises, frame.pulses)
+            && !out.broken.iter().any(|b| b.ends_with("at the end"))
+    }
+
+    #[test]
+    fn a_lost_request_fails_the_frame() {
+        let fb = random_fb(6);
+        let dirty = pattern(|l| l % 4 != 3);
+        let p = program(BUS, Some(&fb), &dirty);
+        let frame = p.frame;
+        let out = run(&setup(BUS, LATENCY, p));
+        assert!(out.broken.is_empty() && accepted(&frame, &out), "{:?} {:?}", out.left, out.broken);
+        // `D`'s in a quiet stretch: one in a run of compares makes a `BCK` edge the counts catch.
+        for (channel, at) in [(0, 0), (0, frame.ticks as usize / 2), (1, 0), (1, 100)] {
+            let mut s = setup(BUS, LATENCY, program(BUS, Some(&fb), &dirty));
+            s.lost = Some((channel, at));
+            let out = run(&s);
+            assert_eq!((out.rises, out.pulses), (frame.rises, frame.pulses), "channel {channel} at {at}");
+            assert!(!out.broken.iter().any(|b| b.ends_with("at the end")), "channel {channel} at {at}");
+            assert_ne!(out.latched, reference(Some(&fb), &dirty), "channel {channel} at {at}");
+            assert!(!accepted(&frame, &out), "channel {channel} at {at}: {:?}", out.left);
+        }
     }
 
     #[test]

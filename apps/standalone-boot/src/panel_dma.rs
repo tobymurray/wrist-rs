@@ -157,6 +157,7 @@ const WHY_DMA: u32 = 2;
 const WHY_PINS: u32 = 3;
 const WHY_COUNTS: u32 = 4;
 const WHY_FULL: u32 = 5;
+const WHY_LOST: u32 = 6;
 
 fn bus() -> Bus {
     Bus::new(HALF.load(Ordering::Relaxed), EDGE.load(Ordering::Relaxed))
@@ -423,7 +424,7 @@ unsafe fn begin(bus: &Bus, frame: &Frame, d_at: u32) -> Instant {
     start
 }
 
-/// Asleep until the frame should be over, then until both channels are; then what the
+/// Asleep until the frame should be over, then until `D` is; then what `E` has left and what the
 /// hardware counted.
 async fn finish(bus: &Bus, frame: &Frame, start: Instant) -> Result<(), u32> {
     let us = u64::from(frame.cycles(bus) / (dma::TIMER_HZ / 1_000_000));
@@ -437,7 +438,12 @@ async fn finish(bus: &Bus, frame: &Frame, start: Instant) -> Result<(), u32> {
             LAST_ERROR.store((d << 16) | (e & 0xFFFF), Ordering::Relaxed);
             break Err(WHY_DMA);
         }
-        if unsafe { (read32(ch(E, CR)) | read32(ch(D, CR))) & EN == 0 } {
+        if unsafe { read32(ch(D, CR)) & EN == 0 } {
+            let left = unsafe { e_left() };
+            if left != dma::E_LEFT {
+                LAST_ERROR.store(left, Ordering::Relaxed);
+                break Err(WHY_LOST);
+            }
             break Ok(());
         }
         if Instant::now() >= deadline {
@@ -462,6 +468,20 @@ async fn finish(bus: &Bus, frame: &Frame, start: Instant) -> Result<(), u32> {
         return Err(WHY_COUNTS);
     }
     Ok(())
+}
+
+/// `E` suspended, and the transfers it has not written: `BNDT` and `FIFOL` (RM0456 17.8.8).
+unsafe fn e_left() -> u32 {
+    if read32(ch(E, CR)) & EN == 0 {
+        return 0;
+    }
+    modify32(ch(E, CR), 0, SUSP);
+    for _ in 0..10_000 {
+        if read32(ch(E, SR)) & SUSPF != 0 {
+            break;
+        }
+    }
+    (read32(ch(E, BR1)) & 0xFFFF) / 2 + ((read32(ch(E, SR)) >> 16) & 0xFF)
 }
 
 /// Every channel suspended, then reset.
@@ -533,6 +553,7 @@ pub fn command(args: &str, uart: Uart) {
         WHY_DMA => "dma error",
         WHY_PINS => "a pin left high",
         WHY_COUNTS => "counts",
+        WHY_LOST => "a lost request",
         _ => "list full",
     });
     uart.write_reg(", detail ", LAST_ERROR.load(Ordering::Relaxed));
