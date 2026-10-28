@@ -485,9 +485,9 @@ wakeups: the task runs when the counter next reaches the same value, one 2 s per
 Upstream's driver, which does not wait, runs alarms up to 2000.4 ms late on battery (687
 times over 5 ms in 23 min under the latency probe), and a short press's light comes on that
 late. A second `DIER` write before `DIEROK`, which RM0456 58.7.7 forbids, is not what loses
-them. ES0499 2.17.3 (for the U575/585, not this part) says changing a `DIER` enable clears
-its `ISR` flag. So the driver skips unchanged writes, waits for `DIEROK` after each change
-(54 us a Stop 2 wake on average), writes `CCIE` once per alarm, and handles at the overflow
+them. ES0553 2.12.3 says changing a `DIER` enable clears its `ISR` flag. So the driver
+skips unchanged writes, waits for `DIEROK` after each change (54 us a Stop 2 wake on
+average), writes `CCIE` once per alarm, and handles at the overflow
 an alarm found already due there: alarms run at most 4.0 ms late on battery, none over 5 ms
 in 26 min.
 
