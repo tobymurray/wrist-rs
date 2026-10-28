@@ -44,7 +44,7 @@ Checked independently against the STM32U5A5 datasheet's alternate-function table
 
 | Net group | Pins | Peripheral | Status |
 |---|---|---|---|
-| `MAIN_SCL/SDA` | PB6, PB7 | I2C1 (AF4 per ST's GPIO database), which an I2C scan found hosting 0x36, 0x5A, 0x61; sheet 5 wires it to the PCA9420 `SCL`/`SDA` and the MAX17262 | CONFIRMED |
+| `MAIN_SCL/SDA` | PB6, PB7 | I2C1 (AF4 per ST's GPIO database), which an I2C scan found hosting 0x36, 0x5A, 0x61; sheet 5 wires it to the PCA9420 `SCL`/`SDA` and the MAX17262 | CONFIRMED; run at 400 kHz, the MAX17262's maximum (its datasheet's `fSCL`; the PCA9420's is 1 MHz, datasheet Rev 4.2; the STUSB4500's not checked here, the pull-ups unknown). MEASURED: 61 readings in 10 min with no failed read |
 | `SENSOR1_SCL/SDA` | PC0, PC1 | I2C3 | CONFIRMED; MEASURED: the Bluetooth module's EEPROM answers at 0x50 at 100 kHz |
 | `SENSOR2_SCL/SDA` | PD12, PD13 | I2C4, which hosts the BMI270 (0x68) and the BMM350 (0x14) | CONFIRMED; MEASURED: BMI270 chip id 0x24, BMM350 chip id 0x33. The image only resets both into suspend |
 | `SENSORBODY_SCL/SDA` | PB13, PB14 | I2C2 | CONFIRMED |
@@ -141,7 +141,8 @@ per-unit and are not recorded here.
 
 **Read by this project's firmware: the same four records**, each
 read twice at boot in four 25-byte pieces and identical both times. Two reads take 22.0 to
-22.2 ms at 100 kHz (I2C1, I2C2, I2C3) and 6.2 ms at 400 kHz (I2C4). The body EEPROM
+22.2 ms at 100 kHz (I2C2, I2C3, and I2C1 before it ran at 400 kHz) and 6.2 to 6.4 ms at 400 kHz
+(I2C4, I2C1). The body EEPROM
 answered with `ALTIMETER_EN` (PG0) high and the body slot's `RST_L`/`CS` (PF13/PG12) not
 yet configured, so it needs neither `PPG_EN` candidate; whether it needs PG0 was not tried.
 The image reads the display's, link1's and the GNSS module's records at boot, and a slot
