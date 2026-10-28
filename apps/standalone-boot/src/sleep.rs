@@ -123,6 +123,7 @@ fn write_time_driver(uart: Uart) {
     uart.write_line("");
     write_cycles(uart, "[lptim] CMPOK waits ", s.cmpok_waits, s.cmpok_cycles, s.cmpok_max_cycles);
     uart.write_str(", set at the first poll "); uart.write_u32(s.cmpok_first_poll);
+    uart.write_str(", unchanged and skipped "); uart.write_u32(s.compare_skipped);
     write_cycles(uart, "; DIEROK waits ", s.dierok_waits, s.dierok_cycles, s.dierok_max_cycles);
     uart.write_line("");
     uart.write_str("[lptim] alarms handled over 5 ms late "); uart.write_u32(s.late_alarms);

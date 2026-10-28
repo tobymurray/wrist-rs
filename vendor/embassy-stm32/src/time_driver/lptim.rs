@@ -177,6 +177,7 @@ pub mod stats {
         pub overdue_at_overflow: u32,
         pub overdue_ccie_clear: u32,
         pub cmpok_waits: u32,
+        pub compare_skipped: u32,
         pub cmpok_first_poll: u32,
         pub cmpok_cycles: u32,
         pub cmpok_max_cycles: u32,
@@ -200,6 +201,7 @@ pub mod stats {
     static OVERDUE_AT_OVERFLOW: AtomicU32 = AtomicU32::new(0);
     static OVERDUE_CCIE_CLEAR: AtomicU32 = AtomicU32::new(0);
     static CMPOK_WAITS: AtomicU32 = AtomicU32::new(0);
+    static COMPARE_SKIPPED: AtomicU32 = AtomicU32::new(0);
     static CMPOK_FIRST: AtomicU32 = AtomicU32::new(0);
     static CMPOK_CYCLES: AtomicU32 = AtomicU32::new(0);
     static CMPOK_MAX: AtomicU32 = AtomicU32::new(0);
@@ -229,6 +231,7 @@ pub mod stats {
             overdue_at_overflow: OVERDUE_AT_OVERFLOW.load(Relaxed),
             overdue_ccie_clear: OVERDUE_CCIE_CLEAR.load(Relaxed),
             cmpok_waits: CMPOK_WAITS.load(Relaxed),
+            compare_skipped: COMPARE_SKIPPED.load(Relaxed),
             cmpok_first_poll: CMPOK_FIRST.load(Relaxed),
             cmpok_cycles: CMPOK_CYCLES.load(Relaxed),
             cmpok_max_cycles: CMPOK_MAX.load(Relaxed),
@@ -267,6 +270,11 @@ pub mod stats {
             CMPOK_FIRST.fetch_add(1, Relaxed);
         }
         LAST_CMPOK_FIRST.store(first_poll, Relaxed);
+    }
+
+    pub(super) fn compare_skipped() {
+        COMPARE_SKIPPED.fetch_add(1, Relaxed);
+        LAST_CMPOK_FIRST.store(false, Relaxed);
     }
 
     pub(super) fn dierok_wait(from: u32) {
@@ -375,6 +383,11 @@ fn write_compare(r: Regs, val: u16) {
     }
     #[cfg(any(stm32wba, stm32u5, stm32u3))]
     {
+        // wrist-rs: every write is waited out below, so a `CCR` already holding `val` needs none.
+        if r.ccr(0).read().ccr() == val {
+            stats::compare_skipped();
+            return;
+        }
         // wrist-rs: a stale CMPOK does not acknowledge this write; see WRIST-PATCHES.md.
         r.icr().write(|w| w.set_cmpokcf(0, true));
         r.ccr(0).write(|w| w.set_ccr(val));
