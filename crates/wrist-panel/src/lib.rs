@@ -3,6 +3,8 @@
 //! The Sharp LS012B7DD06A's pixel bus as this board wires it, and the timing the driver keeps
 //! (LCP-2619063C, `HARDWARE.md`).
 
+pub mod dma;
+
 pub const LINES: usize = 240;
 /// Pixel pairs a line shifts in, top pair first.
 pub const PAIRS: usize = 120;
