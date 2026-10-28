@@ -172,7 +172,12 @@ configures it on every boot and leaves `RCC_BDCR` = `0x0C00A987`: LSE on, ready 
 bypass (the SiT1532), `LSESYSEN` and `LSESYSRDY` set, `RTCSEL` = LSE with `RTCEN`, and the
 LSI on. It does not reset the domain: a word in `TAMP_BKP0R` and a running calendar
 survive a reset through it. Only a PMIC hard reset (Select held 16 s), which cycles
-`1V8_RTC`, clears it. Any embassy-based image must give `embassy_stm32::init` a low-speed
+`1V8_RTC`, clears it (MEASURED 2026-10-28: the PCA9420's reset monitor `0x71` went from
+`0x88` to `0x89`, `LONG_ON_DONE`; `TAMP_BKP0R` read 0, the zone record was gone and the
+calendar uninitialised; `RCC_CSR` at handoff stayed `0x14004400`, so it does not show the
+hard reset). From wrist-rs, Select held 3 s reaches the bootloader's USB mode without it,
+and the domain survives: a zone record set the day before came through that, stock 1.6.2
+installed over it, two installer dry runs and two installs from stock. Any embassy-based image must give `embassy_stm32::init` a low-speed
 config that matches those bits, `LSESYSEN` included, or embassy resets the domain and the
 RTC calendar with it; both `wrist-loader` and `standalone-boot` mirror what they find.
 

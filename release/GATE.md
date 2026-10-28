@@ -50,11 +50,12 @@ The watch runs an earlier wrist-rs.
 5. The face: day and date, the time, the charge, inside the ring, and the minute rolls
    over on time. The time survived the update. `.venv/bin/python tools/wrist-time.py`
    prints `[rtc] set` and `[rtc] zone …, N change(s) kept`; `cmd time` shows the zone and
-   its changes, and still shows them after `reset`. Then a forced change: with `T` sixty
+   its changes, and still shows them after `reset`. Then a forced change: with `T` fifteen
    seconds ahead as UTC seconds since 1970 (`date +%s`), `cmd "time zone <offset> T
-   <offset+60>"`; at the next minute the face is an hour ahead and the console says
-   `[rtc] zone change applied`. The same with `<offset-60>` goes back an hour once and not
-   again. Finish with [`tools/wrist-time.py`](../tools/wrist-time.py). After the 16 s hold of Select, later, `cmd
+   <offset+60>"`; within 10 s of `T` the face is an hour ahead and the console says
+   `[rtc] zone change applied`. On USB the watch looks for a due change every 10 s, on
+   battery as the minute turns, which is when real changes fall. The same with
+   `<offset-60>` goes back an hour once, and not again in the minute after. Finish with [`tools/wrist-time.py`](../tools/wrist-time.py). After step 13's 16 s hold, step 16's `cmd
    time` shows no zone record.
 6. `cmd report 10`, under `[step] park`: SDMMC1 now off, the unused lines analog, RTC
    alarm A off, unused SRAM off in Stop with the SRAM bits of
@@ -108,13 +109,16 @@ the stock version changes, or when INSTALL.md's "Stock to wrist-rs" or "Back to 
 changes. Otherwise the round trip of `round_trip_release` stands: the installer and loader
 are byte for byte the ones it ran, and the recipe holds the image to the installer's plan.
 
-13. Back to that stock version, as in INSTALL.md ("Back to stock"). Stock starts and
-    reports it.
+13. Back to that stock version, as in INSTALL.md ("Back to stock"), but holding Select
+    through the power reset: past the USB screen at about 3 s, until the screen blanks at
+    about 16 s and the USB screen comes back. Stock starts and reports it. A run that
+    starts at step 14 skips step 16's zone check.
 14. The dry run: INSTALL.md steps 1 to 4, with every check there passing. The launcher
     lists **Wrist-rs**, and the screen shows `INSTALL-CRC.txt`'s digits.
 15. The confirm's refusals, each from a passing dry run: a click of Select; Select held for
     about two seconds and let go; Select held with Back pressed during the countdown; and
-    Select held from the launcher, through `Checking`, until the ready screen appears.
+    Select pressed during `Checking` and held until the ready screen appears (the launcher
+    opens an app on release, so a hold cannot start there).
     None of them installs: the screen goes back to the CRC and "Hold Select to install", and
     the watch stays on stock. Note anything else a 3 s hold of Select brings up.
 16. Install: INSTALL.md steps 5 to 7. Note how long `Installing` stays on screen. The
