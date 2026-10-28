@@ -39,7 +39,13 @@ From earlier releases:
 
 ## Checked on the watch
 
-To be written from this release's gate run ([GATE.md](GATE.md), step 22).
+With this build's package, updating from 0.2.0: updates over USB, including a pulled cable
+and a killed tool, which leave the watch on its current version; the rollback of an image
+no computer keeps; the clock across restarts and daylight-saving changes; every button and
+every page; and deep sleep on battery.
+
+On stock firmware 1.6.2: the Wrist-rs app's dry run and its refusals, the install, the way
+back to stock, and the install again over this release's own record.
 
 ## Limits
 
@@ -52,4 +58,6 @@ To be written from this release's gate run ([GATE.md](GATE.md), step 22).
   Back and Select only light it; Up and Down also move between pages.
 - After a cable is pulled during an update, the next update can get no answer from the
   watch. Run it again.
+- Rarely, the watch restarts by itself: its timer driver gives up waiting on the hardware.
+  The time and zone survive. 0.2.0 does the same.
 - No stock apps, notifications, sensors, Bluetooth or activity storage.
