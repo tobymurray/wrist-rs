@@ -393,6 +393,10 @@ class Gate:
         self.save('step7-page.txt', text)
         late = re.search(r'executor late by at most ([\d.]+) ms', text)
         self.check(7, bool(late) and float(late[1]) <= 5, f'executor late by at most {late[1] if late else "?"} ms')
+        text = self.cmd('page bus', 2)
+        self.save('step7-bus.txt', text)
+        self.check(7, 'keeps the data window' in text and bool(re.search(r'\[bus\] frames \d+, failed 0\b', text)),
+                   'the bus keeps the data window, failed 0')
 
     def step8(self):
         import serial

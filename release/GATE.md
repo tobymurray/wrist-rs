@@ -63,6 +63,7 @@ The watch runs an earlier wrist-rs.
    `RCC_AHB2ENR1_SDMMC1EN` clear (`mmio.rs`).
 7. `cmd modules`: both records as expected. `cmd "page lag 10"`, wait ten seconds, then
    `cmd page`: the longest time a task kept the executor is a few milliseconds at most.
+   `cmd "page bus"`: the bus keeps the data window, and `failed 0`.
 8. Buttons. A short press of each of Up, Down, Back and Select lights the face. `cmd "page
    light on"`, then a short press: the light goes off, and the next press lights the face
    for 3 s. Pages: from the face, Down shows the battery (the charge, the voltage, `input
