@@ -343,7 +343,7 @@ uses DMA. The vendored HAL indexes GPDMA channels through its controller-aware a
 casting GPDMA to the four-channel LPDMA type panics for channels 4 and 5
 ([`vendor/embassy-stm32/WRIST-PATCHES.md`](vendor/embassy-stm32/WRIST-PATCHES.md)).
 
-An image built with `panel-dma` also takes channels 12 to 15, through registers and with
+The firmware also takes channels 12 to 15, through registers and with
 no interrupt, with TIM1 to TIM4, to write the panel's bus
 ([`apps/standalone-boot/src/panel_dma.rs`](apps/standalone-boot/src/panel_dma.rs)).
 

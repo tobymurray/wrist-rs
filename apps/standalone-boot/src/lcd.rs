@@ -300,7 +300,6 @@ impl Lcd {
         for pin in (0..16).filter(|pin| wrist_panel::DATA_MASK & (1 << pin) != 0) {
             configure_output(GPIOE_BASE, pin);
         }
-        #[cfg(feature = "panel-dma")]
         crate::panel_dma::init();
         Self(())
     }
@@ -324,7 +323,6 @@ impl Lcd {
         if !dirty.contains(&true) {
             return (0, cost);
         }
-        #[cfg(feature = "panel-dma")]
         if crate::panel_dma::usable() {
             if let Ok(done) = crate::panel_dma::scan(fb, dirty).await {
                 return done;
