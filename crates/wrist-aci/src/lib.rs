@@ -39,6 +39,7 @@ pub mod opcode {
     pub const ACI_GAP_SET_AUTHENTICATION_REQUIREMENT: u16 = 0xFC86;
     pub const ACI_GAP_PASS_KEY_RESP: u16 = 0xFC88;
     pub const ACI_GAP_INIT: u16 = 0xFC8A;
+    pub const ACI_GAP_SLAVE_SECURITY_REQ: u16 = 0xFC8D;
     pub const ACI_GAP_TERMINATE: u16 = 0xFC93;
     pub const ACI_GAP_CLEAR_SECURITY_DB: u16 = 0xFC94;
     pub const ACI_GAP_ALLOW_REBOND: u16 = 0xFC95;
@@ -51,9 +52,49 @@ pub mod opcode {
     pub const ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_REQ: u16 = 0xFD81;
 }
 
-/// `ACI_GATT_ADD_CHAR`'s security permissions (ST's `ble_defs.h`). ST's stack applies them to
-/// writes with response only; a write without response arrives whatever the link, so the
-/// application checks the link for those itself.
+/// `ACI_HAL_WRITE_CONFIG_DATA`'s offsets (ST's `bluenrg1_hal_aci.h`), written before any other command.
+pub mod config {
+    pub const PUBLIC_ADDRESS: u8 = 0x00;
+    pub const STATIC_RANDOM_ADDRESS: u8 = 0x2E;
+}
+
+/// Address types, own and identity.
+pub mod address {
+    pub const PUBLIC: u8 = 0x00;
+    pub const STATIC_RANDOM: u8 = 0x01;
+}
+
+/// A static random address (Core 6.B 1.3.2.1) from 64 bits, little-endian as the chip carries it.
+#[must_use]
+pub const fn static_random(bits: u64) -> [u8; 6] {
+    let b = bits.to_le_bytes();
+    let mut a = [b[0], b[1], b[2], b[3], b[4], b[5] | 0xC0];
+    let rest = bits & 0x3FFF_FFFF_FFFF;
+    if rest == 0 || rest == 0x3FFF_FFFF_FFFF {
+        a[0] ^= 1;
+    }
+    a
+}
+
+/// The watch's static random address from the MCU's 96-bit unique id (FNV-1a).
+#[must_use]
+pub const fn static_random_address(uid: [u32; 3]) -> [u8; 6] {
+    let mut h: u64 = 0xCBF2_9CE4_8422_2325;
+    let mut w = 0;
+    while w < 3 {
+        let bytes = uid[w].to_le_bytes();
+        let mut i = 0;
+        while i < 4 {
+            h ^= bytes[i] as u64;
+            h = h.wrapping_mul(0x0100_0000_01B3);
+            i += 1;
+        }
+        w += 1;
+    }
+    static_random(h)
+}
+
+/// `ACI_GATT_ADD_CHAR`'s security permissions (ST's `ble_defs.h`).
 pub mod permission {
     pub const NONE: u8 = 0x00;
     /// Writes only over a link encrypted with authenticated (MITM-protected) keys.
@@ -69,6 +110,8 @@ pub mod vendor {
     pub const HAL_EVENTS_LOST: u16 = 0x0002;
     pub const GAP_PAIRING_COMPLETE: u16 = 0x0401;
     pub const GAP_PASS_KEY_REQ: u16 = 0x0402;
+    /// A security request reached the central.
+    pub const GAP_SLAVE_SECURITY_INITIATED: u16 = 0x0404;
     pub const GAP_BOND_LOST: u16 = 0x0405;
     pub const GAP_NUMERIC_COMPARISON_VALUE: u16 = 0x0409;
     pub const GATT_ATTRIBUTE_MODIFIED: u16 = 0x0C01;
@@ -83,6 +126,60 @@ pub mod status {
     /// No TX buffers for now; `GATT_TX_POOL_AVAILABLE` follows when there are.
     pub const INSUFFICIENT_RESOURCES: u8 = 0x64;
 }
+
+/// `ACI_GAP_SET_AUTHENTICATION_REQUIREMENT`'s parameters, in ST's order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct AuthenticationRequirement {
+    pub bonding: bool,
+    pub mitm: bool,
+    /// 0 not supported, 1 optional, 2 Secure Connections only.
+    pub secure_connections: u8,
+    pub keypress_notifications: bool,
+    pub min_key_size: u8,
+    pub max_key_size: u8,
+    /// `None`: the host is asked for a passkey (`GAP_PASS_KEY_REQ`).
+    pub fixed_pin: Option<u32>,
+    /// 0 public, 1 static random.
+    pub identity_address_type: u8,
+}
+
+impl AuthenticationRequirement {
+    #[must_use]
+    pub const fn params(&self) -> [u8; 12] {
+        let (use_fixed, pin) = match self.fixed_pin {
+            Some(pin) => (0x00, pin),
+            None => (0x01, 0),
+        };
+        let p = pin.to_le_bytes();
+        [
+            self.bonding as u8,
+            self.mitm as u8,
+            self.secure_connections,
+            self.keypress_notifications as u8,
+            self.min_key_size,
+            self.max_key_size,
+            use_fixed,
+            p[0],
+            p[1],
+            p[2],
+            p[3],
+            self.identity_address_type,
+        ]
+    }
+}
+
+/// The watch's pairing.
+pub const PAIRING: AuthenticationRequirement = AuthenticationRequirement {
+    bonding: true,
+    mitm: true,
+    secure_connections: 2,
+    keypress_notifications: false,
+    min_key_size: 16,
+    max_key_size: 16,
+    fixed_pin: None,
+    identity_address_type: address::STATIC_RANDOM,
+};
 
 /// An HCI command packet (`01`, opcode, length, parameters) into `out`;
 /// returns its length. Parameters past 255 bytes, or past `out`, are cut.

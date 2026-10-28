@@ -6,7 +6,15 @@ use wrist_wake::earliest;
 const NOW: u64 = 1_000;
 
 fn idle() -> State {
-    State { now: NOW, work: false, confirm_by: None, transfer: Transfer::None, console: None, abandon_at: None }
+    State {
+        now: NOW,
+        work: false,
+        confirm_by: None,
+        transfer: Transfer::None,
+        console: None,
+        abandon_at: None,
+        ask_at: None,
+    }
 }
 
 #[test]
@@ -85,4 +93,87 @@ fn battery_is_slow_until_a_transfer_and_a_cable_is_fast() {
     assert_eq!(cable, timing(Power::Battery, true), "a transfer is as fast as a cable");
     assert_eq!(cable, timing(Power::Cable, true));
     assert!(cable.advertise <= 160 && cable.interval_max <= 24 && cable.latency == 0);
+}
+
+#[test]
+fn interval_now_keeps_to_its_supervision_timeout() {
+    use wrist_wake::ble::{interval_now, supervised, NOW_LATENCY, NOW_TIMEOUT};
+    assert!(interval_now(6, 6) && interval_now(12, 12) && interval_now(6, 1_999));
+    // 2000 x 1.25 ms x 2 is the 5 s timeout itself.
+    assert!(!interval_now(6, 2_000) && !interval_now(2_400, 3_200));
+    assert!(!interval_now(5, 12) && !interval_now(24, 12));
+    for max in 6..=3_200 {
+        assert_eq!(interval_now(6, max), supervised(max, NOW_LATENCY, NOW_TIMEOUT), "{max}");
+    }
+}
+
+#[test]
+fn a_start_that_never_advertised_failed() {
+    use wrist_wake::ble::Radio;
+    assert!(Radio::Starting.start_failed() && Radio::Failed.start_failed());
+    for up in [Radio::Idle, Radio::Advertising, Radio::Connected] {
+        assert!(!up.start_failed(), "{up:?}");
+    }
+    for r in [Radio::Off, Radio::Starting, Radio::Idle, Radio::Advertising, Radio::Connected, Radio::Failed] {
+        assert_eq!(Radio::from_u8(r as u8), r);
+    }
+}
+
+#[test]
+fn a_chunk_refused_for_want_of_buffers_goes_again_first() {
+    use wrist_wake::ble::Outbox;
+    let mut out = Outbox::<8>::default();
+    let (chunk, n) = out.next(4, |b| {
+        b.copy_from_slice(b"pong");
+        4
+    });
+    assert_eq!(out.sent(chunk, n, 0x64), Ok(()));
+    assert!(out.holding());
+    let (again, m) = out.next(4, |_| panic!("the held chunk goes first"));
+    assert_eq!(&again[..m], b"pong");
+    assert_eq!(out.sent(again, m, 0), Ok(()));
+    assert!(!out.holding());
+    assert_eq!(out.next(4, |_| 0).1, 0);
+}
+
+#[test]
+fn any_other_refusal_loses_the_chunk_and_a_detach_drops_the_held_one() {
+    use wrist_wake::ble::Outbox;
+    let mut out = Outbox::<8>::default();
+    let (chunk, n) = out.next(8, |b| {
+        b[..2].copy_from_slice(b"ok");
+        2
+    });
+    assert_eq!(out.sent(chunk, n, 0x41), Err(0x41));
+    assert!(!out.holding());
+    out.sent(chunk, n, 0x64).unwrap();
+    out.clear();
+    assert_eq!(out.next(8, |_| 0).1, 0);
+}
+
+#[test]
+fn nothing_is_asked_of_a_central_at_connect() {
+    use wrist_wake::ble::{PairAsk, ASK_TO_PAIR_AFTER_MS};
+    let mut ask = PairAsk::default();
+    ask.connected(NOW, 1_000);
+    assert!(!ask.take(NOW), "a request at connect crossed a bonded central's encryption");
+    assert!(!ask.take(NOW + 1_999));
+    assert_eq!(ask.due(), Some(NOW + ASK_TO_PAIR_AFTER_MS));
+    assert_eq!(due(&State { ask_at: ask.due(), ..idle() }), Some(NOW + ASK_TO_PAIR_AFTER_MS));
+    assert!(ask.take(NOW + ASK_TO_PAIR_AFTER_MS));
+    assert!(!ask.take(NOW + ASK_TO_PAIR_AFTER_MS + 1), "once a link");
+    assert_eq!(ask.due(), None);
+}
+
+#[test]
+fn an_encrypted_or_pairing_link_is_never_asked() {
+    use wrist_wake::ble::{PairAsk, ASK_TO_PAIR_AFTER_MS};
+    let mut ask = PairAsk::default();
+    ask.connected(NOW, 32_768);
+    ask.settled();
+    assert_eq!(ask.due(), None);
+    assert!(!ask.take(NOW + ASK_TO_PAIR_AFTER_MS * 33));
+    // The next link starts afresh, on the image's own tick.
+    ask.connected(NOW, 32_768);
+    assert_eq!(ask.due(), Some(NOW + ASK_TO_PAIR_AFTER_MS * 32_768 / 1_000));
 }
