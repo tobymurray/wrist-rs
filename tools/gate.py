@@ -37,6 +37,12 @@ def plan_pages(root=ROOT):
     return first, first + pages - 1
 
 
+def notes_stock(root=ROOT):
+    """The stock version the release notes name, from their `Stock firmware` row."""
+    m = re.search(r'^\| \*\*Stock firmware\*\* \| \*\*([0-9.]+)\*\*', (root / 'release/NOTES.md').read_text(), re.M)
+    return m[1] if m else None
+
+
 def mmio_bits(root=ROOT):
     """The bit constants in the image's mmio.rs, by name: `1 << 27`, `0b11 << 4` and the like."""
     text = (root / 'apps/standalone-boot/src/mmio.rs').read_text()
@@ -307,15 +313,22 @@ class Gate:
             f.extractall(self.pkg)
         gate = json.loads((ROOT / 'release/gate.json').read_text())
         fp = manifest.get('round_trip_fingerprint')
-        self.round_trip = a.round_trip or fp != gate.get('round_trip_fingerprint')
+        # gate.json keeps the last round trip's stock version until this one passes.
+        self.stock = notes_stock()
+        if not self.stock:
+            sys.exit('release/NOTES.md names no stock version')
+        self.round_trip = (a.round_trip or fp != gate.get('round_trip_fingerprint')
+                           or self.stock != gate.get('stock_version'))
         self.log(f'  round-trip fingerprint {fp}; gate.json has {gate.get("round_trip_fingerprint")} '
-                 f'from {gate.get("round_trip_release")}: section D '
+                 f'from {gate.get("round_trip_release")} on stock {gate.get("stock_version")}; '
+                 f'the notes name stock {self.stock}: section D '
                  + ('runs' if self.round_trip else 'carries over'))
-        self.stock = gate.get('stock_version')
         # Step 2.
         if self.round_trip and chosen & set(range(13, 19)):
             if not (a.ota and a.ota.is_file()):
                 sys.exit('section D runs: pass --ota with the stock .ota the release notes name')
+            if f'_{self.stock}.ota' not in a.ota.name:
+                sys.exit(f'{a.ota.name} is not stock {self.stock}, which the release notes name')
             self.log(f'  {a.ota.name}: SHA-256 {hashlib.sha256(a.ota.read_bytes()).hexdigest()}')
             self.ask(2, f'is that the SHA-256 INSTALL.md says to check for stock {self.stock}?')
         self.ask(2, 'is the watch charged above 50 %?')
