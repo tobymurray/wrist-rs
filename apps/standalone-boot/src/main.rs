@@ -345,6 +345,13 @@ fn main() -> ! {
     uart.write_line("[10] I2C1 up; power chips read:");
     pmic::write_report(&mut uart.lines(), &power);
     pmic::read_modes_blocking(&mut bus);
+    pmic::read_gauge_config_blocking(&mut bus);
+    uart.write_str("[10] gauge reset: ");
+    uart.write_line(match pmic::restore_gauge_blocking(&mut bus) {
+        Ok(false) => "none",
+        Ok(true) => pmic::RESTORED,
+        Err(why) => why,
+    });
     pmic::write_rails(&mut uart.lines(), power.top_cntl3);
     pmic::write_summary(&mut uart.lines(), &power);
     match pmic::slow_gauge_hibernate(&mut bus) {
@@ -1025,6 +1032,7 @@ fn minute_now() -> u32 {
 /// The charge in percent and the cell's voltage, for the face and the battery page.
 async fn read_power(uart: Uart, bus: &mut pmic::AsyncBus, n: u32) -> (Option<u8>, Option<u32>) {
     let s = pmic::snapshot(bus).await;
+    pmic::restore_gauge(bus, s.gauge_status).await;
     if n.is_multiple_of(6) {
         pmic::write_report(&mut uart.lines(), &s);
         embassy_futures::yield_now().await;

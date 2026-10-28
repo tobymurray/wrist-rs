@@ -129,6 +129,8 @@ pub const LPTIM_CCMR1_CC1P_INVERTED: u32 = 0b01 << 2;
 
 // --- PWR (RM0456 10.10) ------------------------------------------------------
 
+pub const PWR_CR1: u32 = 0x4602_0800;
+pub const PWR_CR1_ULPMEN: u32 = 1 << 7;
 pub const PWR_VOSR: u32 = 0x4602_0800 + 0x0C;
 pub const PWR_SVMCR: u32 = 0x4602_0800 + 0x10;
 pub const PWR_SVMSR: u32 = 0x4602_0800 + 0x3C;

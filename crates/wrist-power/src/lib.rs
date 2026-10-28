@@ -137,10 +137,117 @@ pub const fn hibernating(status2: u16) -> bool {
 }
 
 /// `HibCfg` with `HibScalar` at its largest: in hibernate the MAX17262 samples every
-/// 351 ms × 2^7 = 45 s instead of the default 5.6 s (ADI UG6597).
+/// 351 ms × 2^7 = 45 s instead of the default 5.6 s (ADI UG6597). A value with `EnHib`
+/// clear, as a failed restore leaves, starts from the default `0x870C` instead.
 #[must_use]
 pub const fn slow_hibernate(hib_cfg: u16) -> u16 {
-    hib_cfg | 0b111
+    let base = if hib_cfg & (1 << 15) != 0 { hib_cfg } else { 0x870C };
+    base | 0b111
+}
+
+/// Whether the MAX17262 has been reset since it was last configured: `Status.POR`, bit 1.
+#[must_use]
+pub const fn gauge_reset(status: u16) -> bool {
+    status & (1 << 1) != 0
+}
+
+/// One step of configuring the MAX17262 after a reset (ADI UG6595, Steps 1 to 3, EZ option).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GaugeStep {
+    /// Read the register until these bits are clear.
+    WaitClear(u8, u16),
+    Write(u8, u16),
+    /// Read `HibCfg`, for [`GaugeStep::RestoreHibCfg`].
+    SaveHibCfg,
+    /// Write it back, with [`slow_hibernate`].
+    RestoreHibCfg,
+    /// Clear `Status.POR`, and read it back.
+    ClearPor,
+}
+
+/// The stock firmware's configuration, as read from the watch (`HARDWARE.md`): 200 mAh,
+/// 13.9 mA end of charge, empty at 3.40 V, charged above 4.275 V. `ModelCfg` carries `Refresh`.
+pub const GAUGE_RESTORE: [GaugeStep; 12] = [
+    GaugeStep::WaitClear(0x3D, 1),
+    GaugeStep::SaveHibCfg,
+    GaugeStep::Write(0x60, 0x0090),
+    GaugeStep::Write(0xBA, 0),
+    GaugeStep::Write(0x60, 0),
+    GaugeStep::Write(0x18, 0x0190),
+    GaugeStep::Write(0x1E, 0x0059),
+    GaugeStep::Write(0x3A, 0xAA63),
+    GaugeStep::Write(0xDB, 0x8400),
+    GaugeStep::WaitClear(0xDB, 0x8000),
+    GaugeStep::RestoreHibCfg,
+    GaugeStep::ClearPor,
+];
+
+const HIB_CFG: u8 = 0xBA;
+const STATUS: u8 = 0x00;
+
+/// The MAX17262's registers, a little-endian word at a time.
+#[allow(async_fn_in_trait)]
+pub trait GaugeBus {
+    async fn read(&mut self, reg: u8) -> Option<u16>;
+    async fn write(&mut self, reg: u8, value: u16) -> bool;
+    async fn wait_ms(&mut self, ms: u32);
+}
+
+/// Runs [`GAUGE_RESTORE`]. A failure after `HibCfg` was saved still writes it back, so the
+/// gauge is never left out of hibernate.
+///
+/// # Errors
+///
+/// The step that failed.
+pub async fn restore_gauge(bus: &mut impl GaugeBus) -> Result<(), &'static str> {
+    let mut hib_cfg = None;
+    let outcome = run_restore(bus, &mut hib_cfg).await;
+    if outcome.is_err() {
+        if let Some(v) = hib_cfg {
+            bus.write(HIB_CFG, slow_hibernate(v)).await;
+        }
+    }
+    outcome
+}
+
+async fn run_restore(bus: &mut impl GaugeBus, hib_cfg: &mut Option<u16>) -> Result<(), &'static str> {
+    for step in GAUGE_RESTORE {
+        match step {
+            GaugeStep::WaitClear(reg, mask) => {
+                let mut tries = 0;
+                while bus.read(reg).await.ok_or("no answer while waiting")? & mask != 0 {
+                    tries += 1;
+                    if tries > 100 {
+                        return Err("still busy after 1 s");
+                    }
+                    bus.wait_ms(10).await;
+                }
+            }
+            GaugeStep::Write(reg, v) => {
+                if !bus.write(reg, v).await {
+                    return Err("a write failed");
+                }
+            }
+            GaugeStep::SaveHibCfg => *hib_cfg = Some(bus.read(HIB_CFG).await.ok_or("HibCfg unread")?),
+            GaugeStep::RestoreHibCfg => {
+                let v = hib_cfg.take().ok_or("HibCfg not saved")?;
+                if !bus.write(HIB_CFG, slow_hibernate(v)).await {
+                    *hib_cfg = Some(v);
+                    return Err("HibCfg unwritten");
+                }
+            }
+            GaugeStep::ClearPor => {
+                let status = bus.read(STATUS).await.ok_or("Status unread")?;
+                if !bus.write(STATUS, status & !(1 << 1)).await {
+                    return Err("Status unwritten");
+                }
+                if gauge_reset(bus.read(STATUS).await.ok_or("Status unread")?) {
+                    return Err("POR still set");
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The MAX17262's `TTE` register in seconds, or `None` for its `0xFFFF`.

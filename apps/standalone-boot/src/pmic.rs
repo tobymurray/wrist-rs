@@ -39,10 +39,11 @@ pub struct Snapshot {
     /// In 0.5 mAh.
     pub full_cap_raw: Option<u16>,
     pub design_cap_raw: Option<u16>,
+    pub gauge_status: Option<u16>,
 }
 
 /// (chip, register, two bytes wide), in [`Snapshot`]'s order.
-const READS: [(u8, u8, bool); 19] = [
+const READS: [(u8, u8, bool); 20] = [
     (PCA9420, 0x00, false),
     (PCA9420, 0x09, false),
     (PCA9420, 0x0A, false),
@@ -62,6 +63,7 @@ const READS: [(u8, u8, bool); 19] = [
     (MAX17262, 0xBA, true),
     (MAX17262, 0x10, true),
     (MAX17262, 0x18, true),
+    (MAX17262, 0x00, true),
 ];
 
 fn assemble(v: &[Option<u16>; READS.len()]) -> Snapshot {
@@ -86,6 +88,7 @@ fn assemble(v: &[Option<u16>; READS.len()]) -> Snapshot {
         hib_cfg: v[16],
         full_cap_raw: v[17],
         design_cap_raw: v[18],
+        gauge_status: v[19],
     }
 }
 
@@ -301,6 +304,113 @@ pub fn slow_gauge_hibernate(bus: &mut AsyncBus) -> Option<u16> {
     bus.blocking_write_read(MAX17262, &[HIB_CFG], &mut b).ok()?;
     Some(u16::from_le_bytes(b))
 }
+
+/// The gauge's `Status`, whose `POR` marks a reset, and the `DesignCap`, `IChgTerm`, `VEmpty`
+/// and `ModelCfg` a reset loses (ADI UG6597, "EZ configuration").
+const GAUGE_CONFIG: [u8; 5] = [0x00, 0x18, 0x1E, 0x3A, 0xDB];
+
+/// Read once at boot, before [`slow_gauge_hibernate`].
+static GAUGE_AT_BOOT: Mutex<CriticalSectionRawMutex, Cell<[Option<u16>; 5]>> =
+    Mutex::new(Cell::new([None; 5]));
+
+pub fn read_gauge_config_blocking(bus: &mut AsyncBus) {
+    let mut v = [None; 5];
+    for (slot, reg) in v.iter_mut().zip(GAUGE_CONFIG) {
+        let mut b = [0u8; 2];
+        *slot = bus.blocking_write_read(MAX17262, &[reg], &mut b).ok().map(|()| u16::from_le_bytes(b));
+    }
+    GAUGE_AT_BOOT.lock(|g| g.set(v));
+}
+
+pub fn write_gauge_config(uart: &mut Lines) {
+    uart.write_str("[gauge] at boot:");
+    let labels = ["Status", "DesignCap", "IChgTerm", "VEmpty", "ModelCfg"];
+    for (label, raw) in labels.iter().zip(GAUGE_AT_BOOT.lock(Cell::get)) {
+        uart.write_str(" ");
+        uart.write_str(label);
+        uart.write_str(" ");
+        match raw {
+            Some(c) => {
+                let [hi, lo] = c.to_be_bytes();
+                uart.write_hex8(hi);
+                uart.write_hex8(lo);
+            }
+            None => uart.write_str("--"),
+        }
+    }
+    uart.write_line("");
+    uart.write_str("[gauge] reset: ");
+    uart.write_line(match GAUGE_RESTORED.lock(Cell::get) {
+        None => "not checked",
+        Some(Ok(false)) => "none outstanding",
+        Some(Ok(true)) => RESTORED,
+        Some(Err(why)) => why,
+    });
+}
+
+/// The last check: `None` before boot's, `Some(Ok(false))` with no reset to undo.
+static GAUGE_RESTORED: Mutex<CriticalSectionRawMutex, Cell<Option<Result<bool, &'static str>>>> =
+    Mutex::new(Cell::new(None));
+
+struct BlockingGauge<'a>(&'a mut AsyncBus);
+
+/// Blocking: only before the first awaited transfer.
+impl wrist_power::GaugeBus for BlockingGauge<'_> {
+    fn read(&mut self, reg: u8) -> impl core::future::Future<Output = Option<u16>> {
+        let mut b = [0u8; 2];
+        core::future::ready(self.0.blocking_write_read(MAX17262, &[reg], &mut b).ok().map(|()| u16::from_le_bytes(b)))
+    }
+    fn write(&mut self, reg: u8, value: u16) -> impl core::future::Future<Output = bool> {
+        let [lo, hi] = value.to_le_bytes();
+        core::future::ready(self.0.blocking_write(MAX17262, &[reg, lo, hi]).is_ok())
+    }
+    fn wait_ms(&mut self, ms: u32) -> impl core::future::Future<Output = ()> {
+        embassy_time::block_for(embassy_time::Duration::from_millis(u64::from(ms)));
+        core::future::ready(())
+    }
+}
+
+struct Gauge<'a>(&'a mut AsyncBus);
+
+impl wrist_power::GaugeBus for Gauge<'_> {
+    async fn read(&mut self, reg: u8) -> Option<u16> {
+        let mut b = [0u8; 2];
+        self.0.write_read(MAX17262, &[reg], &mut b).await.ok().map(|()| u16::from_le_bytes(b))
+    }
+    async fn write(&mut self, reg: u8, value: u16) -> bool {
+        let [lo, hi] = value.to_le_bytes();
+        self.0.write(MAX17262, &[reg, lo, hi]).await.is_ok()
+    }
+    async fn wait_ms(&mut self, ms: u32) {
+        embassy_time::Timer::after_millis(u64::from(ms)).await;
+    }
+}
+
+/// At boot, after [`read_gauge_config_blocking`]: the gauge configured again if it has been reset.
+pub fn restore_gauge_blocking(bus: &mut AsyncBus) -> Result<bool, &'static str> {
+    let outcome = match GAUGE_AT_BOOT.lock(Cell::get)[0] {
+        None => Err("Status unread"),
+        Some(status) if !wrist_power::gauge_reset(status) => Ok(false),
+        Some(_) => embassy_futures::block_on(wrist_power::restore_gauge(&mut BlockingGauge(bus))).map(|()| true),
+    };
+    GAUGE_RESTORED.lock(|r| r.set(Some(outcome)));
+    outcome
+}
+
+/// With each reading: a gauge reset while the MCU ran on USB, or one boot could not read.
+pub async fn restore_gauge(bus: &mut AsyncBus, status: Option<u16>) {
+    let Some(status) = status else { return };
+    let outcome = if wrist_power::gauge_reset(status) {
+        wrist_power::restore_gauge(&mut Gauge(bus)).await.map(|()| true)
+    } else if matches!(GAUGE_RESTORED.lock(Cell::get), Some(Err(_))) {
+        Ok(false)
+    } else {
+        return;
+    };
+    GAUGE_RESTORED.lock(|r| r.set(Some(outcome)));
+}
+
+pub const RESTORED: &str = "found; 200 mAh, 13.9 mA end of charge and 3.40 V empty written again";
 
 /// The PCA9420's four mode settings, `MODECFG_0_0` to `MODECFG_3_3`, in one read.
 pub type Modes = [u8; 16];

@@ -9,7 +9,7 @@ use embassy_sync::watch::{Receiver, Watch};
 use wrist_power::{BatteryRun, StopInput};
 use embassy_time::{Duration, Instant};
 
-use crate::mmio::{read32, write32, GPIOB_BASE, GPIOG_BASE, GPIO_BSRR, GPIO_IDR};
+use crate::mmio::{read32, write32, GPIOB_BASE, GPIOG_BASE, GPIO_BSRR, GPIO_IDR, PWR_CR1, PWR_CR1_ULPMEN};
 use crate::{pmic, uart::Uart};
 
 const PD_PORT_STATUS_1: u8 = 0x0E;
@@ -215,6 +215,11 @@ pub fn command(args: &[u8], uart: Uart) {
         None => uart.write_line("[power] no stretch on battery finished since boot"),
         Some(run) => write_run(uart, &run),
     }
+    let cr1 = unsafe { read32(PWR_CR1) };
+    uart.write_str("[power] PWR_CR1 ");
+    uart.write_hex32(cr1);
+    uart.write_line(if cr1 & PWR_CR1_ULPMEN != 0 { ": ULPMEN set" } else { ": ULPMEN clear" });
+    pmic::write_gauge_config(&mut uart.lines());
     crate::write_buttons(uart);
     crate::sleep::command("", uart);
 }
