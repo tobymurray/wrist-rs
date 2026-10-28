@@ -343,6 +343,20 @@ uses DMA. The vendored HAL indexes GPDMA channels through its controller-aware a
 casting GPDMA to the four-channel LPDMA type panics for channels 4 and 5
 ([`vendor/embassy-stm32/WRIST-PATCHES.md`](vendor/embassy-stm32/WRIST-PATCHES.md)).
 
+The firmware also takes channels 12 to 15, through registers and with
+no interrupt, with TIM1 to TIM4, to write the panel's bus
+([`apps/standalone-boot/src/panel_dma.rs`](apps/standalone-boot/src/panel_dma.rs)).
+
+| Claim | Status |
+|---|---|
+| A GPDMA burst of two to four beats to TIM3 never completes: the channel stays enabled with its FIFO full (`FIFOL` 3), on either port, with or without a hardware request on the destination, block repeat or a list, on `tim3_cc1/cc4/upd_dma`. Single beats reach TIM3's registers | MEASURED, `page bus test` on a diagnostic build |
+| TIM3's own DMA burst works: `DCR` = `(5 << 16) \| (2 << 8) \| 13` (on compare 4, three transfers from `CCR1`) with single beats to `DMAR` writes `CCR1` to `CCR3` and leaves `CCR4` | MEASURED, same build |
+| That three-write burst takes about 29 timer cycles at 48 MHz from compare 4: 999 of 999 repeated blocks completed at a period of 29 cycles or more, 876 at 28, 669 at 25 | MEASURED, same build, no other channel running |
+| A single-beat GPDMA write lands 11 to 13 timer cycles after its TIM3 request, on either port, a list load adding about one; the same at 64-, 28- and 24-cycle ticks with both channels running | MEASURED, `page bus probe` |
+| `E`'s half-word writes to `GPIOE_ODR` reach the pins 3 to 9 timer cycles after TIM3's update: `R1` (`PE0`) and `BCK` stamped through EXTI 0 and 6 and two GPDMA channels, `BCK`'s known compare taking out the path (9 cycles, constant) | MEASURED, `page bus pins` |
+| At a 26-cycle tick, `D` reading each compare's source on its request failed 11 of 113 frames with its list and sources in SRAM5, 4 of 192 in SRAM2, and 1 of 266 in SRAM5 with interrupts masked during frames; `D` reading its sources ahead failed 0 of 259 in SRAM5 and 0 of 261 in SRAM2 | MEASURED, `page bus` on a diagnostic build |
+| `tim3_cc1_dma` fires every tick, not only on toggles: with `CCR1` above `ARR`, `CC1IF` is set at the overflow (RM0456 55.5.6). A channel counting it counted ticks | MEASURED, a diagnostic build |
+
 ## USB device (OTG_HS)
 
 | Claim | Status |

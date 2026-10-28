@@ -147,7 +147,7 @@ unsafe fn write_acknowledged(base: u32, reg: u32, value: u32, ok: u32) {
     write32(base + LPTIM_ICR, ok);
 }
 
-unsafe fn set_alternate((base, pin): (u32, u32), af: u32) {
+pub(crate) unsafe fn set_alternate((base, pin): (u32, u32), af: u32) {
     let (afr, shift) = if pin < 8 { (GPIO_AFRL, pin * 4) } else { (GPIO_AFRH, (pin - 8) * 4) };
     modify32(base + afr, 0xF << shift, af << shift);
     modify32(base + GPIO_MODER, 0b11 << (pin * 2), 0b10 << (pin * 2));
@@ -272,7 +272,7 @@ pub struct Cost {
 }
 
 impl Cost {
-    fn end_step(&mut self, from: u32) {
+    pub(crate) fn end_step(&mut self, from: u32) {
         let took = crate::busy::cycles().wrapping_sub(from);
         self.busy = self.busy.wrapping_add(took);
         self.longest = self.longest.max(took);
@@ -300,6 +300,7 @@ impl Lcd {
         for pin in (0..16).filter(|pin| wrist_panel::DATA_MASK & (1 << pin) != 0) {
             configure_output(GPIOE_BASE, pin);
         }
+        crate::panel_dma::init();
         Self(())
     }
 
@@ -321,6 +322,11 @@ impl Lcd {
         let mut cost = Cost::default();
         if !dirty.contains(&true) {
             return (0, cost);
+        }
+        if crate::panel_dma::usable() {
+            if let Ok(done) = crate::panel_dma::scan(fb, dirty).await {
+                return done;
+            }
         }
         let mut step = crate::busy::cycles();
         let start = Instant::now();

@@ -13,6 +13,7 @@ mod glass;
 mod lcd;
 mod mmio;
 mod modules;
+mod panel_dma;
 mod park;
 mod pmic;
 mod rtc;
@@ -325,6 +326,8 @@ fn main() -> ! {
     config.enable_debug_during_sleep = false;
     config.min_stop_pause = Duration::from_micros(200);
     let p = embassy_stm32::init(config);
+    // `panel_dma.rs` drives these through registers.
+    let _ = (p.TIM1, p.TIM3, p.TIM4, p.GPDMA1_CH12, p.GPDMA1_CH13, p.GPDMA1_CH14, p.GPDMA1_CH15, p.PA6, p.PA7, p.PB0);
     uart = unsafe { Uart::init_at(48_000_000) };
     uart.write_line(if unsafe { read32(RCC_BDCR) } & BDCR_LSERDY != 0 {
         "[9] embassy-stm32 initialised: MSIS 48 MHz, time driver on LPTIM4/LSE, UART re-divided"
@@ -875,6 +878,7 @@ async fn display(mut bus: pmic::AsyncBus, mut pwr_int: ExtiInput<'static, Async>
             show(panel, fb, scenes, uart, &mut drawn, (&composed, short)).await;
         }
         shown_page = page;
+        if panel.is_some() { panel_dma::between_frames(uart) }
         if glass::dump_wanted() {
             if panel.is_none() {
                 uart.write_line("[frame] the panel is not started; the buffer holds no face");

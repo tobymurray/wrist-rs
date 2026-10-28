@@ -156,9 +156,10 @@ pub fn command(args: &[u8], uart: Uart) {
             crate::backlight(false);
             uart.write_line("[glass] front light off");
         }
+        b if b == "bus" || b.starts_with("bus ") => crate::panel_dma::command(&b[3..], uart),
         "stress" => write_stress(&mut uart.lines()),
         s if s.starts_with("stress ") => stress_command(s[7..].trim(), uart),
-        _ => uart.write_line("[glass] usage: page [lag [seconds] | vcom [auto|low|high] | light on|off | dump | stress ...]"),
+        _ => uart.write_line("[glass] usage: page [lag [seconds] | vcom [auto|low|high] | light on|off | dump | bus ... | stress ...]"),
     }
 }
 
