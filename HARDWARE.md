@@ -468,10 +468,16 @@ under one Stop1 hold). The HAL's blanket idle clock-enable lock, which would kee
 in Stop1 for good, is dropped on U5, whose peripheral registers are retained in Stop2 (ST
 AN5371, AN5652); active transfers keep their guards, and raw debug-UART output holds Stop1
 until it drains. **MEASURED**: on battery the image wakes about 40 times a minute (the 2 s
-overflow, the watchdog's 8 s feed, the minute's redraw and the face's timers; 39.2 worn for
-71 min with 17 presses), spends about 99.7 % of the time in Stop2, and restores its clocks
+overflow, the watchdog's feed, then every 8 s, the minute's redraw and the face's timers; 39.2
+worn for 71 min with 17 presses), spends about 99.7 % of the time in Stop2, and restores its clocks
 in 0.12 ms an exit. A lit face wakes the core only to turn its light off: sampling the
 buttons every 50 ms while lit adds about 60 wakes a press.
+
+The IWDG counts the LSI through /256 from 4095, so it resets about 32.8 s after a feed
+at 32 kHz, and 31.2 to 34.5 s over the datasheet's LSI range (30.4 to 33.6 kHz). The button task feeds it every 16 s, and the image's longest hold, an update's
+flash phase, feeds it as it goes. **MEASURED** on USB: with no press, the button task runs
+3.7 times a minute, against 7.5 with an 8 s feed; the wakes this saves on battery are not
+yet measured.
 
 Every Stop exit on U5 re-runs the HAL's whole clock initialisation from a saved
 configuration: HSE and the PLLs stop in any Stop mode and come back only that way.

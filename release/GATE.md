@@ -86,8 +86,8 @@ The watch runs an earlier wrist-rs.
 11. `cmd power`: the input is external, and the last stretch on battery shows its length,
     mean current, charge at each end and the gauge's time to empty; `unanswered input
     reads in a row 0; Stop follows the input`. `stop2_wakes` divided
-    by that length in minutes is the wake rate on battery: expect about forty a minute, from
-    the time driver every 2 s, the watchdog's feed every 8 s and the minute's redraw.
+    by that length in minutes is the wake rate on battery: expect about thirty-six a minute, from
+    the time driver every 2 s, the watchdog's feed every 16 s and the minute's redraw.
     `PWR_INT_L` reads high, and `input interrupts` has gone up by two, the unplug and the
     plug. Under `[lptim]`: `alarms handled over 5 ms late 0`, `Stop entered with one
     unacknowledged 0` and `waits over 2 ms: DIEROK 0, CMPOK 0`; a late alarm is a press
