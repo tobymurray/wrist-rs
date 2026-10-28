@@ -302,6 +302,42 @@ pub fn slow_gauge_hibernate(bus: &mut AsyncBus) -> Option<u16> {
     Some(u16::from_le_bytes(b))
 }
 
+/// The gauge's `Status`, whose `POR` marks a reset, and the `DesignCap`, `IChgTerm`, `VEmpty`
+/// and `ModelCfg` a reset loses (ADI UG6597, "EZ configuration").
+const GAUGE_CONFIG: [u8; 5] = [0x00, 0x18, 0x1E, 0x3A, 0xDB];
+
+/// Read once at boot, before [`slow_gauge_hibernate`].
+static GAUGE_AT_BOOT: Mutex<CriticalSectionRawMutex, Cell<[Option<u16>; 5]>> =
+    Mutex::new(Cell::new([None; 5]));
+
+pub fn read_gauge_config_blocking(bus: &mut AsyncBus) {
+    let mut v = [None; 5];
+    for (slot, reg) in v.iter_mut().zip(GAUGE_CONFIG) {
+        let mut b = [0u8; 2];
+        *slot = bus.blocking_write_read(MAX17262, &[reg], &mut b).ok().map(|()| u16::from_le_bytes(b));
+    }
+    GAUGE_AT_BOOT.lock(|g| g.set(v));
+}
+
+pub fn write_gauge_config(uart: &mut Lines) {
+    uart.write_str("[gauge] at boot:");
+    let labels = ["Status", "DesignCap", "IChgTerm", "VEmpty", "ModelCfg"];
+    for (label, raw) in labels.iter().zip(GAUGE_AT_BOOT.lock(Cell::get)) {
+        uart.write_str(" ");
+        uart.write_str(label);
+        uart.write_str(" ");
+        match raw {
+            Some(c) => {
+                let [hi, lo] = c.to_be_bytes();
+                uart.write_hex8(hi);
+                uart.write_hex8(lo);
+            }
+            None => uart.write_str("--"),
+        }
+    }
+    uart.write_line("");
+}
+
 /// The PCA9420's four mode settings, `MODECFG_0_0` to `MODECFG_3_3`, in one read.
 pub type Modes = [u8; 16];
 
