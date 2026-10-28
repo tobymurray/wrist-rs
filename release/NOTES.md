@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Stock firmware** | **1.6.1** only. The installer runs on no other version. |
+| **Stock firmware** | **1.6.2** only. The installer runs on no other version. |
 | **Watch** | UNA Watch with its original modules and LS012 display |
 | **Install guide** | [INSTALL.md](INSTALL.md) |
 
