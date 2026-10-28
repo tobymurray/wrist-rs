@@ -338,7 +338,7 @@ fn main() -> ! {
 
     // Blocking transfers only before the first awaited one (`HARDWARE.md`, "Debug and boot").
     let mut i2c_config = embassy_stm32::i2c::Config::default();
-    i2c_config.frequency = Hertz::khz(100);
+    i2c_config.frequency = Hertz::khz(400);
     i2c_config.timeout = embassy_time::Duration::from_millis(20);
     let mut bus = I2c::new(p.I2C1, p.PB6, p.PB7, p.GPDMA1_CH0, p.GPDMA1_CH1, I2cIrqs, i2c_config);
     let power = pmic::snapshot_blocking(&mut bus);
