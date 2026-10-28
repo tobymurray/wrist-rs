@@ -336,7 +336,7 @@ fn main() -> ! {
     });
     uart.flush();
 
-    // Blocking reads only before the first awaited transfer (`HARDWARE.md`, "Debug and boot").
+    // Blocking transfers only before the first awaited one (`HARDWARE.md`, "Debug and boot").
     let mut i2c_config = embassy_stm32::i2c::Config::default();
     i2c_config.frequency = Hertz::khz(100);
     i2c_config.timeout = embassy_time::Duration::from_millis(20);
@@ -347,6 +347,16 @@ fn main() -> ! {
     pmic::read_modes_blocking(&mut bus);
     pmic::write_rails(&mut uart.lines(), power.top_cntl3);
     pmic::write_summary(&mut uart.lines(), &power);
+    match pmic::slow_gauge_hibernate(&mut bus) {
+        Some(cfg) => {
+            let [hi, lo] = cfg.to_be_bytes();
+            uart.write_str("[10] gauge HibCfg ");
+            uart.write_hex8(hi);
+            uart.write_hex8(lo);
+            uart.write_line("");
+        }
+        None => uart.write_line("[10] gauge HibCfg: the gauge did not answer"),
+    }
     uart.write_str("[10b] input-power interrupt on PWR_INT_L (PG7): ");
     match crate::power::arm_input_interrupt(&mut bus) {
         Some(mask) => {

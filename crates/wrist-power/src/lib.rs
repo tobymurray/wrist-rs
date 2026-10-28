@@ -136,6 +136,13 @@ pub const fn hibernating(status2: u16) -> bool {
     status2 & (1 << 1) != 0
 }
 
+/// `HibCfg` with `HibScalar` at its largest: in hibernate the MAX17262 samples every
+/// 351 ms × 2^7 = 45 s instead of the default 5.6 s (ADI UG6597).
+#[must_use]
+pub const fn slow_hibernate(hib_cfg: u16) -> u16 {
+    hib_cfg | 0b111
+}
+
 /// The MAX17262's `TTE` register in seconds, or `None` for its `0xFFFF`.
 #[must_use]
 pub fn tte_seconds(raw: u16) -> Option<u32> {

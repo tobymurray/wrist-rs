@@ -1,4 +1,4 @@
-use wrist_power::{hibernating, tte_seconds, BatteryRun};
+use wrist_power::{hibernating, slow_hibernate, tte_seconds, BatteryRun};
 
 #[test]
 fn a_run_averages_the_readings_it_had() {
@@ -36,4 +36,11 @@ fn hib_is_status2_bit_1() {
     assert!(hibernating(0b10));
     assert!(!hibernating(0b01));
     assert!(hibernating(0xFFFF));
+}
+
+#[test]
+fn slow_hibernate_sets_only_hib_scalar() {
+    assert_eq!(slow_hibernate(0x870C), 0x870F);
+    assert_eq!(slow_hibernate(0x870F), 0x870F);
+    assert_eq!(slow_hibernate(0), 0x0007);
 }

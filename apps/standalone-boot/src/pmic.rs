@@ -1,4 +1,4 @@
-//! The PMIC and the fuel gauge, read only (`HARDWARE.md`, "Power and reset domain").
+//! The PMIC and the fuel gauge (`HARDWARE.md`, "Power and reset domain").
 
 use core::cell::Cell;
 
@@ -14,6 +14,7 @@ pub type AsyncBus = I2c<'static, Async, Master>;
 
 const PCA9420: u8 = wrist_board::i2c::PCA9420_PMIC;
 const MAX17262: u8 = wrist_board::i2c::MAX17262_GAUGE;
+const HIB_CFG: u8 = 0xBA;
 
 /// `None` is a read that failed.
 #[derive(Clone, Copy, Default)]
@@ -229,7 +230,7 @@ pub fn write_summary(uart: &mut Lines, s: &Snapshot) {
 }
 
 pub fn write_report(uart: &mut Lines, s: &Snapshot) {
-    uart.write_line("-- power chips on I2C1 (read only) --");
+    uart.write_line("-- power chips on I2C1 --");
     uart.write_str("PCA9420 DEV_INFO ");
     hex_or_dashes(uart, s.dev_info);
     uart.write_str("  TOP_CNTL0..3 ");
@@ -288,6 +289,17 @@ pub fn write_report(uart: &mut Lines, s: &Snapshot) {
         }
         uart.write_line("");
     }
+}
+
+/// At boot, before any awaited transfer: `HibCfg` as read back after
+/// [`wrist_power::slow_hibernate`], or `None` if the gauge did not answer.
+pub fn slow_gauge_hibernate(bus: &mut AsyncBus) -> Option<u16> {
+    let mut b = [0u8; 2];
+    bus.blocking_write_read(MAX17262, &[HIB_CFG], &mut b).ok()?;
+    let [lo, hi] = wrist_power::slow_hibernate(u16::from_le_bytes(b)).to_le_bytes();
+    bus.blocking_write(MAX17262, &[HIB_CFG, lo, hi]).ok()?;
+    bus.blocking_write_read(MAX17262, &[HIB_CFG], &mut b).ok()?;
+    Some(u16::from_le_bytes(b))
 }
 
 /// The PCA9420's four mode settings, `MODECFG_0_0` to `MODECFG_3_3`, in one read.
