@@ -726,7 +726,7 @@ pub fn write_buttons(uart: Uart) {
 #[embassy_executor::task]
 async fn button_watch(mut lines: ButtonLines) -> ! {
     /// Must stay well under the watchdog's period.
-    const FEED: Duration = Duration::from_secs(8);
+    const FEED: Duration = Duration::from_secs(16);
     const SAMPLE_MS: u64 = 50;
     const HOLD_SAMPLES: u32 = 60;
     const SHORT_SAMPLES: u32 = 20;
