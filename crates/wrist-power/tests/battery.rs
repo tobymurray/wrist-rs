@@ -1,4 +1,4 @@
-use wrist_power::{hibernating, slow_hibernate, tte_seconds, BatteryRun};
+use wrist_power::{hibernate_fast, hibernating, slow_hibernate, tte_seconds, BatteryRun};
 
 #[test]
 fn a_run_averages_the_readings_it_had() {
@@ -46,4 +46,14 @@ fn slow_hibernate_sets_hib_scalar_with_hibernate_on() {
     // Hibernate off, as a failed restore leaves it, comes back on.
     assert_eq!(slow_hibernate(0), 0x870F);
     assert_eq!(slow_hibernate(0x0007), 0x870F);
+}
+
+#[test]
+fn only_a_slow_hibernate_needs_no_write() {
+    assert!(hibernate_fast(0x870C));
+    assert!(hibernate_fast(0x8706));
+    assert!(hibernate_fast(0));
+    assert!(hibernate_fast(0x070F));
+    assert!(!hibernate_fast(0x870F));
+    assert!(!hibernate_fast(0x8007));
 }
