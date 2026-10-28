@@ -39,7 +39,8 @@ press, hold and unplug, and keeps every step's output under one directory.
 
 The watch runs an earlier wrist-rs.
 
-4. First the refusals: `.venv/bin/python tools/wrist-update.py --loader app.bin` and
+4. First `cmd "power sleep"`: a `[crash]` line other than `no retained failure` is the
+   previous image's; note it, then `cmd "power sleep clear-crash"`. Then the refusals: `.venv/bin/python tools/wrist-update.py --loader app.bin` and
    `.venv/bin/python tools/wrist-update.py first-install/Apps/ImageInstaller/image.bin` each
    exit at once with one line and send nothing. Then `.venv/bin/python tools/wrist-update.py
    app.bin`. Expect `[update] ok`, a restart and `state boot`. `cmd "boot;version"`:
@@ -89,7 +90,10 @@ The watch runs an earlier wrist-rs.
     the time driver every 2 s, the watchdog's feed every 8 s and the minute's redraw.
     `PWR_INT_L` reads high, and `input interrupts` has gone up by two, the unplug and the
     plug. Under `[lptim]`: `alarms handled over 5 ms late 0` and `Stop entered with one
-    unacknowledged 0`; a late alarm is a press whose light comes on late. Record the mean
+    unacknowledged 0`; a late alarm is a press whose light comes on late. `[crash] no
+    retained failure`: nothing panicked or faulted since step 4, through every restart (a
+    record names a panic's line and file hash, which [`tools/wrist-crash.py`](../tools/wrist-crash.py)
+    resolves with this `app.bin`). Record the mean
     current, the time to empty and the wake rate; a meter in series with the cell gives the
     real floor, if you have one.
 

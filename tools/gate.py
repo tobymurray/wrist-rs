@@ -22,6 +22,11 @@ import threading
 import time
 import zipfile
 
+try:
+    from termios import error as TermiosError
+except ImportError:
+    TermiosError = OSError
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
@@ -98,11 +103,13 @@ def witness_checks(text, crc):
 
 def wake_rate(power):
     """Stop 2 wakes a minute over the last stretch on battery, or None."""
-    minutes = re.search(r'last on battery: (\d+) min', power)
+    stretch = re.search(r'last on battery: (?:(\d+) d )?(?:(\d+) h)? ?(?:(\d+) min)?,', power)
     wakes = re.search(r'stop2_wakes=(\d+)', power)
-    if not (minutes and wakes) or int(minutes[1]) == 0:
+    if not (stretch and wakes):
         return None
-    return int(wakes[1]) / int(minutes[1])
+    d, h, m = (int(v or 0) for v in stretch.groups())
+    minutes = (d * 24 + h) * 60 + m
+    return int(wakes[1]) / minutes if minutes else None
 
 
 def press(button, then):
@@ -213,7 +220,8 @@ class Gate:
                     if until and until.encode() in buf:
                         end = min(end, time.time() + then)
                         until = None
-        except (serial.SerialException, OSError) as e:
+        # A port opened as the watch restarts can fail in termios, which is not an OSError.
+        except (serial.SerialException, OSError, TermiosError) as e:
             buf += f'\n[gate.py] the console closed: {e}\n'.encode()
         return '\n'.join(l for l in buf.decode('utf-8', 'replace').splitlines() if not l.startswith('[hb]'))
 
@@ -361,6 +369,11 @@ class Gate:
         self.killed_tool()
 
     def refusals_and_update(self):
+        before = self.cmd('power sleep', 3)
+        if crash := re.search(r'^\[crash\] (?!no retained).*$', before, re.M):
+            self.log(f'    before the gate, from the previous image: {crash[0]}; cleared')
+            self.save('step4-crash-before.txt', before)
+        self.cmd('power sleep clear-crash', 2)
         app, image = self.pkg / 'app.bin', self.pkg / 'first-install/Apps/ImageInstaller/image.bin'
         for flags, what in [((app, '--loader'), 'app.bin as a loader'), ((image,), 'image.bin as an application')]:
             t0 = time.time()
@@ -482,6 +495,8 @@ class Gate:
 
         short('Back', 'face lit for 3 s')
         short('Select', 'face lit for 3 s')
+        # Inside Select's 3 s light, its timer would take the console's light off.
+        time.sleep(3.5)
         s.write(b'page light on\r\n')
         time.sleep(0.5)
         short('Back', "the console's light off")
@@ -532,7 +547,8 @@ class Gate:
                           and interrupts(text) - interrupts(self.before) == 2, 'input interrupts up by two'),
                          (rate is not None and 30 <= rate <= 50, f'Stop 2 wakes a minute {rate and round(rate, 1)}, about 40'),
                          ('alarms handled over 5 ms late 0' in text, 'no late alarms'),
-                         ('Stop entered with one unacknowledged 0' in text, 'Stop never entered with one unacknowledged')]:
+                         ('Stop entered with one unacknowledged 0' in text, 'Stop never entered with one unacknowledged'),
+                         ('[crash] no retained failure' in text, 'no panic or fault retained (wrist-crash.py names a panic\'s file)')]:
             self.check(11, ok, what)
         for line in re.findall(r'^.*last on battery.*$', text, re.M):
             self.log('    ' + line.strip())
