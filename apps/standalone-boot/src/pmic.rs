@@ -40,33 +40,36 @@ pub struct Snapshot {
     pub full_cap_raw: Option<u16>,
     pub design_cap_raw: Option<u16>,
     pub gauge_status: Option<u16>,
+    /// Every register read, not only the reading's.
+    pub full: bool,
 }
 
-/// (chip, register, two bytes wide), in [`Snapshot`]'s order.
-const READS: [(u8, u8, bool); 20] = [
-    (PCA9420, 0x00, false),
-    (PCA9420, 0x09, false),
-    (PCA9420, 0x0A, false),
-    (PCA9420, 0x0B, false),
-    (PCA9420, 0x0C, false),
-    (PCA9420, 0x18, false),
-    (PCA9420, 0x19, false),
-    (PCA9420, 0x20, false),
-    (PCA9420, 0x71, false),
-    (MAX17262, 0x09, true),
-    (MAX17262, 0x06, true),
-    (MAX17262, 0x08, true),
-    (MAX17262, 0x0A, true),
-    (MAX17262, 0x0B, true),
-    (MAX17262, 0x11, true),
-    (MAX17262, 0xB0, true),
-    (MAX17262, 0xBA, true),
-    (MAX17262, 0x10, true),
-    (MAX17262, 0x18, true),
-    (MAX17262, 0x00, true),
+/// (chip, register, two bytes wide, read with every reading), in [`Snapshot`]'s order; the rest
+/// only with the full report.
+const READS: [(u8, u8, bool, bool); 20] = [
+    (PCA9420, 0x00, false, false),
+    (PCA9420, 0x09, false, false),
+    (PCA9420, 0x0A, false, false),
+    (PCA9420, 0x0B, false, false),
+    (PCA9420, 0x0C, false, false),
+    (PCA9420, 0x18, false, true),
+    (PCA9420, 0x19, false, true),
+    (PCA9420, 0x20, false, true),
+    (PCA9420, 0x71, false, false),
+    (MAX17262, 0x09, true, true),
+    (MAX17262, 0x06, true, true),
+    (MAX17262, 0x08, true, true),
+    (MAX17262, 0x0A, true, true),
+    (MAX17262, 0x0B, true, true),
+    (MAX17262, 0x11, true, true),
+    (MAX17262, 0xB0, true, true),
+    (MAX17262, 0xBA, true, false),
+    (MAX17262, 0x10, true, false),
+    (MAX17262, 0x18, true, false),
+    (MAX17262, 0x00, true, true),
 ];
 
-fn assemble(v: &[Option<u16>; READS.len()]) -> Snapshot {
+fn assemble(v: &[Option<u16>; READS.len()], full: bool) -> Snapshot {
     let b = |i: usize| v[i].and_then(|x| u8::try_from(x).ok());
     Snapshot {
         dev_info: b(0),
@@ -89,6 +92,7 @@ fn assemble(v: &[Option<u16>; READS.len()]) -> Snapshot {
         full_cap_raw: v[17],
         design_cap_raw: v[18],
         gauge_status: v[19],
+        full,
     }
 }
 
@@ -102,28 +106,42 @@ fn value(b: [u8; 2], wide: bool) -> u16 {
 
 pub fn snapshot_blocking(bus: &mut AsyncBus) -> Snapshot {
     let mut v = [None; READS.len()];
-    for (slot, &(addr, reg, wide)) in v.iter_mut().zip(READS.iter()) {
+    for (slot, &(addr, reg, wide, _)) in v.iter_mut().zip(READS.iter()) {
         let mut b = [0u8; 2];
         let n = if wide { 2 } else { 1 };
         *slot = bus.blocking_write_read(addr, &[reg], &mut b[..n]).ok().map(|()| value(b, wide));
     }
-    assemble(&v)
+    assemble(&v, true)
 }
 
-pub async fn snapshot(bus: &mut AsyncBus) -> Snapshot {
+pub async fn snapshot(bus: &mut AsyncBus, full: bool) -> Snapshot {
     let mut v = [None; READS.len()];
-    for (slot, &(addr, reg, wide)) in v.iter_mut().zip(READS.iter()) {
+    for (slot, &(addr, reg, wide, every)) in v.iter_mut().zip(READS.iter()) {
+        if !full && !every {
+            continue;
+        }
         let mut b = [0u8; 2];
         let n = if wide { 2 } else { 1 };
         let r: Result<(), Error> = bus.write_read(addr, &[reg], &mut b[..n]).await;
         *slot = r.ok().map(|()| value(b, wide));
     }
-    assemble(&v)
+    assemble(&v, full)
 }
 
 fn hex_or_dashes(uart: &mut Lines, v: Option<u8>) {
     match v {
         Some(b) => uart.write_hex8(b),
+        None => uart.write_str("--"),
+    }
+}
+
+fn write_hex16(uart: &mut Lines, v: Option<u16>) {
+    match v {
+        Some(c) => {
+            let [hi, lo] = c.to_be_bytes();
+            uart.write_hex8(hi);
+            uart.write_hex8(lo);
+        }
         None => uart.write_str("--"),
     }
 }
@@ -211,17 +229,13 @@ pub fn write_summary(uart: &mut Lines, s: &Snapshot) {
         Some(_) => "active",
         None => "--",
     });
-    for (label, raw) in [(", Status2 ", s.status2), (", HibCfg ", s.hib_cfg)] {
-        uart.write_str(label);
-        match raw {
-            Some(c) => {
-                let [hi, lo] = c.to_be_bytes();
-                uart.write_hex8(hi);
-                uart.write_hex8(lo);
-            }
-            None => uart.write_str("--"),
-        }
+    uart.write_str(", Status2 ");
+    write_hex16(uart, s.status2);
+    if !s.full {
+        return uart.write_line("");
     }
+    uart.write_str(", HibCfg ");
+    write_hex16(uart, s.hib_cfg);
     for (label, raw) in [(", full ", s.full_cap_raw), (" of ", s.design_cap_raw)] {
         uart.write_str(label);
         match raw {

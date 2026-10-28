@@ -1031,12 +1031,12 @@ fn minute_now() -> u32 {
 
 /// The charge in percent and the cell's voltage, for the face and the battery page.
 async fn read_power(uart: Uart, bus: &mut pmic::AsyncBus, n: u32) -> (Option<u8>, Option<u32>) {
-    let s = pmic::snapshot(bus).await;
+    let s = pmic::snapshot(bus, n.is_multiple_of(6)).await;
     pmic::restore_gauge(bus, s.gauge_status).await;
     if !s.gauge_status.is_some_and(wrist_power::gauge_reset) {
         pmic::keep_hibernate_slow(&mut uart.lines(), bus, s.hib_cfg).await;
     }
-    if n.is_multiple_of(6) {
+    if s.full {
         pmic::write_report(&mut uart.lines(), &s);
         embassy_futures::yield_now().await;
         pmic::write_rails(&mut uart.lines(), s.top_cntl3);
