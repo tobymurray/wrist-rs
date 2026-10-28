@@ -1,4 +1,4 @@
-# wrist-rs 0.2.0
+# wrist-rs 0.3.0
 
 | | |
 |---|---|
@@ -12,35 +12,34 @@ charge, with pages for the battery and the build, in place of the stock firmware
 
 ## In this release
 
-New since 0.1.0:
+New since 0.2.0:
 
-- Pages: Down steps from the face to the battery (charge, cell voltage, and whether it runs
-  from USB or the cell), then to about (the version and build ID), then back to the face. Up
-  steps the other way, Back returns to the face, and so do 10 s without a press.
-- The console no longer cuts the end off a line now and then, once every 8 KB of output.
+- The face and pages in Atkinson Hyperlegible Next. Digits that do not change stay where
+  they are when the minute turns.
+- Drawing is faster: a page change reaches the glass in about 50 ms, not about 300 ms, and
+  the panel is written by timers and DMA while the processor sleeps.
+- The installer is the **Wrist-rs** app, opened from the launcher, in place of the
+  `Install` glance: its dry run shows the image's CRC on screen, and holding Select 3 s
+  installs ([install guide](INSTALL.md)).
+- The console's `flash survey` reports which flash pages hold anything, without writing.
 - The loader is unchanged: no loader update is needed.
 
-From 0.1.0:
+From earlier releases:
 
-- The face, lit by a short press of any button.
+- The face, lit by a short press of any button, with pages for the battery and the build:
+  Down steps from the face to the battery, then to about, then back to the face; Up steps
+  the other way, and Back or 10 s without a press returns to the face.
 - Time kept across restarts and updates, set from a computer with
   [`tools/wrist-time.py`](../tools/wrist-time.py), which also sends the zone's next two
   daylight-saving changes for the watch to apply.
 - Updates over USB with [`tools/wrist-update.py`](../tools/wrist-update.py), into a second
   slot, with rollback.
 - Everything the face does not use turned off at start, and deep sleep on battery.
-- The first install from stock firmware 1.6.1 with the `Install` glance, and the way back
-  through UNA's own recovery, both in the [install guide](INSTALL.md).
+- The way back to stock through UNA's own recovery, in the [install guide](INSTALL.md).
 
 ## Checked on the watch
 
-With this build's package, updating from 0.1.0: updates over USB, including a pulled cable
-and a killed tool, which leave the watch on its current version; the rollback of an image
-no computer keeps; the clock across restarts and daylight-saving changes; every button and
-every page; and deep sleep on battery.
-
-The first install from stock firmware 1.6.1, and the way back, are 0.1.0's: the installer
-and the loader are byte for byte the ones that round trip ran.
+To be written from this release's gate run ([GATE.md](GATE.md), step 22).
 
 ## Limits
 
