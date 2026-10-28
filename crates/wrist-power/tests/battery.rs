@@ -39,8 +39,11 @@ fn hib_is_status2_bit_1() {
 }
 
 #[test]
-fn slow_hibernate_sets_only_hib_scalar() {
+fn slow_hibernate_sets_hib_scalar_with_hibernate_on() {
     assert_eq!(slow_hibernate(0x870C), 0x870F);
     assert_eq!(slow_hibernate(0x870F), 0x870F);
-    assert_eq!(slow_hibernate(0), 0x0007);
+    assert_eq!(slow_hibernate(0x8000), 0x8007);
+    // Hibernate off, as a failed restore leaves it, comes back on.
+    assert_eq!(slow_hibernate(0), 0x870F);
+    assert_eq!(slow_hibernate(0x0007), 0x870F);
 }
