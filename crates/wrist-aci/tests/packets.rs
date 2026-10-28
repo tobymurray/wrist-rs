@@ -2,8 +2,10 @@
 //! the 217-byte console write, two events in one read, a read cut short.
 
 use wrist_aci::{
-    att_mtu, command, header_sizes, numeric_comparison, packet_len, packet_whole, pairing_complete, parse, vendor,
-    AttributeModified, Event,
+    ad_name, ad_uuid128s, ad_uuid16s, att_mtu, characteristics, command, descriptors, gap_proc_complete, gatt_error,
+    header_sizes, notification, numeric_comparison, packet_len, packet_whole, pairing_complete, parse, read_value,
+    reports, service_range, services, vendor, Address, AttributeModified, Characteristic, Event, L2capUpdateRequest,
+    Service, Uuid,
 };
 
 /// A vendor event packet: `04 FF len code params`.
@@ -165,4 +167,104 @@ fn neighbouring_dies_get_different_addresses() {
             assert!(seen.insert(wrist_aci::static_random_address([(x << 16) | y, 0x3133_5111, 0x3039_3533])));
         }
     }
+}
+
+fn strap_report() -> Vec<u8> {
+    let mut ad = vec![0x02, 0x01, 0x06, 0x05, 0x03, 0x0D, 0x18, 0x0F, 0x18];
+    ad.extend([0x05, 0x09, b'H', b'1', b'0', b' ']);
+    let mut r = vec![0x00, 0x01, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xC6, u8::try_from(ad.len()).unwrap()];
+    r.extend(ad);
+    r.push((-67i8).cast_unsigned());
+    r
+}
+
+#[test]
+fn advertising_reports_decode() {
+    let mut p = vec![0x02];
+    p.extend(strap_report());
+    // A scan response from a public address, carrying only a name.
+    p.extend([0x04, 0x00, 1, 2, 3, 4, 5, 6, 4, 3, 0x08, b'P', b'M', 0xB0]);
+    let all: Vec<_> = reports(&p).collect();
+    assert_eq!(all.len(), 2);
+    let strap = all[0];
+    assert_eq!(strap.kind, 0);
+    assert_eq!(strap.address, Address { kind: 1, bytes: [0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xC6] });
+    assert_eq!(strap.rssi, -67);
+    assert_eq!(ad_name(strap.data), Some(&b"H10 "[..]));
+    assert_eq!(ad_uuid16s(strap.data).collect::<Vec<_>>(), [0x180D, 0x180F]);
+    assert_eq!(all[1].kind, 4);
+    assert_eq!(ad_name(all[1].data), Some(&b"PM"[..]));
+    assert_eq!(all[1].rssi, -80);
+    // A count past what the event holds stops at the last whole report.
+    let mut cut = vec![0x03];
+    cut.extend(strap_report());
+    cut.extend(&strap_report()[..5]);
+    assert_eq!(reports(&cut).count(), 1);
+}
+
+#[test]
+fn advertising_data_with_a_128_bit_uuid_and_junk() {
+    // CE060000-43E5-11E4-916C-0800200C9A66, little-endian.
+    let pm5 = [0x66, 0x9A, 0x0C, 0x20, 0x00, 0x08, 0x6C, 0x91, 0xE4, 0x11, 0xE5, 0x43, 0x00, 0x00, 0x06, 0xCE];
+    let mut ad = vec![17, 0x07];
+    ad.extend(pm5);
+    assert_eq!(ad_uuid128s(&ad).collect::<Vec<_>>(), [&pm5]);
+    // A structure longer than the data, and a zero length, end the list without a panic.
+    assert_eq!(ad_name(&[0x09, 0x09, b'x']), None);
+    assert_eq!(ad_uuid16s(&[0x00, 0x03, 0x0D, 0x18]).count(), 0);
+}
+
+#[test]
+fn primary_services_decode() {
+    // Connection 0x0801, elements of 6: (1, 5, 0x1800), (6, 9, 0x180D).
+    let p = [0x01, 0x08, 6, 12, 1, 0, 5, 0, 0x00, 0x18, 6, 0, 9, 0, 0x0D, 0x18];
+    let all: Vec<_> = services(&p).collect();
+    assert_eq!(
+        all,
+        [Service { start: 1, end: 5, uuid: Uuid::U16(0x1800) }, Service { start: 6, end: 9, uuid: Uuid::U16(0x180D) }]
+    );
+    // A 128-bit service, element length 20.
+    let mut q = vec![0x01, 0x08, 20, 20, 0x10, 0, 0x20, 0];
+    q.extend([0xAB; 16]);
+    assert_eq!(services(&q).next(), Some(Service { start: 0x10, end: 0x20, uuid: Uuid::U128([0xAB; 16]) }));
+    // An element length that fits no UUID yields nothing.
+    assert_eq!(services(&[0x01, 0x08, 5, 5, 1, 0, 2, 0, 3]).count(), 0);
+}
+
+#[test]
+fn characteristics_decode() {
+    // Heart Rate Measurement: declaration 7, notify, value 8; Body Sensor Location 10, read, 11.
+    let p = [0x01, 0x08, 7, 14, 7, 0, 0x10, 8, 0, 0x37, 0x2A, 10, 0, 0x02, 11, 0, 0x38, 0x2A];
+    let all: Vec<_> = characteristics(&p).collect();
+    assert_eq!(all[0], Characteristic { declaration: 7, properties: 0x10, value: 8, uuid: Uuid::U16(0x2A37) });
+    assert_eq!(all[1].uuid, Uuid::U16(0x2A38));
+    // A data length past the event is cut to it: one whole element.
+    let cut = [0x01, 0x08, 7, 14, 7, 0, 0x10, 8, 0, 0x37, 0x2A, 10, 0];
+    assert_eq!(characteristics(&cut).count(), 1);
+}
+
+#[test]
+fn descriptors_service_range_and_values_decode() {
+    // Format 1: (9, 0x2902).
+    assert_eq!(descriptors(&[0x01, 0x08, 1, 4, 9, 0, 0x02, 0x29]).collect::<Vec<_>>(), [(9, Uuid::U16(0x2902))]);
+    assert_eq!(descriptors(&[0x01, 0x08, 3, 4, 9, 0, 0x02, 0x29]).count(), 0);
+    assert_eq!(service_range(&[0x01, 0x08, 1, 6, 0, 9, 0]), Some((6, 9)));
+    assert_eq!(read_value(&[0x01, 0x08, 2, 0x01, 0x02]), Some(&[0x01, 0x02][..]));
+    // Notification: connection, attribute 8, three bytes.
+    assert_eq!(notification(&[0x01, 0x08, 8, 0, 3, 0x16, 72, 0x2C]), Some((8, &[0x16, 72, 0x2C][..])));
+    assert_eq!(notification(&[0x01, 0x08, 8, 0, 9, 0x16]), Some((8, &[0x16][..])));
+    assert_eq!(notification(&[0x01, 0x08, 8]), None);
+    assert_eq!(gatt_error(&[0x01, 0x08, 0x0A, 0x0B, 0x00, 0x05]), Some((0x0A, 0x0B, 0x05)));
+    assert_eq!(gap_proc_complete(&[0x02, 0x00, 0x00]), Some((0x02, 0)));
+}
+
+#[test]
+fn a_peripherals_parameter_request_decodes() {
+    // Connection 0x0801, identifier 7, L2CAP length 8, 400 to 800 ms, latency 0, 6 s.
+    let p = [0x01, 0x08, 7, 8, 0, 0x40, 0x01, 0x80, 0x02, 0, 0, 0x58, 0x02];
+    assert_eq!(
+        L2capUpdateRequest::decode(&p),
+        Some(L2capUpdateRequest { handle: 0x0801, identifier: 7, interval_min: 320, interval_max: 640, latency: 0, timeout: 600 })
+    );
+    assert_eq!(L2capUpdateRequest::decode(&p[..12]), None);
 }

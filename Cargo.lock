@@ -1012,6 +1012,10 @@ name = "wrist-power"
 version = "0.0.0"
 
 [[package]]
+name = "wrist-profiles"
+version = "0.0.0"
+
+[[package]]
 name = "wrist-store"
 version = "0.0.0"
 dependencies = [
