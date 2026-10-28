@@ -145,6 +145,12 @@ pub const fn slow_hibernate(hib_cfg: u16) -> u16 {
     base | 0b111
 }
 
+/// Whether `hib_cfg` is not yet what [`slow_hibernate`] makes it.
+#[must_use]
+pub const fn hibernate_fast(hib_cfg: u16) -> bool {
+    slow_hibernate(hib_cfg) != hib_cfg
+}
+
 /// Whether the MAX17262 has been reset since it was last configured: `Status.POR`, bit 1.
 #[must_use]
 pub const fn gauge_reset(status: u16) -> bool {
