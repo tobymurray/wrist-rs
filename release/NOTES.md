@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Stock firmware** | **1.6.1** only. The installer runs on no other version. |
+| **Stock firmware** | **1.6.2** only. The installer runs on no other version. |
 | **Watch** | UNA Watch with its original modules and LS012 display |
 | **Install guide** | [INSTALL.md](INSTALL.md) |
 
@@ -46,7 +46,7 @@ To be written from this release's gate run ([GATE.md](GATE.md), step 22).
 - The original modules and LS012 display only.
 - The watch follows daylight saving for the two changes
   [`tools/wrist-time.py`](../tools/wrist-time.py) last sent, about a year. After that,
-  after a change of zone, or after a 16-second hold of Select, which clears the zone with
+  after a change of zone, or after a 16-second hold of Select, which resets the power and clears the zone with
   the clock, run the tool again. It knows no zone names.
 - A short press lights the face for 3 s, or turns off a light switched on from the console.
   Back and Select only light it; Up and Down also move between pages.

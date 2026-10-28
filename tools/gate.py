@@ -37,6 +37,12 @@ def plan_pages(root=ROOT):
     return first, first + pages - 1
 
 
+def notes_stock(root=ROOT):
+    """The stock version the release notes name, from their `Stock firmware` row."""
+    m = re.search(r'^\| \*\*Stock firmware\*\* \| \*\*([0-9.]+)\*\*', (root / 'release/NOTES.md').read_text(), re.M)
+    return m[1] if m else None
+
+
 def mmio_bits(root=ROOT):
     """The bit constants in the image's mmio.rs, by name: `1 << 27`, `0b11 << 4` and the like."""
     text = (root / 'apps/standalone-boot/src/mmio.rs').read_text()
@@ -113,6 +119,16 @@ def volumes():
             yield from (p for p in base.iterdir() if p.is_dir())
 
 
+def unmounted():
+    """Labelled partitions on Linux that nothing has mounted, as (device, label)."""
+    if not sys.platform.startswith('linux') or not shutil.which('lsblk'):
+        return []
+    out = subprocess.run(['lsblk', '-rno', 'PATH,LABEL,MOUNTPOINT,TYPE'], capture_output=True, text=True).stdout
+    rows = [line.split(' ') for line in out.splitlines()]
+    return [(r[0], r[1].encode().decode('unicode_escape')) for r in rows
+            if len(r) == 4 and r[1] and not r[2] and r[3] == 'part']
+
+
 class Gate:
     def __init__(self, a):
         self.a = a
@@ -120,6 +136,8 @@ class Gate:
         self.installs = []
         self.before = ''
         self.drive14 = self.drive17 = None
+        # Whether this run's step 13 reset the watch's power, which clears the zone.
+        self.power_reset = False
 
     # -- records --
     def start(self, out):
@@ -158,6 +176,8 @@ class Gate:
     # -- the console --
     def wait_port(self, timeout):
         end = time.time() + timeout
+        if not wrist_port.find(self.a.port):
+            print(f'  waiting up to {timeout} s for the console\'s port', flush=True)
         while time.time() < end:
             port = wrist_port.find(self.a.port)
             if port:
@@ -166,7 +186,9 @@ class Gate:
             time.sleep(0.5)
         return None
 
-    def cmd(self, commands, seconds=3.0):
+    def cmd(self, commands, seconds=3.0, until=None, then=0.0):
+        """The console's answer to `commands` over `seconds`; once `until` appears, only
+        `then` seconds more."""
         import serial
         port = self.wait_port(30)
         if not port:
@@ -188,11 +210,15 @@ class Gate:
                 end = time.time() + seconds
                 while time.time() < end:
                     buf += s.read(4096)
+                    if until and until.encode() in buf:
+                        end = min(end, time.time() + then)
+                        until = None
         except (serial.SerialException, OSError) as e:
             buf += f'\n[gate.py] the console closed: {e}\n'.encode()
         return '\n'.join(l for l in buf.decode('utf-8', 'replace').splitlines() if not l.startswith('[hb]'))
 
     def booted(self, timeout=90):
+        print(f'  waiting up to {timeout} s for `boot` to report state boot', flush=True)
         end = time.time() + timeout
         while time.time() < end:
             text = self.cmd('boot;version', 2)
@@ -227,26 +253,41 @@ class Gate:
         return p.returncode, '\n'.join(lines)
 
     # -- drives --
-    def drive(self, step, want, timeout=180):
+    def drive(self, step, want, what, timeout=180):
         """The mounted drive `want` picks, waited for; None asks to mount it by hand."""
-        end = time.time() + timeout
-        while time.time() < end:
+        print(f'  waiting up to {timeout} s for {what} to be mounted', flush=True)
+        start = time.time()
+        hinted = set()
+        while time.time() < start + timeout:
             for v in volumes():
                 if want(v):
                     self.log(f'  drive: {v}')
                     return v
+            waited = int(time.time() - start)
+            for dev, label in unmounted():
+                # Nothing on some desktops mounts a drive by itself.
+                if waited >= 5 and dev not in hinted:
+                    hinted.add(dev)
+                    print(f'  {dev} ({label}) is attached but not mounted: udisksctl mount -b {dev}', flush=True)
+            if waited and waited % 30 == 0:
+                print(f'  still waiting for {what}: {timeout - waited} s left', flush=True)
             time.sleep(1)
         given = input(f'\n>>> step {step}: no drive found; its mount path, or Enter to stop: ').strip()
         return Path(given) if given else None
 
     def eject(self, step, path):
+        self.log(f'  syncing and ejecting {path}')
         subprocess.run(['sync'])
         if sys.platform == 'darwin':
             ok = subprocess.run(['diskutil', 'eject', str(path)]).returncode == 0
         else:
             dev = subprocess.run(['findmnt', '-no', 'SOURCE', str(path)], capture_output=True, text=True).stdout.strip()
             ok = bool(dev) and subprocess.run(['udisksctl', 'unmount', '-b', dev]).returncode == 0
+            if ok:
+                print(f'  powering off {dev}; udisksctl may wait here for your password', flush=True)
             ok = ok and subprocess.run(['udisksctl', 'power-off', '-b', dev]).returncode == 0
+            if ok:
+                print(f'  {dev} ejected', flush=True)
         if not ok:
             self.do(step, f'eject {path} safely')
 
@@ -272,15 +313,22 @@ class Gate:
             f.extractall(self.pkg)
         gate = json.loads((ROOT / 'release/gate.json').read_text())
         fp = manifest.get('round_trip_fingerprint')
-        self.round_trip = a.round_trip or fp != gate.get('round_trip_fingerprint')
+        # gate.json keeps the last round trip's stock version until this one passes.
+        self.stock = notes_stock()
+        if not self.stock:
+            sys.exit('release/NOTES.md names no stock version')
+        self.round_trip = (a.round_trip or fp != gate.get('round_trip_fingerprint')
+                           or self.stock != gate.get('stock_version'))
         self.log(f'  round-trip fingerprint {fp}; gate.json has {gate.get("round_trip_fingerprint")} '
-                 f'from {gate.get("round_trip_release")}: section D '
+                 f'from {gate.get("round_trip_release")} on stock {gate.get("stock_version")}; '
+                 f'the notes name stock {self.stock}: section D '
                  + ('runs' if self.round_trip else 'carries over'))
-        self.stock = gate.get('stock_version')
         # Step 2.
         if self.round_trip and chosen & set(range(13, 19)):
             if not (a.ota and a.ota.is_file()):
                 sys.exit('section D runs: pass --ota with the stock .ota the release notes name')
+            if f'_{self.stock}.ota' not in a.ota.name:
+                sys.exit(f'{a.ota.name} is not stock {self.stock}, which the release notes name')
             self.log(f'  {a.ota.name}: SHA-256 {hashlib.sha256(a.ota.read_bytes()).hexdigest()}')
             self.ask(2, f'is that the SHA-256 INSTALL.md says to check for stock {self.stock}?')
         self.ask(2, 'is the watch charged above 50 %?')
@@ -359,11 +407,12 @@ class Gate:
         self.check(step, bool(zone(before)) and zone(before) == zone(after), 'the zone and its changes survive reset')
         offset = time.localtime().tm_gmtoff // 60
         for frm, to, word in [(offset, offset + 60, 'forward'), (offset + 60, offset, 'back')]:
-            at = int(time.time()) + 60
-            # Back: two more minutes, in which it must not apply again.
-            wait = 60 - (at % 60) + 60 + 15 + (120 if word == 'back' else 0)
-            self.log(f'  time zone {frm} {at} {to}: listening {wait} s')
-            text = self.cmd(f'time zone {frm} {at} {to}', wait)
+            # On USB the display task checks for a due change every 10 s.
+            at = int(time.time()) + 15
+            # Back: a minute more, through a minute's turn, in which it must not apply again.
+            then = 60 if word == 'back' else 2
+            self.log(f'  time zone {frm} {at} {to}: listening until it applies, at most 45 s, then {then} s more')
+            text = self.cmd(f'time zone {frm} {at} {to}', 45, until='[rtc] zone change applied', then=then)
             self.save(f'step{step}-{word}.txt', text)
             applied = text.count('[rtc] zone change applied')
             self.check(step, applied == 1 and f'calendar {word}' in text, f'one zone change applied, calendar {word}')
@@ -500,8 +549,12 @@ class Gate:
         self.version_is(12, self.m['build_id'])
 
     def to_stock(self, step):
-        self.do(step, 'hold Select about 16 s, keeping it held until the bootloader\'s USB screen, then connect the cable')
-        boot = self.drive(step, lambda v: v.name == 'UNA BOOT')
+        self.do(step, 'hold Select past the USB screen at about 3 s, until the screen blanks at about 16 s '
+                      'and the USB screen comes back; then let go and connect the cable')
+        reset = self.ask(step, 'did the screen blank and come back (the power reset)?')
+        if step == 13:
+            self.power_reset = reset
+        boot = self.drive(step, lambda v: v.name == 'UNA BOOT', 'UNA BOOT')
         if not boot:
             sys.exit('no UNA BOOT drive')
         shutil.copy2(self.a.ota, boot / self.a.ota.name)
@@ -513,7 +566,7 @@ class Gate:
 
     def dry_run(self, step):
         self.do(step, 'connect the cable to stock')
-        drive = self.drive(step, lambda v: v.name != 'UNA BOOT' and (v / 'Apps').is_dir())
+        drive = self.drive(step, lambda v: v.name != 'UNA BOOT' and (v / 'Apps').is_dir(), "the watch's drive")
         if not drive:
             sys.exit('no stock drive')
         folder = drive / 'Apps/ImageInstaller'
@@ -532,7 +585,8 @@ class Gate:
         self.do(step, 'open Wrist-rs and wait for Checking to end')
         self.ask(step, f'the screen shows {crc} and "Dry run passed"?')
         self.do(step, 'press Back to leave, then plug the cable in')
-        drive = self.drive(step, lambda v: (v / 'Apps/ImageInstaller/install.log').is_file())
+        drive = self.drive(step, lambda v: (v / 'Apps/ImageInstaller/install.log').is_file(),
+                           "the watch's drive, with install.log")
         log = (drive / 'Apps/ImageInstaller/install.log').read_text(errors='replace')
         self.save(f'step{step}-install.log', log)
         size = (self.pkg / 'first-install/Apps/ImageInstaller/image.bin').stat().st_size
@@ -541,7 +595,7 @@ class Gate:
         return drive, log
 
     def install(self, step, drive):
-        drive = drive or self.drive(step, lambda v: (v / 'Apps/ImageInstaller').is_dir())
+        drive = drive or self.drive(step, lambda v: (v / 'Apps/ImageInstaller').is_dir(), "the watch's drive")
         self.eject(step, drive)
         crc = self.m['image_crc32']
         self.do(step, f'unplug, open Wrist-rs, and once it shows {crc}, hold Select until it reads Installing')
@@ -558,28 +612,33 @@ class Gate:
         self.drive14, _ = self.dry_run(14)
 
     def step15(self):
-        drive = self.drive14 or self.drive(15, lambda v: (v / 'Apps/ImageInstaller').is_dir())
+        drive = self.drive14 or self.drive(15, lambda v: (v / 'Apps/ImageInstaller').is_dir(), "the watch's drive")
         self.eject(15, drive)
         crc = self.m['image_crc32']
         self.do(15, f'unplug, and open Wrist-rs until it shows {crc}')
         for what in ['click Select once',
                      'hold Select for about two seconds and let go',
                      'hold Select, and press Back during the countdown',
-                     'press Back to leave; then hold Select from the launcher, opening Wrist-rs, '
-                     'and keep holding through Checking until the ready screen appears']:
+                     # The launcher opens an app on release, so the press starts once it is open.
+                     'press Back to leave; open Wrist-rs again, press Select while it reads Checking, '
+                     'and keep holding until the ready screen appears']:
             self.do(15, what)
             self.ask(15, f'it did not install: the screen is back to {crc} and "Hold Select to install"?')
         note = input('\n>>> step 15: anything else a 3 s hold of Select brought up (Enter for nothing)? ').strip()
         self.log(f'  step 15: other things a 3 s hold brings up: {note or "nothing"}')
         self.do(15, 'press Back to leave, and plug the cable in')
-        self.drive14 = self.drive(15, lambda v: v.name != 'UNA BOOT' and (v / 'Apps/ImageInstaller').is_dir())
+        self.drive14 = self.drive(15, lambda v: v.name != 'UNA BOOT' and (v / 'Apps/ImageInstaller').is_dir(),
+                                 "the watch's drive")
         self.check(15, bool(self.drive14), 'still stock: its drive is back')
 
     def step16(self):
         self.install(16, self.drive14)
         text = self.cmd('time', 3)
         self.save('step16-time-after-hold.txt', text)
-        self.check(16, bool(re.search(r'^\s*zone\s*: no record', text, re.M)), 'after the 16 s hold, no zone record')
+        if self.power_reset:
+            self.check(16, bool(re.search(r'^\s*zone\s*: no record', text, re.M)), 'after the 16 s hold, no zone record')
+        else:
+            self.log('  step 16: zone check skipped: no power reset in this run\'s step 13')
         self.step5(16)
         self.step6(16)
 

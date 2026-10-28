@@ -113,7 +113,8 @@ python3 -m venv .venv
 
 `wrist-time.py` sends the local time and the zone's next two daylight-saving changes, which
 the watch applies by itself. Run it again within a year, after a move to another zone, and
-after a 16-second hold of Select, which clears the zone with the clock. `wrist-time.py
+after the watch's power is reset (Select held 16 s, or a flat battery), which clears the
+zone with the clock. `wrist-time.py
 --print` shows what it would send, without a watch.
 
 The tools find the watch by its USB ID, 1209:d1a1, which is requested from pid.codes and
@@ -144,10 +145,11 @@ report.
 
 ## Back to stock, and out of any failure
 
-<img src="images/wrist-rs-to-stock.svg" width="600" alt="From wrist-rs back to the stock firmware: hold Select 16 s, copy the .ota to UNA BOOT, unplug and choose Continue">
+<img src="images/wrist-rs-to-stock.svg" width="600" alt="From wrist-rs back to the stock firmware: hold Select until the USB screen, 3 to 16 s, copy the .ota to UNA BOOT, unplug and choose Continue">
 
-1. Have the checked `.ota` and your backup ready. Hold **Select** for about 16 seconds,
-   which resets the watch's power, and keep holding until the bootloader's USB screen.
+1. Have the checked `.ota` and your backup ready. Hold **Select** until the bootloader's
+   USB screen, then let go: about 3 seconds from wrist-rs. From stock, or from a watch
+   that does not respond, it takes about 16 seconds, when the watch's power resets.
    Connect the data cable: a drive called **`UNA BOOT`** appears.
 2. Copy the `.ota` to the root of `UNA BOOT`, eject it safely, and unplug the cable: the
    menu takes **Continue** only once it is out. Choose **Continue**, which installs the file
@@ -158,5 +160,6 @@ report.
    The installer's files can stay in `Apps/ImageInstaller/`: it does nothing until it is
    opened and the hold confirms it.
 
-The long hold clears the watch's clock. **Factory Reset** is not this: it returns the watch
+The 16-second hold, which resets the watch's power, clears its clock and zone; the
+3-second way from wrist-rs keeps them. **Factory Reset** is not this: it returns the watch
 to its original firmware, losing every release since. Do not use it for recovery.
