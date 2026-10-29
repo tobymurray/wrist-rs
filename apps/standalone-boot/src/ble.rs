@@ -38,6 +38,7 @@
 //! Address. A static random address from the MCU's unique id
 //! (`wrist_aci::static_random_address`), so bonds survive updates.
 
+use core::cell::RefCell;
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU8, Ordering};
 
 use embassy_futures::select::{select, select4, Either4};
@@ -48,6 +49,7 @@ use embassy_stm32::spi::{self, Spi};
 use embassy_stm32::time::Hertz;
 use embassy_stm32::{bind_interrupts, peripherals, Peri};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::channel::Channel;
 use embassy_sync::pipe::Pipe;
 use embassy_sync::signal::Signal;
@@ -62,7 +64,7 @@ use wrist_aci::opcode::{
     ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_REQ, HCI_LE_RAND, HCI_READ_LOCAL_VERSION, HCI_SET_EVENT_MASK,
 };
 use wrist_aci::{address, config, permission, vendor, AttributeModified, Event};
-use wrist_wake::ble::{timing, Outbox, PairAsk, Power, Radio, Timing};
+use wrist_wake::ble::{timing, Lines, Outbox, PairAsk, Power, Radio, Sink, Timing};
 
 use crate::console::Target;
 use crate::uart::Uart;
@@ -146,6 +148,10 @@ static REQUESTS: Channel<CriticalSectionRawMutex, Request, 4> = Channel::new();
 static WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 /// Console output for the central, filled while [`MIRROR`] is set.
 static OUT: Pipe<CriticalSectionRawMutex, 2048> = Pipe::new();
+/// Console output on its way into [`OUT`], a whole line at a time.
+static LINES: Mutex<CriticalSectionRawMutex, RefCell<Lines<256>>> = Mutex::new(RefCell::new(Lines::new()));
+/// Lines the mirror dropped because [`OUT`] was full.
+static LINES_DROPPED: AtomicU32 = AtomicU32::new(0);
 /// A central is subscribed to TX over an encrypted link.
 static MIRROR: AtomicBool = AtomicBool::new(false);
 
@@ -204,10 +210,40 @@ pub async fn proven_changed() {
     }
 }
 
+struct OutSink;
+
+impl Sink for OutSink {
+    fn free(&self) -> usize {
+        OUT.free_capacity()
+    }
+
+    fn write(&mut self, bytes: &[u8]) -> usize {
+        OUT.try_write(bytes).unwrap_or(0)
+    }
+}
+
+/// Empties [`OUT`] and forgets the line in hand.
+fn clear_out() {
+    LINES.lock(|lines| {
+        OUT.clear();
+        if let Ok(mut l) = lines.try_borrow_mut() {
+            l.clear();
+        }
+    });
+}
+
 /// Console output, mirrored to a subscribed central over an encrypted link. Never blocks:
-/// what does not fit is dropped.
+/// a line that does not fit is dropped whole. The lock spans the room check and the write;
+/// a fault handler that interrupts it finds the lines borrowed and mirrors nothing.
 pub fn tee(bytes: &[u8]) {
-    if MIRROR.load(Ordering::Relaxed) && OUT.try_write(bytes).is_ok() {
+    if !MIRROR.load(Ordering::Relaxed) {
+        return;
+    }
+    let lost = LINES.lock(|lines| lines.try_borrow_mut().map_or(0, |mut l| l.feed(bytes, &mut OutSink)));
+    if lost > 0 {
+        LINES_DROPPED.fetch_add(lost, Ordering::Relaxed);
+    }
+    if !OUT.is_empty() {
         WAKE.signal(());
     }
 }
@@ -307,6 +343,7 @@ pub fn write_status(uart: Uart) {
     n(", cut short ", &CUT_SHORT);
     n(", fragments ", &FRAGMENTS);
     n(", repeats ", &REPEATS);
+    n(", mirror lines dropped ", &LINES_DROPPED);
     n(", unsecured writes dropped ", &UNSECURED);
     n(", irq stuck after read ", &IRQ_STUCK_READ);
     n(" write ", &IRQ_STUCK_WRITE);
@@ -648,7 +685,7 @@ impl Link<'_> {
             self.finish_transfer = false;
             if let Some(session) = self.transfer.take() {
                 // What queued while the mirror waited is stale; the result line must find room.
-                OUT.clear();
+                clear_out();
                 if let Err(why) = crate::update::finish_app(self.flash, session).await {
                     self.uart.write_str("[update] error: ");
                     self.uart.write_line(why);
@@ -920,7 +957,7 @@ impl Link<'_> {
     fn set_mirror(&mut self) {
         let on = self.subscribed && ENCRYPTED.load(Ordering::Relaxed);
         if on != MIRROR.swap(on, Ordering::Relaxed) {
-            OUT.clear();
+            clear_out();
             self.outbox.clear();
             self.uart.write_line(if on {
                 "[ble] console attached over the air; 'help' lists commands"
