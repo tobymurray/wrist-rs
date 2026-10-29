@@ -260,6 +260,10 @@ the link1 module `BLUENRG2` rev 1.3, from Linux (BlueZ 5.87) unless a row says o
 | BlueZ keeps a bonded watch's GATT table and does not rediscover it: a later build's characteristic properties were not seen until the host removed the watch and paired again. BlueZ's per-characteristic `MTU` property stays 23 for the bonded watch; `AcquireWrite` on RX reports the 220 negotiated | bleak 3.0.2 |
 | BlueZ grants the battery timing's request: 195 ms, latency 4 | `ble profile battery` on a live link |
 | An application image of 167,644 bytes arrives in 24 to 25 s at a 15 ms interval and MTU 220; the executor is never more than 5 ms late while it arrives. The flash phase then held it for 0.2 and 1.6 s, as over USB, before the CRC came from a table: over USB a 226,684-byte image's update now holds it once, for 1.9 s, against twice, the longer 2.2 s, before | `page` after `wrist-ble.py --update --no-reset`, and over USB after `wrist-update.py` |
+| `ACI_GAP_INIT` takes peripheral and central together (roles `0x05`), and the chip then advertises and scans while it stays connectable for a phone | `ble on`, `ble scan` with advertising running |
+| ST's general discovery delivers advertising reports, but lets repeats through with duplicate filtering on, and reports an advertiser without a discoverable flag only by its scan responses | `ble scan` in a room of advertisers |
+| While the watch advertises, a scan gets about one window per advertising period: advertising every 995 ms, 6 s scans heard 3 reports at 20 ms every 100 ms, 7 at 30 ms every 50 ms, 20 at 100 ms every 500 ms and 51 at 200 ms every second | `ble scan 6 <interval> <window>` |
+| ST ends a general discovery by itself about 10.2 s after it starts, with `GAP_PROC_COMPLETE` status 0: a scan asked for 30 s reported done at 10.2 s | `ble scan 30` on a cable |
 
 ## What the schematics settle
 
