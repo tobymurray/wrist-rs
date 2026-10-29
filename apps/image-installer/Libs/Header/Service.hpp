@@ -49,7 +49,7 @@ private:
     void dryRun();
     void install(uint32_t confirmedCrc);
 
-    /// Kept in step with crates/wrist-flash/src/hw.rs.
+    /// Kept in step with crates/wrist-flash/src/commit.rs.
     static constexpr uint32_t kStatusAddress = 0x0805A000u;
     static constexpr uint32_t kStatusMagic   = 0x4641'4E55u;
     static constexpr uint32_t kKernelBase    = 0x08060000u;

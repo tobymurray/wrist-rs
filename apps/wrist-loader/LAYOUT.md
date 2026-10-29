@@ -14,7 +14,7 @@ Both [`memory.x`](memory.x) files spell out these numbers; embassy-boot takes th
 1's base. They are fixed for the life of the project: moving dfu or state means replacing
 the loader, which has no second slot. The installer's pages are bank 1 page 45, blank at the
 end of the bootloader's partition, and bank 2 pages 34 and 128 to 195
-([`crates/wrist-flash/src/plan.rs`](../../crates/wrist-flash/src/plan.rs), `hw.rs`).
+([`crates/wrist-flash/src/plan.rs`](../../crates/wrist-flash/src/plan.rs), `commit.rs`, `hw.rs`).
 
 ## Bank 2
 

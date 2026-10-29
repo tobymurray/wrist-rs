@@ -333,7 +333,7 @@ firmware image.
 | Firmware update and factory reset live in the bootloader, which draws its own menu, so recovery needs no debugger, no UART and no working kernel | CONFIRMED by test with the kernel erased |
 | Factory reset returns to the firmware the watch shipped with, not the previous version, so every update since has to be installed again | CONFIRMED by test |
 | A long-press combination in the bootloader rolls the watch back to an earlier firmware version, with no host; `UNA BOOT` carries `UnaWatch-Kernel_1.0.2.gld`, the shipped image it restores | CONFIRMED by test with a working kernel; the file seen on the drive |
-| The bootloader's recovery erases from `0x08060000` to the end of flash and nothing below, so [`crates/wrist-flash/src/hw.rs`](crates/wrist-flash/src/hw.rs) keeps its status in a blank page of the bootloader's partition | CONFIRMED |
+| The bootloader's recovery erases from `0x08060000` to the end of flash and nothing below, so [`crates/wrist-flash/src/commit.rs`](crates/wrist-flash/src/commit.rs) keeps its status in a blank page of the bootloader's partition | CONFIRMED |
 | An app on the stock kernel can write the FLASH control registers. A key write while the controller was mid-operation faulted, so `hw.rs` writes the keys only while `LOCK` is set | MEASURED (the fault); LIKELY that the busy controller, not a second unlock, caused it |
 | A write to `FLASH_NSCR` while `LOCK` is set is discarded with no flag and no fault, so `hw.rs` reads `NSCR` back after each command | CONFIRMED by test |
 | `PNB` is `NSCR[10:3]` and `BKER` is bit 11, so a page number of 256 or more silently selects the other bank; `hw.rs` sets `BKER` itself and checks it | CONFIRMED |

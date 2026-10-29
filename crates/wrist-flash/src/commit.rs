@@ -188,6 +188,8 @@ mod tests {
 
     /// Programming a word that is not erased (RM0456 7.9.7).
     const PROGERR: u32 = 1 << 3;
+    /// `PG` set while `PER` is (RM0456 7.9.7).
+    const PGSERR: u32 = 1 << 7;
 
     /// The old kernel's first word in each of its pages.
     const OLD: u32 = 0x1234_5678;
@@ -202,6 +204,8 @@ mod tests {
         /// From the page and how many times it was erased before.
         erase: EraseResult,
         erased: BTreeMap<u8, u32>,
+        /// `PER`, from an erase until [`Flash::end_erase`].
+        per: bool,
         /// Kernel erases that answer OK and leave the page as it was.
         drops_erase: bool,
         /// For every kernel program.
@@ -219,6 +223,7 @@ mod tests {
                 unlocks: true,
                 erase: Box::new(|_, _| Ok(())),
                 erased: BTreeMap::new(),
+                per: false,
                 drops_erase: false,
                 program_errors: None,
                 stuck: None,
@@ -275,6 +280,7 @@ mod tests {
         fn erase_page(&mut self, page: u8, bank2: bool) -> Result<(), u32> {
             assert!(!bank2, "the commit erases bank 1 only");
             self.log.push(Op::Erase(page));
+            self.per = true;
             let before = self.erased.entry(page).or_insert(0);
             let n = *before;
             *before += 1;
@@ -288,12 +294,16 @@ mod tests {
 
         fn end_erase(&mut self) {
             self.log.push(Op::EndErase);
+            self.per = false;
         }
 
         fn program(&mut self, address: u32, words: &[u32]) -> Result<(), u32> {
             self.log.push(Op::Program(address));
             assert_eq!(address % QUADWORD_U32, 0);
             assert_eq!(words.len() % (QUADWORD / 4), 0);
+            if self.per {
+                return Err(PGSERR);
+            }
             if let Some(errors) = self.program_errors.filter(|_| address >= KERNEL_BASE) {
                 return Err(errors);
             }

@@ -421,7 +421,7 @@ int Service::describeFlash(char* out, size_t capacity)
     const bool finished = (st[4] == kStatusMagic);
     const uint32_t outcome = (st[5] >> 16) & 0xFFFFu;
 
-    // Kept in step with the OUTCOME_* codes in crates/wrist-flash/src/hw.rs.
+    // Kept in step with the OUTCOME_* codes in crates/wrist-flash/src/commit.rs.
     const char* verdict = "blank: the installer never got as far as unlocking flash";
     if (began && !finished) {
         verdict = "BEGAN but no outcome: the kernel write started and did not finish";
