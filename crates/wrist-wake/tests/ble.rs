@@ -293,3 +293,18 @@ fn a_detach_forgets_the_line_in_hand() {
     assert_eq!(lines.feed(b"[ble] console attached\r\n", &mut ring), 0);
     assert_eq!(ring.read(64), b"[ble] console attached\r\n");
 }
+
+#[test]
+fn a_line_whose_only_refused_piece_is_its_end_is_not_counted_lost() {
+    let mut ring = Ring::<300>::new();
+    let mut lines = wrist_wake::ble::Lines::<256>::default();
+    ring.end = 44;
+    let body = [b'x'; 256];
+    assert_eq!(lines.feed(&body, &mut ring) + lines.feed(b"\r\n", &mut ring), 0);
+    ring.read(300);
+    assert_eq!(lines.feed(b"next\r\n", &mut ring), 0);
+    assert_eq!(ring.read(300), b"\r\nnext\r\n");
+    // An empty line refused outright is lost.
+    ring.full = true;
+    assert_eq!(lines.feed(b"\r\n", &mut ring), 1);
+}

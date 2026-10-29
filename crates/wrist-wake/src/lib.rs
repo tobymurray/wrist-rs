@@ -244,9 +244,11 @@ pub mod ble {
                     self.len += n;
                     piece = &piece[n..];
                 }
+                // Only the line's end refused: the next line's `\r\n` lead completes it.
+                let end_only = self.partial && self.buf[..self.len].iter().all(|&b| b == b'\r' || b == b'\n');
                 if ends && !self.dropping && !self.put(sink) {
                     self.dropping = true;
-                    lost += 1;
+                    lost += u32::from(!end_only);
                 }
                 if ends {
                     self.open |= self.dropping && self.partial;
