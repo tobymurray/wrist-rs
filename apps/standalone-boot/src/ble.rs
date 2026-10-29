@@ -38,6 +38,8 @@
 //! Address. A static random address from the MCU's unique id
 //! (`wrist_aci::static_random_address`), so bonds survive updates.
 
+mod scan;
+
 use core::cell::RefCell;
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU8, Ordering};
 
@@ -63,8 +65,8 @@ use wrist_aci::opcode::{
     ACI_GATT_UPDATE_CHAR_VALUE, ACI_HAL_GET_FW_BUILD_NUMBER, ACI_HAL_SET_TX_POWER_LEVEL, ACI_HAL_WRITE_CONFIG_DATA,
     ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_REQ, HCI_LE_RAND, HCI_READ_LOCAL_VERSION, HCI_SET_EVENT_MASK,
 };
-use wrist_aci::{address, config, permission, vendor, AttributeModified, Event};
-use wrist_wake::ble::{timing, Lines, Outbox, PairAsk, Power, Radio, Sink, Timing};
+use wrist_aci::{address, config, permission, role, vendor, AttributeModified, Event};
+use wrist_wake::ble::{timing, Lines, Outbox, PairAsk, Power, Radio, Scan, Sink, Timing};
 
 use crate::console::Target;
 use crate::uart::Uart;
@@ -140,6 +142,8 @@ enum Request {
     Disconnect,
     /// Ask for this interval range (1.25 ms units) on the current connection.
     IntervalNow(u16, u16),
+    /// `ble scan`: seconds, and a duty in place of the power source's.
+    Scan(u8, Option<Scan>),
 }
 
 static REQUESTS: Channel<CriticalSectionRawMutex, Request, 4> = Channel::new();
@@ -257,7 +261,7 @@ fn power() -> Power {
     }
 }
 
-/// `ble`, `ble on|off|version|yes|no|bonds|forget|disconnect|profile auto|cable|battery|interval now <min> <max>`.
+/// `ble`, `ble on|off|version|yes|no|bonds|forget|disconnect|profile auto|cable|battery|interval now <min> <max>|scan [s] [interval window]`.
 pub fn command(args: &[u8], uart: Uart) {
     let request = match args {
         b"" => return write_status(uart),
@@ -291,9 +295,13 @@ pub fn command(args: &[u8], uart: Uart) {
                 _ => return uart.write_line("[ble] usage: ble interval now <min> <max> (1.25 ms units, 6 to 1999)"),
             }
         }
+        rest if rest == b"scan" || rest.starts_with(b"scan ") => match scan::parse(&rest[4..]) {
+            Some(request) => request,
+            None => return uart.write_line(scan::USAGE),
+        },
         _ => {
             return uart.write_line(
-                "[ble] usage: ble [on|off|version|yes|no|bonds|forget|disconnect|profile auto|cable|battery|interval now <min> <max>]",
+                "[ble] usage: ble [on|off|version|yes|no|bonds|forget|disconnect|profile auto|cable|battery|interval now <min> <max>|scan [s] [interval window]]",
             )
         }
     };
@@ -387,7 +395,12 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
         while !on {
             match REQUESTS.receive().await {
                 Request::On => on = true,
-                Request::Version | Request::Bonds | Request::Forget | Request::Disconnect | Request::IntervalNow(..) => {
+                Request::Version
+                | Request::Bonds
+                | Request::Forget
+                | Request::Disconnect
+                | Request::IntervalNow(..)
+                | Request::Scan(..) => {
                     uart.write_line("[ble] off; `ble on` starts it");
                 }
                 Request::Off => {
@@ -438,6 +451,7 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
             console_at: Instant::from_ticks(0),
             outbox: Outbox::default(),
             pair_ask: PairAsk::default(),
+            scanner: scan::Scanner::default(),
         };
         link.bring_up().await;
         if Radio::from_u8(STATE.load(Ordering::Relaxed)).start_failed() {
@@ -502,6 +516,7 @@ struct Link<'d> {
     console_at: Instant,
     outbox: Outbox<NUS_VALUE_LEN>,
     pair_ask: PairAsk,
+    scanner: scan::Scanner,
 }
 
 impl Link<'_> {
@@ -511,6 +526,7 @@ impl Link<'_> {
         loop {
             WAKE.reset();
             self.deferred().await;
+            self.scan_tick().await;
             self.retime().await;
             self.console_tick().await;
             let due = self.due();
@@ -573,6 +589,7 @@ impl Link<'_> {
                 .then(|| Console { pending: !OUT.is_empty() || self.outbox.holding(), next_at: tick(self.console_at) }),
             abandon_at: self.transfer.as_ref().map(|_| tick(self.last_data + TRANSFER_IDLE + one)),
             ask_at: self.pair_ask.due(),
+            scan_end: self.scanner.until().map(tick),
         };
         wrist_wake::ble::due(&state).map(Instant::from_ticks)
     }
@@ -607,6 +624,7 @@ impl Link<'_> {
                     self.uart.write_line("[ble] interval now: not connected");
                 }
             }
+            Request::Scan(seconds, duty) => self.scan_request(seconds, duty).await,
         }
     }
 
@@ -777,14 +795,34 @@ impl Link<'_> {
                 return;
             }
         }
-        // GAP init: peripheral, no privacy, a name of up to 7 bytes. The reply carries the GAP
-        // service and device-name handles.
-        let (service, name_char) = match self.command(ACI_GAP_INIT, &[0x01, 0x00, 0x07]).await {
-            Ok(r) if r.status == 0 && r.len >= 6 => {
-                (u16::from_le_bytes([r.params[0], r.params[1]]), u16::from_le_bytes([r.params[2], r.params[3]]))
+        // Peripheral alone if the chip refuses both roles, so updates never depend on the
+        // central role.
+        let mut handles = None;
+        for roles in [role::PERIPHERAL | role::CENTRAL, role::PERIPHERAL] {
+            match self.command(ACI_GAP_INIT, &[roles, 0x00, 0x07]).await {
+                Ok(r) if r.status == 0 && r.len >= 6 => {
+                    let service = u16::from_le_bytes([r.params[0], r.params[1]]);
+                    let name_char = u16::from_le_bytes([r.params[2], r.params[3]]);
+                    handles = Some((service, name_char, roles & role::CENTRAL != 0));
+                    break;
+                }
+                Ok(r) => {
+                    self.uart.write_str("[ble] GAP init refused roles ");
+                    self.uart.write_hex8(roles);
+                    self.uart.write_str(", status ");
+                    self.uart.write_hex8(r.status);
+                    self.uart.write_line("");
+                }
+                Err(why) => {
+                    self.uart.write_str("[ble] GAP init: ");
+                    self.uart.write_line(why);
+                }
             }
-            _ => return self.fail("GAP init"),
+        }
+        let Some((service, name_char, central)) = handles else {
+            return self.fail("GAP init");
         };
+        self.scanner.started(central);
         let mut name = [0u8; 16];
         name[0..2].copy_from_slice(&service.to_le_bytes());
         name[2..4].copy_from_slice(&name_char.to_le_bytes());
@@ -811,7 +849,7 @@ impl Link<'_> {
                 self.uart.write_str(":");
             }
         }
-        self.uart.write_line("");
+        self.uart.write_line(if central { ", peripheral and central" } else { ", peripheral only" });
         self.list_bonds().await;
         self.advertise().await;
     }
@@ -1065,6 +1103,10 @@ impl Link<'_> {
                 self.uart.write_line(" ms");
             }
             Ok(r) => {
+                // Refused while a scan runs: it resumes when the scan ends.
+                if self.scanner.advertising_refused() {
+                    STATE.store(STATE_IDLE, Ordering::Relaxed);
+                }
                 self.uart.write_str("[ble] advertising refused, status ");
                 self.uart.write_hex8(r.status);
                 self.uart.write_line("");
@@ -1296,6 +1338,7 @@ impl Link<'_> {
                 self.uart.write_line(if on { "[ble] link encrypted" } else { "[ble] link encryption off" });
                 self.set_mirror();
             }
+            Event::Advertising { data } => self.scanner.advertising(data, self.uart),
             Event::Vendor { code, params } => self.vendor(code, params),
         }
     }
@@ -1379,6 +1422,11 @@ impl Link<'_> {
             vendor::GATT_ATTRIBUTE_MODIFIED if rest.len() >= 8 => {
                 if let Some(write) = AttributeModified::decode(rest) {
                     self.attribute_modified(write);
+                }
+            }
+            vendor::GAP_PROC_COMPLETE => {
+                if let Some((code, status)) = wrist_aci::gap_proc_complete(rest) {
+                    self.scanner.gap_proc_complete(code, status, self.uart);
                 }
             }
             _ => {

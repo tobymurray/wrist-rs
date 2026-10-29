@@ -287,6 +287,8 @@ pub enum Event<'a> {
     Disconnected { reason: u8 },
     /// Encryption Change: 1 on, 0 off.
     Encryption { on: u8 },
+    /// LE Advertising Report: one or more reports ([`reports`]).
+    Advertising { data: &'a [u8] },
     /// One of ST's events: its code and the bytes after it.
     Vendor { code: u16, params: &'a [u8] },
 }
@@ -314,6 +316,7 @@ pub fn parse(p: &[u8]) -> Option<Event<'_>> {
             interval: u16::from_le_bytes([*iv_lo, *iv_hi]),
             latency: u16::from_le_bytes([*lat_lo, *lat_hi]),
         }),
+        [0x04, 0x3E, _, 0x02, data @ ..] => Some(Event::Advertising { data }),
         [0x04, 0x05, _, _status, _lo, _hi, reason] => Some(Event::Disconnected { reason: *reason }),
         [0x04, 0x08, _, _status, _lo, _hi, on] => Some(Event::Encryption { on: *on }),
         [0x04, 0xFF, _, lo, hi, params @ ..] => Some(Event::Vendor { code: u16::from_le_bytes([*lo, *hi]), params }),

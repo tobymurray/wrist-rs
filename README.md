@@ -33,6 +33,7 @@ stock version is not supported until they name it.
 - Turns off everything the face doesn't use, and sleeps on battery.
 - Optionally, in a build with the `ble` feature: the console and updates over Bluetooth, for a
   computer it is bonded to. The radio stays off until you turn it on ([BUILDING.md](BUILDING.md#bluetooth)).
+  The same build lists the Bluetooth LE devices around it.
 - Never writes UNA's bootloader code, so the stock firmware is always one recovery away.
   The installer records its outcome in a blank page at the end of the bootloader's partition.
 

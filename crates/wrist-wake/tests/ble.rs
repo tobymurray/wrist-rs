@@ -1,6 +1,6 @@
 //! The BLE loop's deadlines: idle costs no wake, and everything it does by time has one.
 
-use wrist_wake::ble::{due, timing, Console, Power, State, Transfer};
+use wrist_wake::ble::{due, scan, timing, Console, Power, State, Transfer};
 use wrist_wake::earliest;
 
 const NOW: u64 = 1_000;
@@ -14,6 +14,7 @@ fn idle() -> State {
         console: None,
         abandon_at: None,
         ask_at: None,
+        scan_end: None,
     }
 }
 
@@ -359,4 +360,29 @@ fn a_held_chunk_is_dropped_at_a_clear_and_a_whole_line_gets_no_blank_one() {
         central.extend(notify(&mut out, &mut ring, 8, 0));
     }
     assert_eq!(central, b"[hb] 1\r\n[update] ok\r\n");
+}
+
+#[test]
+fn a_scan_wakes_the_loop_when_it_ends() {
+    let s = State { scan_end: Some(NOW + 10_000), ..idle() };
+    assert_eq!(due(&s), Some(NOW + 10_000));
+    let s = State { scan_end: Some(NOW + 10_000), abandon_at: Some(NOW + 5_000), ..idle() };
+    assert_eq!(due(&s), Some(NOW + 5_000));
+}
+
+#[test]
+fn scanning_listens_less_on_battery() {
+    for power in [Power::Cable, Power::Battery] {
+        let s = scan(power);
+        // Core Specification limits: 2.5 ms to 10.24 s, window no longer than interval.
+        assert!((4..=0x4000).contains(&s.interval) && (4..=s.interval).contains(&s.window));
+    }
+    let duty = |s: wrist_wake::ble::Scan| u32::from(s.window) * 100 / u32::from(s.interval);
+    assert_eq!(duty(scan(Power::Cable)), 60);
+    assert_eq!(duty(scan(Power::Battery)), 20);
+    // About one window per advertising period: the scan interval within 10% of advertising's.
+    for power in [Power::Cable, Power::Battery] {
+        let (scan, adv) = (u32::from(scan(power).interval), u32::from(timing(power, false).advertise));
+        assert!(scan * 10 >= adv * 9 && scan * 10 <= adv * 11, "{power:?}");
+    }
 }

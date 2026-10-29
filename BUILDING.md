@@ -122,6 +122,9 @@ An update that arrived over the air is kept once USB is configured or an encrypt
 Bluetooth link is up. BlueZ keeps a bonded watch's services: after a build that changes
 them, `bluetoothctl remove <address>` and pair again.
 
+The watch can also scan for any Bluetooth LE device: `ble scan [s]` lists advertisers by
+address, signal, name and services.
+
 ## Working on InscribedDisc
 
 The face is drawn with [InscribedDisc](https://crates.io/crates/inscribed-disc), developed

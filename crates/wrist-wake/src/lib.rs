@@ -53,6 +53,8 @@ pub mod ble {
         pub abandon_at: Option<u64>,
         /// An unencrypted central is asked to pair at this tick ([`PairAsk`]).
         pub ask_at: Option<u64>,
+        /// A scan ends at this tick.
+        pub scan_end: Option<u64>,
     }
 
     /// When the loop must next run by time; `None` means only the chip's IRQ, a request or
@@ -62,7 +64,7 @@ pub mod ble {
         let now = s.now;
         let quiet = s.transfer == Transfer::Started;
         let console = s.console.and_then(|c| (c.pending && !quiet).then_some(c.next_at.max(now)));
-        earliest([s.work.then_some(now), s.confirm_by, console, s.abandon_at, s.ask_at])
+        earliest([s.work.then_some(now), s.confirm_by, console, s.abandon_at, s.ask_at, s.scan_end])
     }
 
     /// How long a link stays unencrypted before the watch asks its central to pair: well past a
@@ -334,6 +336,22 @@ pub mod ble {
                 }
                 _ => Err(status),
             }
+        }
+    }
+
+    /// A scan's duty: every `interval`, listen for `window` (both 0.625 ms units).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct Scan {
+        pub interval: u16,
+        pub window: u16,
+    }
+
+    /// The interval follows advertising's, which paces a scan while the watch advertises (HARDWARE.md).
+    #[must_use]
+    pub const fn scan(power: Power) -> Scan {
+        match power {
+            Power::Cable => Scan { interval: 160, window: 96 },
+            Power::Battery => Scan { interval: 1600, window: 320 },
         }
     }
 }

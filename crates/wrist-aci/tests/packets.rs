@@ -214,11 +214,13 @@ fn strap_report() -> Vec<u8> {
 
 #[test]
 fn advertising_reports_decode() {
-    let mut p = vec![0x02];
+    let mut p = vec![0x04, 0x3E, 0x00, 0x02, 0x02];
     p.extend(strap_report());
     // A scan response from a public address, carrying only a name.
     p.extend([0x04, 0x00, 1, 2, 3, 4, 5, 6, 4, 3, 0x08, b'P', b'M', 0xB0]);
-    let all: Vec<_> = reports(&p).collect();
+    p[2] = u8::try_from(p.len() - 3).unwrap();
+    let Some(Event::Advertising { data }) = parse(&p) else { panic!("not a report") };
+    let all: Vec<_> = reports(data).collect();
     assert_eq!(all.len(), 2);
     let strap = all[0];
     assert_eq!(strap.kind, 0);
