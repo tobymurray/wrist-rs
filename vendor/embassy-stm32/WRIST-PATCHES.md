@@ -34,9 +34,13 @@ revision. Remove this copy once upstream has all of these, or equivalents:
   unchanged value is not written: entering Stop 2 with a `CCIE` enable unacknowledged loses
   the compare wakeup, and the alarm runs one 2 s period late. `set_alarm` writes `CCIE` once, to its final value,
   and an alarm already due after `next_period` runs at the overflow (ES0499 2.17.3).
+  A `DIEROK` or `CMPOK` not seen within 2 ms, against at most 215 us measured, does not
+  stop the driver: the write is made once more and, if still unacknowledged, left to the
+  overflow, which handles an alarm whose wakeup it lost.
 - **Alarms armed for the current counter cycle** (upstream
   [`fb82051b5`](https://github.com/embassy-rs/embassy/commit/fb82051b5), #7241): `CCIE` is
   set for any alarm before the next overflow; setting it only under `0xC000` ticks away
   leaves an alarm in a cycle's last quarter up to 500 ms late.
 - **Time driver counters.** `low_power::time_driver_stats::snapshot()` returns the `DIER`
-  and compare waits, Stop entries with a write unacknowledged, and the last late alarms.
+  and compare waits, Stop entries with a write unacknowledged, the waits that timed out,
+  with the registers at the last, and the last late alarms.

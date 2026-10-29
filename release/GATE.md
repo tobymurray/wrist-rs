@@ -89,8 +89,9 @@ The watch runs an earlier wrist-rs.
     by that length in minutes is the wake rate on battery: expect about forty a minute, from
     the time driver every 2 s, the watchdog's feed every 8 s and the minute's redraw.
     `PWR_INT_L` reads high, and `input interrupts` has gone up by two, the unplug and the
-    plug. Under `[lptim]`: `alarms handled over 5 ms late 0` and `Stop entered with one
-    unacknowledged 0`; a late alarm is a press whose light comes on late. `[crash] no
+    plug. Under `[lptim]`: `alarms handled over 5 ms late 0`, `Stop entered with one
+    unacknowledged 0` and `waits over 2 ms: DIEROK 0, CMPOK 0`; a late alarm is a press
+    whose light comes on late. `[crash] no
     retained failure`: nothing panicked or faulted since step 4, through every restart (a
     record names a panic's line and file hash, which [`tools/wrist-crash.py`](../tools/wrist-crash.py)
     resolves with this `app.bin`). Record the mean
