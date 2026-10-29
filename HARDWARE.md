@@ -520,6 +520,9 @@ At boot ([`apps/standalone-boot/src/park.rs`](apps/standalone-boot/src/park.rs))
   below its top page, and the DCACHE1, DMA2D and PKA RAMs. The linker's RAM is SRAM1; the
   stack shares SRAM5's top page with the loader's mailbox and the failure record. An update
   is staged in SRAM3's first 512 KB, kept through Stop only while a transfer holds it.
+  The image first selects the SMPS (`REGSEL`, which a system reset clears) and keeps every
+  SRAM on if `REGS` does not follow: on the LDO, a watchdog, `NRST` or BOR reset in Stop 2
+  with any SRAM down can hold the part at tens of mA until a power-on (ES0553 2.2.10).
 
 On battery ([`apps/standalone-boot/src/power.rs`](apps/standalone-boot/src/power.rs) and [`console.rs`](apps/standalone-boot/src/console.rs)), also not yet measured:
 

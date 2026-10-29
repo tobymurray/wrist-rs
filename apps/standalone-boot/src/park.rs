@@ -11,10 +11,11 @@ use wrist_board::{pins as net, Pin as Net, Port};
 use crate::mmio::{
     enable_clock, modify32, read32, write32, GPIOA_BASE, GPIOB_BASE, GPIOC_BASE, GPIOD_BASE,
     GPIOE_BASE, GPIOF_BASE, GPIOG_BASE, GPIO_MODER, GPIO_PUPDR, PWR_CR2, PWR_CR2_DC1RAM,
-    PWR_CR2_DMA2DRAM, PWR_CR2_PKARAM, PWR_CR2_SRAM2, PWR_CR2_SRAM3_1_TO_8, PWR_CR2_SRAM4, PWR_CR4,
-    PWR_CR4_SRAM3_9_TO_13, PWR_CR4_SRAM5_1_TO_12, RCC_AHB2ENR1, RCC_AHB2ENR1_GPIOAEN,
-    RCC_AHB2ENR1_GPIOBEN, RCC_AHB2ENR1_GPIOCEN, RCC_AHB2ENR1_GPIODEN, RCC_AHB2ENR1_GPIOFEN,
-    RCC_AHB2ENR1_GPIOGEN, RCC_AHB2ENR1_SDMMC1EN, SDMMC1_BASE, SDMMC_POWER, SRAM1_BASE, SRAM_PAGE,
+    PWR_CR2_DMA2DRAM, PWR_CR2_PKARAM, PWR_CR2_SRAM2, PWR_CR2_SRAM3_1_TO_8, PWR_CR2_SRAM4, PWR_CR3,
+    PWR_CR3_REGSEL, PWR_CR4, PWR_CR4_SRAM3_9_TO_13, PWR_CR4_SRAM5_1_TO_12, PWR_SVMSR,
+    PWR_SVMSR_REGS, RCC_AHB2ENR1, RCC_AHB2ENR1_GPIOAEN, RCC_AHB2ENR1_GPIOBEN, RCC_AHB2ENR1_GPIOCEN,
+    RCC_AHB2ENR1_GPIODEN, RCC_AHB2ENR1_GPIOFEN, RCC_AHB2ENR1_GPIOGEN, RCC_AHB2ENR1_SDMMC1EN,
+    SDMMC1_BASE, SDMMC_POWER, SRAM1_BASE, SRAM_PAGE,
 };
 
 extern "C" {
@@ -55,6 +56,8 @@ const SENSORS: [(u8, &str); 2] = [(0x68, "IMU"), (0x14, "compass")];
 const REG_CMD: u8 = 0x7E;
 const CMD_SOFT_RESET: u8 = 0xB6;
 
+const SMPS_POLLS: u32 = 10_000;
+
 const SENSOR_LEFT_ALONE: u8 = 0;
 const SENSOR_RESET: u8 = 1;
 const SENSOR_SILENT: u8 = 2;
@@ -93,7 +96,9 @@ pub fn park(pins: Pins, sensor_bus: Option<&mut I2c<'static, Blocking, Master>>,
     hold_low(pins.buzzer_en1);
     hold_low(pins.buzzer_en2);
     crate::rtc::disarm_alarm_a();
-    unsafe { sram_off() };
+    if unsafe { select_smps() } {
+        unsafe { sram_off() };
+    }
     if let Some(bus) = sensor_bus {
         for ((addr, _), outcome) in SENSORS.into_iter().zip(&SENSOR_OUTCOME) {
             let reset = bus.blocking_write(addr, &[REG_CMD, CMD_SOFT_RESET]).is_ok();
@@ -113,7 +118,11 @@ pub fn write_report(uart: Uart) {
     uart.write_str("     ");
     uart.write_u32(u32::try_from(ANALOG.len()).unwrap_or(0));
     uart.write_line(" unused lines analog; RTC alarm A off");
-    uart.write_line("     off in Stop: SRAM1 above .bss, SRAM2, SRAM3 outside an update, SRAM4, SRAM5 below its top 64 KB, DCACHE1/DMA2D/PKA RAM");
+    uart.write_line(if on_smps() {
+        "     off in Stop: SRAM1 above .bss, SRAM2, SRAM3 outside an update, SRAM4, SRAM5 below its top 64 KB, DCACHE1/DMA2D/PKA RAM"
+    } else {
+        "     SMPS NOT selected: every SRAM kept on in Stop (ES0553 2.2.10)"
+    });
     uart.write_reg("     PWR_CR2 = ", unsafe { read32(PWR_CR2) });
     uart.write_reg("     PWR_CR4 = ", unsafe { read32(PWR_CR4) });
     for ((_, name), outcome) in SENSORS.into_iter().zip(&SENSOR_OUTCOME) {
@@ -125,6 +134,16 @@ pub fn write_report(uart: Uart) {
             _ => " left alone: the GNSS slot holds another module",
         });
     }
+}
+
+/// SRAM may be powered down in Stop 2 only on the SMPS (ES0553 2.2.10).
+pub fn on_smps() -> bool {
+    unsafe { read32(PWR_SVMSR) & PWR_SVMSR_REGS != 0 }
+}
+
+unsafe fn select_smps() -> bool {
+    modify32(PWR_CR3, 0, PWR_CR3_REGSEL);
+    (0..SMPS_POLLS).any(|_| on_smps())
 }
 
 /// Keeps only SRAM1's pages up to the end of `.bss` and SRAM5's top page (the stack, the
