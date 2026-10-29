@@ -259,7 +259,7 @@ the link1 module `BLUENRG2` rev 1.3, from Linux (BlueZ 5.87) unless a row says o
 | An ATT MTU request or an SMP security request from the watch at connect ends a bonded macOS central's link with a MIC failure: reconnects with both 0 of 6, the security request alone 1 of 4, the MTU request alone 0 of 3, neither 3 of 3 | one Mac and one bond, an image per case |
 | BlueZ keeps a bonded watch's GATT table and does not rediscover it: a later build's characteristic properties were not seen until the host removed the watch and paired again. BlueZ's per-characteristic `MTU` property stays 23 for the bonded watch; `AcquireWrite` on RX reports the 220 negotiated | bleak 3.0.2 |
 | BlueZ grants the battery timing's request: 195 ms, latency 4 | `ble profile battery` on a live link |
-| An application image of 167,644 bytes arrives in 24 to 25 s at a 15 ms interval and MTU 220; the executor is never more than 5 ms late while it arrives. The flash phase then holds it for 0.2 and 1.6 s, as over USB | `page` after `wrist-ble.py --update --no-reset` |
+| An application image of 167,644 bytes arrives in 24 to 25 s at a 15 ms interval and MTU 220; the executor is never more than 5 ms late while it arrives. The flash phase then held it for 0.2 and 1.6 s, as over USB, before the CRC came from a table: over USB a 226,684-byte image's update now holds it once, for 1.9 s, against twice, the longer 2.2 s, before | `page` after `wrist-ble.py --update --no-reset`, and over USB after `wrist-update.py` |
 
 ## What the schematics settle
 

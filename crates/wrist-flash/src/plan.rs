@@ -170,14 +170,29 @@ pub fn crc32(bytes: &[u8]) -> u32 {
 #[must_use]
 pub fn crc32_continue(mut crc: u32, bytes: &[u8]) -> u32 {
     for &byte in bytes {
-        crc ^= u32::from(byte);
-        for _ in 0..8 {
-            let mask = (crc & 1).wrapping_neg();
-            crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
-        }
+        crc = (crc >> 8) ^ CRC32_TABLE[usize::from(crc.to_le_bytes()[0] ^ byte)];
     }
     crc
 }
+
+const fn crc32_bits(mut crc: u32) -> u32 {
+    let mut bit = 0;
+    while bit < 8 {
+        crc = (crc >> 1) ^ (0xEDB8_8320 & (crc & 1).wrapping_neg());
+        bit += 1;
+    }
+    crc
+}
+
+const CRC32_TABLE: [u32; 256] = {
+    let mut table = [0; 256];
+    let mut i: u32 = 0;
+    while i < 256 {
+        table[i as usize] = crc32_bits(i);
+        i += 1;
+    }
+    table
+};
 
 #[cfg(test)]
 mod tests {
@@ -373,5 +388,37 @@ mod tests {
         assert_eq!(crc32(b"a"), 0xE8B7_BE43);
         assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
         assert_eq!(crc32(b"The quick brown fox jumps over the lazy dog"), 0x414F_A339);
+    }
+
+    fn crc32_bitwise(mut crc: u32, bytes: &[u8]) -> u32 {
+        for &byte in bytes {
+            crc ^= u32::from(byte);
+            for _ in 0..8 {
+                let mask = (crc & 1).wrapping_neg();
+                crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+            }
+        }
+        crc
+    }
+
+    #[test]
+    fn crc32_table_matches_the_bitwise_crc() {
+        assert_eq!(CRC32_TABLE[1], 0x7707_3096);
+        assert_eq!(CRC32_TABLE[255], 0x2D02_EF8D);
+        for byte in 0..=255u8 {
+            assert_eq!(crc32_continue(0, &[byte]), crc32_bitwise(0, &[byte]), "{byte}");
+        }
+        let mut x = 0x1234_5678u32;
+        let data: Vec<u8> = (0..70_000)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                x.to_le_bytes()[0]
+            })
+            .collect();
+        for len in [0, 1, 7, 4096, 70_000] {
+            assert_eq!(crc32_continue(0xFFFF_FFFF, &data[..len]), crc32_bitwise(0xFFFF_FFFF, &data[..len]), "{len}");
+        }
     }
 }

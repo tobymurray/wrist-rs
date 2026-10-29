@@ -192,18 +192,14 @@ pub fn staging_command(args: &[u8], uart: Uart) {
     }
 }
 
-/// A 4 KiB block's CRC a line, yielding every kibibyte, since the CRC is bitwise.
+/// A 4 KiB block's CRC a line.
 pub async fn staging_crcs(uart: Uart, len: usize) {
     for (i, block) in staging()[..len.min(STAGING_SIZE)].chunks(4096).enumerate() {
-        let mut crc = 0xFFFF_FFFF;
-        for piece in block.chunks(1024) {
-            crc = wrist_flash::plan::crc32_continue(crc, piece);
-            embassy_futures::yield_now().await;
-        }
+        let crc = wrist_flash::plan::crc32(block);
         uart.write_str("[staging] block ");
         uart.write_u32(u32::try_from(i).unwrap_or(0));
         uart.write_str(" crc ");
-        uart.write_hex32(!crc);
+        uart.write_hex32(crc);
         uart.write_line("");
         crate::console::make_room().await;
     }
@@ -217,13 +213,22 @@ pub fn abort(s: Session) {
     uart.write_line(" abandoned");
 }
 
-fn verify(s: &Session) -> Result<&'static [u8], &'static str> {
+async fn crc32_yielding(bytes: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFF;
+    for piece in bytes.chunks(4096) {
+        crc = wrist_flash::plan::crc32_continue(crc, piece);
+        embassy_futures::yield_now().await;
+    }
+    !crc
+}
+
+async fn verify(s: &Session) -> Result<&'static [u8], &'static str> {
     let uart = Uart::best_effort();
     let staging = staging();
     if !s.complete() {
         return Err("transfer incomplete");
     }
-    let found = wrist_flash::plan::crc32(&staging[..s.len]);
+    let found = crc32_yielding(&staging[..s.len]).await;
     if found != s.crc {
         uart.write_str(s.tag);
         uart.write_str(" crc mismatch in RAM: got ");
@@ -267,7 +272,7 @@ pub fn app_update_allowed(flash: &'static FlashMutex) -> Result<(), &'static str
 
 pub async fn finish_app(flash: &'static FlashMutex, s: Session) -> Result<(), &'static str> {
     let uart = Uart::best_effort();
-    let image = verify(&s)?;
+    let image = verify(&s).await?;
     crate::console::quiet(true);
     Timer::after_millis(200).await;
     let result = write_and_mark(flash, image, s.crc);
@@ -283,7 +288,7 @@ pub async fn finish_app(flash: &'static FlashMutex, s: Session) -> Result<(), &'
 
 pub async fn finish_loader(flash: &'static FlashMutex, s: Session) -> Result<(), &'static str> {
     let uart = Uart::best_effort();
-    let image = verify(&s)?;
+    let image = verify(&s).await?;
     crate::console::quiet(true);
     Timer::after_millis(200).await;
     let result = write_loader(flash, image, s.crc);
