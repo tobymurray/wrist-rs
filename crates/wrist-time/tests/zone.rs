@@ -42,6 +42,14 @@ fn unset_registers_are_no_record() {
 }
 
 #[test]
+fn a_change_left_alone_in_the_second_slot_still_comes_due() {
+    let spring = utc("2027-03-28 01:00:00");
+    let zone = Zone::decode([0x545A_0000, 0, 0, 0x5432_003C, spring]).unwrap();
+    assert_eq!(zone.next, [Some(Change { at: spring, offset: 60 }), None]);
+    assert_eq!(zone.due(at("2027-03-28 01:00:00")).map(|(shift, _)| shift), Some(60));
+}
+
+#[test]
 fn records_round_trip() {
     for zone in [
         london(),
