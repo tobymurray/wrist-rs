@@ -218,7 +218,7 @@ unsafe fn verify(address: u32, words: &[u32]) -> Option<usize> {
     None
 }
 
-/// The registers, for [`commit::commit`]; only `commit` here makes one, with interrupts masked.
+/// Made only by `commit`, with interrupts masked.
 struct Registers;
 
 impl Flash for Registers {

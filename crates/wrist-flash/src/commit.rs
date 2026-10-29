@@ -1,11 +1,8 @@
-//! The kernel write as a sequence over any [`Flash`]: what it refuses before bank 1 is
-//! touched, the order it erases, programs and records in, and what each record says. `hw`
-//! supplies the registers; the host tests a model.
+//! The kernel write, over any [`Flash`].
 
 use crate::plan::{bank1_page_address, Plan, PAGE_SIZE, PAGE_SIZE_U32, QUADWORD};
 
-/// A blank page at the tail of the bootloader's partition, which the recovery's
-/// erase does not reach (`HARDWARE.md`, "Boot handoff").
+/// The witness page (`HARDWARE.md`, "Boot handoff").
 pub const STATUS_PAGE: u8 = 45;
 pub const STATUS_ADDRESS: u32 = 0x0805_A000;
 pub const STATUS_MAGIC: u32 = u32::from_le_bytes(*b"UNAF");
@@ -39,7 +36,6 @@ pub const WRITE_ATTEMPTS: u32 = 3;
 #[allow(clippy::cast_possible_truncation)]
 const QUADWORD_U32: u32 = QUADWORD as u32;
 
-/// The flash controller, as the sequence uses it.
 pub trait Flash {
     /// Whether `NSCR` is writable after.
     fn unlock(&mut self) -> bool;
@@ -83,20 +79,19 @@ fn program_paged<F: Flash>(f: &mut F, address: u32, words: &[u32]) -> Result<(),
     Ok(())
 }
 
-/// Puts `words`, the padded image, over the kernel as `plan` places it. `Err` only if it
-/// refused before bank 1 was touched, with flash locked unless the unlock itself failed;
 /// `Ok` once the outcome is recorded and flash locked, for the caller to reset.
 ///
 /// # Errors
-/// [`ERR_UNLOCK`], [`ERR_WITNESS_FOREIGN`] or [`ERR_STATUS_PAGE`].
+/// [`ERR_UNLOCK`], [`ERR_WITNESS_FOREIGN`] or [`ERR_STATUS_PAGE`], with bank 1 untouched and
+/// flash locked unless the unlock failed.
 pub fn commit<F: Flash>(f: &mut F, plan: Plan, image_crc: u32, words: &[u32]) -> Result<(), i32> {
     if !f.unlock() {
         return Err(ERR_UNLOCK);
     }
 
-    // The witness page is in the bootloader's partition: refuse unless it is blank or ours.
     let witness = f.read(STATUS_ADDRESS);
-    if witness != 0xFFFF_FFFF && witness != STATUS_MAGIC {
+    let blank_or_ours = witness == 0xFFFF_FFFF || witness == STATUS_MAGIC;
+    if !blank_or_ours {
         f.lock();
         return Err(ERR_WITNESS_FOREIGN);
     }
@@ -109,7 +104,7 @@ pub fn commit<F: Flash>(f: &mut F, plan: Plan, image_crc: u32, words: &[u32]) ->
 
     record(f, 0, OUTCOME_BEGAN, 0, image_crc, plan);
 
-    // Point of no return: the kernel's vector table is in these pages.
+    // Point of no return.
     let mut outcome = OUTCOME_ERASE_FAILED;
     let mut detail = 0u32;
     let base = bank1_page_address(plan.first_page);
@@ -190,6 +185,9 @@ mod tests {
         Program(u32),
         Verify(u32),
     }
+
+    /// Programming a word that is not erased (RM0456 7.9.7).
+    const PROGERR: u32 = 1 << 3;
 
     /// The old kernel's first word in each of its pages.
     const OLD: u32 = 0x1234_5678;
@@ -301,9 +299,8 @@ mod tests {
             }
             for (i, &w) in words.iter().enumerate() {
                 let at = address + 4 * i as u32;
-                // A quad-word programs once between erases.
                 if self.word(at) != 0xFFFF_FFFF {
-                    return Err(1 << 3);
+                    return Err(PROGERR);
                 }
                 let w = match self.stuck {
                     Some((stuck, value)) if stuck == at => value,
@@ -460,7 +457,7 @@ mod tests {
 
     #[test]
     fn a_program_failure_is_recorded_with_its_errors() {
-        for (errors, code) in [(1 << 3, OUTCOME_PROGRAM_FAILED), (POLL_TIMED_OUT, OUTCOME_TIMEOUT)] {
+        for (errors, code) in [(PROGERR, OUTCOME_PROGRAM_FAILED), (POLL_TIMED_OUT, OUTCOME_TIMEOUT)] {
             let mut m = Model { program_errors: Some(errors), ..Model::new() };
             assert_eq!(run(&mut m), Ok(()));
             assert_eq!(outcome(&m), (code, errors));
@@ -476,7 +473,6 @@ mod tests {
         assert_eq!(m.log.iter().filter(|op| matches!(op, Op::Verify(_))).count(), WRITE_ATTEMPTS as usize);
     }
 
-    /// `Service.cpp` decodes the record on the watch after an install.
     #[test]
     fn the_installer_reads_the_record_as_it_is_written() {
         let header = include_str!("../../../apps/image-installer/Libs/Header/Service.hpp");
