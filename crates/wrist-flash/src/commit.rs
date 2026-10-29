@@ -197,6 +197,7 @@ mod tests {
     type EraseResult = Box<dyn FnMut(u8, u32) -> Result<(), u32>>;
 
     /// Bank 1 as words, unwritten ones erased, and every call logged.
+    #[allow(clippy::struct_excessive_bools)]
     struct Model {
         words: BTreeMap<u32, u32>,
         log: Vec<Op>,
@@ -206,6 +207,8 @@ mod tests {
         erased: BTreeMap<u8, u32>,
         /// `PER`, from an erase until [`Flash::end_erase`].
         per: bool,
+        /// `NSCR`'s `LOCK`, set from reset.
+        locked: bool,
         /// Kernel erases that answer OK and leave the page as it was.
         drops_erase: bool,
         /// For every kernel program.
@@ -224,6 +227,7 @@ mod tests {
                 erase: Box::new(|_, _| Ok(())),
                 erased: BTreeMap::new(),
                 per: false,
+                locked: true,
                 drops_erase: false,
                 program_errors: None,
                 stuck: None,
@@ -266,11 +270,13 @@ mod tests {
     impl Flash for Model {
         fn unlock(&mut self) -> bool {
             self.log.push(Op::Unlock);
+            self.locked &= !self.unlocks;
             self.unlocks
         }
 
         fn lock(&mut self) {
             self.log.push(Op::Lock);
+            self.locked = true;
         }
 
         fn kick_watchdog(&mut self) {
@@ -280,6 +286,9 @@ mod tests {
         fn erase_page(&mut self, page: u8, bank2: bool) -> Result<(), u32> {
             assert!(!bank2, "the commit erases bank 1 only");
             self.log.push(Op::Erase(page));
+            if self.locked {
+                return Err(NOT_ARMED | (1 << 15));
+            }
             self.per = true;
             let before = self.erased.entry(page).or_insert(0);
             let n = *before;
@@ -299,6 +308,9 @@ mod tests {
 
         fn program(&mut self, address: u32, words: &[u32]) -> Result<(), u32> {
             self.log.push(Op::Program(address));
+            if self.locked {
+                return Err(PGSERR);
+            }
             assert_eq!(address % QUADWORD_U32, 0);
             assert_eq!(words.len() % (QUADWORD / 4), 0);
             if self.per {
