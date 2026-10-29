@@ -112,18 +112,58 @@ fn dier_write(r: Regs, val: u32) {
         stats::skipped();
         return;
     }
-    r.icr().write(|w| w.set_dierokcf(true));
-    r.dier().write(|w| w.0 = val);
     stats::written(old, val);
+    let write = || {
+        r.icr().write(|w| w.set_dierokcf(true));
+        r.dier().write(|w| w.0 = val);
+    };
+    if let Some((from, _)) = write_acknowledged(r, true, val, write, || r.isr().read().dierok()) {
+        stats::dierok_wait(from);
+        stats::acknowledged(ier_read(r));
+    }
+}
+
+/// wrist-rs: an acknowledgement has taken at most 7 LSE cycles (215 us); this is 65.
+#[cfg(any(stm32wba, stm32u5, stm32u3))]
+const ACK_TIMEOUT_US: u32 = 2_000;
+
+/// wrist-rs: `write`s, which clears `ok` first, and waits for `ok`. Unacknowledged, the write is
+/// made once more, then given up: a compare wakeup it loses is an alarm the next overflow finds
+/// overdue. When acknowledged, the cycle count it was first written at and whether `ok` was
+/// already set at the first poll.
+#[cfg(any(stm32wba, stm32u5, stm32u3))]
+fn write_acknowledged(r: Regs, dier: bool, val: u32, write: impl Fn(), ok: impl Fn() -> bool) -> Option<(u32, bool)> {
+    write();
     let from = stats::cycles();
-    for _ in 0..20_000 {
-        if r.isr().read().dierok() {
-            stats::dierok_wait(from);
-            stats::acknowledged(ier_read(r));
-            return;
+    if ok() {
+        return Some((from, true));
+    }
+    if poll(from, &ok) {
+        return Some((from, false));
+    }
+    let read_back = if dier { ier_read(r) } else { u32::from(r.ccr(0).read().ccr()) };
+    let (cr, isr, bdcr) = (r.cr().read().0, r.isr().read().0, crate::pac::RCC.bdcr().read().0);
+    let counter = r.cnt().read().cnt();
+    write();
+    let acknowledged = poll(stats::cycles(), &ok);
+    let counter_ticks = r.cnt().read().cnt().wrapping_sub(counter);
+    let timeout = stats::Timeout { dier, cr, isr, bdcr, written: val, read_back, counter_ticks };
+    stats::timed_out(timeout, acknowledged);
+    acknowledged.then_some((from, false))
+}
+
+/// wrist-rs: whether `ok` sets within `ACK_TIMEOUT_US` of `from`.
+#[cfg(any(stm32wba, stm32u5, stm32u3))]
+fn poll(from: u32, ok: impl Fn() -> bool) -> bool {
+    // SAFETY: the clocks are set before the time driver starts, and only in critical sections.
+    let hz = unsafe { crate::rcc::get_freqs() }.sys.to_hertz().map_or(160_000_000, |f| f.0);
+    let limit = hz / 1_000_000 * ACK_TIMEOUT_US;
+    while stats::cycles().wrapping_sub(from) < limit {
+        if ok() {
+            return true;
         }
     }
-    panic!("LPTIM interrupt enable write acknowledgement timed out");
+    ok()
 }
 
 /// wrist-rs: what the driver saw, for diagnosing late wakes; see WRIST-PATCHES.md.
@@ -166,6 +206,21 @@ pub mod stats {
         pub flags: u16,
     }
 
+    /// A write not acknowledged in time, with the registers as its wait ended.
+    #[derive(Clone, Copy, Default)]
+    pub struct Timeout {
+        /// `DIER`, else `CCR`.
+        pub dier: bool,
+        pub cr: u32,
+        pub isr: u32,
+        /// `RCC_BDCR`.
+        pub bdcr: u32,
+        pub written: u32,
+        pub read_back: u32,
+        /// How far the counter moved while the write made again was waited on.
+        pub counter_ticks: u16,
+    }
+
     /// Cycles are the core's, at the clock in force.
     #[derive(Clone, Copy, Default)]
     pub struct Stats {
@@ -184,6 +239,12 @@ pub mod stats {
         pub dierok_waits: u32,
         pub dierok_cycles: u32,
         pub dierok_max_cycles: u32,
+        /// Waits that timed out, and of those, the ones the write made again did not end.
+        pub dierok_timeouts: u32,
+        pub dierok_given_up: u32,
+        pub cmpok_timeouts: u32,
+        pub cmpok_given_up: u32,
+        pub last_timeout: Timeout,
         pub late_alarms: u32,
         pub late_max_ticks: u32,
         /// Oldest first.
@@ -192,6 +253,8 @@ pub mod stats {
 
     const LATE_TICKS: u64 = 164;
     const NO_LATE: Late = Late { at_ticks: 0, late_ticks: 0, alarm_lo: 0, flags: 0 };
+    const NO_TIMEOUT: Timeout =
+        Timeout { dier: false, cr: 0, isr: 0, bdcr: 0, written: 0, read_back: 0, counter_ticks: 0 };
 
     static DIER_WRITES: AtomicU32 = AtomicU32::new(0);
     static DIER_SKIPPED: AtomicU32 = AtomicU32::new(0);
@@ -208,6 +271,11 @@ pub mod stats {
     static DIEROK_WAITS: AtomicU32 = AtomicU32::new(0);
     static DIEROK_CYCLES: AtomicU32 = AtomicU32::new(0);
     static DIEROK_MAX: AtomicU32 = AtomicU32::new(0);
+    static DIEROK_TIMEOUTS: AtomicU32 = AtomicU32::new(0);
+    static DIEROK_GIVEN_UP: AtomicU32 = AtomicU32::new(0);
+    static CMPOK_TIMEOUTS: AtomicU32 = AtomicU32::new(0);
+    static CMPOK_GIVEN_UP: AtomicU32 = AtomicU32::new(0);
+    static LAST_TIMEOUT: Mutex<CriticalSectionRawMutex, RefCell<Timeout>> = Mutex::new(RefCell::new(NO_TIMEOUT));
     static LATE_ALARMS: AtomicU32 = AtomicU32::new(0);
     static LATE_MAX: AtomicU32 = AtomicU32::new(0);
     static LATE: Mutex<CriticalSectionRawMutex, RefCell<[Late; 8]>> = Mutex::new(RefCell::new([NO_LATE; 8]));
@@ -238,6 +306,11 @@ pub mod stats {
             dierok_waits: DIEROK_WAITS.load(Relaxed),
             dierok_cycles: DIEROK_CYCLES.load(Relaxed),
             dierok_max_cycles: DIEROK_MAX.load(Relaxed),
+            dierok_timeouts: DIEROK_TIMEOUTS.load(Relaxed),
+            dierok_given_up: DIEROK_GIVEN_UP.load(Relaxed),
+            cmpok_timeouts: CMPOK_TIMEOUTS.load(Relaxed),
+            cmpok_given_up: CMPOK_GIVEN_UP.load(Relaxed),
+            last_timeout: LAST_TIMEOUT.lock(|t| *t.borrow()),
             late_alarms: LATE_ALARMS.load(Relaxed),
             late_max_ticks: LATE_MAX.load(Relaxed),
             late: LATE.lock(|l| *l.borrow()),
@@ -280,6 +353,16 @@ pub mod stats {
     pub(super) fn dierok_wait(from: u32) {
         add_cycles(&DIEROK_CYCLES, &DIEROK_MAX, from);
         DIEROK_WAITS.fetch_add(1, Relaxed);
+    }
+
+    pub(super) fn timed_out(timeout: Timeout, acknowledged: bool) {
+        let (timeouts, given_up) =
+            if timeout.dier { (&DIEROK_TIMEOUTS, &DIEROK_GIVEN_UP) } else { (&CMPOK_TIMEOUTS, &CMPOK_GIVEN_UP) };
+        timeouts.fetch_add(1, Relaxed);
+        if !acknowledged {
+            given_up.fetch_add(1, Relaxed);
+        }
+        LAST_TIMEOUT.lock(|t| *t.borrow_mut() = timeout);
     }
 
     pub(super) fn skipped() {
@@ -389,16 +472,13 @@ fn write_compare(r: Regs, val: u16) {
             return;
         }
         // wrist-rs: a stale CMPOK does not acknowledge this write; see WRIST-PATCHES.md.
-        r.icr().write(|w| w.set_cmpokcf(0, true));
-        r.ccr(0).write(|w| w.set_ccr(val));
-        let from = stats::cycles();
-        for i in 0..20_000 {
-            if r.isr().read().cmpok(0) {
-                stats::cmpok_wait(from, i == 0);
-                return;
-            }
+        let write = || {
+            r.icr().write(|w| w.set_cmpokcf(0, true));
+            r.ccr(0).write(|w| w.set_ccr(val));
+        };
+        if let Some((from, first)) = write_acknowledged(r, false, u32::from(val), write, || r.isr().read().cmpok(0)) {
+            stats::cmpok_wait(from, first);
         }
-        panic!("LPTIM compare write acknowledgement timed out");
     }
 }
 
