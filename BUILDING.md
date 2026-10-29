@@ -126,13 +126,15 @@ The watch can also scan for any Bluetooth LE device: `ble scan [s]` lists advert
 address, signal, name and services. `ble connect <addr> [random]` makes a link of its own
 beside the phone's, and `ble services`, `chars`, `descs`, `read`, `write` and `subscribe` use
 it; `ble drop` ends it. `hr strap <addr>` reads a standard heart-rate strap, reports when it
-goes quiet, and finds it again after it is lost.
+goes quiet, and finds it again after it is lost; `hr relay on` serves those readings from the
+watch's own Heart Rate Service and advertises it, so a rower or a bike that takes a
+heart-rate sensor can use the watch.
 
 Without a strap, a Linux host can be one:
 
 ```sh
-.venv/bin/python tools/hr-sim.py
-.venv/bin/python tools/wrist-cmd.py "hr strap <host address>"
+.venv/bin/python tools/hr-sim.py --consume <watch address>   # a strap, and a relay listener
+.venv/bin/python tools/wrist-cmd.py "hr relay on;hr strap <host address>"
 ```
 
 ## Working on InscribedDisc

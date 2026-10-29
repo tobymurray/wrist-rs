@@ -59,14 +59,15 @@ use embassy_sync::signal::Signal;
 use embassy_time::{with_timeout, Duration, Instant, Timer};
 use wrist_aci::opcode::{
     ACI_GAP_ALLOW_REBOND, ACI_GAP_CLEAR_SECURITY_DB, ACI_GAP_GET_BONDED_DEVICES, ACI_GAP_INIT,
-    ACI_GAP_NUMERIC_COMPARISON_CONFIRM, ACI_GAP_PASS_KEY_RESP,
+    ACI_GAP_IS_DEVICE_BONDED, ACI_GAP_NUMERIC_COMPARISON_CONFIRM, ACI_GAP_PASS_KEY_RESP,
     ACI_GAP_SET_AUTHENTICATION_REQUIREMENT, ACI_GAP_SET_DISCOVERABLE, ACI_GAP_SET_IO_CAPABILITY,
     ACI_GAP_SET_NON_DISCOVERABLE, ACI_GAP_SLAVE_SECURITY_REQ, ACI_GAP_TERMINATE, ACI_GATT_ADD_CHAR,
     ACI_GATT_ADD_SERVICE, ACI_GATT_INIT,
     ACI_GATT_UPDATE_CHAR_VALUE, ACI_GATT_UPDATE_CHAR_VALUE_EXT, ACI_HAL_GET_FW_BUILD_NUMBER, ACI_HAL_SET_TX_POWER_LEVEL, ACI_HAL_WRITE_CONFIG_DATA,
     ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_REQ, HCI_LE_RAND, HCI_READ_LOCAL_VERSION, HCI_SET_EVENT_MASK,
 };
-use wrist_aci::{address, config, permission, role, vendor, AttributeModified, Event};
+use wrist_aci::{address, config, permission, role, vendor, Address, AttributeModified, Event};
+use wrist_profiles::heart_rate;
 use wrist_wake::ble::{timing, Lines, Outbox, PairAsk, Power, Radio, Scan, Sink, Timing};
 
 use crate::console::Target;
@@ -473,6 +474,9 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
             console_at: Instant::from_ticks(0),
             outbox: Outbox::default(),
             pair_ask: PairAsk::default(),
+            peer: Address::default(),
+            hrs: None,
+            advertised_relay: false,
             advertised_every: 0,
             paused_advertising: false,
             scanner: scan::Scanner::default(),
@@ -546,6 +550,12 @@ struct Link<'d> {
     console_at: Instant,
     outbox: Outbox<NUS_VALUE_LEN>,
     pair_ask: PairAsk,
+    /// The central on the peripheral link.
+    peer: Address,
+    /// The Heart Rate Service: service, measurement and body sensor location handles.
+    hrs: Option<(u16, u16, u16)>,
+    /// Advertising carries the Heart Rate Service (the relay was on when it started).
+    advertised_relay: bool,
     /// The interval advertising actually runs at (0.625 ms units), which beside a sensor link
     /// may be shorter than the timing wanted.
     advertised_every: u16,
@@ -697,7 +707,7 @@ impl Link<'_> {
     async fn retime(&mut self) {
         let want = timing(power(), self.transfer.is_some());
         match STATE.load(Ordering::Relaxed) {
-            STATE_ADVERTISING if self.advertised != Some(want) => {
+            STATE_ADVERTISING if self.advertised != Some(want) || self.advertised_relay != central::relay_on() => {
                 if self.command(ACI_GAP_SET_NON_DISCOVERABLE, &[]).await.is_ok() {
                     self.advertise().await;
                 }
@@ -796,6 +806,11 @@ impl Link<'_> {
         if STATE.load(Ordering::Relaxed) != STATE_CONNECTED || ENCRYPTED.load(Ordering::Relaxed) {
             return;
         }
+        // While the relay serves heart rate, only a central with a bond is asked: a rower or a
+        // bike that came for heart rate cannot pair, and may hang up if asked.
+        if central::relay_on() && !self.peer_bonded().await {
+            return;
+        }
         let h = CONN_HANDLE.load(Ordering::Relaxed).to_le_bytes();
         match self.command(ACI_GAP_SLAVE_SECURITY_REQ, &h).await {
             Ok(r) if r.status == 0 => self.uart.write_line("[ble] link still unencrypted: asked the central to pair"),
@@ -809,6 +824,13 @@ impl Link<'_> {
                 self.uart.write_line(why);
             }
         }
+    }
+
+    async fn peer_bonded(&mut self) -> bool {
+        let mut p = [0u8; 7];
+        p[0] = self.peer.kind;
+        p[1..].copy_from_slice(&self.peer.bytes);
+        matches!(self.command(ACI_GAP_IS_DEVICE_BONDED, &p).await, Ok(r) if r.status == 0)
     }
 
     /// Reset, address, TX power, event mask, GATT, GAP, name, IO capability, security
@@ -935,6 +957,21 @@ impl Link<'_> {
             return false;
         };
         self.nus = Some((nus, rx, tx));
+        // The relay's Heart Rate Service: read and notify only, so it needs no pairing, as a
+        // strap's does not.
+        let Some(hrs) = self.add_service(heart_rate::SERVICE, 8).await else {
+            return false;
+        };
+        let (Some(measurement), Some(location)) = (
+            self.add_char_props(hrs, heart_rate::MEASUREMENT, heart_rate::MAX_LEN, CHAR_PROP_NOTIFY).await,
+            self.add_char_props(hrs, heart_rate::BODY_SENSOR_LOCATION, 1, CHAR_PROP_READ).await,
+        ) else {
+            return false;
+        };
+        if self.update_value(hrs, location, &[heart_rate::location::CHEST]).await != 0 {
+            return false;
+        }
+        self.hrs = Some((hrs, measurement, location));
         true
     }
 
@@ -986,11 +1023,16 @@ impl Link<'_> {
 
     /// A readable, variable-length characteristic with a 16-bit UUID.
     async fn add_char(&mut self, service: u16, uuid: u16, len: usize) -> Option<u16> {
+        self.add_char_props(service, uuid, len, CHAR_PROP_READ).await
+    }
+
+    /// A variable-length characteristic with a 16-bit UUID and these properties.
+    async fn add_char_props(&mut self, service: u16, uuid: u16, len: usize, props: u8) -> Option<u16> {
         let sv = service.to_le_bytes();
         let u = uuid.to_le_bytes();
         let l = u16::try_from(len).unwrap_or(0).to_le_bytes();
         // No security permissions, no write events, key size 7, variable length.
-        let p = [sv[0], sv[1], 0x01, u[0], u[1], l[0], l[1], CHAR_PROP_READ, permission::NONE, 0x00, 0x07, 0x01];
+        let p = [sv[0], sv[1], 0x01, u[0], u[1], l[0], l[1], props, permission::NONE, 0x00, 0x07, 0x01];
         match self.command(ACI_GATT_ADD_CHAR, &p).await {
             Ok(r) if r.status == 0 && r.len >= 2 => Some(u16::from_le_bytes([r.params[0], r.params[1]])),
             _ => {
@@ -1175,21 +1217,32 @@ impl Link<'_> {
         p[7] = u8::try_from(1 + DEVICE_NAME.len()).unwrap_or(0);
         p[8] = 0x09;
         p[9..9 + DEVICE_NAME.len()].copy_from_slice(DEVICE_NAME);
-        let n = 9 + DEVICE_NAME.len();
-        // Service UUID length 0, then slave connection interval min and max 0.
-        p[n..n + 5].copy_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00]);
+        let mut n = 9 + DEVICE_NAME.len();
+        // The Heart Rate Service while the relay is on, so a rower or a bike looking for a
+        // heart-rate sensor finds the watch.
+        let relay = central::relay_on();
+        if relay {
+            let u = heart_rate::SERVICE.to_le_bytes();
+            p[n..n + 4].copy_from_slice(&[0x03, wrist_aci::ad::UUID16_COMPLETE, u[0], u[1]]);
+            n += 4;
+        } else {
+            p[n] = 0x00;
+            n += 1;
+        }
+        p[n..n + 4].copy_from_slice(&[0x00, 0x00, 0x00, 0x00]);
         let ladder = wrist_wake::ble::advertising_ladder(want.advertise, self.central.interval());
         for every in ladder.into_iter().flatten() {
             p[1..3].copy_from_slice(&every.to_le_bytes());
             p[3..5].copy_from_slice(&every.to_le_bytes());
-            match self.command(ACI_GAP_SET_DISCOVERABLE, &p[..n + 5]).await {
+            match self.command(ACI_GAP_SET_DISCOVERABLE, &p[..n + 4]).await {
                 Ok(r) if r.status == 0 => {
                     STATE.store(STATE_ADVERTISING, Ordering::Relaxed);
                     self.advertised = Some(want);
                     self.advertised_every = every;
+                    self.advertised_relay = relay;
                     self.uart.write_str("[ble] advertising as UNA every ");
                     self.uart.write_u32(u32::from(every) * 625 / 1000);
-                    self.uart.write_str(" ms");
+                    self.uart.write_str(if relay { " ms, with heart rate" } else { " ms" });
                     return self.uart.write_line(if every == want.advertise { "" } else { " (to fit the sensor link)" });
                 }
                 // Refused by ST's scheduler: the next rung.
@@ -1391,8 +1444,9 @@ impl Link<'_> {
                 self.central.connected(handle, peer, interval, self.uart);
             }
             Event::ConnectFailed { status } => self.central.connect_failed(status, self.uart),
-            Event::Connected { handle, central: false, interval, .. } => {
+            Event::Connected { handle, central: false, peer, interval } => {
                 CONN_HANDLE.store(handle, Ordering::Relaxed);
+                self.peer = peer;
                 self.pair_ask.connected(Instant::now().as_ticks(), embassy_time::TICK_HZ);
                 if let Some((iv, lat)) = interval {
                     INTERVAL.store(iv, Ordering::Relaxed);
@@ -1426,6 +1480,7 @@ impl Link<'_> {
                 self.sensor_disconnected(reason);
             }
             Event::Disconnected { reason, .. } => {
+                central::relay_subscribed(true, false);
                 STATE.store(STATE_IDLE, Ordering::Relaxed);
                 CONN_HANDLE.store(0, Ordering::Relaxed);
                 ENCRYPTED.store(false, Ordering::Relaxed);
@@ -1472,10 +1527,19 @@ impl Link<'_> {
     }
 
     /// A central wrote one of our attributes: the console's RX (bytes for the parser or a
-    /// transfer) or TX's CCCD (the mirror on or off), over the peripheral link only.
+    /// transfer) or TX's CCCD (the mirror on or off), over the peripheral link only; or the
+    /// heart rate's CCCD, over either link.
     fn attribute_modified(&mut self, conn: u16, write: AttributeModified) {
         let AttributeModified { attr, offset, data } = write;
         let phone = conn == CONN_HANDLE.load(Ordering::Relaxed) && STATE.load(Ordering::Relaxed) == STATE_CONNECTED;
+        if let Some((_, measurement, _)) = self.hrs {
+            if attr == measurement + 2 {
+                let on = data.first().is_some_and(|b| b & 0x01 != 0);
+                central::relay_subscribed(phone, on);
+                self.uart.write_line(if on { "[hr] a central subscribed to the watch's heart rate" } else { "[hr] a central unsubscribed" });
+                return;
+            }
+        }
         let Some((_, rx, tx)) = self.nus else {
             return;
         };

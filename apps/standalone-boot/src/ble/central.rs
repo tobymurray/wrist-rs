@@ -1,7 +1,8 @@
 //! The watch as a central: one outbound link (the "sensor link") beside the phone's, a GATT
-//! client on it, and heart rate read from a strap.
+//! client on it, and heart rate read from a strap and served again from the watch's own Heart
+//! Rate Service (the relay).
 
-use core::sync::atomic::{AtomicU16, AtomicU32, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU8, Ordering};
 
 use embassy_time::{Duration, Instant};
 use wrist_aci::opcode::{
@@ -47,6 +48,7 @@ pub(super) enum Ask {
     Subscribe(u16, u8),
     Strap(Address),
     HrOff,
+    Relay(bool),
     Fake(u16),
 }
 
@@ -75,6 +77,25 @@ static HR_RR_MS: AtomicU32 = AtomicU32::new(0);
 /// When the last reading came, in milliseconds since boot (0: none yet).
 static HR_AT_MS: AtomicU32 = AtomicU32::new(0);
 static HR_READINGS: AtomicU32 = AtomicU32::new(0);
+static RELAY: AtomicBool = AtomicBool::new(false);
+static RELAYED: AtomicU32 = AtomicU32::new(0);
+/// Connections subscribed to the watch's heart rate: bit 0 the phone link, bit 1 the sensor link.
+static RELAY_SUBSCRIBERS: AtomicU8 = AtomicU8::new(0);
+
+/// The relay is on: advertising carries the Heart Rate Service, and readings are notified.
+pub(super) fn relay_on() -> bool {
+    RELAY.load(Ordering::Relaxed)
+}
+
+/// A central wrote the watch's heart-rate CCCD: `phone` for the peripheral link.
+pub(super) fn relay_subscribed(phone: bool, on: bool) {
+    let bit = if phone { 1 } else { 2 };
+    if on {
+        RELAY_SUBSCRIBERS.fetch_or(bit, Ordering::Relaxed);
+    } else {
+        RELAY_SUBSCRIBERS.fetch_and(!bit, Ordering::Relaxed);
+    }
+}
 
 /// What `ble <args>` meant to the central side.
 pub(super) enum Parsed {
@@ -133,7 +154,7 @@ pub(super) fn ble_command(args: &[u8], uart: Uart) -> Parsed {
     Parsed::Request(Request::Central(ask))
 }
 
-/// `hr`, `hr strap <addr> [random]`, `hr off`, `hr fake <bpm>`.
+/// `hr`, `hr strap <addr> [random]`, `hr off`, `hr relay on|off`, `hr fake <bpm>`.
 pub fn hr_command(args: &[u8], uart: Uart) {
     let text = core::str::from_utf8(args).unwrap_or("");
     let mut words = text.split_whitespace();
@@ -144,11 +165,16 @@ pub fn hr_command(args: &[u8], uart: Uart) {
             None => return uart.write_line("[hr] usage: hr strap AA:BB:CC:DD:EE:FF [random]"),
         },
         Some("off") => Ask::HrOff,
+        Some("relay") => match words.next() {
+            Some("on") => Ask::Relay(true),
+            Some("off") => Ask::Relay(false),
+            _ => return uart.write_line("[hr] usage: hr relay on|off"),
+        },
         Some("fake") => match words.next().map(str::parse::<u16>) {
             Some(Ok(bpm)) if (20..=250).contains(&bpm) => Ask::Fake(bpm),
             _ => return uart.write_line("[hr] usage: hr fake <bpm, 20 to 250> (`hr off` stops it)"),
         },
-        Some(_) => return uart.write_line("[hr] usage: hr [strap <addr> [random]|off|fake <bpm>]"),
+        Some(_) => return uart.write_line("[hr] usage: hr [strap <addr> [random]|off|relay on|off|fake <bpm>]"),
     };
     if REQUESTS.try_send(Request::Central(ask)).is_err() {
         uart.write_line("[hr] not queued: four already waiting");
@@ -227,7 +253,7 @@ pub(super) fn write_status(uart: Uart) {
     uart.write_line(")");
 }
 
-/// `hr`: the strap's state, and the last reading and its age.
+/// `hr`: the strap's state, the last reading and its age, and the relay.
 fn write_hr(uart: Uart) {
     uart.write_str("[hr] ");
     let state = HR.load(Ordering::Relaxed);
@@ -264,6 +290,12 @@ fn write_hr(uart: Uart) {
         uart.write_str(", readings ");
         uart.write_u32(HR_READINGS.load(Ordering::Relaxed));
     }
+    uart.write_str("; relay ");
+    uart.write_str(if relay_on() { "on" } else { "off" });
+    uart.write_str(", relayed ");
+    uart.write_u32(RELAYED.load(Ordering::Relaxed));
+    uart.write_str(", subscribers ");
+    uart.write_u32(RELAY_SUBSCRIBERS.load(Ordering::Relaxed).count_ones());
     uart.write_line("");
 }
 
@@ -345,8 +377,9 @@ pub(super) struct Central {
     strap: Option<Strap>,
     /// `hr fake`: the rate, and when the next reading goes.
     fake: Option<(u16, Instant)>,
-    /// Work events left: an indication to confirm, a parameter request.
+    /// Work events left: an indication to confirm, a reading to relay, a parameter request.
     confirm: bool,
+    relay: Option<Measurement>,
     update_request: Option<L2capUpdateRequest>,
     printed_at: Option<Instant>,
 }
@@ -373,6 +406,7 @@ impl Central {
     pub(super) fn due(&self, scanning: bool) -> Option<Instant> {
         let now = Instant::now();
         let work = self.confirm
+            || self.relay.is_some()
             || self.update_request.is_some()
             || (self.proc.is_none()
                 && self.link.is_some()
@@ -411,12 +445,14 @@ impl Central {
         *self = Self { available, ..Self::default() };
         CENTRAL.store(if available { CENTRAL_IDLE } else { CENTRAL_UNAVAILABLE }, Ordering::Relaxed);
         HR.store(HR_OFF, Ordering::Relaxed);
+        RELAY_SUBSCRIBERS.store(0, Ordering::Relaxed);
     }
 
     /// The radio is going off.
     pub(super) fn stopped() {
         CENTRAL.store(CENTRAL_UNAVAILABLE, Ordering::Relaxed);
         HR.store(HR_OFF, Ordering::Relaxed);
+        RELAY_SUBSCRIBERS.store(0, Ordering::Relaxed);
     }
 
     /// LE Connection Complete with the watch as the central.
@@ -465,6 +501,7 @@ impl Central {
         self.proc = None;
         self.confirm = false;
         self.update_request = None;
+        RELAY_SUBSCRIBERS.fetch_and(!2, Ordering::Relaxed);
         CENTRAL.store(CENTRAL_IDLE, Ordering::Relaxed);
         uart.write_str("[ble] sensor link down, reason ");
         uart.write_hex8(reason);
@@ -615,6 +652,9 @@ impl Central {
                         uart.write_u32(u32::try_from(m.rr_len).unwrap_or(0));
                         uart.write_line(if first { " (readings arriving; `hr` shows the latest)" } else { "" });
                     }
+                    if relay_on() {
+                        self.relay = Some(m);
+                    }
                 }
                 return;
             }
@@ -693,6 +733,7 @@ fn connect_timeout() -> Duration {
 fn new_source() {
     HR_READINGS.store(0, Ordering::Relaxed);
     HR_AT_MS.store(0, Ordering::Relaxed);
+    RELAYED.store(0, Ordering::Relaxed);
 }
 
 /// A heart-rate reading, from the strap or `hr fake`, into the statics `hr` reports.
@@ -731,6 +772,14 @@ impl Link<'_> {
                     HR.store(HR_OFF, Ordering::Relaxed);
                 }
                 self.drop_sensor().await;
+            }
+            Ask::Relay(on) => {
+                RELAY.store(on, Ordering::Relaxed);
+                uart.write_line(if on {
+                    "[hr] relay on: readings are served as a heart-rate sensor, and advertised"
+                } else {
+                    "[hr] relay off"
+                });
             }
             Ask::Fake(bpm) => {
                 self.drop_strap().await;
@@ -967,8 +1016,15 @@ impl Link<'_> {
         if let Some((bpm, at)) = self.central.fake {
             if now >= at {
                 self.central.fake = Some((bpm, at.max(now - FAKE_EVERY) + FAKE_EVERY));
-                reading(&Measurement::rate(bpm));
+                let m = Measurement::rate(bpm);
+                reading(&m);
+                if relay_on() {
+                    self.central.relay = Some(m);
+                }
             }
+        }
+        if let Some(m) = self.central.relay.take() {
+            self.relay(&m).await;
         }
         self.retime_sensor().await;
     }
@@ -1090,5 +1146,17 @@ impl Link<'_> {
         p[6..8].copy_from_slice(&want.latency.to_le_bytes());
         p[8..10].copy_from_slice(&want.timeout.to_le_bytes());
         let _ = self.command(ACI_GAP_START_CONNECTION_UPDATE, &p).await;
+    }
+
+    /// One reading notified to whoever subscribed to the watch's Heart Rate Service.
+    async fn relay(&mut self, m: &Measurement) {
+        let Some((service, measurement, _)) = self.hrs else {
+            return;
+        };
+        let mut b = [0u8; heart_rate::MAX_LEN];
+        let n = m.encode(&mut b);
+        if self.update_value(service, measurement, &b[..n]).await == 0 {
+            RELAYED.fetch_add(1, Ordering::Relaxed);
+        }
     }
 }

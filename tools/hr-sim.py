@@ -4,6 +4,9 @@ without a strap on anyone's chest.
 
     hr-sim.py                        serve a Heart Rate Service and advertise it, until Ctrl-C
     hr-sim.py --seconds 60           ... for a minute
+    hr-sim.py --consume WATCH        also subscribe to the watch's own heart rate (the relay)
+                                     once the watch connects, and print what it sends
+    hr-sim.py --consume ADDR --connect   ... connecting to the watch ourselves, as a rower would
 
 The simulated strap advertises as HR-SIM with service 0x180D and notifies a Heart Rate
 Measurement once a second while subscribed. The watch finds it with `ble scan`, and reads it
@@ -139,9 +142,64 @@ def measurement(t):
     return bytes([0x16, bpm, rr & 0xFF, rr >> 8]), bpm
 
 
+async def consume(bus, adapter, address, connect, stop):
+    """Print the watch's Heart Rate Measurement over whichever link joins us, since BlueZ
+    refuses a second link between the same two devices."""
+    dev_path = f"/org/bluez/{adapter}/dev_{address.upper().replace(':', '_')}"
+    root = bus.get_proxy_object("org.bluez", "/", await bus.introspect("org.bluez", "/"))
+    manager = root.get_interface("org.freedesktop.DBus.ObjectManager")
+    asked = False
+    while not stop.is_set():
+        objects = await manager.call_get_managed_objects()
+        dev = objects.get(dev_path, {}).get("org.bluez.Device1")
+        if dev is None:
+            await asyncio.sleep(1)
+            continue
+        if not dev["Connected"].value or not dev["ServicesResolved"].value:
+            if connect and not asked:
+                asked = True
+                obj = bus.get_proxy_object("org.bluez", dev_path, await bus.introspect("org.bluez", dev_path))
+                try:
+                    await obj.get_interface("org.bluez.Device1").call_connect()
+                except Exception as e:
+                    print(f"-- consume: connect: {e}", flush=True)
+                    asked = False
+            await asyncio.sleep(1)
+            continue
+        chars = [path for path, ifaces in objects.items()
+                 if path.startswith(dev_path + "/")
+                 and ifaces.get("org.bluez.GattCharacteristic1", {}).get("UUID", Variant("s", "")).value == HRM]
+        if not chars:
+            print("-- consume: the watch is connected but shows no Heart Rate Measurement", flush=True)
+            await asyncio.sleep(3)
+            continue
+        obj = bus.get_proxy_object("org.bluez", chars[0], await bus.introspect("org.bluez", chars[0]))
+        props = obj.get_interface("org.freedesktop.DBus.Properties")
+
+        def changed(iface, values, _invalid):
+            if iface == "org.bluez.GattCharacteristic1" and "Value" in values:
+                data = bytes(values["Value"].value)
+                print(f"-- {time.strftime('%H:%M:%S')} the watch relayed {data.hex(' ')} "
+                      f"({data[1] if len(data) > 1 else '?'} bpm)", flush=True)
+
+        props.on_properties_changed(changed)
+        await obj.get_interface("org.bluez.GattCharacteristic1").call_start_notify()
+        print(f"-- {time.strftime('%H:%M:%S')} subscribed to the watch's heart rate ({chars[0]})", flush=True)
+        while not stop.is_set():
+            await asyncio.sleep(1)
+            dev = (await manager.call_get_managed_objects()).get(dev_path, {}).get("org.bluez.Device1")
+            if dev is None or not dev["Connected"].value:
+                print(f"-- {time.strftime('%H:%M:%S')} the watch's link is down", flush=True)
+                props.off_properties_changed(changed)
+                asked = False
+                break
+
+
 async def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--seconds", type=float, default=0, help="stop after this long (0: until Ctrl-C)")
+    ap.add_argument("--consume", metavar="WATCH", help="also subscribe to the watch's heart rate (relay test)")
+    ap.add_argument("--connect", action="store_true", help="with --consume, open the link to the watch ourselves")
     ap.add_argument("--adapter", default="hci0")
     args = ap.parse_args()
 
@@ -161,6 +219,8 @@ async def main():
     await obj.get_interface("org.bluez.LEAdvertisingManager1").call_register_advertisement(adv_path, {})
     print("-- advertising HR-SIM (0x180D); Ctrl-C stops", flush=True)
 
+    stop = asyncio.Event()
+    task = asyncio.create_task(consume(bus, args.adapter, args.consume, args.connect, stop)) if args.consume else None
     start = time.time()
     sent = 0
     try:
@@ -175,6 +235,9 @@ async def main():
     except asyncio.CancelledError:
         pass
     finally:
+        stop.set()
+        if task:
+            task.cancel()
         print(f"-- stopped after {sent} notifications", flush=True)
     return 0
 

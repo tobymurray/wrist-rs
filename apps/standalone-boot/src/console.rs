@@ -494,7 +494,7 @@ pub fn command(cmd: &[u8], flash: &'static FlashMutex) {
             #[cfg(feature = "ble")]
             uart.write_line("[usb]   ble scan [s] [interval window] | connect <addr> [random] | drop | services | chars <s> <e> | descs <s> <e> | read <h> | write <h> <hex> | subscribe <h> [indicate|off]: the watch as a central, for any device");
             #[cfg(feature = "ble")]
-            uart.write_line("[usb]   hr [strap <addr> [random]|off|fake <bpm>]: heart rate from a strap");
+            uart.write_line("[usb]   hr [strap <addr> [random]|off|relay on|off|fake <bpm>]: heart rate from a strap, served again as a heart-rate sensor while the relay is on");
         }
         #[cfg(feature = "ble")]
         b"ble" => crate::ble::command(b"", uart),

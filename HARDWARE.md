@@ -266,7 +266,8 @@ the link1 module `BLUENRG2` rev 1.3, from Linux (BlueZ 5.87) unless a row says o
 | While the watch advertises, a scan gets about one window per advertising period: advertising every 995 ms, 6 s scans heard 3 reports at 20 ms every 100 ms, 7 at 30 ms every 50 ms, 20 at 100 ms every 500 ms and 51 at 200 ms every second | `ble scan 6 <interval> <window>` |
 | ST ends a general discovery by itself about 10.2 s after it starts, with `GAP_PROC_COMPLETE` status 0: a scan asked for 30 s reported done at 10.2 s | `ble scan 30` on a cable |
 | The GATT client works on the watch's own link: primary services, characteristics, descriptors, read, write, notifications. BlueZ, already bonded to the watch, encrypts that link itself and discovers the watch's services over it | `ble services|chars|descs|read|subscribe` against `tools/hr-sim.py` |
-| A second link between the same two devices fails: with the host connected to the watch, the watch's own connection to the host completed and dropped at once (`0x3E`), each time | `hr strap` to `tools/hr-sim.py` on a host holding a link to the watch |
+| A second link between the same two devices fails: with the host connected to the watch, the watch's own connection to the host completed and dropped at once (`0x3E`), each time. One link serves both ways: the watch reads the host's heart rate and the host subscribes to the watch's over it | `hr strap` with `hr-sim.py --consume` |
+| The Heart Rate Service added after the console's was found by BlueZ without pairing again, and an update over the air still worked: 194,228 bytes in 27.3 s at MTU 220, kept | `wrist-ble.py --update` |
 
 ## What the schematics settle
 
