@@ -37,6 +37,23 @@ fn command_packets_carry_opcode_and_length() {
 }
 
 #[test]
+fn parameters_past_255_bytes_are_cut_and_the_length_says_so() {
+    let params: Vec<u8> = (0..300u16).map(|i| u8::try_from(i % 251).unwrap()).collect();
+    let mut out = [0u8; 400];
+    assert_eq!(command(0xFD06, &params, &mut out), 4 + 255);
+    assert_eq!(out[3], 255);
+    assert_eq!(&out[4..259], &params[..255]);
+    assert!(out[259..].iter().all(|&b| b == 0));
+}
+
+#[test]
+fn a_buffer_too_small_for_the_header_gets_nothing() {
+    let mut tiny = [0xAAu8; 3];
+    assert_eq!(command(0xFC0C, &[1, 2], &mut tiny), 0);
+    assert_eq!(tiny, [0xAA; 3]);
+}
+
+#[test]
 fn two_events_in_one_read_are_measured_apart() {
     let mut read = vendor_event(vendor::GATT_PROC_COMPLETE, &[0x01, 0x08, 0x00]);
     let first = read.len();
@@ -51,6 +68,20 @@ fn a_packet_cut_short_is_not_whole() {
     assert!(packet_whole(&p));
     assert!(!packet_whole(&p[..200]));
     assert_eq!(packet_len(&p[..200]), 200);
+}
+
+#[test]
+fn an_acl_packet_is_measured_by_its_16_bit_length() {
+    // `02`, handle, then a length of 0x0102: 258 data bytes, then an event behind it.
+    let mut read = vec![0x02, 0x01, 0x20, 0x02, 0x01];
+    read.extend([0x5A; 258]);
+    let acl = read.len();
+    read.extend(vendor_event(vendor::GATT_PROC_COMPLETE, &[0x01, 0x08, 0x00]));
+    assert_eq!(packet_len(&read), acl);
+    assert!(packet_whole(&read[..acl]));
+    assert!(!packet_whole(&read[..acl - 1]));
+    assert_eq!(packet_len(&read[..acl - 1]), acl - 1);
+    assert_eq!(parse(&read[acl..]), Some(Event::Vendor { code: vendor::GATT_PROC_COMPLETE, params: &[0x01, 0x08, 0x00] }));
 }
 
 #[test]
@@ -101,6 +132,9 @@ fn connection_complete_gives_handle_interval_and_latency() {
     let mut f = p.clone();
     f[4] = 0x3E;
     assert_eq!(parse(&f), None);
+    // Cut before the latency ends: the handle still, no interval.
+    assert_eq!(parse(&p[..18]), Some(Event::Connected { handle: 0x0801, interval: None }));
+    assert_eq!(parse(&e[..30]), Some(Event::Connected { handle: 0x0801, interval: None }));
 }
 
 #[test]

@@ -1,9 +1,9 @@
 use wrist_flash::layout::bank1;
 use wrist_flash::plan::{crc32, PAGE_SIZE, QUADWORD};
 use wrist_store::{
-    boot_actions, mounted, next_sequence, nmi_in_store, pages_for, plan_write, reclaimable, retired, scan, valid,
-    BootActions, CommitRecord, Found, Head, Page, Refusal, Reject, StorePage, COMMIT_AREA, MAX_PACK, PAGES, RECORD_LEN,
-    RETIRED_RANGE,
+    boot_actions, check, mounted, next_sequence, nmi_in_store, pages_for, plan_write, reclaimable, retired, scan, valid,
+    BootActions, CommitRecord, Found, Head, Page, Refusal, Reject, StorePage, WritePlan, COMMIT_AREA, MAX_PACK, PAGES,
+    RECORD_LEN, RETIRED_RANGE,
 };
 
 #[test]
@@ -114,6 +114,19 @@ fn impossible_lengths_are_rejected() {
     // Two pages from the last page would run past the end.
     assert_eq!(CommitRecord::decode(&record().encode(at(255)), at(255)), Err(Reject::Length));
     assert!(CommitRecord::decode(&record().encode(at(254)), at(254)).is_ok());
+}
+
+#[test]
+fn the_check_before_erasing_refuses_a_plan_past_the_end_or_off_the_quadword() {
+    let last = StorePage::nth(PAGES - 1).unwrap();
+    let first = StorePage::nth(0).unwrap();
+    let fits = PAGE_SIZE - COMMIT_AREA;
+    assert_eq!(check(&WritePlan { first: last, pages: 1, padded_len: fits }), Ok(()));
+    assert_eq!(check(&WritePlan { first: last, pages: 2, padded_len: QUADWORD }), Err(Refusal::CrossesStoreEnd));
+    assert_eq!(check(&WritePlan { first, pages: 1, padded_len: QUADWORD + 1 }), Err(Refusal::Unaligned));
+    // A pack longer than its pages, less the commit area, would program the next page.
+    assert_eq!(check(&WritePlan { first, pages: 1, padded_len: fits + QUADWORD }), Err(Refusal::Unaligned));
+    assert_eq!(check(&WritePlan { first, pages: 2, padded_len: fits + QUADWORD }), Ok(()));
 }
 
 #[test]
