@@ -104,7 +104,7 @@ fn ier_set_ccie(r: Regs, n: usize, val: bool) {
 
 /// wrist-rs: the one way DIER changes. A write is waited out to its `DIEROK`, as RM0456
 /// 58.7.7 asks before the next; one still unacknowledged at Stop 2 entry loses its compare wakeup.
-/// A write that changes nothing is skipped: changing an enable clears its flag (ES0499 2.17.3).
+/// A write that changes nothing is skipped: changing an enable clears its flag (ES0553 2.12.3).
 #[cfg(any(stm32wba, stm32u5, stm32u3))]
 fn dier_write(r: Regs, val: u32) {
     let old = ier_read(r);
@@ -154,7 +154,7 @@ pub mod stats {
     pub const CCR_WRONG: u16 = 1 << 6;
     /// Found overdue by another timer's `schedule_wake`.
     pub const BY_SCHEDULE: u16 = 1 << 7;
-    /// Its arming turned `CCIE` on from off, which clears `CC1IF` (ES0499 2.17.3).
+    /// Its arming turned `CCIE` on from off, which clears `CC1IF` (ES0553 2.12.3).
     pub const CCIE_ON: u16 = 1 << 8;
 
     /// An alarm handled more than 5 ms after its time.
@@ -560,7 +560,7 @@ impl RtcDriver {
 
             // Overflow
             // wrist-rs: an alarm already due once `next_period` has enabled it, whose flag
-            // the enable may have cleared (ES0499 2.17.3), is handled now.
+            // the enable may have cleared (ES0553 2.12.3), is handled now.
             let mut overdue = false;
             if sr.ue() {
                 self.next_period();
