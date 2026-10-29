@@ -254,7 +254,9 @@ async fn verify(s: &Session) -> Result<&'static [u8], &'static str> {
 }
 
 fn release() {
-    unsafe { modify32(PWR_CR2, 0, PWR_CR2_SRAM3_1_TO_8) };
+    if crate::park::on_smps() {
+        unsafe { modify32(PWR_CR2, 0, PWR_CR2_SRAM3_1_TO_8) };
+    }
     STAGING_BUSY.store(false, Ordering::Release);
 }
 

@@ -140,8 +140,11 @@ pub const PWR_VOSR_USBBOOSTEN: u32 = 1 << 20;
 pub const PWR_SVMCR_UVMEN: u32 = 1 << 24;
 pub const PWR_SVMCR_USV: u32 = 1 << 28;
 pub const PWR_SVMSR_VDDUSBRDY: u32 = 1 << 24;
+pub const PWR_SVMSR_REGS: u32 = 1 << 1;
 
 pub const PWR_CR2: u32 = 0x4602_0800 + 0x04;
+pub const PWR_CR3: u32 = 0x4602_0800 + 0x08;
+pub const PWR_CR3_REGSEL: u32 = 1 << 1;
 pub const PWR_CR4: u32 = 0x4602_0800 + 0xA8;
 pub const PWR_CR2_SRAM2: u32 = 0b11 << 4;
 pub const PWR_CR2_SRAM4: u32 = 1 << 6;
