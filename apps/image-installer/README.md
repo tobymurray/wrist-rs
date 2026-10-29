@@ -87,7 +87,7 @@ code the watch runs, with a made-up CRC:
 - Every wait is bounded, and every erase and program is read back.
 
 `install.log` and `stage.log` stay on the watch's storage. The outcome record a commit
-leaves in the bootloader partition's tail is defined in [`crates/wrist-flash/src/hw.rs`](../../crates/wrist-flash/src/hw.rs),
+leaves in the bootloader partition's tail is defined in [`crates/wrist-flash/src/commit.rs`](../../crates/wrist-flash/src/commit.rs),
 and the next dry run reports it. UNA's recovery leaves it in place, so a dry run after a
 return to stock reports the last install.
 

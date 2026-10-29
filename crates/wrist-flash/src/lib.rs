@@ -2,6 +2,7 @@
 
 //! The installer app's C interface: stage an image, put it over the kernel, reset into it.
 
+pub mod commit;
 pub mod layout;
 pub mod plan;
 pub mod survey;

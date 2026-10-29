@@ -3,9 +3,11 @@
 // Target only, where `usize` is `u32`.
 #![allow(clippy::cast_possible_truncation)]
 
+use crate::commit::{self, Flash, NOT_ARMED, POLL_TIMED_OUT};
+pub use crate::commit::{ERR_STATUS_PAGE, ERR_UNLOCK, ERR_WITNESS_FOREIGN};
 use crate::plan::{
-    self, bank1_page_address, bank2_page_address, crc32, quadword, Plan, MAX_PAGES, PAGE_SIZE,
-    QUADWORD, SELF_TEST_PAGE, STAGING_ADDRESS,
+    self, bank2_page_address, crc32, quadword, Plan, MAX_PAGES, QUADWORD, SELF_TEST_PAGE,
+    STAGING_ADDRESS,
 };
 
 // RM0456 7.9, Table 79.
@@ -43,48 +45,14 @@ const IWDG_KEY_RELOAD: u32 = 0xAAAA;
 const SCB_AIRCR: u32 = 0xE000_ED0C;
 const AIRCR_SYSRESETREQ: u32 = (0x5FA << 16) | (1 << 2);
 
-/// A blank page at the tail of the bootloader's partition, which the recovery's
-/// erase does not reach (`HARDWARE.md`, "Boot handoff").
-const STATUS_PAGE: u8 = 45;
-const STATUS_ADDRESS: u32 = 0x0805_A000;
-const STATUS_MAGIC: u32 = u32::from_le_bytes(*b"UNAF");
-
-/// Slot 0 of the status record, written before bank 1 is touched; the outcome goes in slot 1.
-const OUTCOME_BEGAN: u32 = 9;
-const OUTCOME_OK: u32 = 1;
-/// `detail`: the page's index in the image `<< 24`, then `NSSR`'s errors.
-const OUTCOME_ERASE_FAILED: u32 = 2;
-/// `detail`: `NSSR`'s errors.
-const OUTCOME_PROGRAM_FAILED: u32 = 3;
-/// `detail`: the byte offset of the first mismatch.
-const OUTCOME_VERIFY_FAILED: u32 = 4;
-/// `detail`: the word read instead of `0xFFFF_FFFF`.
-const OUTCOME_ERASE_NOT_BLANK: u32 = 5;
-/// `detail`: [`POLL_TIMED_OUT`], after the page's index `<< 24` when erasing.
-const OUTCOME_TIMEOUT: u32 = 6;
-/// `detail`: the page's index `<< 24`, then [`NOT_ARMED`] with `NSCR`'s top half.
-const OUTCOME_ERASE_NOT_ARMED: u32 = 7;
-
-pub const ERR_UNLOCK: i32 = -6;
-pub const ERR_STATUS_PAGE: i32 = -7;
-pub const ERR_WITNESS_FOREIGN: i32 = -8;
 pub const ERR_STAGE_ARGS: i32 = -9;
 pub const ERR_STAGE_ERASE: i32 = -10;
 pub const ERR_STAGE_PROGRAM: i32 = -11;
 pub const ERR_STAGE_VERIFY: i32 = -12;
 pub const ERR_STAGED_MISMATCH: i32 = -13;
 
-unsafe fn witness_page_ours(address: u32, magic: u32) -> bool {
-    let first = read_flash(address);
-    first == 0xFFFF_FFFF || first == magic
-}
-
 /// Far beyond a page erase at any clock, and still finite.
 const POLL_BUDGET: u32 = 20_000_000;
-const POLL_TIMED_OUT: u32 = 0xFFFF;
-const NOT_ARMED: u32 = 0xE000;
-
-const WRITE_ATTEMPTS: u32 = 3;
 
 #[inline]
 unsafe fn read32(addr: u32) -> u32 {
@@ -239,16 +207,6 @@ unsafe fn program(address: u32, words: &[u32]) -> Result<(), u32> {
     Ok(())
 }
 
-unsafe fn program_paged(address: u32, words: &[u32]) -> Result<(), u32> {
-    let mut addr = address;
-    for page in words.chunks(PAGE_SIZE / 4) {
-        kick_watchdog();
-        program(addr, page)?;
-        addr += PAGE_SIZE as u32;
-    }
-    Ok(())
-}
-
 /// The byte offset of the first word that differs.
 unsafe fn verify(address: u32, words: &[u32]) -> Option<usize> {
     invalidate_icache();
@@ -260,16 +218,41 @@ unsafe fn verify(address: u32, words: &[u32]) -> Option<usize> {
     None
 }
 
-unsafe fn record_at(slot: u32, outcome: u32, detail: u32, image_crc: u32, plan: Plan) {
-    if !unlock() {
-        return;
+/// Made only by `commit`, with interrupts masked.
+struct Registers;
+
+impl Flash for Registers {
+    fn unlock(&mut self) -> bool {
+        unsafe { unlock() }
     }
-    let packed = (u32::from(plan.first_page) << 8) | u32::from(plan.pages);
-    let _: Result<(), u32> = program(
-        STATUS_ADDRESS + slot * (QUADWORD as u32),
-        &[STATUS_MAGIC, (outcome << 16) | packed, detail, image_crc],
-    );
-    // No lock here: the caller's next erase needs `NSCR` unlocked.
+
+    fn lock(&mut self) {
+        unsafe { lock() }
+    }
+
+    fn kick_watchdog(&mut self) {
+        unsafe { kick_watchdog() }
+    }
+
+    fn erase_page(&mut self, page: u8, bank2: bool) -> Result<(), u32> {
+        unsafe { erase_page(page, bank2) }
+    }
+
+    fn end_erase(&mut self) {
+        unsafe { clear_op_bits(NSCR_PER | NSCR_STRT) }
+    }
+
+    fn program(&mut self, address: u32, words: &[u32]) -> Result<(), u32> {
+        unsafe { program(address, words) }
+    }
+
+    fn read(&mut self, address: u32) -> u32 {
+        unsafe { read_flash(address) }
+    }
+
+    fn verify(&mut self, address: u32, words: &[u32]) -> Option<usize> {
+        unsafe { verify(address, words) }
+    }
 }
 
 unsafe fn staged_crc(len: usize) -> u32 {
@@ -295,93 +278,14 @@ unsafe fn commit(plan: Plan, image_crc: u32) -> i32 {
     write32(ICACHE_CR, icache & !ICACHE_CR_EN);
     core::arch::asm!("dsb sy", "isb sy", options(nomem, nostack));
 
-    if !unlock() {
-        write32(ICACHE_CR, icache);
-        core::arch::asm!("cpsie i", options(nomem, nostack));
-        return ERR_UNLOCK;
+    match commit::commit(&mut Registers, plan, image_crc, words) {
+        Err(code) => {
+            write32(ICACHE_CR, icache);
+            core::arch::asm!("cpsie i", options(nomem, nostack));
+            code
+        }
+        Ok(()) => reset(),
     }
-
-    // The witness page is in the bootloader's partition: refuse unless it is blank or ours.
-    if !witness_page_ours(STATUS_ADDRESS, STATUS_MAGIC) {
-        lock();
-        write32(ICACHE_CR, icache);
-        core::arch::asm!("cpsie i", options(nomem, nostack));
-        return ERR_WITNESS_FOREIGN;
-    }
-    let witness_ok = erase_page(STATUS_PAGE, false).is_ok();
-    clear_op_bits(NSCR_PER | NSCR_STRT);
-    if !witness_ok {
-        lock();
-        write32(ICACHE_CR, icache);
-        core::arch::asm!("cpsie i", options(nomem, nostack));
-        return ERR_STATUS_PAGE;
-    }
-
-    record_at(0, OUTCOME_BEGAN, 0, image_crc, plan);
-
-    // Point of no return: the kernel's vector table is in these pages.
-    let mut outcome = OUTCOME_ERASE_FAILED;
-    let mut detail = 0u32;
-    let base = bank1_page_address(plan.first_page);
-    for _ in 0..WRITE_ATTEMPTS {
-        let mut failed = false;
-        for i in 0..plan.pages {
-            kick_watchdog();
-            if let Err(errors) = erase_page(plan.first_page + i, false) {
-                outcome = if errors == POLL_TIMED_OUT {
-                    OUTCOME_TIMEOUT
-                } else if errors & 0xF000 == NOT_ARMED {
-                    OUTCOME_ERASE_NOT_ARMED
-                } else {
-                    OUTCOME_ERASE_FAILED
-                };
-                detail = (u32::from(i) << 24) | errors;
-                failed = true;
-                break;
-            }
-        }
-        clear_op_bits(NSCR_PER | NSCR_STRT);
-        if failed {
-            continue;
-        }
-
-        // A silently dropped erase would otherwise surface as a program failure.
-        let mut not_blank = None;
-        for i in 0..plan.pages {
-            let word = read_flash(bank1_page_address(plan.first_page + i));
-            if word != 0xFFFF_FFFF {
-                not_blank = Some(word);
-                break;
-            }
-        }
-        if let Some(word) = not_blank {
-            outcome = OUTCOME_ERASE_NOT_BLANK;
-            detail = word;
-            continue;
-        }
-
-        match program_paged(base, words) {
-            Err(errors) => {
-                outcome =
-                    if errors == POLL_TIMED_OUT { OUTCOME_TIMEOUT } else { OUTCOME_PROGRAM_FAILED };
-                detail = errors;
-            }
-            Ok(()) => {
-                if let Some(at) = verify(base, words) {
-                    outcome = OUTCOME_VERIFY_FAILED;
-                    detail = at as u32;
-                } else {
-                    outcome = OUTCOME_OK;
-                    detail = 0;
-                    break;
-                }
-            }
-        }
-    }
-
-    record_at(1, outcome, detail, image_crc, plan);
-    write32(FLASH_NSCR, NSCR_LOCK);
-    reset()
 }
 
 const SELF_TEST_ADDRESS: u32 = 0x0824_4000;
