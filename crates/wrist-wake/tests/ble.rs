@@ -147,7 +147,7 @@ fn any_other_refusal_loses_the_chunk_and_a_detach_drops_the_held_one() {
     assert_eq!(out.sent(chunk, n, 0x41), Err(0x41));
     assert!(!out.holding());
     out.sent(chunk, n, 0x64).unwrap();
-    out.clear();
+    out.discard();
     assert_eq!(out.next(8, |_| 0).1, 0);
 }
 
@@ -198,6 +198,11 @@ impl<const N: usize> Ring<N> {
             (false, true) => self.end - self.start,
             (false, false) => N - self.start + self.end,
         }
+    }
+
+    fn clear(&mut self) {
+        self.start = self.end;
+        self.full = false;
     }
 
     fn read(&mut self, most: usize) -> Vec<u8> {
@@ -289,7 +294,7 @@ fn a_detach_forgets_the_line_in_hand() {
     let mut ring = Ring::<64>::new();
     let mut lines = wrist_wake::ble::Lines::<64>::default();
     assert_eq!(lines.feed(b"[hb] 3", &mut ring), 0);
-    lines.clear();
+    lines.clear(false);
     assert_eq!(lines.feed(b"[ble] console attached\r\n", &mut ring), 0);
     assert_eq!(ring.read(64), b"[ble] console attached\r\n");
 }
@@ -307,4 +312,51 @@ fn a_line_whose_only_refused_piece_is_its_end_is_not_counted_lost() {
     // An empty line refused outright is lost.
     ring.full = true;
     assert_eq!(lines.feed(b"\r\n", &mut ring), 1);
+}
+
+/// One console notification of at most `most` bytes from the pipe, as the image sends it;
+/// what the central received.
+fn notify<const N: usize>(out: &mut wrist_wake::ble::Outbox<8>, ring: &mut Ring<N>, most: usize, status: u8) -> Vec<u8> {
+    let (chunk, n) = out.next(most, |b| {
+        let r = ring.read(b.len());
+        b[..r.len()].copy_from_slice(&r);
+        r.len()
+    });
+    out.sent(chunk, n, status).unwrap();
+    if status == 0 { chunk[..n].to_vec() } else { Vec::new() }
+}
+
+#[test]
+fn a_line_half_sent_when_the_pipe_is_cleared_ends_before_the_next() {
+    let mut ring = Ring::<64>::new();
+    let mut lines = wrist_wake::ble::Lines::<64>::default();
+    let mut out = wrist_wake::ble::Outbox::<8>::default();
+    assert_eq!(heartbeat(&mut lines, &mut ring, 97), 0);
+    let mut central = notify(&mut out, &mut ring, 8, 0);
+    // An update finishes: what was queued is stale.
+    ring.clear();
+    lines.clear(out.discard());
+    assert_eq!(lines.feed(b"[update] ok\r\n", &mut ring), 0);
+    while ring.len() > 0 {
+        central.extend(notify(&mut out, &mut ring, 8, 0));
+    }
+    assert_eq!(central, b"[hb] 97 \r\n[update] ok\r\n");
+}
+
+#[test]
+fn a_held_chunk_is_dropped_at_a_clear_and_a_whole_line_gets_no_blank_one() {
+    let mut ring = Ring::<64>::new();
+    let mut lines = wrist_wake::ble::Lines::<64>::default();
+    let mut out = wrist_wake::ble::Outbox::<8>::default();
+    assert_eq!(lines.feed(b"[hb] 1\r\nabcdefghij\r\n", &mut ring), 0);
+    let mut central = notify(&mut out, &mut ring, 8, 0);
+    // Refused for want of buffers, held, and never sent.
+    assert_eq!(notify(&mut out, &mut ring, 8, wrist_aci::status::INSUFFICIENT_RESOURCES), b"");
+    ring.clear();
+    lines.clear(out.discard());
+    assert_eq!(lines.feed(b"[update] ok\r\n", &mut ring), 0);
+    while out.holding() || ring.len() > 0 {
+        central.extend(notify(&mut out, &mut ring, 8, 0));
+    }
+    assert_eq!(central, b"[hb] 1\r\n[update] ok\r\n");
 }
