@@ -77,6 +77,22 @@ fn write_uuid(uart: Uart, u: Uuid) {
     }
 }
 
+/// 0.625 ms units, exactly.
+fn write_ms(uart: Uart, units: u16) {
+    let us = u32::from(units) * 625;
+    uart.write_u32(us / 1000);
+    let (mut rest, mut digit) = (us % 1000, 100);
+    if rest != 0 {
+        uart.write_str(".");
+    }
+    while rest != 0 {
+        uart.write_u32(rest / digit);
+        rest %= digit;
+        digit /= 10;
+    }
+    uart.write_str(" ms");
+}
+
 /// Printable ASCII as is, anything else as `?`.
 fn write_name(uart: Uart, name: &[u8]) {
     uart.write_str("\"");
@@ -221,10 +237,10 @@ impl Link<'_> {
                 self.uart.write_str(" s, listening ");
                 self.uart.write_u32(u32::from(s.window) * 100 / u32::from(s.interval));
                 self.uart.write_str("% of the time (");
-                self.uart.write_u32(u32::from(s.window) * 5 / 8);
-                self.uart.write_str(" ms in every ");
-                self.uart.write_u32(u32::from(s.interval) * 5 / 8);
-                self.uart.write_line(" ms)");
+                write_ms(self.uart, s.window);
+                self.uart.write_str(" in every ");
+                write_ms(self.uart, s.interval);
+                self.uart.write_line(")");
             }
             Ok(status) => {
                 self.uart.write_str("[ble] scan refused, status ");
