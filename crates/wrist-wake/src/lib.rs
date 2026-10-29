@@ -220,9 +220,10 @@ pub mod ble {
             Self { buf: [0; N], len: 0, partial: false, dropping: false, open: false }
         }
 
-        /// Forgets the line in hand, as when the sink is emptied.
-        pub fn clear(&mut self) {
-            *self = Self::new();
+        /// Forgets the line in hand, as when the sink is emptied; `cut`: what the sink
+        /// already passed on ends inside a line, so the next one starts on a new line.
+        pub fn clear(&mut self, cut: bool) {
+            *self = Self { open: cut, ..Self::new() };
         }
 
         /// Takes console output; how many lines it lost for want of room.
@@ -284,11 +285,13 @@ pub mod ble {
     /// Console output to a subscribed central; a chunk refused for want of TX buffers goes again first.
     pub struct Outbox<const N: usize> {
         held: Option<([u8; N], usize)>,
+        /// The last chunk sent ended inside a line.
+        cut: bool,
     }
 
     impl<const N: usize> Default for Outbox<N> {
         fn default() -> Self {
-            Self { held: None }
+            Self { held: None, cut: false }
         }
     }
 
@@ -298,8 +301,11 @@ pub mod ble {
             self.held.is_some()
         }
 
-        pub fn clear(&mut self) {
+        /// Drops the held chunk, which the central never had, as when what was queued is
+        /// discarded; whether the central was left inside a line.
+        pub fn discard(&mut self) -> bool {
             self.held = None;
+            self.cut
         }
 
         /// The held chunk, else up to `most` bytes from `read`.
@@ -318,7 +324,10 @@ pub mod ble {
         /// The status, for any refusal but `INSUFFICIENT_RESOURCES`.
         pub fn sent(&mut self, chunk: [u8; N], n: usize, status: u8) -> Result<(), u8> {
             match status {
-                0 => Ok(()),
+                0 => {
+                    self.cut = chunk[..n].last() != Some(&b'\n');
+                    Ok(())
+                }
                 wrist_aci::status::INSUFFICIENT_RESOURCES => {
                     self.held = Some((chunk, n));
                     Ok(())

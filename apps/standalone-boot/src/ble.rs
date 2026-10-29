@@ -222,12 +222,12 @@ impl Sink for OutSink {
     }
 }
 
-/// Empties [`OUT`] and forgets the line in hand.
-fn clear_out() {
+/// Empties [`OUT`] and forgets the line in hand; `cut`: the central was left inside a line.
+fn clear_out(cut: bool) {
     LINES.lock(|lines| {
         OUT.clear();
         if let Ok(mut l) = lines.try_borrow_mut() {
-            l.clear();
+            l.clear(cut);
         }
     });
 }
@@ -685,7 +685,7 @@ impl Link<'_> {
             self.finish_transfer = false;
             if let Some(session) = self.transfer.take() {
                 // What queued while the mirror waited is stale; the result line must find room.
-                clear_out();
+                clear_out(self.outbox.discard());
                 if let Err(why) = crate::update::finish_app(self.flash, session).await {
                     self.uart.write_str("[update] error: ");
                     self.uart.write_line(why);
@@ -957,8 +957,7 @@ impl Link<'_> {
     fn set_mirror(&mut self) {
         let on = self.subscribed && ENCRYPTED.load(Ordering::Relaxed);
         if on != MIRROR.swap(on, Ordering::Relaxed) {
-            clear_out();
-            self.outbox.clear();
+            clear_out(self.outbox.discard());
             self.uart.write_line(if on {
                 "[ble] console attached over the air; 'help' lists commands"
             } else {
@@ -1250,6 +1249,7 @@ impl Link<'_> {
                 ENCRYPTED.store(false, Ordering::Relaxed);
                 self.subscribed = false;
                 self.set_mirror();
+                self.outbox = Outbox::default();
                 // No request here: one crossing the central's own encryption start ended a
                 // bonded macOS central's link (HARDWARE.md).
                 self.mtu = DEFAULT_MTU;
