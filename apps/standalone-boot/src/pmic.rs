@@ -410,6 +410,20 @@ pub async fn restore_gauge(bus: &mut AsyncBus, status: Option<u16>) {
     GAUGE_RESTORED.lock(|r| r.set(Some(outcome)));
 }
 
+/// With each reading: `HibScalar` again, if boot could not set it.
+pub async fn keep_hibernate_slow(uart: &mut Lines, bus: &mut AsyncBus, hib_cfg: Option<u16>) {
+    let Some(was) = hib_cfg.filter(|&v| wrist_power::hibernate_fast(v)) else { return };
+    let slow = wrist_power::slow_hibernate(was);
+    let ok = wrist_power::GaugeBus::write(&mut Gauge(bus), HIB_CFG, slow).await;
+    for (label, v) in [("[gauge] HibCfg ", was), (" found, ", slow)] {
+        uart.write_str(label);
+        let [hi, lo] = v.to_be_bytes();
+        uart.write_hex8(hi);
+        uart.write_hex8(lo);
+    }
+    uart.write_line(if ok { " written" } else { " not written" });
+}
+
 pub const RESTORED: &str = "found; 200 mAh, 13.9 mA end of charge and 3.40 V empty written again";
 
 /// The PCA9420's four mode settings, `MODECFG_0_0` to `MODECFG_3_3`, in one read.
