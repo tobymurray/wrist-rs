@@ -9,7 +9,8 @@ revision. Remove this copy once upstream has all of these, or equivalents:
 - **Log formatting.** Three placeholders in `low_power.rs` and `time_driver/lptim.rs` use
   `Debug`, not `Display`, which upstream fails to compile with `log`.
 - **LPTIM compare (U5).** `CMPOK` is cleared before `CCR` is written, and the wait for the
-  write's own `CMPOK` is bounded: a stale `CMPOK` makes compare wakeups miss.
+  write's own `CMPOK` is bounded: a stale `CMPOK` makes compare wakeups miss. A `CCR` that
+  already holds the value is not written again, since no write is left unacknowledged.
 - **LPTIM counter snapshot.** An overflow pending but not yet serviced is accounted for,
   through `wrist_time::counter::extend` (host-tested in [`crates/wrist-time`](../../crates/wrist-time)); without it
   the time can go backwards at rollover.
@@ -39,4 +40,5 @@ revision. Remove this copy once upstream has all of these, or equivalents:
   set for any alarm before the next overflow; setting it only under `0xC000` ticks away
   leaves an alarm in a cycle's last quarter up to 500 ms late.
 - **Time driver counters.** `low_power::time_driver_stats::snapshot()` returns the `DIER`
-  and compare waits, Stop entries with a write unacknowledged, and the last late alarms.
+  and compare waits, the compare writes skipped, Stop entries with a write unacknowledged,
+  and the last late alarms.
