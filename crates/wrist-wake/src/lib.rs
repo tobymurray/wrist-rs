@@ -184,6 +184,103 @@ pub mod ble {
         }
     }
 
+    /// Where [`Lines`] puts the mirror's output: the image's pipe.
+    pub trait Sink {
+        /// Bytes it has room for.
+        fn free(&self) -> usize;
+        /// Queues a prefix of `bytes`, which may be short of what fits (a ring buffer's
+        /// end); how many.
+        fn write(&mut self, bytes: &[u8]) -> usize;
+    }
+
+    /// Console output for the mirror, held until its line ends so that the line goes into
+    /// the sink whole or not at all: what the central reads never runs one line into
+    /// another. A line longer than `N` goes in `N`-byte pieces; when a piece does not fit,
+    /// the rest of that line is dropped and the next line starts on a new one.
+    pub struct Lines<const N: usize> {
+        buf: [u8; N],
+        len: usize,
+        /// A piece of the current line is in the sink.
+        partial: bool,
+        /// The current line is being dropped up to its `\n`.
+        dropping: bool,
+        /// The sink ends in a line that was cut short: a `\r\n` goes before what follows.
+        open: bool,
+    }
+
+    impl<const N: usize> Default for Lines<N> {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl<const N: usize> Lines<N> {
+        #[must_use]
+        pub const fn new() -> Self {
+            Self { buf: [0; N], len: 0, partial: false, dropping: false, open: false }
+        }
+
+        /// Forgets the line in hand, as when the sink is emptied.
+        pub fn clear(&mut self) {
+            *self = Self::new();
+        }
+
+        /// Takes console output; how many lines it lost for want of room.
+        pub fn feed(&mut self, mut bytes: &[u8], sink: &mut impl Sink) -> u32 {
+            let mut lost = 0;
+            while !bytes.is_empty() {
+                let end = bytes.iter().position(|&b| b == b'\n').map_or(bytes.len(), |i| i + 1);
+                let (mut piece, rest) = bytes.split_at(end);
+                bytes = rest;
+                let ends = piece.last() == Some(&b'\n');
+                while !self.dropping && !piece.is_empty() {
+                    if self.len == N && !self.put(sink) {
+                        self.dropping = true;
+                        lost += 1;
+                        break;
+                    }
+                    let n = (N - self.len).min(piece.len());
+                    self.buf[self.len..self.len + n].copy_from_slice(&piece[..n]);
+                    self.len += n;
+                    piece = &piece[n..];
+                }
+                // Only the line's end refused: the next line's `\r\n` lead completes it.
+                let end_only = self.partial && self.buf[..self.len].iter().all(|&b| b == b'\r' || b == b'\n');
+                if ends && !self.dropping && !self.put(sink) {
+                    self.dropping = true;
+                    lost += u32::from(!end_only);
+                }
+                if ends {
+                    self.open |= self.dropping && self.partial;
+                    self.dropping = false;
+                    self.partial = false;
+                }
+            }
+            lost
+        }
+
+        /// What is held goes into the sink whole, or is dropped; whether it went.
+        fn put(&mut self, sink: &mut impl Sink) -> bool {
+            let held = &self.buf[..self.len];
+            self.len = 0;
+            let lead: &[u8] = if self.open { b"\r\n" } else { b"" };
+            if lead.len() + held.len() > sink.free() {
+                return false;
+            }
+            for mut part in [lead, held] {
+                while !part.is_empty() {
+                    match sink.write(part) {
+                        0 => return false,
+                        n => part = &part[n..],
+                    }
+                }
+            }
+            self.open = false;
+            self.partial = true;
+            true
+        }
+    }
+
     /// Console output to a subscribed central; a chunk refused for want of TX buffers goes again first.
     pub struct Outbox<const N: usize> {
         held: Option<([u8; N], usize)>,

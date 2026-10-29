@@ -177,3 +177,134 @@ fn an_encrypted_or_pairing_link_is_never_asked() {
     ask.connected(NOW, 32_768);
     assert_eq!(ask.due(), Some(NOW + ASK_TO_PAIR_AFTER_MS * 32_768 / 1_000));
 }
+
+/// embassy-sync's `Pipe` as the mirror uses it: a write fills only the contiguous span up
+/// to the buffer's end, so it can be short even with room after the wrap.
+struct Ring<const N: usize> {
+    buf: [u8; N],
+    start: usize,
+    end: usize,
+    full: bool,
+}
+
+impl<const N: usize> Ring<N> {
+    fn new() -> Self {
+        Self { buf: [0; N], start: 0, end: 0, full: false }
+    }
+
+    fn len(&self) -> usize {
+        match (self.full, self.start <= self.end) {
+            (true, _) => N,
+            (false, true) => self.end - self.start,
+            (false, false) => N - self.start + self.end,
+        }
+    }
+
+    fn read(&mut self, most: usize) -> Vec<u8> {
+        let n = self.len().min(most);
+        let out = (0..n).map(|i| self.buf[(self.start + i) % N]).collect();
+        self.start = (self.start + n) % N;
+        self.full &= n == 0;
+        out
+    }
+}
+
+impl<const N: usize> wrist_wake::ble::Sink for Ring<N> {
+    fn free(&self) -> usize {
+        N - self.len()
+    }
+
+    fn write(&mut self, bytes: &[u8]) -> usize {
+        if self.full {
+            return 0;
+        }
+        let span = if self.start <= self.end { N - self.end } else { self.start - self.end };
+        let n = span.min(bytes.len());
+        self.buf[self.end..self.end + n].copy_from_slice(&bytes[..n]);
+        self.end = (self.end + n) % N;
+        self.full = n > 0 && self.start == self.end;
+        n
+    }
+}
+
+/// A heartbeat line as the image writes it: in pieces.
+fn heartbeat(lines: &mut wrist_wake::ble::Lines<64>, ring: &mut Ring<64>, beat: u32) -> u32 {
+    let mut lost = 0;
+    for piece in ["[hb] ", &beat.to_string(), "  uptime ", &(beat * 2).to_string(), " s", "\r\n"] {
+        lost += lines.feed(piece.as_bytes(), ring);
+    }
+    lost
+}
+
+#[test]
+fn a_mirrored_line_crosses_the_pipes_end_whole() {
+    let mut ring = Ring::<64>::new();
+    let mut lines = wrist_wake::ble::Lines::<64>::default();
+    ring.end = 60;
+    ring.start = 60;
+    assert_eq!(heartbeat(&mut lines, &mut ring, 214), 0);
+    assert_eq!(ring.read(64), b"[hb] 214  uptime 428 s\r\n");
+}
+
+#[test]
+fn a_full_pipe_drops_whole_lines_and_counts_them() {
+    let mut ring = Ring::<64>::new();
+    let mut lines = wrist_wake::ble::Lines::<64>::default();
+    let mut read = Vec::new();
+    let mut lost = 0;
+    for beat in 0..200 {
+        lost += heartbeat(&mut lines, &mut ring, beat);
+        if beat % 7 == 0 {
+            read.extend(ring.read(20));
+        }
+    }
+    read.extend(ring.read(64));
+    let text = String::from_utf8(read).unwrap();
+    let got: Vec<&str> = text.split_terminator("\r\n").collect();
+    assert!(lost > 0, "the pipe never filled");
+    assert_eq!(got.len() + lost as usize, 200);
+    let mut previous = None;
+    for line in got {
+        let beat: u32 = line.strip_prefix("[hb] ").and_then(|l| l.split(' ').next()).unwrap().parse().unwrap();
+        assert_eq!(line, format!("[hb] {beat}  uptime {} s", beat * 2), "spliced");
+        assert!(previous < Some(beat));
+        previous = Some(beat);
+    }
+}
+
+#[test]
+fn a_line_longer_than_the_holder_cut_short_ends_before_the_next() {
+    let mut ring = Ring::<64>::new();
+    let mut lines = wrist_wake::ble::Lines::<16>::default();
+    let long = [b'x'; 100];
+    assert_eq!(lines.feed(&long, &mut ring), 1);
+    assert_eq!(lines.feed(b"yy\r\n", &mut ring), 0);
+    assert_eq!(ring.read(64), [b'x'; 64]);
+    assert_eq!(lines.feed(b"next\r\n", &mut ring), 0);
+    assert_eq!(ring.read(64), b"\r\nnext\r\n");
+}
+
+#[test]
+fn a_detach_forgets_the_line_in_hand() {
+    let mut ring = Ring::<64>::new();
+    let mut lines = wrist_wake::ble::Lines::<64>::default();
+    assert_eq!(lines.feed(b"[hb] 3", &mut ring), 0);
+    lines.clear();
+    assert_eq!(lines.feed(b"[ble] console attached\r\n", &mut ring), 0);
+    assert_eq!(ring.read(64), b"[ble] console attached\r\n");
+}
+
+#[test]
+fn a_line_whose_only_refused_piece_is_its_end_is_not_counted_lost() {
+    let mut ring = Ring::<300>::new();
+    let mut lines = wrist_wake::ble::Lines::<256>::default();
+    ring.end = 44;
+    let body = [b'x'; 256];
+    assert_eq!(lines.feed(&body, &mut ring) + lines.feed(b"\r\n", &mut ring), 0);
+    ring.read(300);
+    assert_eq!(lines.feed(b"next\r\n", &mut ring), 0);
+    assert_eq!(ring.read(300), b"\r\nnext\r\n");
+    // An empty line refused outright is lost.
+    ring.full = true;
+    assert_eq!(lines.feed(b"\r\n", &mut ring), 1);
+}
