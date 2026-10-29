@@ -346,8 +346,7 @@ pub mod ble {
         pub window: u16,
     }
 
-    /// The interval follows advertising's: while the watch advertises, ST's stack grants about
-    /// one scan window per advertising period (HARDWARE.md).
+    /// The interval follows advertising's, which paces a scan while the watch advertises (HARDWARE.md).
     #[must_use]
     pub const fn scan(power: Power) -> Scan {
         match power {

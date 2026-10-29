@@ -11,14 +11,15 @@ use super::{power, Link, Request, STATE, STATE_ADVERTISING, STATE_IDLE};
 use crate::uart::Uart;
 
 const SCAN_DEFAULT_S: u8 = 10;
-/// The chip ends a general discovery itself at about 10 s (HARDWARE.md).
+/// The chip ends a general discovery itself by then (HARDWARE.md).
 const SCAN_MAX_S: u8 = 10;
 /// Lines one scan prints; past this, advertisers are only counted.
 const SCAN_LINES: u32 = 48;
 /// Advertisers one scan tells apart; past this, repeats may print again.
 const SCAN_SEEN: usize = 32;
-/// HCI error: Command Disallowed.
 const COMMAND_DISALLOWED: u8 = 0x0C;
+/// An advertising report's kind for a scan response.
+const SCAN_RESPONSE: u8 = 0x04;
 
 pub(super) const USAGE: &str = "[ble] usage: ble scan [seconds, 1 to 10] [interval ms] [window ms]";
 
@@ -122,7 +123,7 @@ impl Scanner {
         for r in wrist_aci::reports(data) {
             *heard += 1;
             // One line per advertiser and kind.
-            let key = (r.address, r.kind == 0x04);
+            let key = (r.address, r.kind == SCAN_RESPONSE);
             if *printed >= SCAN_LINES || self.seen.contains(&Some(key)) {
                 continue;
             }
@@ -137,7 +138,7 @@ impl Scanner {
             }
             uart.write_u32(u32::from(r.rssi.unsigned_abs()));
             uart.write_str(" dBm");
-            if r.kind == 0x04 {
+            if r.kind == SCAN_RESPONSE {
                 uart.write_str(" (scan response)");
             }
             if let Some(name) = wrist_aci::ad_name(r.data) {
@@ -156,8 +157,7 @@ impl Scanner {
         }
     }
 
-    /// `GAP_PROC_COMPLETE`.
-    /// The chip ended the scan; the watch's own end at its time takes the scan first.
+    /// The chip ended the scan, unless the watch's own end at its time took it first.
     pub(super) fn gap_proc_complete(&mut self, code: u8, status: u8, uart: Uart) {
         if code == gap_proc::GENERAL_DISCOVERY && self.scan.is_some() {
             if status != 0 {
@@ -210,8 +210,8 @@ impl Link<'_> {
         let mut p = [0u8; 6];
         p[0..2].copy_from_slice(&s.interval.to_le_bytes());
         p[2..4].copy_from_slice(&s.window.to_le_bytes());
-        // The chip filtering duplicates.
         p[4] = address::STATIC_RANDOM;
+        // The chip filters duplicates.
         p[5] = 0x01;
         match self.while_advertising(ACI_GAP_START_GENERAL_DISCOVERY_PROC, &p).await {
             Ok(0) => {
