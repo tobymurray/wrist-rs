@@ -79,6 +79,7 @@ pub fn status(soc_pct: Option<u8>) -> Status {
         clock: civil.map(|c| Clock { h: c.hour, m: c.minute, s: c.second }),
         date: civil.map(|c| Date { year: c.year, month: c.month, day: c.day }),
         soc_pct,
+        steps: crate::imu::today(),
     }
 }
 

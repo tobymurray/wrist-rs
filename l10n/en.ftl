@@ -16,6 +16,11 @@ face-date-invalid = ?
 charge-percent = { $pct } %
 # The charge before the gauge has a reading, its digits as figure dashes.
 charge-unset = ‒‒ %
+# Steps counted since midnight, under the charge; a whole number, at most six digits.
+steps-today = { $steps ->
+    [one] { $steps } step
+   *[other] { $steps } steps
+}
 
 ## Battery
 

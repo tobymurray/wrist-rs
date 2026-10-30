@@ -1,6 +1,7 @@
 //! The BMI270's step counter. The chip keeps its state across the MCU's resets and updates
 //! (`HARDWARE.md`, "Modules and slots"), so a boot adopts a chip already counting and loads only
-//! one that is not.
+//! one that is not. Today's steps come from its count through a [`Ledger`] kept in backup
+//! registers.
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 
@@ -9,7 +10,8 @@ use embassy_stm32::i2c::{I2c, Master};
 use embassy_stm32::mode::Blocking;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
-use embassy_time::Timer;
+use embassy_time::{with_timeout, Duration, Timer};
+use wrist_steps::Ledger;
 use wrist_imu::{reg, Activity, Found, Outputs, ADDR, CHIP_ID, OUT_LEN, OUT_PAGE, PAGE_LEN, STEP_PAGE};
 
 use crate::uart::Uart;
@@ -31,6 +33,27 @@ static RUNNING: AtomicBool = AtomicBool::new(false);
 static FOUND: AtomicU32 = AtomicU32::new(u32::MAX);
 static FOUND_STEPS_ON: AtomicBool = AtomicBool::new(false);
 static READ: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+static DONE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+static TODAY: AtomicU32 = AtomicU32::new(0);
+/// Set by the first reading, so the face never shows a count not yet read.
+static TODAY_KNOWN: AtomicBool = AtomicBool::new(false);
+static YESTERDAY: AtomicU32 = AtomicU32::new(u32::MAX);
+
+/// Today's steps, once the chip is counting.
+pub fn today() -> Option<u32> {
+    TODAY_KNOWN.load(Ordering::Relaxed).then(|| TODAY.load(Ordering::Relaxed))
+}
+
+pub fn counting() -> bool {
+    matches!(STATE.load(Ordering::Relaxed), ADOPTED | LOADED)
+}
+
+/// Reads the count and waits a little for it, so the face drawn next shows it.
+pub async fn read_now() {
+    DONE.reset();
+    READ.signal(());
+    let _ = with_timeout(Duration::from_millis(50), DONE.wait()).await;
+}
 
 /// Reads the count now, and with `report` prints it.
 pub fn request_read(report: bool) {
@@ -77,16 +100,26 @@ pub async fn run(mut bus: Bus) -> ! {
     if state != FAILED {
         uart.write_line(if state == ADOPTED { "[imu] counting, carried on" } else { "[imu] counting from 0" });
     }
+    let mut ledger = Ledger::restore(&crate::rtc::steps_words(), state == ADOPTED);
     loop {
         if state != FAILED {
             match outputs(&mut bus).await {
                 Ok(out) => {
                     STEPS.store(out.steps, Ordering::Relaxed);
                     ACTIVITY.store(out.activity as u8, Ordering::Relaxed);
+                    let day = crate::rtc::now_civil().and_then(|c| wrist_steps::day_of(wrist_time::seconds_of(c)));
+                    let l = ledger.get_or_insert_with(|| Ledger::new(day, out.steps));
+                    TODAY.store(l.observe(day, out.steps), Ordering::Relaxed);
+                    if !TODAY_KNOWN.swap(true, Ordering::Relaxed) {
+                        crate::wake_display();
+                    }
+                    YESTERDAY.store(l.yesterday().unwrap_or(u32::MAX), Ordering::Relaxed);
+                    crate::rtc::set_steps_words(&l.save());
                 }
                 Err(()) => uart.write_line("[imu] read failed"),
             }
         }
+        DONE.signal(());
         if REPORT.swap(false, Ordering::Relaxed) {
             write_report(uart);
         }
@@ -98,9 +131,18 @@ fn write_report(uart: Uart) {
     match STATE.load(Ordering::Relaxed) {
         FAILED => uart.write_line("[imu] not counting (see the boot log)"),
         state => {
-            uart.write_str(if state == ADOPTED { "[imu] counting, carried on: " } else { "[imu] counting since boot: " });
+            uart.write_str("[imu] today ");
+            uart.write_u32(TODAY.load(Ordering::Relaxed));
+            match YESTERDAY.load(Ordering::Relaxed) {
+                u32::MAX => uart.write_str(", yesterday unknown"),
+                y => {
+                    uart.write_str(", yesterday ");
+                    uart.write_u32(y);
+                }
+            }
+            uart.write_str(if state == ADOPTED { "; the chip's count, carried on: " } else { "; the chip's count since boot: " });
             uart.write_u32(STEPS.load(Ordering::Relaxed));
-            uart.write_str(" steps, ");
+            uart.write_str(", ");
             let activity = match ACTIVITY.load(Ordering::Relaxed) {
                 a if a == Activity::Still as u8 => Activity::Still,
                 a if a == Activity::Walking as u8 => Activity::Walking,

@@ -59,6 +59,12 @@ fn every_built_in_string_is_in_its_slot_s_face() {
             message(l, Msg::ChargePercent { pct: 0 }, &mut pct);
             message(l, Msg::ChargeUnset, &mut pct);
             assert_covers(&format!("{} {name} charge", l.tag), charge, &pct);
+
+            let mut steps = vec![DIGITS];
+            for n in [0, 1, 2, 5, 21] {
+                message(l, Msg::StepsToday { steps: n }, &mut steps);
+            }
+            assert_covers(&format!("{} {name} steps", l.tag), id, &steps);
         }
         assert_covers(&format!("{name} version"), words, &[VERSION]);
         assert_covers(&format!("{name} id"), id, &[ID]);

@@ -34,7 +34,7 @@ fn main() {
             FACES,
         ),
         [page, version, build, _] if page == "about" => compose_about(&About { version, build }, &EN_GB, FACES),
-        [time, date, soc, _] => {
+        [time, date, soc, rest @ ..] if rest.len() <= 2 => {
             let nums = |s: &str, sep| -> Vec<u16> { s.split(sep).map(|n| n.parse().expect("a number")).collect() };
             let byte = |n: u16| u8::try_from(n).expect("a field under 256");
             let clock = arg(time).map(|t| {
@@ -46,10 +46,11 @@ fn main() {
                 Date { year: d[0], month: byte(d[1]), day: byte(d[2]) }
             });
             let soc_pct = arg(soc).map(|s| s.parse().expect("a percentage"));
-            compose(&Status { clock, date, soc_pct }, &EN_GB, FACES)
+            let steps = rest.first().filter(|_| rest.len() == 2).and_then(|s| arg(s)).map(|s| s.parse().expect("a step count"));
+            compose(&Status { clock, date, soc_pct, steps }, &EN_GB, FACES)
         }
         _ => {
-            eprintln!("usage: face HH:MM YYYY-MM-DD PERCENT OUT.raw");
+            eprintln!("usage: face HH:MM YYYY-MM-DD PERCENT [STEPS] OUT.raw");
             eprintln!("       face battery PERCENT MV usb|cell OUT.raw");
             eprintln!("       face about VERSION BUILD OUT.raw   ('-' for unset)");
             eprintln!("       face stress KIND STEP OUT.raw");
