@@ -27,9 +27,16 @@ def find_or_exit(explicit=None):
 
 
 def open_console(explicit=None, timeout=0.2):
-    """The console, open and quiet: a newline ends any half line the watch holds, and what follows is dropped."""
+    """The console, open and quiet."""
     import serial
-    s = serial.Serial(find_or_exit(explicit), 115200, timeout=0.05)
+    return settle(serial.Serial(find_or_exit(explicit), 115200, timeout=timeout))
+
+
+def settle(s):
+    """The open console, quiet: the host's tty can echo the watch's greeting back before the port
+    is raw, so a newline ends that half line on either side of dropping what the watch sends."""
+    timeout = s.timeout
+    s.timeout = 0.05
     time.sleep(0.3)
     s.write(b"\r\n")
     s.flush()
@@ -38,6 +45,8 @@ def open_console(explicit=None, timeout=0.2):
     while time.time() < end and time.time() - last < 0.3:
         if s.read(4096):
             last = time.time()
+    s.write(b"\r\n")
+    s.flush()
     s.reset_input_buffer()
     s.timeout = timeout
     return s

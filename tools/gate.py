@@ -204,11 +204,11 @@ class Gate:
         # A reset or a pulled cable ends the link: keep what came before it.
         try:
             with serial.Serial(port, 115200, timeout=0.2) as s:
-                time.sleep(0.3)
-                s.reset_input_buffer()
                 if commands:
-                    # The host's tty can echo the attach banner back, garbling the first line.
-                    s.write(b'\r\n'); s.flush(); time.sleep(0.2)
+                    wrist_port.settle(s)
+                else:
+                    time.sleep(0.3)
+                    s.reset_input_buffer()
                 for c in filter(None, commands.split(';')):
                     data = (c.strip() + '\r\n').encode()
                     for i in range(0, len(data), 60):
@@ -462,7 +462,7 @@ class Gate:
 
     def step8(self):
         import serial
-        s = serial.Serial(self.wait_port(30), 115200, timeout=0.2)
+        s = wrist_port.settle(serial.Serial(self.wait_port(30), 115200, timeout=0.2))
         buf, lock, stop = [], threading.Lock(), threading.Event()
 
         def reader():
