@@ -210,9 +210,7 @@ class Gate:
                     time.sleep(0.3)
                     s.reset_input_buffer()
                 for c in filter(None, commands.split(';')):
-                    data = (c.strip() + '\r\n').encode()
-                    for i in range(0, len(data), 60):
-                        s.write(data[i:i + 60]); s.flush(); time.sleep(0.005)
+                    wrist_port.write_command(s, c)
                     time.sleep(0.3)
                 end = time.time() + seconds
                 while time.time() < end:

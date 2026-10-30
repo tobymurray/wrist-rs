@@ -19,9 +19,7 @@ ap.add_argument('seconds', nargs='?', type=float, default=3)
 args = ap.parse_args()
 s = wrist_port.open_console(args.port)
 for c in args.commands.split(';'):
-    data = (c.strip() + '\r\n').encode()
-    for i in range(0, len(data), 60):
-        s.write(data[i:i + 60]); s.flush(); time.sleep(0.005)
+    wrist_port.write_command(s, c)
     time.sleep(0.3)
 end = time.time() + args.seconds; buf = b''
 while time.time() < end:

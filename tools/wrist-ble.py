@@ -39,9 +39,10 @@ TX = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
 
 
 class Console:
-    def __init__(self):
+    def __init__(self, echo=lambda text: print(text, flush=True)):
         self.buf = b""
         self.lines = []
+        self.echo = echo
 
     def on_notify(self, _handle, data: bytearray):
         self.buf += bytes(data)
@@ -49,7 +50,7 @@ class Console:
             line, self.buf = self.buf.split(b"\n", 1)
             text = line.decode("utf-8", "replace").rstrip("\r")
             self.lines.append(text)
-            print(text, flush=True)
+            self.echo(text)
 
     async def wait_for(self, needles, timeout):
         start = len(self.lines)
@@ -330,7 +331,13 @@ async def main():
 
     if args.pair:
         return await pair(args.name, args.port)
-    device = await find(args.name)
+    return await run(args.name, args.commands, args.update, args.listen, not args.no_reset,
+                     args.keep_interval, args.chunk, args.pace)
+
+
+async def run(name, commands="", update=None, listen=2.0, reset=True, keep_interval=False, chunk=244, pace=0.0):
+    """Commands, then an update if one is given; 0 once it is done (with `reset`, once kept)."""
+    device = await find(name)
     if device is None:
         return 1
     con = Console()
@@ -340,21 +347,21 @@ async def main():
         await acquire_mtu(client)
         print(f"-- mtu {mtu_of(client)}", flush=True)
         ok = True
-        for cmd in [c.strip() for c in args.commands.split(";") if c.strip()]:
+        for cmd in [c.strip() for c in commands.split(";") if c.strip()]:
             await send(client, cmd)
             await asyncio.sleep(0.5)
-        if args.update and not args.keep_interval:
+        if update and not keep_interval:
             await fast_interval(client, con)
-        if args.update:
-            ok = await transfer(client, con, args.update, args.pace, args.chunk)
-        if ok and args.update and not args.no_reset:
+        if update:
+            ok = await transfer(client, con, update, pace, chunk)
+        if ok and update and reset:
             print("-- reset sent", flush=True)
             await send(client, "reset")
             await asyncio.sleep(0.5)
         else:
-            await asyncio.sleep(args.listen)
-    if ok and args.update and not args.no_reset:
-        return 0 if await wait_kept(args.name, 120) else 1
+            await asyncio.sleep(listen)
+    if ok and update and reset:
+        return 0 if await wait_kept(name, 120) else 1
     return 0 if ok else 1
 
 
