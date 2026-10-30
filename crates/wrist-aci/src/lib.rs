@@ -53,6 +53,7 @@ pub mod opcode {
     /// As a central: handle, interval min and max, latency, timeout, CE length min and max.
     pub const ACI_GAP_START_CONNECTION_UPDATE: u16 = 0xFC9E;
     pub const ACI_GAP_GET_BONDED_DEVICES: u16 = 0xFCA3;
+    pub const ACI_GAP_IS_DEVICE_BONDED: u16 = 0xFCA4;
     pub const ACI_GAP_NUMERIC_COMPARISON_CONFIRM: u16 = 0xFCA5;
     pub const ACI_GATT_INIT: u16 = 0xFD01;
     pub const ACI_GATT_ADD_SERVICE: u16 = 0xFD02;
@@ -70,6 +71,8 @@ pub mod opcode {
     pub const ACI_GATT_WRITE_CHAR_DESC: u16 = 0xFD21;
     /// An indication's confirmation.
     pub const ACI_GATT_CONFIRM_INDICATION: u16 = 0xFD25;
+    /// A notification or indication to one connection, or to every subscriber.
+    pub const ACI_GATT_UPDATE_CHAR_VALUE_EXT: u16 = 0xFD2C;
     pub const ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_REQ: u16 = 0xFD81;
     /// As a central, the answer to a peripheral's request ([`super::L2capUpdateRequest`]).
     pub const ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_RESP: u16 = 0xFD82;
@@ -278,17 +281,22 @@ pub enum Event<'a> {
     CommandComplete { opcode: u16, status: u8, params: &'a [u8] },
     /// Command Status: a command accepted (0) or refused, results to follow.
     CommandStatus { opcode: u16, status: u8 },
-    /// LE (Enhanced) Connection Complete with success: the handle, and the
-    /// interval (1.25 ms units) and latency when the packet carries them.
-    Connected { handle: u16, interval: Option<(u16, u16)> },
+    /// LE (Enhanced) Connection Complete with success: the handle, whether the watch is the
+    /// central, the peer, and the interval (1.25 ms units) and latency when the packet
+    /// carries them.
+    Connected { handle: u16, central: bool, peer: Address, interval: Option<(u16, u16)> },
+    /// LE (Enhanced) Connection Complete with an error: a connection that never formed.
+    ConnectFailed { status: u8 },
     /// LE Connection Update Complete with success: interval (1.25 ms units), latency.
-    ConnectionUpdate { interval: u16, latency: u16 },
+    ConnectionUpdate { handle: u16, interval: u16, latency: u16 },
     /// Disconnection Complete, with its reason (0x13: the peer hung up).
-    Disconnected { reason: u8 },
+    Disconnected { handle: u16, reason: u8 },
     /// Encryption Change: 1 on, 0 off.
-    Encryption { on: u8 },
+    Encryption { handle: u16, on: u8 },
     /// LE Advertising Report: one or more reports ([`reports`]).
     Advertising { data: &'a [u8] },
+    /// Another LE meta event, by subevent code.
+    LeMeta { sub: u8 },
     /// One of ST's events: its code and the bytes after it.
     Vendor { code: u16, params: &'a [u8] },
 }
@@ -296,6 +304,7 @@ pub enum Event<'a> {
 /// The event in one HCI packet, if it is one the image acts on.
 #[must_use]
 pub fn parse(p: &[u8]) -> Option<Event<'_>> {
+    let u16_at = |i: usize| u16::from_le_bytes([p[i], p[i + 1]]);
     match p {
         [0x04, 0x0E, _, _num, lo, hi, status, params @ ..] => {
             Some(Event::CommandComplete { opcode: u16::from_le_bytes([*lo, *hi]), status: *status, params })
@@ -303,22 +312,25 @@ pub fn parse(p: &[u8]) -> Option<Event<'_>> {
         [0x04, 0x0F, _, status, _num, lo, hi, ..] => {
             Some(Event::CommandStatus { opcode: u16::from_le_bytes([*lo, *hi]), status: *status })
         }
-        // Status, handle, role, peer address type and address, then (Enhanced)
-        // two resolvable addresses, then interval and latency.
-        [0x04, 0x3E, _, sub @ (0x01 | 0x0A), 0x00, lo, hi, ..] => {
+        // LE Connection Complete and LE Enhanced Connection Complete (Core Vol 4 Part E 7.7.65.1, 7.7.65.10).
+        [0x04, 0x3E, _, sub @ (0x01 | 0x0A), 0x00, _, _, role, kind, a0, a1, a2, a3, a4, a5, ..] => {
             let at = if *sub == 0x01 { 15 } else { 27 };
             Some(Event::Connected {
-                handle: u16::from_le_bytes([*lo, *hi]),
+                handle: u16_at(5),
+                central: *role == 0,
+                // An Enhanced report says 2 or 3 for an identity it resolved: still public or random.
+                peer: Address { kind: kind & 0x01, bytes: [*a0, *a1, *a2, *a3, *a4, *a5] },
                 interval: p.get(at..at + 4).map(|v| (u16::from_le_bytes([v[0], v[1]]), u16::from_le_bytes([v[2], v[3]]))),
             })
         }
-        [0x04, 0x3E, _, 0x03, 0x00, _, _, iv_lo, iv_hi, lat_lo, lat_hi, ..] => Some(Event::ConnectionUpdate {
-            interval: u16::from_le_bytes([*iv_lo, *iv_hi]),
-            latency: u16::from_le_bytes([*lat_lo, *lat_hi]),
-        }),
+        [0x04, 0x3E, _, 0x01 | 0x0A, status, ..] if *status != 0 => Some(Event::ConnectFailed { status: *status }),
+        [0x04, 0x3E, _, 0x03, 0x00, _, _, _, _, _, _, ..] => {
+            Some(Event::ConnectionUpdate { handle: u16_at(5), interval: u16_at(7), latency: u16_at(9) })
+        }
         [0x04, 0x3E, _, 0x02, data @ ..] => Some(Event::Advertising { data }),
-        [0x04, 0x05, _, _status, _lo, _hi, reason] => Some(Event::Disconnected { reason: *reason }),
-        [0x04, 0x08, _, _status, _lo, _hi, on] => Some(Event::Encryption { on: *on }),
+        [0x04, 0x3E, _, sub, ..] => Some(Event::LeMeta { sub: *sub }),
+        [0x04, 0x05, _, _status, _, _, reason] => Some(Event::Disconnected { handle: u16_at(4), reason: *reason }),
+        [0x04, 0x08, _, _status, _, _, on] => Some(Event::Encryption { handle: u16_at(4), on: *on }),
         [0x04, 0xFF, _, lo, hi, params @ ..] => Some(Event::Vendor { code: u16::from_le_bytes([*lo, *hi]), params }),
         _ => None,
     }

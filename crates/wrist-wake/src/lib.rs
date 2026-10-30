@@ -55,6 +55,9 @@ pub mod ble {
         pub ask_at: Option<u64>,
         /// A scan ends at this tick.
         pub scan_end: Option<u64>,
+        /// The watch's own central work by time, the earliest of: a connection attempt or GATT
+        /// procedure given up, the next reconnection to a sensor.
+        pub central_at: Option<u64>,
     }
 
     /// When the loop must next run by time; `None` means only the chip's IRQ, a request or
@@ -64,7 +67,7 @@ pub mod ble {
         let now = s.now;
         let quiet = s.transfer == Transfer::Started;
         let console = s.console.and_then(|c| (c.pending && !quiet).then_some(c.next_at.max(now)));
-        earliest([s.work.then_some(now), s.confirm_by, console, s.abandon_at, s.ask_at, s.scan_end])
+        earliest([s.work.then_some(now), s.confirm_by, console, s.abandon_at, s.ask_at, s.scan_end, s.central_at])
     }
 
     /// How long a link stays unencrypted before the watch asks its central to pair: well past a
@@ -125,14 +128,14 @@ pub mod ble {
     }
 
     /// On a cable, as responsive as the link allows. On battery, current first: advertising
-    /// about once a second (1022.5 ms, an interval phones scan well) and an idle link that
+    /// about once a second (chosen to fit beside a sensor link: [`sensor`]) and an idle link that
     /// wakes the radio about once a second, until a transfer asks for speed while it lasts.
     #[must_use]
     pub const fn timing(power: Power, transfer: bool) -> Timing {
         const FAST: Timing = Timing { advertise: 160, interval_min: 12, interval_max: 24, latency: 0, timeout: 500 };
         match (power, transfer) {
             (Power::Cable, _) | (Power::Battery, true) => FAST,
-            (Power::Battery, false) => Timing { advertise: 1636, interval_min: 80, interval_max: 160, latency: 4, timeout: 600 },
+            (Power::Battery, false) => Timing { advertise: 1592, interval_min: 80, interval_max: 160, latency: 4, timeout: 600 },
         }
     }
 
@@ -353,5 +356,84 @@ pub mod ble {
             Power::Cable => Scan { interval: 160, window: 96 },
             Power::Battery => Scan { interval: 1600, window: 320 },
         }
+    }
+
+    /// How long one attempt to connect to a sensor lasts (ms): it listens as [`scan`] does,
+    /// which on battery hears an advertiser less often.
+    #[must_use]
+    pub const fn connect_timeout_ms(power: Power) -> u64 {
+        match power {
+            Power::Cable => 10_000,
+            Power::Battery => 20_000,
+        }
+    }
+
+    /// The link the watch asks of a sensor it connects to as the central, chosen so that
+    /// advertising [`fits`] beside it (HARDWARE.md).
+    #[must_use]
+    pub const fn sensor(power: Power) -> Timing {
+        match power {
+            Power::Cable => Timing { advertise: 0, interval_min: 24, interval_max: 40, latency: 0, timeout: 400 },
+            Power::Battery => Timing { advertise: 0, interval_min: 400, interval_max: 400, latency: 0, timeout: 600 },
+        }
+    }
+
+    /// Whether advertising every `advertise` (0.625 ms units) fits beside a central link of
+    /// `interval` (1.25 ms units): `advertise + 5 ms` a whole multiple of the interval.
+    #[must_use]
+    pub const fn fits(advertise: u16, interval: u16) -> bool {
+        // In units of 0.625 ms: 5 ms is 8, and the interval is twice its count.
+        interval > 0 && (advertise as u32 + 8).is_multiple_of(2 * interval as u32)
+    }
+
+    /// Whether the watch agrees to a sensor's request for a link of `min..=max` (1.25 ms
+    /// units): only if advertising every `advertise` [`fits`] beside some interval in it.
+    #[must_use]
+    pub fn agrees_to(advertise: u16, min: u16, max: u16) -> bool {
+        (min..=max).any(|iv| fits(advertise, iv))
+    }
+
+    /// After a sensor is lost, how long (ms) before the next attempt to reach it, each attempt
+    /// a scan of its own.
+    #[must_use]
+    pub const fn reconnect_after_ms(power: Power) -> u64 {
+        match power {
+            Power::Cable => 5_000,
+            Power::Battery => 30_000,
+        }
+    }
+
+    /// How long a lost sensor is looked for before the watch gives up on it (ms).
+    pub const GIVE_UP_MS: u64 = 5 * 60 * 1000;
+
+    /// The shortest advertising interval the watch uses (0.625 ms units): the cable's.
+    pub const ADVERTISE_FASTEST: u16 = timing(Power::Cable, false).advertise;
+
+    /// The advertising intervals to try, best first (0.625 ms units), beside a central link of
+    /// `sensor_interval` (1.25 ms units) that refuses any that does not [`fits`] (HARDWARE.md):
+    /// the one wanted, the two longest that fit and are no longer (or beside a slower link the
+    /// shortest that fits), then the cable's, so the watch stays reachable.
+    #[must_use]
+    pub fn advertising_ladder(want: u16, sensor_interval: Option<u16>) -> [Option<u16>; 4] {
+        let mut out = [Some(want), None, None, None];
+        let mut n = 1;
+        let mut push = |v: u16, out: &mut [Option<u16>; 4]| {
+            // Connectable advertising may be no faster than 20 ms (32 units).
+            if v >= 32 && !out.contains(&Some(v)) && n < out.len() {
+                out[n] = Some(v);
+                n += 1;
+            }
+        };
+        if let Some(iv) = sensor_interval.filter(|&iv| iv > 0) {
+            let step = u32::from(iv) * 2;
+            let k = ((u32::from(want) + 8) / step).max(1);
+            for k in [k, k.saturating_sub(1)] {
+                if k >= 1 && k * step > 8 {
+                    push(u16::try_from(k * step - 8).unwrap_or(want), &mut out);
+                }
+            }
+        }
+        push(ADVERTISE_FASTEST.min(want), &mut out);
+        out
     }
 }

@@ -1,6 +1,9 @@
 //! The BLE loop's deadlines: idle costs no wake, and everything it does by time has one.
 
-use wrist_wake::ble::{due, scan, timing, Console, Power, State, Transfer};
+use wrist_wake::ble::{
+    advertising_ladder, agrees_to, connect_timeout_ms, due, fits, reconnect_after_ms, scan, sensor, timing, Console, Power, State, Transfer, ADVERTISE_FASTEST,
+    GIVE_UP_MS,
+};
 use wrist_wake::earliest;
 
 const NOW: u64 = 1_000;
@@ -15,6 +18,7 @@ fn idle() -> State {
         abandon_at: None,
         ask_at: None,
         scan_end: None,
+        central_at: None,
     }
 }
 
@@ -88,7 +92,7 @@ fn every_timing_is_inside_the_specification() {
 fn battery_is_slow_until_a_transfer_and_a_cable_is_fast() {
     let idle = timing(Power::Battery, false);
     let cable = timing(Power::Cable, false);
-    assert!(idle.advertise >= 1_600, "about a second on battery");
+    assert!(idle.advertise >= 1_590, "about a second on battery");
     // An idle link wakes the radio at most about once a second.
     assert!(u32::from(idle.interval_min) * 125 / 100 * (1 + u32::from(idle.latency)) >= 500);
     assert_eq!(cable, timing(Power::Battery, true), "a transfer is as fast as a cable");
@@ -371,6 +375,14 @@ fn a_scan_wakes_the_loop_when_it_ends() {
 }
 
 #[test]
+fn central_work_by_time_wakes_the_loop() {
+    let s = State { central_at: Some(NOW + 10_000), ..idle() };
+    assert_eq!(due(&s), Some(NOW + 10_000));
+    let s = State { central_at: Some(NOW + 10_000), abandon_at: Some(NOW + 5_000), ..idle() };
+    assert_eq!(due(&s), Some(NOW + 5_000));
+}
+
+#[test]
 fn scanning_listens_less_on_battery() {
     for power in [Power::Cable, Power::Battery] {
         let s = scan(power);
@@ -384,5 +396,84 @@ fn scanning_listens_less_on_battery() {
     for power in [Power::Cable, Power::Battery] {
         let (scan, adv) = (u32::from(scan(power).interval), u32::from(timing(power, false).advertise));
         assert!(scan * 10 >= adv * 9 && scan * 10 <= adv * 11, "{power:?}");
+    }
+    assert!(connect_timeout_ms(Power::Battery) >= 10 * u64::from(scan(Power::Battery).interval) * 5 / 8);
+}
+
+#[test]
+fn the_sensor_link_is_slow_on_battery_and_within_the_spec() {
+    for power in [Power::Cable, Power::Battery] {
+        let t = sensor(power);
+        assert!((6..=t.interval_max).contains(&t.interval_min) && t.interval_max <= 3200);
+        assert_eq!(t.latency, 0);
+        // The timeout (10 ms) exceeds twice the longest interval (1.25 ms): (1 + 0) * 2 * max.
+        assert!(u32::from(t.timeout) * 10 * 100 > 2 * u32::from(t.interval_max) * 125);
+        assert!((10..=3200).contains(&t.timeout));
+    }
+    assert!(sensor(Power::Battery).interval_min >= 8 * sensor(Power::Cable).interval_max);
+}
+
+#[test]
+fn a_lost_sensor_is_retried_less_often_on_battery_and_not_for_ever() {
+    assert!(reconnect_after_ms(Power::Battery) > reconnect_after_ms(Power::Cable));
+    assert!(GIVE_UP_MS >= 10 * reconnect_after_ms(Power::Battery));
+}
+
+#[test]
+fn advertising_without_a_sensor_link_is_as_wanted_then_the_cable_interval() {
+    let battery = timing(Power::Battery, false).advertise;
+    assert_eq!(advertising_ladder(battery, None), [Some(battery), Some(ADVERTISE_FASTEST), None, None]);
+    // On a cable the wanted interval is the fastest already: nothing else to try.
+    assert_eq!(advertising_ladder(ADVERTISE_FASTEST, None), [Some(ADVERTISE_FASTEST), None, None, None]);
+}
+
+#[test]
+fn beside_a_sensor_link_advertising_tries_intervals_that_fit() {
+    // HARDWARE.md: a 420 ms link (336 units) and 1022.5 ms (1636 units) refused.
+    let ladder = advertising_ladder(1636, Some(336));
+    // 2 x 420 - 5 = 835 ms (1336 units), then 415 ms (664), then the cable's 100 ms.
+    assert_eq!(ladder, [Some(1636), Some(1336), Some(664), Some(ADVERTISE_FASTEST)]);
+    for v in ladder.into_iter().take(3).skip(1).flatten() {
+        assert!(fits(v, 336));
+    }
+    // A link slower than the wanted interval: the shortest interval that fits it, 495 ms.
+    assert_eq!(advertising_ladder(160, Some(400)), [Some(160), Some(792), None, None]);
+}
+
+#[test]
+fn beside_any_sensor_link_some_rung_fits() {
+    for want in [timing(Power::Cable, false).advertise, timing(Power::Battery, false).advertise] {
+        for iv in 6..=3200 {
+            assert!(advertising_ladder(want, Some(iv)).into_iter().flatten().any(|v| fits(v, iv)), "{want} beside {iv}");
+        }
+    }
+}
+
+#[test]
+fn each_power_sources_advertising_fits_beside_its_sensor_link() {
+    for power in [Power::Cable, Power::Battery] {
+        let adv = timing(power, false).advertise;
+        let s = sensor(power);
+        // Some interval the stack may pick within the range fits.
+        assert!((s.interval_min..=s.interval_max).any(|iv| fits(adv, iv)), "{power:?}");
+        // So the ladder's first rung is the interval wanted.
+        assert_eq!(advertising_ladder(adv, Some(s.interval_min.max(28).min(s.interval_max)))[0], Some(adv));
+    }
+    // HARDWARE.md: 100 ms beside 35 ms fits; 1022.5 ms beside 400 to 500 ms never does.
+    assert!(fits(160, 28));
+    assert!(!(320..=400).any(|iv| fits(1636, iv)));
+    assert!(fits(1592, 400));
+}
+
+#[test]
+fn a_sensors_request_is_agreed_to_only_if_advertising_still_fits() {
+    let cable = timing(Power::Cable, false).advertise;
+    // A strap asking for 400 to 650 ms beside 100 ms advertising.
+    assert!(!agrees_to(cable, 320, 520));
+    assert!(agrees_to(cable, 24, 40));
+    assert!(!agrees_to(cable, 40, 24));
+    for power in [Power::Cable, Power::Battery] {
+        let s = sensor(power);
+        assert!(agrees_to(timing(power, false).advertise, s.interval_min, s.interval_max), "{power:?}");
     }
 }

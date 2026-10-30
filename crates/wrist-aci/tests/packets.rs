@@ -121,29 +121,42 @@ fn connection_complete_gives_handle_interval_and_latency() {
     let mut p = vec![0x04, 0x3E, 0x13, 0x01, 0x00, 0x01, 0x08, 0x01, 0x00];
     p.extend([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
     p.extend([24, 0, 0, 0, 0xF4, 0x01, 0x00]);
-    assert_eq!(parse(&p), Some(Event::Connected { handle: 0x0801, interval: Some((24, 0)) }));
+    let peer = Address { kind: 0, bytes: [0x11, 0x22, 0x33, 0x44, 0x55, 0x66] };
+    assert_eq!(parse(&p), Some(Event::Connected { handle: 0x0801, central: false, peer, interval: Some((24, 0)) }));
     // Enhanced: two resolvable addresses before the interval.
     let mut e = vec![0x04, 0x3E, 0x1F, 0x0A, 0x00, 0x01, 0x08, 0x01, 0x00];
     e.extend([0x11; 6]);
     e.extend([0; 12]);
     e.extend([39, 0, 0, 0, 0xF4, 0x01, 0x00]);
-    assert_eq!(parse(&e), Some(Event::Connected { handle: 0x0801, interval: Some((39, 0)) }));
+    let peer = Address { kind: 0, bytes: [0x11; 6] };
+    assert_eq!(parse(&e), Some(Event::Connected { handle: 0x0801, central: false, peer, interval: Some((39, 0)) }));
+    // The watch as the central (role 0), to a random address resolved (type 3).
+    e[7] = 0x00;
+    e[8] = 0x03;
+    let Some(Event::Connected { central, peer, .. }) = parse(&e) else { panic!("not connected") };
+    assert!(central);
+    assert_eq!(peer.kind, 1);
     // A failed connection is not one.
     let mut f = p.clone();
     f[4] = 0x3E;
-    assert_eq!(parse(&f), None);
+    assert_eq!(parse(&f), Some(Event::ConnectFailed { status: 0x3E }));
     // Cut before the latency ends: the handle still, no interval.
-    assert_eq!(parse(&p[..18]), Some(Event::Connected { handle: 0x0801, interval: None }));
-    assert_eq!(parse(&e[..30]), Some(Event::Connected { handle: 0x0801, interval: None }));
+    assert!(matches!(parse(&p[..18]), Some(Event::Connected { handle: 0x0801, interval: None, .. })));
+    assert!(matches!(parse(&e[..30]), Some(Event::Connected { handle: 0x0801, interval: None, .. })));
 }
 
 #[test]
 fn connection_update_disconnection_and_encryption() {
     // Install 48: BlueZ moved to 15 ms (12 units) on request.
     let p = [0x04, 0x3E, 0x0A, 0x03, 0x00, 0x01, 0x08, 12, 0, 0, 0, 0xF4, 0x01];
-    assert_eq!(parse(&p), Some(Event::ConnectionUpdate { interval: 12, latency: 0 }));
-    assert_eq!(parse(&[0x04, 0x05, 0x04, 0x00, 0x01, 0x08, 0x13]), Some(Event::Disconnected { reason: 0x13 }));
-    assert_eq!(parse(&[0x04, 0x08, 0x04, 0x00, 0x01, 0x08, 0x01]), Some(Event::Encryption { on: 1 }));
+    assert_eq!(parse(&p), Some(Event::ConnectionUpdate { handle: 0x0801, interval: 12, latency: 0 }));
+    assert_eq!(
+        parse(&[0x04, 0x05, 0x04, 0x00, 0x01, 0x08, 0x13]),
+        Some(Event::Disconnected { handle: 0x0801, reason: 0x13 })
+    );
+    assert_eq!(parse(&[0x04, 0x08, 0x04, 0x00, 0x01, 0x08, 0x01]), Some(Event::Encryption { handle: 0x0801, on: 1 }));
+    // Other LE meta events are named, not acted on.
+    assert_eq!(parse(&[0x04, 0x3E, 0x02, 0x14, 0x00]), Some(Event::LeMeta { sub: 0x14 }));
 }
 
 #[test]
@@ -203,6 +216,8 @@ fn neighbouring_dies_get_different_addresses() {
     }
 }
 
+/// One report: connectable undirected, a random address, flags, the 16-bit list (heart rate,
+/// battery) and a complete name.
 fn strap_report() -> Vec<u8> {
     let mut ad = vec![0x02, 0x01, 0x06, 0x05, 0x03, 0x0D, 0x18, 0x0F, 0x18];
     ad.extend([0x05, 0x09, b'H', b'1', b'0', b' ']);

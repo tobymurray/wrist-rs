@@ -492,12 +492,16 @@ pub fn command(cmd: &[u8], flash: &'static FlashMutex) {
             #[cfg(feature = "ble")]
             uart.write_line("[usb]   ble [on|off|version|yes|no|bonds|forget|disconnect|profile auto|cable|battery|interval now <min> <max>]: the radio; off until `ble on`, which persists; `ble yes` confirms a pairing");
             #[cfg(feature = "ble")]
-            uart.write_line("[usb]   ble scan [s] [interval window]: lists advertisers for s seconds (10 by default), listening for window ms in every interval ms");
+            uart.write_line("[usb]   ble scan [s] [interval window] | connect <addr> [random] | drop | services | chars <s> <e> | descs <s> <e> | read <h> | write <h> <hex> | subscribe <h> [indicate|off]: the watch as a central, for any device");
+            #[cfg(feature = "ble")]
+            uart.write_line("[usb]   hr [strap <addr> [random]|off|fake <bpm>]: heart rate from a strap");
         }
         #[cfg(feature = "ble")]
         b"ble" => crate::ble::command(b"", uart),
         #[cfg(feature = "ble")]
         rest if rest.starts_with(b"ble ") => crate::ble::command(&rest[4..], uart),
+        #[cfg(feature = "ble")]
+        rest if rest == b"hr" || rest.starts_with(b"hr ") => crate::ble::hr_command(&rest[2..], uart),
         b"usblog" => crate::REPORT.signal(crate::Report::UsbLog),
         b"report" => crate::REPORT.signal(crate::Report::Full),
         rest if rest == b"modules" || rest.starts_with(b"modules ") => crate::modules::command(&rest[7..], uart),
