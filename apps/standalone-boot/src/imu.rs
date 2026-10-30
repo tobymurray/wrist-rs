@@ -119,10 +119,11 @@ pub async fn run(mut bus: Bus, mut irq: ExtiInput<'static, Async>) -> ! {
     let mut ledger = Ledger::restore(&crate::rtc::steps_words(), state == ADOPTED);
     RAISE_CHANGED.store(state != FAILED, Ordering::Relaxed);
     loop {
-        if RAISE_CHANGED.swap(false, Ordering::Relaxed) {
+        if RAISE_CHANGED.swap(false, Ordering::Relaxed) && state != FAILED {
             let on = crate::rtc::raise_wanted();
             if route_raise(&mut bus, on).await.is_err() {
                 uart.write_line("[imu] raise setting not applied");
+                RAISE_CHANGED.store(true, Ordering::Relaxed);
             }
         }
         if state != FAILED {
@@ -154,7 +155,12 @@ pub async fn run(mut bus: Bus, mut irq: ExtiInput<'static, Async>) -> ! {
                 }
                 service_raise(&mut bus).await;
             }
-            if let Either::First(()) = select(READ.wait(), irq.wait_for_rising_edge()).await {
+            let woke = if irq.is_high() {
+                select(READ.wait(), irq.wait_for_rising_edge()).await
+            } else {
+                select(READ.wait(), irq.wait_for_high()).await
+            };
+            if let Either::First(()) = woke {
                 break;
             }
             service_raise(&mut bus).await;
@@ -165,7 +171,7 @@ pub async fn run(mut bus: Bus, mut irq: ExtiInput<'static, Async>) -> ! {
 /// Reading `INT_STATUS_0` clears the latched line; a failed read waits a little to be tried again.
 async fn service_raise(bus: &mut Bus) {
     match get(bus, reg::INT_STATUS_0) {
-        Ok(status) if wrist_imu::raised(status) => {
+        Ok(status) if wrist_imu::raised(status) && crate::rtc::raise_wanted() => {
             RAISES.fetch_add(1, Ordering::Relaxed);
             crate::light_for_raise();
         }
@@ -191,7 +197,7 @@ async fn route_raise(bus: &mut Bus, on: bool) -> Result<(), ()> {
         put(bus, r, v).await?;
     }
     put(bus, reg::PWR_CONF, wrist_imu::PWR_CONF).await?;
-    // A raise latched before this would hold the line high and hide the next edge.
+    // A raise latched before this would light the face as soon as the setting changed.
     get(bus, reg::INT_STATUS_0).map(|_| ())
 }
 
@@ -218,11 +224,11 @@ fn write_report(uart: Uart) {
                 _ => Activity::Unknown,
             };
             uart.write_line(activity.name());
+            uart.write_str(if crate::rtc::raise_wanted() { "[imu] raise lights the face; raises since boot " } else { "[imu] raise off; raises since boot " });
+            uart.write_u32(RAISES.load(Ordering::Relaxed));
+            uart.write_line("");
         }
     }
-    uart.write_str(if crate::rtc::raise_wanted() { "[imu] raise lights the face; raises since boot " } else { "[imu] raise off; raises since boot " });
-    uart.write_u32(RAISES.load(Ordering::Relaxed));
-    uart.write_line("");
     write_found(uart);
 }
 
