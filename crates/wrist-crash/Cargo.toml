@@ -1,0 +1,10 @@
+[package]
+name = "wrist-crash"
+version = "0.0.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+publish = false
+description = "The retained failure record's layout"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }

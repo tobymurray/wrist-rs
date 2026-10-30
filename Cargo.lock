@@ -953,6 +953,10 @@ name = "wrist-board"
 version = "0.0.0"
 
 [[package]]
+name = "wrist-crash"
+version = "0.0.0"
+
+[[package]]
 name = "wrist-eeprom"
 version = "0.0.0"
 dependencies = [

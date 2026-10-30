@@ -999,6 +999,7 @@ dependencies = [
  "static_cell",
  "wrist-aci",
  "wrist-board",
+ "wrist-crash",
  "wrist-eeprom",
  "wrist-flash",
  "wrist-glass",
@@ -1238,6 +1239,10 @@ version = "0.0.0"
 
 [[package]]
 name = "wrist-board"
+version = "0.0.0"
+
+[[package]]
+name = "wrist-crash"
 version = "0.0.0"
 
 [[package]]
