@@ -491,3 +491,19 @@ fn advertising_starts_again_only_when_it_no_longer_fits_the_sensor_link() {
     assert!(readvertise_for(Some(160), 32));
     assert!(readvertise_for(None, 28));
 }
+
+#[test]
+fn advertising_fitted_to_one_power_sources_sensor_link_stops_for_the_others_re_timing() {
+    for (from, to) in [(Power::Battery, Power::Cable), (Power::Cable, Power::Battery)] {
+        let old = sensor(from).interval_min;
+        let new = sensor(to).interval_min;
+        for want in [timing(from, false).advertise, timing(to, false).advertise] {
+            for every in advertising_ladder(want, Some(old)).into_iter().flatten().filter(|&a| fits(a, old)) {
+                assert!(readvertise_for(Some(every), new), "{from:?} to {to:?}, advertising {every}");
+            }
+        }
+    }
+    // The two ST refused (HARDWARE.md).
+    assert!(readvertise_for(Some(792), 28));
+    assert!(readvertise_for(Some(1560), 400));
+}

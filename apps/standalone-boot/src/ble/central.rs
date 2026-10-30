@@ -5,7 +5,7 @@ use core::sync::atomic::{AtomicU16, AtomicU32, AtomicU8, Ordering};
 
 use embassy_time::{Duration, Instant};
 use wrist_aci::opcode::{
-    ACI_GAP_CREATE_CONNECTION, ACI_GAP_START_CONNECTION_UPDATE, ACI_GAP_TERMINATE, ACI_GAP_TERMINATE_GAP_PROC, ACI_GATT_CONFIRM_INDICATION,
+    ACI_GAP_CREATE_CONNECTION, ACI_GAP_SET_NON_DISCOVERABLE, ACI_GAP_START_CONNECTION_UPDATE, ACI_GAP_TERMINATE, ACI_GAP_TERMINATE_GAP_PROC, ACI_GATT_CONFIRM_INDICATION,
     ACI_GATT_DISC_ALL_CHAR_DESC, ACI_GATT_DISC_ALL_CHAR_OF_SERVICE, ACI_GATT_DISC_ALL_PRIMARY_SERVICES,
     ACI_GATT_DISC_PRIMARY_SERVICE_BY_UUID, ACI_GATT_READ_CHAR_VALUE, ACI_GATT_WRITE_CHAR_DESC, ACI_GATT_WRITE_CHAR_VALUE,
     ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_RESP,
@@ -20,6 +20,8 @@ use crate::uart::Uart;
 
 /// A request for the sensor link's timing that the chip refused is tried again this much later.
 const RETIME_AGAIN: Duration = Duration::from_secs(5);
+/// Refusals of one timing before the sensor link is left as it is.
+const RETIME_TRIES: u8 = 3;
 /// A strap with no reading for this long is quiet.
 const QUIET: Duration = Duration::from_secs(5);
 /// A link this quiet is dropped and the strap looked for again, since a host that stops
@@ -351,6 +353,8 @@ pub(super) struct Central {
     asked: Option<Timing>,
     /// The chip refused the last request for the sensor link's timing: it is tried again then.
     retime_at: Option<Instant>,
+    /// The timing the chip last refused, and how many times.
+    refused: Option<(Timing, u8)>,
     strap: Option<Strap>,
     /// `hr fake`: the rate, and when the next reading goes.
     fake: Option<(u16, Instant)>,
@@ -440,6 +444,7 @@ impl Central {
         self.requested = None;
         self.link_interval = interval.map(|(iv, _)| iv);
         self.retime_at = None;
+        self.refused = None;
         self.proc = None;
         Self::set_peer(peer);
         CENTRAL.store(CENTRAL_CONNECTED, Ordering::Relaxed);
@@ -1104,18 +1109,27 @@ impl Link<'_> {
         self.uart.write_line(": refused");
     }
 
-    /// The sensor link asked for the power source's timing when that changes.
+    /// The sensor link asked for the power source's timing when that changes, advertising that
+    /// would not fit the new interval stopped first (HARDWARE.md).
     async fn retime_sensor(&mut self) {
         let Some(h) = self.central.handle() else {
             return;
         };
         let want = sensor(power());
-        if self.central.asked == Some(want) {
+        let refusals = self.central.refused.filter(|(t, _)| *t == want).map_or(0, |(_, n)| n);
+        if self.central.asked == Some(want) || refusals >= RETIME_TRIES {
             self.central.retime_at = None;
             return;
         }
         if self.central.proc.is_some() || self.central.retime_at.is_some_and(|at| Instant::now() < at) {
             return;
+        }
+        let stopped = STATE.load(Ordering::Relaxed) == STATE_ADVERTISING
+            && readvertise_for(Some(self.advertised_every), want.interval_min)
+            && self.command(ACI_GAP_SET_NON_DISCOVERABLE, &[]).await.is_ok_and(|r| r.status == 0);
+        if stopped {
+            STATE.store(STATE_IDLE, Ordering::Relaxed);
+            self.advertised = None;
         }
         let mut p = [0u8; 14];
         p[0..2].copy_from_slice(&h.to_le_bytes());
@@ -1127,12 +1141,19 @@ impl Link<'_> {
         if status == 0 {
             self.central.asked = Some(want);
             self.central.retime_at = None;
+            self.central.refused = None;
             self.central.requested = Some(want.interval_min);
             return;
         }
-        self.central.retime_at = Some(Instant::now() + RETIME_AGAIN);
+        self.readvertise |= stopped;
+        self.central.refused = Some((want, refusals + 1));
         self.uart.write_str("[ble] the chip refused to re-time the sensor link, status ");
         self.uart.write_hex8(status);
+        if refusals + 1 >= RETIME_TRIES {
+            self.central.retime_at = None;
+            return self.uart.write_line("; left as it is");
+        }
+        self.central.retime_at = Some(Instant::now() + RETIME_AGAIN);
         self.uart.write_line("; trying again in 5 s");
     }
 }
