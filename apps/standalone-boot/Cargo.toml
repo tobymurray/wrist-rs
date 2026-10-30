@@ -27,6 +27,7 @@ wrist-aci = { path = "../../crates/wrist-aci", optional = true }
 wrist-wake = { path = "../../crates/wrist-wake", optional = true }
 wrist-board = { path = "../../crates/wrist-board" }
 wrist-glass = { path = "../../crates/wrist-glass" }
+wrist-imu = { path = "../../crates/wrist-imu" }
 wrist-pages = { path = "../../crates/wrist-pages" }
 wrist-time = { path = "../../crates/wrist-time" }
 wrist-crash = { path = "../../crates/wrist-crash" }

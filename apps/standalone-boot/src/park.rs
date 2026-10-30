@@ -52,7 +52,7 @@ const ANALOG: [Net; 35] = [
     net::FUEL_GAUGE_ALRT, net::USB_FAULT_L,
 ];
 
-const SENSORS: [(u8, &str); 2] = [(0x68, "IMU"), (0x14, "compass")];
+const COMPASS: u8 = 0x14;
 const REG_CMD: u8 = 0x7E;
 const CMD_SOFT_RESET: u8 = 0xB6;
 
@@ -63,9 +63,9 @@ const SENSOR_RESET: u8 = 1;
 const SENSOR_SILENT: u8 = 2;
 
 static SDMMC_WAS_ON: AtomicBool = AtomicBool::new(false);
-static SENSOR_OUTCOME: [AtomicU8; 2] = [AtomicU8::new(SENSOR_LEFT_ALONE), AtomicU8::new(SENSOR_LEFT_ALONE)];
+static COMPASS_OUTCOME: AtomicU8 = AtomicU8::new(SENSOR_LEFT_ALONE);
 
-/// `sensor_bus` is `None` when the GNSS slot holds another module.
+/// `sensor_bus` is `None` when the GNSS slot holds another module; the IMU on it is `imu.rs`'s.
 pub fn park(pins: Pins, sensor_bus: Option<&mut I2c<'static, Blocking, Master>>, uart: Uart) {
     SDMMC_WAS_ON.store(unsafe { sdmmc_off() }, Ordering::Relaxed);
     unsafe {
@@ -100,10 +100,8 @@ pub fn park(pins: Pins, sensor_bus: Option<&mut I2c<'static, Blocking, Master>>,
         unsafe { sram_off() };
     }
     if let Some(bus) = sensor_bus {
-        for ((addr, _), outcome) in SENSORS.into_iter().zip(&SENSOR_OUTCOME) {
-            let reset = bus.blocking_write(addr, &[REG_CMD, CMD_SOFT_RESET]).is_ok();
-            outcome.store(if reset { SENSOR_RESET } else { SENSOR_SILENT }, Ordering::Relaxed);
-        }
+        let reset = bus.blocking_write(COMPASS, &[REG_CMD, CMD_SOFT_RESET]).is_ok();
+        COMPASS_OUTCOME.store(if reset { SENSOR_RESET } else { SENSOR_SILENT }, Ordering::Relaxed);
     }
     uart.write_line("[13] parked:");
     write_report(uart);
@@ -125,15 +123,11 @@ pub fn write_report(uart: Uart) {
     });
     uart.write_reg("     PWR_CR2 = ", unsafe { read32(PWR_CR2) });
     uart.write_reg("     PWR_CR4 = ", unsafe { read32(PWR_CR4) });
-    for ((_, name), outcome) in SENSORS.into_iter().zip(&SENSOR_OUTCOME) {
-        uart.write_str("     ");
-        uart.write_str(name);
-        uart.write_line(match outcome.load(Ordering::Relaxed) {
-            SENSOR_RESET => " reset to suspend",
-            SENSOR_SILENT => " did not answer; left alone",
-            _ => " left alone: the GNSS slot holds another module",
-        });
-    }
+    uart.write_line(match COMPASS_OUTCOME.load(Ordering::Relaxed) {
+        SENSOR_RESET => "     compass reset to suspend",
+        SENSOR_SILENT => "     compass did not answer; left alone",
+        _ => "     compass left alone: the GNSS slot holds another module",
+    });
 }
 
 /// SRAM may be powered down in Stop 2 only on the SMPS (ES0553 2.2.10).
