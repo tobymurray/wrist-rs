@@ -146,13 +146,31 @@ pub async fn run(mut bus: Bus, mut irq: ExtiInput<'static, Async>) -> ! {
         if REPORT.swap(false, Ordering::Relaxed) {
             write_report(uart);
         }
-        while let Either::Second(()) = select(READ.wait(), irq.wait_for_rising_edge()).await {
-            // Reading clears the latched line.
-            if get(&mut bus, reg::INT_STATUS_0).is_ok_and(wrist_imu::raised) {
-                RAISES.fetch_add(1, Ordering::Relaxed);
-                crate::light_for_raise();
+        loop {
+            // A raise latched while the task was busy left the line high, with no edge to wait for.
+            for _ in 0..3 {
+                if !irq.is_high() {
+                    break;
+                }
+                service_raise(&mut bus).await;
             }
+            if let Either::First(()) = select(READ.wait(), irq.wait_for_rising_edge()).await {
+                break;
+            }
+            service_raise(&mut bus).await;
         }
+    }
+}
+
+/// Reading `INT_STATUS_0` clears the latched line; a failed read waits a little to be tried again.
+async fn service_raise(bus: &mut Bus) {
+    match get(bus, reg::INT_STATUS_0) {
+        Ok(status) if wrist_imu::raised(status) => {
+            RAISES.fetch_add(1, Ordering::Relaxed);
+            crate::light_for_raise();
+        }
+        Ok(_) => {}
+        Err(()) => Timer::after_millis(10).await,
     }
 }
 
