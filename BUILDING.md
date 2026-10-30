@@ -123,7 +123,17 @@ Bluetooth link is up. BlueZ keeps a bonded watch's services: after a build that 
 them, `bluetoothctl remove <address>` and pair again.
 
 The watch can also scan for any Bluetooth LE device: `ble scan [s]` lists advertisers by
-address, signal, name and services.
+address, signal, name and services. `ble connect <addr> [random]` makes a link of its own
+beside the phone's, and `ble services`, `chars`, `descs`, `read`, `write` and `subscribe` use
+it; `ble drop` ends it. `hr strap <addr>` reads a standard heart-rate strap, reports when it
+goes quiet, and finds it again after it is lost.
+
+Without a strap, a Linux host can be one:
+
+```sh
+.venv/bin/python tools/hr-sim.py
+.venv/bin/python tools/wrist-cmd.py "hr strap <host address>"
+```
 
 ## Working on InscribedDisc
 
