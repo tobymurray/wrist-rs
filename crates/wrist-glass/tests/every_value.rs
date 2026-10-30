@@ -80,7 +80,7 @@ fn counts_past_the_most_shown_show_as_it() {
     for faces in FAMILIES {
         let at = |steps| {
             let status = Status { steps: Some(steps), ..Status::default() };
-            compose(&status, &BUILT_IN[0], faces).0
+            compose(&status, BUILT_IN[0], faces).0
         };
         assert_eq!(at(u32::MAX), at(STEPS_SHOWN_MAX));
         assert_ne!(at(STEPS_SHOWN_MAX - 1), at(STEPS_SHOWN_MAX));
@@ -90,8 +90,8 @@ fn counts_past_the_most_shown_show_as_it() {
 #[test]
 fn no_count_draws_no_line() {
     for faces in FAMILIES {
-        let without = compose(&Status::default(), &BUILT_IN[0], faces).0;
-        let with = compose(&Status { steps: Some(0), ..Status::default() }, &BUILT_IN[0], faces).0;
+        let without = compose(&Status::default(), BUILT_IN[0], faces).0;
+        let with = compose(&Status { steps: Some(0), ..Status::default() }, BUILT_IN[0], faces).0;
         assert_eq!(with.lines().count(), without.lines().count() + 1);
     }
 }
