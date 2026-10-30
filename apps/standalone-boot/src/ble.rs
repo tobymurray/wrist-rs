@@ -65,7 +65,7 @@ use wrist_aci::opcode::{
     ACI_GATT_UPDATE_CHAR_VALUE, ACI_HAL_GET_FW_BUILD_NUMBER, ACI_HAL_SET_TX_POWER_LEVEL, ACI_HAL_WRITE_CONFIG_DATA,
     ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_REQ, HCI_LE_RAND, HCI_READ_LOCAL_VERSION, HCI_SET_EVENT_MASK,
 };
-use wrist_aci::{address, config, permission, role, vendor, AttributeModified, Event};
+use wrist_aci::{address, config, permission, role, vendor, AttributeModified, Event, L2capUpdateResponse};
 use wrist_wake::ble::{timing, IntervalAsk, Lines, Outbox, PairAsk, Power, Radio, Scan, Sink, Timing};
 
 use crate::console::Target;
@@ -189,6 +189,8 @@ static IRQ_STUCK_WRITE: AtomicU32 = AtomicU32::new(0);
 static CONNECT_FAILURES: AtomicU32 = AtomicU32::new(0);
 static UPDATE_FAILURES: AtomicU32 = AtomicU32::new(0);
 static LAST_UPDATE_FAILURE: AtomicU8 = AtomicU8::new(0);
+/// The central's L2CAP answers refusing the watch's parameter request.
+static UPDATES_REFUSED: AtomicU32 = AtomicU32::new(0);
 static DISCONNECT_FAILURES: AtomicU32 = AtomicU32::new(0);
 static ENCRYPTION_FAILURES: AtomicU32 = AtomicU32::new(0);
 /// Packets the image does not act on: other events, unhandled vendor events, malformed packets.
@@ -370,6 +372,7 @@ pub fn write_status(uart: Uart) {
         uart.write_hex8(LAST_UPDATE_FAILURE.load(Ordering::Relaxed));
         uart.write_str(")");
     }
+    n(", updates refused ", &UPDATES_REFUSED);
     n(", disconnect failures ", &DISCONNECT_FAILURES);
     n(", encryption failures ", &ENCRYPTION_FAILURES);
     n(", unknown events ", &UNKNOWN);
@@ -471,6 +474,7 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
             pair_ask: PairAsk::default(),
             interval_ask: IntervalAsk::default(),
             scanner: scan::Scanner::default(),
+            seen: Seen::default(),
         };
         link.bring_up().await;
         if Radio::from_u8(STATE.load(Ordering::Relaxed)).start_failed() {
@@ -537,6 +541,26 @@ struct Link<'d> {
     pair_ask: PairAsk,
     interval_ask: IntervalAsk,
     scanner: scan::Scanner,
+    seen: Seen,
+}
+
+/// Codes of unknown events already named on the console: each is named once.
+#[derive(Default)]
+struct Seen {
+    codes: [u16; 16],
+    len: usize,
+}
+
+impl Seen {
+    /// True the first time `code` comes; once full, never.
+    fn first(&mut self, code: u16) -> bool {
+        if self.codes[..self.len].contains(&code) || self.len == self.codes.len() {
+            return false;
+        }
+        self.codes[self.len] = code;
+        self.len += 1;
+        true
+    }
 }
 
 impl Link<'_> {
@@ -1374,9 +1398,21 @@ impl Link<'_> {
             }
             Event::LeAdvertisingReport { data } => self.scanner.advertising(data, self.uart),
             Event::Vendor { code, params } => self.vendor(code, params),
-            Event::LeUnknown { .. } | Event::Unknown { .. } | Event::Malformed(_) => {
+            Event::LeUnknown { subevent_code } => self.unknown("[ble] LE event ", 0x3E, subevent_code),
+            Event::Unknown { code } => self.unknown("[ble] event ", code, 0),
+            Event::Malformed(_) => {
                 UNKNOWN.fetch_add(1, Ordering::Relaxed);
             }
+        }
+    }
+
+    /// Named on the console the first time its code comes.
+    fn unknown(&mut self, label: &str, code: u8, subevent: u8) {
+        UNKNOWN.fetch_add(1, Ordering::Relaxed);
+        if self.seen.first(u16::from_be_bytes([code, subevent])) {
+            self.uart.write_str(label);
+            self.uart.write_hex8(if code == 0x3E { subevent } else { code });
+            self.uart.write_line("");
         }
     }
 
@@ -1462,6 +1498,12 @@ impl Link<'_> {
             vendor::GATT_ATTRIBUTE_MODIFIED if rest.len() >= 8 => {
                 if let Some(write) = AttributeModified::decode(rest) {
                     self.attribute_modified(write);
+                }
+            }
+            vendor::L2CAP_CONNECTION_UPDATE_RESP if rest.len() >= 4 => {
+                if L2capUpdateResponse::decode(rest).is_some_and(|r| !r.accepted()) {
+                    UPDATES_REFUSED.fetch_add(1, Ordering::Relaxed);
+                    self.uart.write_line("[ble] the central refused the interval request");
                 }
             }
             vendor::GAP_PROC_COMPLETE => {

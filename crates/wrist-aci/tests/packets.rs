@@ -5,7 +5,7 @@ use wrist_aci::{
     ad_name, ad_uuid128s, ad_uuid16s, att_mtu, characteristics, command, descriptors, gap_proc_complete, gatt_error,
     header_sizes, notification, numeric_comparison, packet_len, packet_whole, pairing_complete, parse, read_value,
     reports, service_range, services, vendor, Address, AttributeModified, Characteristic, Event, L2capUpdateRequest,
-    Service, Uuid,
+    L2capUpdateResponse, Service, Uuid,
 };
 
 /// A vendor event packet: `04 FF len code params`.
@@ -500,4 +500,21 @@ fn a_peripherals_parameter_request_decodes() {
         Some(L2capUpdateRequest { handle: 0x0801, identifier: 7, interval_min: 320, interval_max: 640, latency: 0, timeout: 600 })
     );
     assert_eq!(L2capUpdateRequest::decode(&p[..12]), None);
+}
+
+#[test]
+fn the_centrals_answer_to_a_parameter_request_decodes() {
+    let accepted = vendor_event(vendor::L2CAP_CONNECTION_UPDATE_RESP, &[0x01, 0x08, 0x00, 0x00]);
+    let refused = vendor_event(vendor::L2CAP_CONNECTION_UPDATE_RESP, &[0x01, 0x08, 0x01, 0x00]);
+    for (p, result) in [(&accepted, 0), (&refused, 1)] {
+        let Event::Vendor { code, params } = parse(p) else { panic!("{p:02X?}") };
+        assert_eq!(code, 0x0800);
+        let r = L2capUpdateResponse::decode(params).unwrap();
+        assert_eq!(r, L2capUpdateResponse { handle: 0x0801, result });
+        assert_eq!(r.accepted(), result == 0);
+    }
+    assert_eq!(L2capUpdateResponse::decode(&[0x01, 0x08, 0x01]), None);
+    let short = vendor_event(vendor::L2CAP_CONNECTION_UPDATE_RESP, &[0x01, 0x08]);
+    let Event::Vendor { params, .. } = parse(&short) else { panic!("{short:02X?}") };
+    assert_eq!(L2capUpdateResponse::decode(params), None);
 }

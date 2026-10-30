@@ -151,6 +151,8 @@ pub mod vendor {
     /// A GAP procedure ended: its code, status, data ([`super::gap_proc_complete`]).
     pub const GAP_PROC_COMPLETE: u16 = 0x0407;
     pub const GAP_NUMERIC_COMPARISON_VALUE: u16 = 0x0409;
+    /// The central's answer to the watch's own parameter request ([`super::L2capUpdateResponse`]).
+    pub const L2CAP_CONNECTION_UPDATE_RESP: u16 = 0x0800;
     /// As a central: a peripheral asks for new connection parameters.
     pub const L2CAP_CONNECTION_UPDATE_REQ: u16 = 0x0802;
     pub const GATT_ATTRIBUTE_MODIFIED: u16 = 0x0C01;
@@ -651,5 +653,28 @@ impl L2capUpdateRequest {
         let p = params.get(..13)?;
         let at = |i: usize| u16::from_le_bytes([p[i], p[i + 1]]);
         Some(Self { handle: at(0), identifier: p[2], interval_min: at(5), interval_max: at(7), latency: at(9), timeout: at(11) })
+    }
+}
+
+/// `L2CAP_CONNECTION_UPDATE_RESP`: the central's answer to the watch's parameter request
+/// (Core Specification, Vol 3, Part A, 4.21).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct L2capUpdateResponse {
+    pub handle: u16,
+    pub result: u16,
+}
+
+impl L2capUpdateResponse {
+    /// Connection handle, result (ST's `bluenrg1_events.h`).
+    #[must_use]
+    pub fn decode(params: &[u8]) -> Option<Self> {
+        let p = params.get(..4)?;
+        Some(Self { handle: u16::from_le_bytes([p[0], p[1]]), result: u16::from_le_bytes([p[2], p[3]]) })
+    }
+
+    /// Result 0; anything else is a refusal.
+    #[must_use]
+    pub fn accepted(&self) -> bool {
+        self.result == 0
     }
 }

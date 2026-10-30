@@ -7,7 +7,7 @@ use libfuzzer_sys::fuzz_target;
 use wrist_aci::{
     ad_name, ad_uuid128s, ad_uuid16s, att_mtu, characteristics, descriptors, gap_proc_complete, gatt_error,
     notification, numeric_comparison, packet_len, packet_whole, pairing_complete, parse, proc_complete, read_value,
-    reports, service_range, services, AttributeModified, Event, L2capUpdateRequest,
+    reports, service_range, services, AttributeModified, Event, L2capUpdateRequest, L2capUpdateResponse,
 };
 
 fn within(outer: &[u8], inner: &[u8]) {
@@ -27,6 +27,7 @@ fn vendor(params: &[u8]) {
     let _ = gatt_error(params);
     let _ = service_range(params);
     let _ = L2capUpdateRequest::decode(params);
+    let _ = L2capUpdateResponse::decode(params);
     if let Some(v) = read_value(params) {
         within(params, v);
     }
