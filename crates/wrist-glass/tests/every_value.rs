@@ -1,7 +1,7 @@
 //! Every value each slot can hold fits it, to the pixel, in every built-in locale and both
 //! typefaces, without touching another line, so no locale's data or translation can cut a line.
 
-use wrist_glass::pages::{compose, compose_about, compose_battery, About, Battery, Clock, Date, Faces, Short, Status, ATKINSON, BUILT_IN, POPPINS};
+use wrist_glass::pages::{compose, compose_about, compose_battery, About, Battery, Clock, Date, Faces, Short, Status, ATKINSON, BUILT_IN, POPPINS, STEPS_SHOWN_MAX};
 use wrist_glass::text::{Glass, Placed};
 
 const FAMILIES: [&Faces; 2] = [&POPPINS, &ATKINSON];
@@ -30,7 +30,7 @@ fn every_date_fits_the_face() {
             for month in 1..=12 {
                 for day in 1..=days_in(year, month) {
                     let d = Date { year, month, day };
-                    let status = Status { clock: Some(Clock { h: 23, m: 59, s: 0 }), date: Some(d), soc_pct: Some(100) };
+                    let status = Status { clock: Some(Clock { h: 23, m: 59, s: 0 }), date: Some(d), soc_pct: Some(100), steps: Some(wrist_glass::pages::STEPS_SHOWN_MAX) };
                     whole(&format!("{} {} {year}-{month}-{day}", faces.name, l.tag), compose(&status, l, faces));
                     combos.insert((d.weekday(), day, month));
                 }
@@ -48,7 +48,7 @@ fn every_time_and_charge_fits_the_face() {
     for (faces, l) in FAMILIES.iter().flat_map(|f| BUILT_IN.iter().map(move |l| (f, l))) {
         for h in 0..24 {
             for m in 0..60 {
-                let status = Status { clock: Some(Clock { h, m, s: 0 }), date: None, soc_pct: None };
+                let status = Status { clock: Some(Clock { h, m, s: 0 }), date: None, soc_pct: None, steps: None };
                 whole(&format!("{} {} {h}:{m}", faces.name, l.tag), compose(&status, l, faces));
             }
         }
@@ -56,6 +56,43 @@ fn every_time_and_charge_fits_the_face() {
             let status = Status { soc_pct: Some(pct), ..Status::default() };
             whole(&format!("{} {} {pct} %", faces.name, l.tag), compose(&status, l, faces));
         }
+    }
+}
+
+#[test]
+fn every_step_count_fits_the_face() {
+    for (faces, l) in FAMILIES.iter().flat_map(|f| BUILT_IN.iter().map(move |l| (f, l))) {
+        let big = (1..=6).map(|d| 10u32.pow(d) - 1).chain([STEPS_SHOWN_MAX, STEPS_SHOWN_MAX + 1, u32::MAX]);
+        for steps in (0..=19_999).chain(big) {
+            let status = Status {
+                clock: Some(Clock { h: 23, m: 59, s: 0 }),
+                date: Some(Date { year: 2026, month: 9, day: 30 }),
+                soc_pct: Some(100),
+                steps: Some(steps),
+            };
+            whole(&format!("{} {} {steps} steps", faces.name, l.tag), compose(&status, l, faces));
+        }
+    }
+}
+
+#[test]
+fn counts_past_the_most_shown_show_as_it() {
+    for faces in FAMILIES {
+        let at = |steps| {
+            let status = Status { steps: Some(steps), ..Status::default() };
+            compose(&status, &BUILT_IN[0], faces).0
+        };
+        assert_eq!(at(u32::MAX), at(STEPS_SHOWN_MAX));
+        assert_ne!(at(STEPS_SHOWN_MAX - 1), at(STEPS_SHOWN_MAX));
+    }
+}
+
+#[test]
+fn no_count_draws_no_line() {
+    for faces in FAMILIES {
+        let without = compose(&Status::default(), &BUILT_IN[0], faces).0;
+        let with = compose(&Status { steps: Some(0), ..Status::default() }, &BUILT_IN[0], faces).0;
+        assert_eq!(with.lines().count(), without.lines().count() + 1);
     }
 }
 
