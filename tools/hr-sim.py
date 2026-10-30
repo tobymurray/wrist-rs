@@ -109,12 +109,12 @@ class Characteristic(ServiceInterface):
     @method()
     def StartNotify(self):
         self.notifying = True
-        print(f"-- {time.strftime('%H:%M:%S')} the watch subscribed", flush=True)
+        print(f"-- {time.strftime('%H:%M:%S')} the central subscribed", flush=True)
 
     @method()
     def StopNotify(self):
         self.notifying = False
-        print(f"-- {time.strftime('%H:%M:%S')} the watch unsubscribed", flush=True)
+        print(f"-- {time.strftime('%H:%M:%S')} the central unsubscribed", flush=True)
 
     def notify(self, value):
         self.value = value

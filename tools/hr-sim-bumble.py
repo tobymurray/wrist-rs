@@ -4,30 +4,35 @@ peer can't.
 
     hr-sim-bumble.py hci-socket:0                  a strap, as hr-sim.py, on hci0
     hr-sim-bumble.py hci-socket:0 --vanish-after 40
-                                     40 s after the watch subscribes, reset the controller so the
-                                     link ends without a terminate, for a supervision timeout on
-                                     the watch; the simulator then exits
-    ... --hang-up-after 25           end each link 25 s after the watch subscribes (13)
+                                     40 s after the central subscribes, reset the controller and
+                                     exit. How the link ends depends on the controller: one that
+                                     drops it silently gives a supervision timeout (08) on the
+                                     central; an Intel AX200 sends a terminate (13) first
+    ... --hang-up-after 25           end each link 25 s after the central subscribes (13)
     ... --att-delay 3                answer every ATT request 3 s late
     ... --drop-att 4                 leave the 4th ATT request on each link unanswered
     ... --late-service 20            serve no Heart Rate Service until 20 s after connecting, then
-                                     add it and indicate Service Changed
-    ... --refuse-updates             refuse the watch's connection parameter requests (LE Remote
+                                     add it and indicate Service Changed to a central that
+                                     subscribed to it, in this run or, bonded, in an earlier one
+    ... --refuse-updates             refuse the central's connection parameter requests (LE Remote
                                      Connection Parameter Request, negative reply 0x3B)
-    ... --ask 400,650                ask the watch for a 400-650 ms interval over L2CAP, 2 s after
+    ... --ask 400,650                ask the central for a 400-650 ms interval over L2CAP, 2 s after
                                      it subscribes
-    ... --forget-bonds               hold keys in memory only, so a watch bonded to an earlier run
+    ... --forget-bonds               hold keys in memory only, so a central bonded to an earlier run
                                      meets a strap that has lost its bond
 
 The transport is any Bumble transport spec. `hci-socket:0` takes hci0 from BlueZ for as long as
-this runs: bring it down first (`sudo hciconfig hci0 down`, or stop bluetooth.service), and run as
-root or with cap_net_admin. `usb:0` is a dongle. Bonds persist in Bumble's JSON key store, so
-the watch stays bonded across runs.
+this runs: power it off first (`sudo btmgmt power off`), turn ssp off after (`sudo btmgmt ssp
+off`), and run as root or with cap_net_admin. `usb:0` is a dongle. Bonds persist in Bumble's JSON
+key store, with the static address as the strap's identity, so a central stays bonded across
+runs; a bonded central's Service Changed subscription persists in a file beside it.
 
 Needs bumble (pip install bumble).
 """
 import argparse
 import asyncio
+import json
+from pathlib import Path
 import struct
 import sys
 import time
@@ -94,7 +99,7 @@ def misbehave_on_att(device, args):
 
 def refuse_parameter_requests(device):
     def refuse(event):
-        log(f"refusing the watch's request for {event.interval_min * 1.25:.2f}-"
+        log(f"refusing the central's request for {event.interval_min * 1.25:.2f}-"
             f"{event.interval_max * 1.25:.2f} ms, latency {event.max_latency}")
         AsyncRunner.spawn(device.host.send_sync_command(
             hci.HCI_LE_Remote_Connection_Parameter_Request_Negative_Reply_Command(
@@ -105,9 +110,60 @@ def refuse_parameter_requests(device):
     device.host.on_hci_le_remote_connection_parameter_request_event = refuse
 
 
+def log_refused_keys(device):
+    """Log a central's request to encrypt with a key the strap doesn't hold, which no event reports."""
+    provide = device.host.long_term_key_provider
+
+    async def provider(handle, rand, ediv):
+        key = await provide(handle, rand, ediv)
+        if key is None:
+            connection = device.lookup_connection(handle)
+            log(f"no key for {connection.peer_address if connection else handle}: encryption refused (a lost bond)")
+        return key
+
+    device.host.long_term_key_provider = provider
+
+
+def remember_service_changed(device):
+    """Keep a bonded central's Service Changed subscription across runs, in a file beside the key store."""
+    path = getattr(device.keystore, "filename", None)
+    if path is None:
+        return
+    path = Path(path).with_suffix(".service-changed.json")
+    try:
+        peers = set(json.loads(path.read_text()))
+    except (OSError, ValueError):
+        peers = set()
+    changed = device.gatt_service.service_changed_characteristic
+
+    def on_subscription(bearer, characteristic, _notify, indicate):
+        if characteristic is not changed:
+            return
+        connection = getattr(bearer, "connection", bearer)
+        peer = str(connection.peer_address)
+        keep = indicate and connection.is_encrypted
+        if keep == (peer in peers):
+            return
+        (peers.add if keep else peers.discard)(peer)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(sorted(peers)))
+
+    def on_connection(connection):
+        def restore():
+            if connection.is_encrypted and str(connection.peer_address) in peers:
+                device.gatt_server.subscribers.setdefault(connection, {})[changed.handle] = bytes([2, 0])
+                log("the central is subscribed to Service Changed from an earlier run")
+
+        connection.on("connection_encryption_change", restore)
+
+    device.gatt_server.on(device.gatt_server.EVENT_CHARACTERISTIC_SUBSCRIPTION, on_subscription)
+    device.on(device.EVENT_CONNECTION, on_connection)
+
+
 async def serve(hci_source, hci_sink, args):
     config = DeviceConfiguration()
-    config.load_from_dict({"name": "HR-SIM", "address": args.address, "keystore": "JsonKeyStore"})
+    config.load_from_dict({"name": "HR-SIM", "address": args.address, "keystore": "JsonKeyStore",
+                           "identity_address_type": 1})
     device = Device.from_config_with_hci(config, hci_source, hci_sink)
     if args.forget_bonds:
         device.keystore = MemoryKeyStore()
@@ -124,6 +180,7 @@ async def serve(hci_source, hci_sink, args):
         misbehave_on_att(device, args)
     if args.refuse_updates:
         refuse_parameter_requests(device)
+    log_refused_keys(device)
 
     done = asyncio.get_running_loop().create_future()
     subscribed = set()
@@ -136,7 +193,7 @@ async def serve(hci_source, hci_sink, args):
         changed = device.gatt_service.service_changed_characteristic
         listening = any(cccd.get(changed.handle, b"\0")[0] & 0x02 for cccd in device.gatt_server.subscribers.values())
         log(f"Heart Rate Service added at handles {service.handle:#06x}-{service.end_group_handle:#06x}; "
-            + ("indicating Service Changed" if listening else "the watch isn't subscribed to Service Changed"))
+            + ("indicating Service Changed" if listening else "the central isn't subscribed to Service Changed"))
         await device.indicate_subscribers(changed, struct.pack("<HH", service.handle, service.end_group_handle))
 
     async def after_subscribe(connection):
@@ -146,27 +203,27 @@ async def serve(hci_source, hci_sink, args):
             log(f"asking for {low}-{high} ms")
             try:
                 await connection.update_parameters(low, high, 0, max(6 * high, 4000), use_l2cap=True)
-                log("the watch accepted")
+                log("the central accepted")
             except Exception as e:
-                log(f"the watch refused: {e}")
+                log(f"the central refused: {e}")
         if args.hang_up_after:
             await asyncio.sleep(args.hang_up_after)
             log("hanging up (13)")
             await connection.disconnect(hci.HCI_REMOTE_USER_TERMINATED_CONNECTION_ERROR)
         elif args.vanish_after:
             await asyncio.sleep(args.vanish_after)
-            log("resetting the controller: the link ends without a terminate")
+            log("resetting the controller")
             await device.host.send_sync_command(hci.HCI_Reset_Command())
             done.set_result(None)
 
     def on_subscription(connection, notify, _indicate):
         if notify and connection not in subscribed:
             subscribed.add(connection)
-            log("the watch subscribed")
+            log("the central subscribed")
             AsyncRunner.spawn(after_subscribe(connection))
         elif not notify:
             subscribed.discard(connection)
-            log("the watch unsubscribed")
+            log("the central unsubscribed")
 
     hrm.on("subscription", on_subscription)
 
@@ -187,6 +244,7 @@ async def serve(hci_source, hci_sink, args):
     device.on(device.EVENT_CONNECTION, on_connection)
 
     await device.power_on()
+    remember_service_changed(device)
     await device.start_advertising(auto_restart=True)
     log(f"advertising HR-SIM (0x180D) as {device.random_address}; Ctrl-C stops")
 
