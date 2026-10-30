@@ -65,7 +65,7 @@ def reopen(explicit, timeout):
             name = wrist_port.find(None)
         if name:
             try:
-                return serial.Serial(name, 115200, timeout=0.5)
+                return wrist_port.settle(serial.Serial(name, 115200, timeout=0.5))
             except serial.SerialException:
                 pass
         time.sleep(1)
@@ -106,9 +106,7 @@ def main():
     crc = zlib.crc32(data) & 0xffffffff
     name = wrist_port.find_or_exit(args.port)
     print(f"image {len(data)} bytes, CRC-32 {crc:08X}, port {name}")
-    s = serial.Serial(name, 115200, timeout=0.5, write_timeout=5)
-    time.sleep(1.0)
-    s.reset_input_buffer()
+    s = wrist_port.settle(serial.Serial(name, 115200, timeout=0.5, write_timeout=5))
     tag = "[loader]" if args.loader else "[update]"
     verb = "loader" if args.loader else "update"
     s.write(f"{verb} {len(data)} {crc:08X}\r\n".encode())
@@ -151,8 +149,6 @@ def main():
     s = reopen(args.port, 60)
     if s is None:
         sys.exit("the watch did not come back within 60 s; the loader may have reverted, or it needs the stock route")
-    time.sleep(1.0)
-    s.reset_input_buffer()
     s.write(b"version\r\n")
     wait_for(s, ["standalone-boot"], 10)
     print("waiting for the new version to mark itself booted (about 15 s); do not reset the watch")
