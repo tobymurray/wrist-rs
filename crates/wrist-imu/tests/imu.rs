@@ -1,4 +1,7 @@
-use wrist_imu::{chunks, engine_ok, enable_steps, reg, steps_enabled, Activity, Found, Outputs, CHUNK, CONFIG, PAGE_LEN};
+use wrist_imu::{
+    chunks, enable_raise, enable_steps, engine_ok, raise_routing, raised, reg, steps_enabled, Activity, Found, Outputs, CHUNK,
+    CONFIG, PAGE_LEN, RAISE_INT,
+};
 
 #[test]
 fn the_image_is_bosch_s() {
@@ -89,4 +92,26 @@ fn outputs_decode_the_count_and_activity() {
     let names: Vec<_> = (0..4).map(|a| Outputs::parse(&[0, 0, 0, 0, a]).activity.name()).collect();
     assert_eq!(names, ["still", "walking", "running", "unknown"]);
     assert_eq!(Outputs::parse(&[0, 0, 0, 0, 0xFC]).activity, Activity::Still);
+}
+
+#[test]
+fn the_raise_is_one_bit_of_page_seven() {
+    let mut page = [0x5Au8; PAGE_LEN];
+    enable_raise(&mut page, true);
+    let mut on = [0x5Au8; PAGE_LEN];
+    on[0] = 0x5A | 0x10;
+    assert_eq!(page, on);
+    enable_raise(&mut page, false);
+    let mut off = [0x5Au8; PAGE_LEN];
+    off[0] = 0x4A;
+    assert_eq!(page, off);
+}
+
+#[test]
+fn the_raise_routes_to_int2_alone() {
+    assert_eq!(raise_routing(true), [(reg::INT2_IO_CTRL, 0x0A), (reg::INT_LATCH, 0x01), (reg::INT2_MAP_FEAT, 0x08)]);
+    assert_eq!(raise_routing(false), [(reg::INT2_IO_CTRL, 0x00), (reg::INT_LATCH, 0x01), (reg::INT2_MAP_FEAT, 0x00)]);
+    assert!(raised(RAISE_INT));
+    assert!(raised(0xFF));
+    assert!(!raised(!RAISE_INT));
 }
