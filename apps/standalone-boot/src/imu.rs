@@ -44,6 +44,10 @@ pub fn today() -> Option<u32> {
     TODAY_KNOWN.load(Ordering::Relaxed).then(|| TODAY.load(Ordering::Relaxed))
 }
 
+pub fn counting() -> bool {
+    matches!(STATE.load(Ordering::Relaxed), ADOPTED | LOADED)
+}
+
 /// Reads the count and waits a little for it, so the face drawn next shows it.
 pub async fn read_now() {
     DONE.reset();

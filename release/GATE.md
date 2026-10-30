@@ -80,7 +80,8 @@ The watch runs an earlier wrist-rs.
     100 steps, counting them: within a minute `cmd imu` is up by 97 to 103. `reset`, and
     the count is unchanged; the same after step 4's update. `cmd "time set <today>
     23:59:40"`: after the minute turns, today is 0 and yesterday holds the day's count.
-    Finish with [`tools/wrist-time.py`](../tools/wrist-time.py).
+    Finish with [`tools/wrist-time.py`](../tools/wrist-time.py), which takes the clock back
+    across midnight: today starts again from 0, and yesterday is unknown.
 
 ### B. On battery
 
