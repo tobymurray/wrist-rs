@@ -1,0 +1,10 @@
+[package]
+name = "wrist-steps"
+version = "0.0.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+publish = false
+description = "Today's steps from the IMU's running count, across midnights and restarts"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }

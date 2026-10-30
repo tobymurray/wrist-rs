@@ -3,7 +3,7 @@
 use crate::{DatePiece, Locale, Piece, Plural, TimePiece};
 
 /// How many messages there are.
-pub const MESSAGES: usize = 15;
+pub const MESSAGES: usize = 16;
 
 /// Every message, in `l10n/en.ftl`'s order, with its arguments.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,6 +29,9 @@ pub enum Msg {
     // In place of the date after the alarm was found too late to ring, until a press.
     /// `MISSED`
     FaceAlarmMissed,
+    // Steps counted since midnight, under the charge; a whole number, at most six digits.
+    /// `{$steps} steps`
+    StepsToday { steps: u32 },
     // The page's title, in capitals like the English.
     /// `BATTERY`
     BatteryTitle,
@@ -63,14 +66,15 @@ impl Msg {
             Self::ChargeUnset => (4, [0]),
             Self::FaceAlarmRinging => (5, [0]),
             Self::FaceAlarmMissed => (6, [0]),
-            Self::BatteryTitle => (7, [0]),
-            Self::BatteryCellMv { mv: a0 } => (8, [a0]),
-            Self::BatteryCellUnset => (9, [0]),
-            Self::BatteryInputUsb => (10, [0]),
-            Self::BatteryInputCell => (11, [0]),
-            Self::BatteryInputUnknown => (12, [0]),
-            Self::AboutTitle => (13, [0]),
-            Self::AboutProduct => (14, [0]),
+            Self::StepsToday { steps: a0 } => (7, [a0]),
+            Self::BatteryTitle => (8, [0]),
+            Self::BatteryCellMv { mv: a0 } => (9, [a0]),
+            Self::BatteryCellUnset => (10, [0]),
+            Self::BatteryInputUsb => (11, [0]),
+            Self::BatteryInputCell => (12, [0]),
+            Self::BatteryInputUnknown => (13, [0]),
+            Self::AboutTitle => (14, [0]),
+            Self::AboutProduct => (15, [0]),
         }
     }
 }
@@ -101,6 +105,8 @@ pub static EN_GB: Locale = Locale {
         &[Piece::Text("ALARM")],
         // face-alarm-missed
         &[Piece::Text("MISSED")],
+        // steps-today
+        &[Piece::Select { arg: 0, cases: &[(Plural::One, &[Piece::Arg(0), Piece::Text(" step")])], other: &[Piece::Arg(0), Piece::Text(" steps")] }],
         // battery-title
         &[Piece::Text("BATTERY")],
         // battery-cell-mv

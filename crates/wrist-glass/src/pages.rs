@@ -31,6 +31,8 @@ pub struct Status {
     pub ringing: bool,
     /// The alarm missed and not yet seen: its word in place of the date.
     pub missed: bool,
+    /// Today's steps; `None` draws no line, as on a watch without the IMU.
+    pub steps: Option<u32>,
 }
 
 /// One typeface's font for each kind of line.
@@ -89,24 +91,42 @@ const FACE_DATE: i32 = 84;
 const FACE_TIME: i32 = 143;
 const FACE_BATT: i32 = 175;
 const FACE_ALARM: i32 = 205;
+const FACE_STEPS: i32 = FACE_BATT + 26;
+/// The alarm's line under the steps line.
+const FACE_ALARM_UNDER_STEPS: i32 = FACE_STEPS + 22;
+/// How far the face rises with a steps line, to stay centred.
+const STEPS_LIFT: i32 = 15;
+/// How far it rises with the alarm's line under the steps line.
+const STEPS_ALARM_LIFT: i32 = 20;
+/// The most steps the face's line shows; more show as this.
+pub const STEPS_SHOWN_MAX: u32 = 999_999;
 
 #[must_use]
 pub fn compose(status: &Status, locale: &Locale, faces: &Faces) -> (Glass, Short) {
     let mut b = Builder::new();
-    b.at(faces.words, FACE_DATE, |l| match status.date {
+    let lift = match (status.steps, status.alarm) {
+        (Some(_), Some(_)) => STEPS_ALARM_LIFT,
+        (Some(_), None) => STEPS_LIFT,
+        (None, _) => 0,
+    };
+    b.at(faces.words, FACE_DATE - lift, |l| match status.date {
         _ if status.ringing => locale.message(l, Msg::FaceAlarmRinging),
         _ if status.missed => locale.message(l, Msg::FaceAlarmMissed),
         Some(d) if d.named() => locale.date(l, d),
         Some(_) => locale.message(l, Msg::FaceDateInvalid),
         None => locale.message(l, Msg::FaceSetTime),
     });
-    b.at(faces.time, FACE_TIME, |l| match status.clock {
+    b.at(faces.time, FACE_TIME - lift, |l| match status.clock {
         Some(c) => locale.time(l, c),
         None => locale.message(l, Msg::FaceTimeUnset),
     });
-    b.at(faces.words, FACE_BATT, |l| push_percent(l, locale, status.soc_pct));
+    b.at(faces.words, FACE_BATT - lift, |l| push_percent(l, locale, status.soc_pct));
+    if let Some(steps) = status.steps {
+        b.at(faces.id, FACE_STEPS - lift, |l| locale.message(l, Msg::StepsToday { steps: steps.min(STEPS_SHOWN_MAX) }));
+    }
     if let Some(alarm) = status.alarm {
-        b.at(faces.id, FACE_ALARM, |l| locale.time(l, alarm));
+        let at = if status.steps.is_some() { FACE_ALARM_UNDER_STEPS } else { FACE_ALARM };
+        b.at(faces.id, at - lift, |l| locale.time(l, alarm));
     }
     (b.glass, b.short)
 }
