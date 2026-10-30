@@ -6,6 +6,8 @@
 //! The configuration image is `bmi270_config_file[]` from Bosch Sensortec's BMI270 Sensor API
 //! (`bmi270.c` at commit 41129fc), under the BSD-3-Clause licence in `LICENSE-BOSCH`.
 
+pub mod record;
+
 pub const ADDR: u8 = 0x68;
 pub const CHIP_ID: u8 = 0x24;
 
@@ -13,9 +15,14 @@ pub mod reg {
     pub const CHIP_ID: u8 = 0x00;
     pub const INT_STATUS_0: u8 = 0x1C;
     pub const INTERNAL_STATUS: u8 = 0x21;
+    pub const FIFO_LENGTH_0: u8 = 0x24;
+    pub const FIFO_DATA: u8 = 0x26;
     pub const FEAT_PAGE: u8 = 0x2F;
     pub const FEATURES: u8 = 0x30;
     pub const ACC_CONF: u8 = 0x40;
+    pub const ACC_RANGE: u8 = 0x41;
+    pub const FIFO_CONFIG_0: u8 = 0x48;
+    pub const FIFO_CONFIG_1: u8 = 0x49;
     pub const INT2_IO_CTRL: u8 = 0x54;
     pub const INT_LATCH: u8 = 0x55;
     pub const INT2_MAP_FEAT: u8 = 0x57;
@@ -28,6 +35,12 @@ pub mod reg {
 }
 
 pub const SOFT_RESET: u8 = 0xB6;
+pub const FIFO_FLUSH: u8 = 0xB0;
+
+/// `FIFO_CONFIG_0` and `FIFO_CONFIG_1` recording: no sensortime, the accelerometer alone, headerless.
+pub const FIFO_RECORDING: [u8; 2] = [0x00, 0x40];
+/// Their reset values: nothing stored.
+pub const FIFO_OFF: [u8; 2] = [0x02, 0x10];
 
 /// After a write with advanced power save on, the next access waits this long.
 pub const POWER_SAVE_GAP_US: u64 = 450;
