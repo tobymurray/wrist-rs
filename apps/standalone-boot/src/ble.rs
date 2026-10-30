@@ -92,8 +92,9 @@ pub struct Pins {
 
 const SLAVE_READY_TIMEOUT: Duration = Duration::from_millis(100);
 const IRQ_LOW_TIMEOUT: Duration = Duration::from_millis(1000);
-/// A bond lost this soon after the sensor link's pairing failed is the sensor link's.
+/// A bond lost this close to a failed pairing on the sensor link, in either order, is the sensor link's.
 const BOND_LOST_AFTER: Duration = Duration::from_secs(1);
+const SENSOR_BOND_LOST: &str = "[ble] the sensor link's peer lost its bond: the link stays unencrypted";
 const BOOT_TIMEOUT: Duration = Duration::from_millis(3000);
 const REPLY_TIMEOUT: Duration = Duration::from_millis(1000);
 /// How long a numeric comparison waits for `ble yes` before it is rejected.
@@ -459,6 +460,7 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
             rebond_for: None,
             end_sensor: false,
             sensor_pairing_failed: None,
+            bond_lost_at: None,
             nus: None,
             line: [0; 192],
             line_len: 0,
@@ -521,10 +523,12 @@ struct Link<'d> {
     passkey_for: Option<u16>,
     confirm_for: Option<(u16, Instant)>,
     rebond_for: Option<u16>,
-    /// The sensor link asked to pair, or its peer lost its bond: it is ended.
+    /// The sensor link asked to pair: it is ended.
     end_sensor: bool,
     /// When the sensor link's pairing last failed.
     sensor_pairing_failed: Option<Instant>,
+    /// A bond lost beside a sensor link, not yet known to be its: the phone's after [`BOND_LOST_AFTER`].
+    bond_lost_at: Option<Instant>,
     /// The console service: service, RX and TX characteristic handles.
     nus: Option<(u16, u16, u16)>,
     line: [u8; 192],
@@ -630,7 +634,11 @@ impl Link<'_> {
             abandon_at: self.transfer.as_ref().map(|_| tick(self.last_data + TRANSFER_IDLE + one)),
             ask_at: self.pair_ask.due(),
             scan_end: self.scanner.until().map(tick),
-            central_at: self.central.due(self.scanner.until().is_some()).map(tick),
+            central_at: [self.central.due(self.scanner.until().is_some()), self.bond_lost_at.map(|at| at + BOND_LOST_AFTER)]
+                .into_iter()
+                .flatten()
+                .min()
+                .map(tick),
         };
         wrist_wake::ble::due(&state).map(Instant::from_ticks)
     }
@@ -757,6 +765,10 @@ impl Link<'_> {
                 crate::update::abort(session);
             }
             self.uart.write_line("[update] error: no data for 5 s; transfer abandoned");
+        }
+        if self.bond_lost_at.is_some_and(|at| at.elapsed() >= BOND_LOST_AFTER) {
+            self.bond_lost_at = None;
+            self.phone_bond_lost();
         }
         if let Some(h) = self.rebond_for.take() {
             let _ = self.command(ACI_GAP_ALLOW_REBOND, &h.to_le_bytes()).await;
@@ -1218,8 +1230,13 @@ impl Link<'_> {
         // Retried when the sensor link changes or goes (`advertised` is cleared then).
         STATE.store(STATE_IDLE, Ordering::Relaxed);
         self.advertised = None;
+        if self.scanner.until().is_some() {
+            self.paused_advertising = true;
+            return self.uart.write_line("[ble] advertising: refused during the scan; it resumes after");
+        }
         if self.central.handle().is_some() {
             self.uart.write_line("[ble] advertising: no interval fits beside the sensor link; ending it to stay reachable");
+            self.central.reconnect_now = true;
             return self.drop_sensor().await;
         }
         self.uart.write_line("[ble] advertising: no interval fits");
@@ -1509,15 +1526,22 @@ impl Link<'_> {
         }
     }
 
-    /// `GAP_BOND_LOST` names no link; a failed pairing on the sensor link comes just before it.
+    /// `GAP_BOND_LOST` names no link; a failed pairing on the sensor link comes beside it, before
+    /// or after. The phone's pairing waits on the answer, so it is held only that long.
     fn bond_lost(&mut self) {
-        let phone = STATE.load(Ordering::Relaxed) == STATE_CONNECTED;
-        let sensor_failed = self.sensor_pairing_failed.take().is_some_and(|at| at.elapsed() < BOND_LOST_AFTER);
-        if self.central.handle().is_some() && (sensor_failed || !phone) {
-            self.end_sensor = true;
-            self.uart.write_line("[ble] the sensor link's peer lost its bond with the watch: ending it");
-        } else if phone {
-            self.rebond_for = Some(CONN_HANDLE.load(Ordering::Relaxed));
+        if self.sensor_pairing_failed.take().is_some_and(|at| at.elapsed() < BOND_LOST_AFTER) {
+            self.uart.write_line(SENSOR_BOND_LOST);
+        } else if self.central.handle().is_some() {
+            self.bond_lost_at = Some(Instant::now());
+        } else {
+            self.phone_bond_lost();
+        }
+    }
+
+    fn phone_bond_lost(&mut self) {
+        let phone = CONN_HANDLE.load(Ordering::Relaxed);
+        if phone != 0 {
+            self.rebond_for = Some(phone);
         }
     }
 
@@ -1552,8 +1576,12 @@ impl Link<'_> {
         // Pairing on the sensor link (a bonded host encrypting it) is not the phone's.
         if sensor && ecode == vendor::GAP_PAIRING_COMPLETE {
             let ok = wrist_aci::pairing_complete(rest).is_some_and(|(status, _)| status == 0);
+            self.uart.write_line(if ok { "[ble] sensor link paired" } else { "[ble] sensor link pairing failed" });
+            if !ok && self.bond_lost_at.take().is_some_and(|at| at.elapsed() < BOND_LOST_AFTER) {
+                return self.uart.write_line(SENSOR_BOND_LOST);
+            }
             self.sensor_pairing_failed = (!ok).then(Instant::now);
-            return self.uart.write_line(if ok { "[ble] sensor link paired" } else { "[ble] sensor link pairing failed" });
+            return;
         }
         match ecode {
             vendor::BLUE_INITIALIZED => self.uart.write_line("[ble] chip initialised"),

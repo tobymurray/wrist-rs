@@ -626,4 +626,18 @@ impl L2capUpdateRequest {
         let at = |i: usize| u16::from_le_bytes([p[i], p[i + 1]]);
         Some(Self { handle: at(0), identifier: p[2], interval_min: at(5), interval_max: at(7), latency: at(9), timeout: at(11) })
     }
+
+    /// `ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_RESP`'s parameters refusing the request: the
+    /// chip sends an acceptance as a refusal anyway (HARDWARE.md).
+    #[must_use]
+    pub fn refusal(&self) -> [u8; 16] {
+        let mut p = [0u8; 16];
+        p[0..2].copy_from_slice(&self.handle.to_le_bytes());
+        p[2..4].copy_from_slice(&self.interval_min.to_le_bytes());
+        p[4..6].copy_from_slice(&self.interval_max.to_le_bytes());
+        p[6..8].copy_from_slice(&self.latency.to_le_bytes());
+        p[8..10].copy_from_slice(&self.timeout.to_le_bytes());
+        p[14] = self.identifier;
+        p
+    }
 }

@@ -319,3 +319,9 @@ fn a_peripherals_parameter_request_decodes() {
     );
     assert_eq!(L2capUpdateRequest::decode(&p[..12]), None);
 }
+
+#[test]
+fn an_update_request_is_refused_with_its_own_parameters() {
+    let r = L2capUpdateRequest { handle: 0x0801, identifier: 7, interval_min: 320, interval_max: 640, latency: 2, timeout: 600 };
+    assert_eq!(r.refusal(), [0x01, 0x08, 0x40, 0x01, 0x80, 0x02, 2, 0, 0x58, 0x02, 0, 0, 0, 0, 7, 0]);
+}

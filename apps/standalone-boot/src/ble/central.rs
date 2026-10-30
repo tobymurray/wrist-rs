@@ -12,13 +12,14 @@ use wrist_aci::opcode::{
 };
 use wrist_aci::{address, gap_proc, vendor, Address, L2capUpdateRequest, Uuid};
 use wrist_profiles::heart_rate::{self, rr_ms, Contact, Measurement};
-use wrist_wake::ble::{agrees_to, connect_timeout_ms, reconnect_after_ms, scan, sensor, timing, Timing, GIVE_UP_MS};
+use wrist_wake::ble::{connect_timeout_ms, readvertise_for, reconnect_after_ms, scan, sensor, sensor_procedure_ms, Timing, GIVE_UP_MS};
 
 use super::scan::{write_address, write_uuid};
-use super::{power, Link, Request, REQUESTS, STATE, STATE_IDLE};
+use super::{power, Link, Request, REQUESTS, STATE, STATE_ADVERTISING, STATE_IDLE};
 use crate::uart::Uart;
 
-const PROC_TIMEOUT: Duration = Duration::from_secs(10);
+/// A request for the sensor link's timing that the chip refused is tried again this much later.
+const RETIME_AGAIN: Duration = Duration::from_secs(5);
 /// A strap with no reading for this long is quiet.
 const QUIET: Duration = Duration::from_secs(5);
 /// A link this quiet is dropped and the strap looked for again, since a host that stops
@@ -324,6 +325,8 @@ struct Strap {
     after_measurement: bool,
     retry_at: Instant,
     lost_since: Option<Instant>,
+    /// When the subscription last came up.
+    live_at: Option<Instant>,
     /// The quiet state has been logged since the last reading.
     quiet_told: bool,
     /// A reading has been logged since the subscription.
@@ -337,11 +340,17 @@ pub(super) struct Central {
     pub available: bool,
     connecting: Option<(Address, Instant)>,
     link: Option<(u16, Address)>,
+    /// The link was ended so that advertising could start: the strap is looked for at once.
+    pub(super) reconnect_now: bool,
+    /// The interval last asked for the sensor link.
+    requested: Option<u16>,
     /// The sensor link's connection interval (1.25 ms units).
     link_interval: Option<u16>,
     proc: Option<(Proc, Instant)>,
     /// The sensor link's timing last asked.
     asked: Option<Timing>,
+    /// The chip refused the last request for the sensor link's timing: it is tried again then.
+    retime_at: Option<Instant>,
     strap: Option<Strap>,
     /// `hr fake`: the rate, and when the next reading goes.
     fake: Option<(u16, Instant)>,
@@ -390,13 +399,18 @@ impl Central {
         [
             work.then_some(now),
             self.connecting.map(|(_, since)| since + connect_timeout()),
-            self.proc.map(|(_, since)| since + PROC_TIMEOUT),
+            self.proc.map(|(_, since)| since + self.procedure_timeout()),
+            self.retime_at.filter(|_| self.link.is_some() && self.proc.is_none()),
             strap,
             self.fake.map(|(_, at)| at),
         ]
         .into_iter()
         .flatten()
         .min()
+    }
+
+    fn procedure_timeout(&self) -> Duration {
+        Duration::from_millis(sensor_procedure_ms(self.interval()))
     }
 
     fn set_peer(a: Address) {
@@ -423,8 +437,9 @@ impl Central {
     pub(super) fn connected(&mut self, handle: u16, peer: Address, interval: Option<(u16, u16)>, uart: Uart) {
         self.connecting = None;
         self.link = Some((handle, peer));
+        self.requested = None;
         self.link_interval = interval.map(|(iv, _)| iv);
-        self.asked = None;
+        self.retime_at = None;
         self.proc = None;
         Self::set_peer(peer);
         CENTRAL.store(CENTRAL_CONNECTED, Ordering::Relaxed);
@@ -461,6 +476,7 @@ impl Central {
     /// The sensor link went down.
     pub(super) fn disconnected(&mut self, reason: u8, uart: Uart) {
         self.link = None;
+        self.requested = None;
         let _ = HR.compare_exchange(HR_NOT_STRAP, HR_OFF, Ordering::Relaxed, Ordering::Relaxed);
         self.proc = None;
         self.confirm = false;
@@ -472,14 +488,24 @@ impl Central {
         self.strap_retry();
     }
 
-    /// A strap still wanted is looked for again after the power source's backoff.
+    /// A strap still wanted is looked for again after the power source's backoff; one whose
+    /// link was ended so that advertising could start is not lost, and is looked for at once.
     fn strap_retry(&mut self) {
+        let reorder = core::mem::take(&mut self.reconnect_now);
         let Some(s) = self.strap.as_mut() else {
             return;
         };
         s.stage = Stage::Connect;
+        s.live_at = None;
+        s.retry_at = Instant::now();
+        if reorder {
+            if s.announced {
+                s.lost_since = None;
+            }
+            return HR.store(HR_CONNECTING, Ordering::Relaxed);
+        }
         s.lost_since.get_or_insert(Instant::now());
-        s.retry_at = Instant::now() + Duration::from_millis(reconnect_after_ms(power()));
+        s.retry_at += Duration::from_millis(reconnect_after_ms(power()));
         HR.store(HR_LOST, Ordering::Relaxed);
     }
 
@@ -600,7 +626,10 @@ impl Central {
                     let contact_changed = m.contact != s.contact;
                     s.quiet_told = false;
                     s.contact = m.contact;
-                    s.lost_since = None;
+                    // A strap that hangs up soon after each subscription is still lost.
+                    if s.live_at.is_some_and(|at| at.elapsed() >= STALE) {
+                        s.lost_since = None;
+                    }
                     reading(&m);
                     if first || contact_changed {
                         uart.write_str("[hr] ");
@@ -664,7 +693,7 @@ impl Central {
                 s.stage = Stage::Live;
                 s.quiet_told = false;
                 s.announced = false;
-                s.lost_since = None;
+                s.live_at = Some(Instant::now());
                 HR_AT_MS.store(now_ms(), Ordering::Relaxed);
                 HR.store(HR_LIVE, Ordering::Relaxed);
                 uart.write_line("[hr] subscribed to the strap's heart rate");
@@ -760,6 +789,7 @@ impl Link<'_> {
                     after_measurement: false,
                     retry_at: Instant::now(),
                     lost_since: None,
+                    live_at: None,
                     quiet_told: false,
                     announced: false,
                     contact: Contact::Unsupported,
@@ -893,14 +923,25 @@ impl Link<'_> {
         }
     }
 
-    /// The sensor link's interval changed: advertising chosen to fit the old one is chosen again.
-    pub(super) fn sensor_interval(&mut self, iv: u16) {
-        self.central.set_interval(iv);
-        self.advertised = None;
-        self.readvertise |= STATE.load(Ordering::Relaxed) == STATE_IDLE;
+    /// The sensor link's interval changed: advertising that no longer fits beside it is chosen
+    /// again. An update has been read as 0 (HARDWARE.md); the interval asked for is taken then.
+    pub(super) fn sensor_interval(&mut self, reported: u16) {
+        let requested = self.central.requested.take();
+        let iv = if reported == 0 { requested.unwrap_or(0) } else { reported };
+        let state = STATE.load(Ordering::Relaxed);
+        if iv != 0 {
+            self.central.set_interval(iv);
+        }
+        if readvertise_for((state == STATE_ADVERTISING).then_some(self.advertised_every), iv) {
+            self.advertised = None;
+            self.readvertise |= state == STATE_IDLE;
+        }
         self.uart.write_str("[ble] sensor link interval ");
+        if iv == 0 {
+            return self.uart.write_line("reported as 0: kept as it was");
+        }
         super::write_interval(self.uart, iv);
-        self.uart.write_line("");
+        self.uart.write_line(if reported == 0 { " (reported as 0: the one asked for)" } else { "" });
     }
 
     /// The sensor link went down: advertising fitted to it goes back to the timing wanted.
@@ -946,9 +987,12 @@ impl Link<'_> {
             }
         }
         if let Some((proc, since)) = self.central.proc {
-            if now >= since + PROC_TIMEOUT {
+            let limit = self.central.procedure_timeout();
+            if now >= since + limit {
                 self.central.proc = None;
-                uart.write_line("[ble] the sensor did not finish a GATT procedure in 10 s");
+                uart.write_str("[ble] the sensor did not finish a GATT procedure in ");
+                uart.write_u32(u32::try_from(limit.as_secs()).unwrap_or(u32::MAX));
+                uart.write_line(" s");
                 if matches!(proc, Proc::StrapService | Proc::StrapChars | Proc::StrapDescs | Proc::StrapSubscribe) {
                     // Start over from a fresh connection.
                     self.drop_sensor().await;
@@ -990,7 +1034,8 @@ impl Link<'_> {
             }
         }
         if s.stage == Stage::Connect {
-            if self.central.link.is_some() || self.central.connecting.is_some() || self.scanner.until().is_some() || now < s.retry_at {
+            // A link made beside advertising keeps it; advertising started beside a link may be refused.
+            if self.central.link.is_some() || self.central.connecting.is_some() || self.scanner.until().is_some() || self.readvertise || now < s.retry_at {
                 return;
             }
             if s.lost_since.is_some_and(|since| now >= since + Duration::from_millis(GIVE_UP_MS)) {
@@ -1043,34 +1088,20 @@ impl Link<'_> {
         self.start_proc(opcode, &p[..n], proc).await;
     }
 
-    /// As the central, a peripheral's request for new parameters is agreed to if advertising
-    /// still fits beside it.
+    /// As the central, a peripheral's request for new parameters is refused: the chip refuses
+    /// an acceptance too (HARDWARE.md), and the watch's own timing keeps advertising fitting.
     async fn answer_update_request(&mut self, r: L2capUpdateRequest) {
-        let yes = agrees_to(timing(power(), false).advertise, r.interval_min, r.interval_max);
-        let mut p = [0u8; 16];
-        p[0..2].copy_from_slice(&r.handle.to_le_bytes());
-        p[2..4].copy_from_slice(&r.interval_min.to_le_bytes());
-        p[4..6].copy_from_slice(&r.interval_max.to_le_bytes());
-        p[6..8].copy_from_slice(&r.latency.to_le_bytes());
-        p[8..10].copy_from_slice(&r.timeout.to_le_bytes());
-        p[14] = r.identifier;
-        p[15] = u8::from(yes);
-        let status = self.command(ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_RESP, &p).await.map_or(0xFF, |r| r.status);
+        let status = self.command(ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_RESP, &r.refusal()).await.map_or(0xFF, |r| r.status);
         self.uart.write_str("[ble] the sensor asked for ");
         super::write_interval(self.uart, r.interval_min);
         self.uart.write_str(" to ");
         super::write_interval(self.uart, r.interval_max);
         if status != 0 {
-            self.uart.write_str(": the chip refused, status ");
+            self.uart.write_str(": the refusal failed, status ");
             self.uart.write_hex8(status);
             return self.uart.write_line("");
         }
-        if !yes {
-            return self.uart.write_line(": refused, advertising would not fit beside it");
-        }
-        self.uart.write_line(": agreed; the link changes if the chip can schedule it");
-        // Its wishes stand until the power source changes.
-        self.central.asked = Some(sensor(power()));
+        self.uart.write_line(": refused");
     }
 
     /// The sensor link asked for the power source's timing when that changes.
@@ -1079,16 +1110,29 @@ impl Link<'_> {
             return;
         };
         let want = sensor(power());
-        if self.central.asked == Some(want) || self.central.proc.is_some() {
+        if self.central.asked == Some(want) {
+            self.central.retime_at = None;
             return;
         }
-        self.central.asked = Some(want);
+        if self.central.proc.is_some() || self.central.retime_at.is_some_and(|at| Instant::now() < at) {
+            return;
+        }
         let mut p = [0u8; 14];
         p[0..2].copy_from_slice(&h.to_le_bytes());
         p[2..4].copy_from_slice(&want.interval_min.to_le_bytes());
         p[4..6].copy_from_slice(&want.interval_max.to_le_bytes());
         p[6..8].copy_from_slice(&want.latency.to_le_bytes());
         p[8..10].copy_from_slice(&want.timeout.to_le_bytes());
-        let _ = self.command(ACI_GAP_START_CONNECTION_UPDATE, &p).await;
+        let status = self.command(ACI_GAP_START_CONNECTION_UPDATE, &p).await.map_or(0xFF, |r| r.status);
+        if status == 0 {
+            self.central.asked = Some(want);
+            self.central.retime_at = None;
+            self.central.requested = Some(want.interval_min);
+            return;
+        }
+        self.central.retime_at = Some(Instant::now() + RETIME_AGAIN);
+        self.uart.write_str("[ble] the chip refused to re-time the sensor link, status ");
+        self.uart.write_hex8(status);
+        self.uart.write_line("; trying again in 5 s");
     }
 }

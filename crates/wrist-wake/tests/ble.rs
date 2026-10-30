@@ -1,7 +1,7 @@
 //! The BLE loop's deadlines: idle costs no wake, and everything it does by time has one.
 
 use wrist_wake::ble::{
-    advertising_ladder, agrees_to, connect_timeout_ms, due, fits, reconnect_after_ms, scan, sensor, timing, Console, Power, State, Transfer, ADVERTISE_FASTEST,
+    advertising_ladder, connect_timeout_ms, readvertise_for, due, fits, reconnect_after_ms, scan, sensor, timing, Console, Power, State, Transfer, ADVERTISE_FASTEST,
     GIVE_UP_MS,
 };
 use wrist_wake::earliest;
@@ -466,14 +466,28 @@ fn each_power_sources_advertising_fits_beside_its_sensor_link() {
 }
 
 #[test]
-fn a_sensors_request_is_agreed_to_only_if_advertising_still_fits() {
-    let cable = timing(Power::Cable, false).advertise;
-    // A strap asking for 400 to 650 ms beside 100 ms advertising.
-    assert!(!agrees_to(cable, 320, 520));
-    assert!(agrees_to(cable, 24, 40));
-    assert!(!agrees_to(cable, 40, 24));
+fn a_slow_sensor_link_gets_longer_for_each_gatt_procedure() {
+    use wrist_wake::ble::sensor_procedure_ms;
+    assert_eq!(sensor_procedure_ms(None), 10_000);
+    assert_eq!(sensor_procedure_ms(Some(sensor(Power::Cable).interval_min)), 10_000);
+    // A strap took 18 s from connection to subscription at 500 ms: one procedure gets 30 s.
+    assert_eq!(sensor_procedure_ms(Some(sensor(Power::Battery).interval_min)), 30_000);
+    assert_eq!(sensor_procedure_ms(Some(3200)), 240_000);
+}
+
+#[test]
+fn a_sensors_own_link_is_one_interval_its_advertising_fits_beside() {
     for power in [Power::Cable, Power::Battery] {
         let s = sensor(power);
-        assert!(agrees_to(timing(power, false).advertise, s.interval_min, s.interval_max), "{power:?}");
+        assert_eq!(s.interval_min, s.interval_max, "{power:?}");
+        assert!(fits(timing(power, false).advertise, s.interval_min), "{power:?}");
     }
+}
+
+#[test]
+fn advertising_starts_again_only_when_it_no_longer_fits_the_sensor_link() {
+    assert!(!readvertise_for(Some(160), 28));
+    assert!(!readvertise_for(Some(160), 0));
+    assert!(readvertise_for(Some(160), 32));
+    assert!(readvertise_for(None, 28));
 }

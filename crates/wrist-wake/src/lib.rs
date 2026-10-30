@@ -373,7 +373,7 @@ pub mod ble {
     #[must_use]
     pub const fn sensor(power: Power) -> Timing {
         match power {
-            Power::Cable => Timing { advertise: 0, interval_min: 24, interval_max: 40, latency: 0, timeout: 400 },
+            Power::Cable => Timing { advertise: 0, interval_min: 28, interval_max: 28, latency: 0, timeout: 400 },
             Power::Battery => Timing { advertise: 0, interval_min: 400, interval_max: 400, latency: 0, timeout: 600 },
         }
     }
@@ -386,11 +386,22 @@ pub mod ble {
         interval > 0 && (advertise as u32 + 8).is_multiple_of(2 * interval as u32)
     }
 
-    /// Whether the watch agrees to a sensor's request for a link of `min..=max` (1.25 ms
-    /// units): only if advertising every `advertise` [`fits`] beside some interval in it.
+    /// How long (ms) the watch waits on one GATT procedure on a sensor link of `interval`
+    /// (1.25 ms units, `None` unknown): 10 s, or 60 connection events where that is longer, as
+    /// at 500 ms, where a strap's discovery took 18 s.
     #[must_use]
-    pub fn agrees_to(advertise: u16, min: u16, max: u16) -> bool {
-        (min..=max).any(|iv| fits(advertise, iv))
+    pub fn sensor_procedure_ms(interval: Option<u16>) -> u64 {
+        10_000u64.max(interval.map_or(0, |iv| u64::from(iv) * 5 * 60 / 4))
+    }
+
+    /// Whether a new sensor link interval (1.25 ms units, 0 unknown) means advertising must
+    /// start again: it runs at `advertising` and no longer fits, or is not running.
+    #[must_use]
+    pub const fn readvertise_for(advertising: Option<u16>, interval: u16) -> bool {
+        match advertising {
+            Some(every) => interval != 0 && !fits(every, interval),
+            None => true,
+        }
     }
 
     /// After a sensor is lost, how long (ms) before the next attempt to reach it, each attempt
