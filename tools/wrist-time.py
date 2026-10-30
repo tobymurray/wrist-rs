@@ -83,10 +83,7 @@ def main():
     except ImportError:
         sys.exit("pyserial is needed: pip install pyserial")
     import wrist_port
-    s = serial.Serial(wrist_port.find_or_exit(args.port), 115200, timeout=0.5)
-    s.dtr = True
-    time.sleep(0.5)
-    s.reset_input_buffer()
+    s = wrist_port.open_console(args.port, timeout=0.5)
     # Send on a second boundary, so the watch's seconds start in step.
     now = time.time()
     time.sleep(1.0 - (now % 1.0))
