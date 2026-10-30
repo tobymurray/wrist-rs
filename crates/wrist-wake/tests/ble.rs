@@ -14,6 +14,7 @@ fn idle() -> State {
         console: None,
         abandon_at: None,
         ask_at: None,
+        interval_at: None,
         scan_end: None,
     }
 }
@@ -385,4 +386,56 @@ fn scanning_listens_less_on_battery() {
         let (scan, adv) = (u32::from(scan(power).interval), u32::from(timing(power, false).advertise));
         assert!(scan * 10 >= adv * 9 && scan * 10 <= adv * 11, "{power:?}");
     }
+}
+
+#[test]
+fn the_interval_waits_for_encryption() {
+    use wrist_wake::ble::IntervalAsk;
+    let mut ask = IntervalAsk::default();
+    ask.connected(NOW, 1_000);
+    assert!(!ask.open(NOW), "beside Service Changed, a request at connect ended a bonded central's link");
+    assert!(!ask.open(NOW + 200));
+    ask.encrypted();
+    assert!(ask.open(NOW + 200));
+    assert_eq!(ask.due(), None);
+    ask.disconnected();
+    assert!(!ask.open(NOW + 10_000));
+}
+
+#[test]
+fn a_central_that_never_encrypts_is_asked_late_and_the_loop_then_sleeps() {
+    use wrist_wake::ble::{IntervalAsk, ASK_INTERVAL_AFTER_MS};
+    let mut ask = IntervalAsk::default();
+    ask.connected(NOW, 1_000);
+    assert_eq!(due(&State { interval_at: ask.due(), ..idle() }), Some(NOW + ASK_INTERVAL_AFTER_MS));
+    assert!(!ask.open(NOW + ASK_INTERVAL_AFTER_MS - 1));
+    assert!(ask.open(NOW + ASK_INTERVAL_AFTER_MS));
+    assert_eq!(ask.due(), None, "a deadline left in the past wakes the loop at once, for ever");
+    assert!(ask.open(NOW + ASK_INTERVAL_AFTER_MS * 10), "a power change later still asks");
+}
+
+#[test]
+fn a_pairing_central_is_asked_once_encrypted_or_once_it_fails() {
+    use wrist_wake::ble::{IntervalAsk, ASK_INTERVAL_AFTER_MS};
+    let mut ask = IntervalAsk::default();
+    ask.connected(NOW, 1_000);
+    ask.pairing();
+    assert!(!ask.open(NOW + ASK_INTERVAL_AFTER_MS * 10), "a pairing's encryption start is still to come");
+    assert_eq!(ask.due(), None);
+    ask.pairing_failed();
+    assert!(ask.open(NOW + 20_000));
+    assert_eq!(ask.due(), None);
+}
+
+#[test]
+fn a_failed_pairing_with_no_link_or_on_an_encrypted_one_arms_nothing() {
+    use wrist_wake::ble::IntervalAsk;
+    let mut ask = IntervalAsk::default();
+    ask.pairing_failed();
+    assert_eq!((ask, ask.due()), (IntervalAsk::NoLink, None));
+    ask.connected(NOW, 1_000);
+    ask.encrypted();
+    ask.pairing();
+    ask.pairing_failed();
+    assert_eq!((ask, ask.due()), (IntervalAsk::Open, None));
 }
