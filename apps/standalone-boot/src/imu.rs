@@ -25,6 +25,8 @@ static STATE: AtomicU8 = AtomicU8::new(STARTING);
 static STEPS: AtomicU32 = AtomicU32::new(0);
 static ACTIVITY: AtomicU8 = AtomicU8::new(Activity::Unknown as u8);
 static REPORT: AtomicBool = AtomicBool::new(false);
+/// The task runs only when the GNSS slot holds the module that carries the IMU.
+static RUNNING: AtomicBool = AtomicBool::new(false);
 /// `INTERNAL_STATUS`, `PWR_CTRL`, `ACC_CONF` and `PWR_CONF` as the boot found them.
 static FOUND: AtomicU32 = AtomicU32::new(u32::MAX);
 static FOUND_STEPS_ON: AtomicBool = AtomicBool::new(false);
@@ -39,7 +41,9 @@ pub fn request_read(report: bool) {
 }
 
 pub fn command(args: &[u8], uart: Uart) {
-    if core::str::from_utf8(args).unwrap_or("").trim().is_empty() {
+    if !RUNNING.load(Ordering::Relaxed) {
+        uart.write_line("[imu] no IMU: the GNSS slot holds another module (`modules`)");
+    } else if core::str::from_utf8(args).unwrap_or("").trim().is_empty() {
         request_read(true);
     } else {
         uart.write_line("[imu] usage: imu");
@@ -48,6 +52,7 @@ pub fn command(args: &[u8], uart: Uart) {
 
 #[embassy_executor::task]
 pub async fn run(mut bus: Bus) -> ! {
+    RUNNING.store(true, Ordering::Relaxed);
     let uart = Uart::best_effort();
     let found = found(&mut bus).await;
     if let Ok(f) = &found {
