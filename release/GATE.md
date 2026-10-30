@@ -82,6 +82,9 @@ The watch runs an earlier wrist-rs.
     23:59:40"`: after the minute turns, today is 0 and yesterday holds the day's count.
     Finish with [`tools/wrist-time.py`](../tools/wrist-time.py), which takes the clock back
     across midnight: today starts again from 0, and yesterday is unknown.
+8b. Raise. `cmd "imu raise on"`, wearing the watch: raising the wrist to look at the face
+    lights it for 3 s and `cmd imu` counts the raise; on the other wrist too. Worn for an
+    hour, compare the raises counted with the times you looked. `cmd "imu raise off"`.
 
 ### B. On battery
 
