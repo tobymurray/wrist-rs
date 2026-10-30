@@ -307,13 +307,35 @@ class Scenario:
 
 
 def counters(status):
-    """The `ble` line's counters of things that should never happen, by name."""
+    """The `ble` line's counters of things that should never happen, by name; a field's later counters
+    take its first one's prefix (`irq stuck after write`)."""
     found = {}
     for field in status.split(', '):
+        prefix = None
         for name, value in re.findall(r'([a-z][a-z ]*[a-z]) (\d+)\b', field):
+            if prefix is None:
+                prefix = name.rpartition(' ')[0]
+            elif prefix and ' ' not in name:
+                name = f'{prefix} {name}'
             if not re.search(r'events|bonded|interval|latency|address', name):
                 found[name] = int(value)
     return found
+
+
+def failed_to_establish(path):
+    """Disconnection Complete events with reason 0x3E in a btmon capture: connections that failed to establish."""
+    data = Path(path).read_bytes()
+    if data[:8] != b'btsnoop\0' or int.from_bytes(data[12:16], 'big') != 2001:
+        return None
+    count, at = 0, 16
+    while at + 24 <= len(data):
+        length = int.from_bytes(data[at + 4:at + 8], 'big')
+        opcode = int.from_bytes(data[at + 8:at + 12], 'big') & 0xFFFF
+        event = data[at + 24:at + 24 + length]
+        at += 24 + length
+        if opcode == 3 and len(event) >= 6 and event[0] == 0x05 and event[2] == 0 and event[5] == 0x3E:
+            count += 1
+    return count
 
 
 def spread(values):
@@ -594,6 +616,11 @@ async def run(a, out, result):
     finally:
         if capture:
             capture.terminate()
+            try:
+                capture.wait(timeout=5)
+                result['failed_to_establish'] = failed_to_establish(out / 'btmon.btsnoop')
+            except (OSError, subprocess.TimeoutExpired):
+                pass
         if installed:
             ok, usb = await install(usb, a, a.restore, out)
             after = await snapshot(usb)
@@ -663,6 +690,8 @@ def main():
     print(f'\n{"PASSED" if result["passed"] else "FAILED"}; see {out}', flush=True)
     for s in result['scenarios']:
         print(f'  {"pass" if s["passed"] else "FAIL"}  {s["name"]} ({s["seconds"]} s) {s["measurements"]}', flush=True)
+    if result.get('failed_to_establish') is not None:
+        print(f'  btmon: {result["failed_to_establish"]} connections failed to establish (0x3E)', flush=True)
     sys.exit(0 if result['passed'] else 1)
 
 

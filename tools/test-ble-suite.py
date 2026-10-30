@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import struct
 import subprocess
 import sys
 import tempfile
@@ -135,6 +136,27 @@ class Judgements(unittest.TestCase):
         with mock.patch('sys.stdout', io.StringIO()):
             asyncio.run(suite.soak(s, usb, None, 'b', a))
         self.assertTrue(s.checks[1]['passed'], s.checks[1]['what'])
+
+    def test_a_field_of_two_counters_names_both(self):
+        found = suite.counters('[ble] connected, encrypted, interval 30.00 ms latency 0, bonded 2, events 40, '
+                               'irq stuck after read 1 write 2, connect failures 3, unknown events 2')
+        self.assertEqual(found, {'irq stuck after read': 1, 'irq stuck after write': 2, 'connect failures': 3})
+
+    def test_connections_that_failed_to_establish_are_counted(self):
+        def record(opcode, packet):
+            return struct.pack('>IIIIq', len(packet), len(packet), opcode, 0, 0) + packet
+        disconnect = lambda reason: bytes([0x05, 4, 0, 0x40, 0, reason])
+        capture = b'btsnoop\0' + struct.pack('>II', 1, 2001) + b''.join([
+            record(3, disconnect(0x3E)), record(3, disconnect(0x13)), record(2, disconnect(0x3E)),
+            record(3, bytes([0x3E, 3, 0x14, 0x40, 0])), record(0x10003, disconnect(0x3E))])
+        with tempfile.NamedTemporaryFile() as f:
+            f.write(capture)
+            f.flush()
+            self.assertEqual(suite.failed_to_establish(f.name), 2)
+            f.seek(0)
+            f.write(b'not a capture')
+            f.flush()
+            self.assertIsNone(suite.failed_to_establish(f.name))
 
 
 if __name__ == '__main__':
