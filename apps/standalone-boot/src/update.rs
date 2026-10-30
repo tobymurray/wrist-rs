@@ -86,6 +86,23 @@ pub fn invalidate_icache() -> bool {
 const STAGING: usize = 0x200D_0000;
 const STAGING_SIZE: usize = 512 * 1024;
 static STAGING_BUSY: AtomicBool = AtomicBool::new(false);
+/// The staging pages hold an IMU recording rather than a transfer.
+static RECORDING: AtomicBool = AtomicBool::new(false);
+
+/// The staging pages for an IMU recording, kept through Stop until [`release_staging`].
+pub fn claim_staging() -> Option<&'static mut [u8]> {
+    if STAGING_BUSY.swap(true, Ordering::Acquire) {
+        return None;
+    }
+    RECORDING.store(true, Ordering::Relaxed);
+    unsafe { modify32(PWR_CR2, PWR_CR2_SRAM3_1_TO_8, 0) };
+    Some(unsafe { core::slice::from_raw_parts_mut(STAGING as *mut u8, STAGING_SIZE) })
+}
+
+pub fn release_staging() {
+    RECORDING.store(false, Ordering::Relaxed);
+    release();
+}
 
 fn staging() -> &'static [u8] {
     unsafe { core::slice::from_raw_parts(STAGING as *const u8, STAGING_SIZE) }
@@ -138,7 +155,11 @@ pub fn begin(
         return Err("length out of range for this target");
     }
     if STAGING_BUSY.swap(true, Ordering::Acquire) {
-        return Err("a transfer is already in progress");
+        return Err(if RECORDING.load(Ordering::Relaxed) {
+            "an IMU recording holds the staging RAM; `imu record clear` frees it"
+        } else {
+            "a transfer is already in progress"
+        });
     }
     unsafe { modify32(PWR_CR2, PWR_CR2_SRAM3_1_TO_8, 0) };
     let uart = Uart::best_effort();
