@@ -1,4 +1,4 @@
-use wrist_imu::record::{fill, frames, Mark, Recording, FRAME, MARK, READ};
+use wrist_imu::record::{fill, frames, overflowed, Mark, Recording, FRAME, MARK, READ};
 
 fn frame(x: i16, y: i16, z: i16) -> [u8; FRAME] {
     let mut f = [0; FRAME];
@@ -17,6 +17,12 @@ fn the_fill_level_is_fourteen_bits_of_whole_frames() {
     assert_eq!(frames(6), 1);
     assert_eq!(frames(2047), 341);
     assert_eq!(READ % FRAME, 0);
+}
+
+#[test]
+fn a_fifo_near_full_may_have_overwritten_frames() {
+    assert!(!overflowed(1_984));
+    assert!(overflowed(1_985));
 }
 
 #[test]
