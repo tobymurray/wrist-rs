@@ -338,7 +338,7 @@ fn main() -> ! {
 
     // Blocking transfers only before the first awaited one (`HARDWARE.md`, "Debug and boot").
     let mut i2c_config = embassy_stm32::i2c::Config::default();
-    i2c_config.frequency = Hertz::khz(100);
+    i2c_config.frequency = Hertz::khz(400);
     i2c_config.timeout = embassy_time::Duration::from_millis(20);
     let mut bus = I2c::new(p.I2C1, p.PB6, p.PB7, p.GPDMA1_CH0, p.GPDMA1_CH1, I2cIrqs, i2c_config);
     let power = pmic::snapshot_blocking(&mut bus);
@@ -1031,12 +1031,12 @@ fn minute_now() -> u32 {
 
 /// The charge in percent and the cell's voltage, for the face and the battery page.
 async fn read_power(uart: Uart, bus: &mut pmic::AsyncBus, n: u32) -> (Option<u8>, Option<u32>) {
-    let s = pmic::snapshot(bus).await;
+    let s = pmic::snapshot(bus, n.is_multiple_of(6)).await;
     pmic::restore_gauge(bus, s.gauge_status).await;
     if !s.gauge_status.is_some_and(wrist_power::gauge_reset) {
         pmic::keep_hibernate_slow(&mut uart.lines(), bus, s.hib_cfg).await;
     }
-    if n.is_multiple_of(6) {
+    if s.full {
         pmic::write_report(&mut uart.lines(), &s);
         embassy_futures::yield_now().await;
         pmic::write_rails(&mut uart.lines(), s.top_cntl3);
