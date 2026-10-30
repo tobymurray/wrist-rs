@@ -450,10 +450,11 @@ unplug and the plug, and `samples` by one a minute.
 Six SRAM words keep the last panic or fault across a software reset
 ([`crates/wrist-crash`](crates/wrist-crash)). `0x2026FFF8` and `0x2026FFFC` hold a tagged panic line and file
 hash, or a fault's `CFSR` and `PC`, above the loader's RCC mailbox (`0x2026FFF0`/`0x2026FFF4`).
-`0x2026FFE0` to `0x2026FFEC` hold the build ID, the uptime in seconds, how many records in a
-row since the last clear, and a check word: the 16 bytes above the stack's start that the
+`0x2026FFE0` to `0x2026FFEC` hold the build ID, the uptime in seconds, the count of records
+since the last clear, and a check word: the 16 bytes above the stack's start that the
 vendor bootloader's handoff reads and nothing writes. A record whose check fails is an
-older image's, reported without them. Neither flash nor the backup registers are written.
+older image's, reported without them. **MEASURED**: all six words survive a panic's reset
+through the vendor bootloader and the loader, and the count rises with a second panic. Neither flash nor the backup registers are written.
 `power` reports the record, saying when another build wrote it, and `power sleep
 clear-crash` clears it; nothing survives a complete power loss. [`tools/wrist-crash.py`](tools/wrist-crash.py)
 resolves a panic's hash using the source paths in the failing image, and refuses an image
