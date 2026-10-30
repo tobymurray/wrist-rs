@@ -414,7 +414,7 @@ pub mod ble {
         }
     }
 
-    /// How long a lost sensor is looked for before the watch gives up on it (ms).
+    /// How long a lost sensor may go without a reading before the watch gives up on it (ms).
     pub const GIVE_UP_MS: u64 = 5 * 60 * 1000;
 
     /// The shortest advertising interval the watch uses (0.625 ms units): the cable's.

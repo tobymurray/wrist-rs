@@ -70,6 +70,8 @@ const HR_LOST: u8 = 4;
 const HR_GAVE_UP: u8 = 5;
 const HR_FAKE: u8 = 6;
 const HR_NOT_STRAP: u8 = 7;
+const HR_KEPT_DROPPING: u8 = 8;
+const HR_GAVE_UP_NOT_STRAP: u8 = 9;
 static HR: AtomicU8 = AtomicU8::new(HR_OFF);
 static HR_BPM: AtomicU16 = AtomicU16::new(0);
 /// 0 unsupported, 1 lost, 2 detected.
@@ -240,8 +242,10 @@ fn write_hr(uart: Uart) {
         HR_DISCOVERING => "connected, finding heart rate",
         HR_LIVE => "strap live",
         HR_LOST => "strap lost, looking for it",
-        HR_GAVE_UP => "strap lost for 5 minutes: gave up (`hr strap` again)",
-        HR_NOT_STRAP => "not a heart-rate strap (`ble drop` ends the link)",
+        HR_GAVE_UP => "strap not found for 5 minutes: gave up (`hr strap` again)",
+        HR_KEPT_DROPPING => "strap kept dropping, no reading for 5 minutes: gave up (`hr strap` again)",
+        HR_NOT_STRAP => "no heart rate on the device, looking again",
+        HR_GAVE_UP_NOT_STRAP => "no heart rate on the device for 5 minutes: gave up (`hr strap` again)",
         _ => "fake readings",
     });
     let at = HR_AT_MS.load(Ordering::Relaxed);
@@ -315,6 +319,16 @@ enum Stage {
     Descs,
     Subscribe,
     Live,
+    /// Discovery found no heart rate: the link is ended on the next pass.
+    End,
+}
+
+/// What a lost strap has done since its last reading: why, if the watch gives up on it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Unheard {
+    NotFound,
+    KeptDropping,
+    NotAStrap,
 }
 
 struct Strap {
@@ -326,9 +340,9 @@ struct Strap {
     /// A characteristic declaration came after the measurement: descriptors stop there.
     after_measurement: bool,
     retry_at: Instant,
+    /// When it was lost, with no reading since.
     lost_since: Option<Instant>,
-    /// When the subscription last came up.
-    live_at: Option<Instant>,
+    unheard: Unheard,
     /// The quiet state has been logged since the last reading.
     quiet_told: bool,
     /// A reading has been logged since the subscription.
@@ -458,6 +472,9 @@ impl Central {
         if let Some(s) = self.strap.as_mut() {
             if s.address == peer {
                 s.stage = Stage::Service;
+                if s.unheard == Unheard::NotFound {
+                    s.unheard = Unheard::KeptDropping;
+                }
                 s.range = None;
                 s.measurement = None;
                 s.cccd = None;
@@ -482,7 +499,6 @@ impl Central {
     pub(super) fn disconnected(&mut self, reason: u8, uart: Uart) {
         self.link = None;
         self.requested = None;
-        let _ = HR.compare_exchange(HR_NOT_STRAP, HR_OFF, Ordering::Relaxed, Ordering::Relaxed);
         self.proc = None;
         self.confirm = false;
         self.update_request = None;
@@ -501,17 +517,13 @@ impl Central {
             return;
         };
         s.stage = Stage::Connect;
-        s.live_at = None;
         s.retry_at = Instant::now();
         if reorder {
-            if s.announced {
-                s.lost_since = None;
-            }
             return HR.store(HR_CONNECTING, Ordering::Relaxed);
         }
         s.lost_since.get_or_insert(Instant::now());
         s.retry_at += Duration::from_millis(reconnect_after_ms(power()));
-        HR.store(HR_LOST, Ordering::Relaxed);
+        HR.store(if s.unheard == Unheard::NotAStrap { HR_NOT_STRAP } else { HR_LOST }, Ordering::Relaxed);
     }
 
     /// `GAP_PROC_COMPLETE` for a connection attempt; success comes before the connection's own
@@ -631,10 +643,8 @@ impl Central {
                     let contact_changed = m.contact != s.contact;
                     s.quiet_told = false;
                     s.contact = m.contact;
-                    // A strap that hangs up soon after each subscription is still lost.
-                    if s.live_at.is_some_and(|at| at.elapsed() >= STALE) {
-                        s.lost_since = None;
-                    }
+                    s.lost_since = None;
+                    s.unheard = Unheard::NotFound;
                     reading(&m);
                     if first || contact_changed {
                         uart.write_str("[hr] ");
@@ -698,22 +708,24 @@ impl Central {
                 s.stage = Stage::Live;
                 s.quiet_told = false;
                 s.announced = false;
-                s.live_at = Some(Instant::now());
+                s.unheard = Unheard::KeptDropping;
                 HR_AT_MS.store(now_ms(), Ordering::Relaxed);
                 HR.store(HR_LIVE, Ordering::Relaxed);
                 uart.write_line("[hr] subscribed to the strap's heart rate");
             }
             Some(stage) => s.stage = stage,
             None => {
-                uart.write_line(match proc {
-                    Proc::StrapService => "[hr] the device has no Heart Rate Service; `ble drop`",
-                    Proc::StrapChars => "[hr] no Heart Rate Measurement in the service; `ble drop`",
-                    Proc::StrapDescs => "[hr] the measurement has no configuration descriptor; `ble drop`",
-                    _ => "[hr] the strap refused the subscription; `ble drop`",
+                uart.write_str(match proc {
+                    Proc::StrapService => "[hr] the device has no Heart Rate Service",
+                    Proc::StrapChars => "[hr] no Heart Rate Measurement in the service",
+                    Proc::StrapDescs => "[hr] the measurement has no configuration descriptor",
+                    _ => "[hr] the strap refused the subscription",
                 });
-                // Left connected and stuck rather than retried for ever: the device is not a strap.
+                uart.write_line("; dropping the link to look again");
+                // A service can appear later, and each link's discovery starts afresh.
+                s.stage = Stage::End;
+                s.unheard = Unheard::NotAStrap;
                 HR.store(HR_NOT_STRAP, Ordering::Relaxed);
-                self.strap = None;
             }
         }
     }
@@ -794,7 +806,7 @@ impl Link<'_> {
                     after_measurement: false,
                     retry_at: Instant::now(),
                     lost_since: None,
-                    live_at: None,
+                    unheard: Unheard::NotFound,
                     quiet_told: false,
                     announced: false,
                     contact: Contact::Unsupported,
@@ -1044,16 +1056,32 @@ impl Link<'_> {
                 return;
             }
             if s.lost_since.is_some_and(|since| now >= since + Duration::from_millis(GIVE_UP_MS)) {
+                let (state, line) = match s.unheard {
+                    Unheard::NotFound => (HR_GAVE_UP, "[hr] strap not found for 5 minutes: gave up"),
+                    Unheard::KeptDropping => (HR_KEPT_DROPPING, "[hr] the strap kept dropping, no reading for 5 minutes: gave up"),
+                    Unheard::NotAStrap => (HR_GAVE_UP_NOT_STRAP, "[hr] no heart rate on the device for 5 minutes: gave up"),
+                };
                 self.central.strap = None;
-                HR.store(HR_GAVE_UP, Ordering::Relaxed);
-                return uart.write_line("[hr] strap not found for 5 minutes: gave up");
+                HR.store(state, Ordering::Relaxed);
+                return uart.write_line(line);
             }
             let a = s.address;
-            HR.store(if s.lost_since.is_some() { HR_LOST } else { HR_CONNECTING }, Ordering::Relaxed);
+            HR.store(
+                match (s.unheard, s.lost_since) {
+                    (Unheard::NotAStrap, _) => HR_NOT_STRAP,
+                    (_, Some(_)) => HR_LOST,
+                    _ => HR_CONNECTING,
+                },
+                Ordering::Relaxed,
+            );
             return self.start_connect(a).await;
         }
         if self.central.proc.is_some() || s.stage == Stage::Live {
             return;
+        }
+        if s.stage == Stage::End {
+            s.stage = Stage::Connect;
+            return self.drop_sensor().await;
         }
         let Some(h) = self.central.link.map(|(h, _)| h.to_le_bytes()) else {
             return;
@@ -1088,7 +1116,7 @@ impl Link<'_> {
                 p[6] = 0x00;
                 (ACI_GATT_WRITE_CHAR_DESC, Proc::StrapSubscribe, 7)
             }
-            Stage::Connect | Stage::Live => return,
+            Stage::Connect | Stage::Live | Stage::End => return,
         };
         self.start_proc(opcode, &p[..n], proc).await;
     }
