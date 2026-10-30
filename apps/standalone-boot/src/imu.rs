@@ -35,11 +35,13 @@ static FOUND_STEPS_ON: AtomicBool = AtomicBool::new(false);
 static READ: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 static DONE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 static TODAY: AtomicU32 = AtomicU32::new(0);
+/// Set by the first reading, so the face never shows a count not yet read.
+static TODAY_KNOWN: AtomicBool = AtomicBool::new(false);
 static YESTERDAY: AtomicU32 = AtomicU32::new(u32::MAX);
 
 /// Today's steps, once the chip is counting.
 pub fn today() -> Option<u32> {
-    matches!(STATE.load(Ordering::Relaxed), ADOPTED | LOADED).then(|| TODAY.load(Ordering::Relaxed))
+    TODAY_KNOWN.load(Ordering::Relaxed).then(|| TODAY.load(Ordering::Relaxed))
 }
 
 /// Reads the count and waits a little for it, so the face drawn next shows it.
@@ -104,6 +106,9 @@ pub async fn run(mut bus: Bus) -> ! {
                     let day = crate::rtc::now_civil().and_then(|c| wrist_steps::day_of(wrist_time::seconds_of(c)));
                     let l = ledger.get_or_insert_with(|| Ledger::new(day, out.steps));
                     TODAY.store(l.observe(day, out.steps), Ordering::Relaxed);
+                    if !TODAY_KNOWN.swap(true, Ordering::Relaxed) {
+                        crate::wake_display();
+                    }
                     YESTERDAY.store(l.yesterday().unwrap_or(u32::MAX), Ordering::Relaxed);
                     crate::rtc::set_steps_words(&l.save());
                 }
