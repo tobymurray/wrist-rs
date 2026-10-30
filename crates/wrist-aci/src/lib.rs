@@ -4,8 +4,8 @@
 //! (OGF 0x3F, the ACI) and vendor events (event code 0xFF with a 16-bit
 //! code), over SPI with a five-byte header each way. This crate holds the
 //! numbers (from ST's public BlueNRG-1/2 ACI documentation), builds command
-//! packets, measures packets in a read, and decodes the events the image
-//! uses into types ([`parse`], then the vendor payload decoders). The image's
+//! packets, measures packets in a read, and decodes every packet into an
+//! event ([`parse`], then the vendor payload decoders). The image's
 //! `ble` module does the transfers and keeps the link's state around it.
 
 #![no_std]
@@ -271,56 +271,84 @@ pub struct Address {
     pub bytes: [u8; 6],
 }
 
-/// The events the image acts on.
+/// The event in one HCI packet, by section of the Core Specification, Vol 4 Part E, whose
+/// layouts ST's `bluenrg1_events.h` follows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Event<'a> {
-    /// Command Complete: the opcode answered, its status, the return parameters.
+    /// Command Complete (7.7.14): the opcode answered, its status, the return parameters.
     CommandComplete { opcode: u16, status: u8, params: &'a [u8] },
-    /// Command Status: a command accepted (0) or refused, results to follow.
+    /// Command Status (7.7.15): a command accepted (0) or refused, results to follow.
     CommandStatus { opcode: u16, status: u8 },
-    /// LE (Enhanced) Connection Complete with success: the handle, and the
-    /// interval (1.25 ms units) and latency when the packet carries them.
-    Connected { handle: u16, interval: Option<(u16, u16)> },
-    /// LE Connection Update Complete with success: interval (1.25 ms units), latency.
-    ConnectionUpdate { interval: u16, latency: u16 },
-    /// Disconnection Complete, with its reason (0x13: the peer hung up).
-    Disconnected { reason: u8 },
-    /// Encryption Change: 1 on, 0 off.
-    Encryption { on: u8 },
-    /// LE Advertising Report: one or more reports ([`reports`]).
+    /// LE (Enhanced) Connection Complete (7.7.65.1, 7.7.65.10) with success: the handle,
+    /// whether the watch is the central, the peer, and the interval (1.25 ms units) and
+    /// latency when the packet carries them.
+    Connected { handle: u16, central: bool, peer: Address, interval: Option<(u16, u16)> },
+    /// LE (Enhanced) Connection Complete with an error: no connection formed.
+    ConnectFailed { status: u8 },
+    /// LE Connection Update Complete (7.7.65.3) with success: interval (1.25 ms units), latency.
+    ConnectionUpdate { handle: u16, interval: u16, latency: u16 },
+    /// LE Connection Update Complete with an error: the link keeps the parameters it had.
+    UpdateFailed { handle: u16, status: u8 },
+    /// Disconnection Complete (7.7.5): a nonzero status is a disconnection that failed, the
+    /// link still up; else the reason (0x13: the peer hung up).
+    Disconnected { handle: u16, status: u8, reason: u8 },
+    /// Encryption Change (7.7.8): a nonzero status is a change that failed; 1 on, 0 off.
+    Encryption { handle: u16, status: u8, on: u8 },
+    /// LE Advertising Report (7.7.65.2): one or more reports ([`reports`]).
     Advertising { data: &'a [u8] },
-    /// One of ST's events: its code and the bytes after it.
+    /// One of ST's events (event code 0xFF): its code and the bytes after it.
     Vendor { code: u16, params: &'a [u8] },
+    /// Another LE meta event, by subevent code.
+    LeMeta { sub: u8 },
+    /// Another HCI event, by event code.
+    Other { code: u8 },
+    /// Not an HCI event, cut short by the end of the read, or too short for its layout.
+    Malformed(&'a [u8]),
 }
 
-/// The event in one HCI packet, if it is one the image acts on.
+/// The event in one HCI packet, read no further than the packet's own length.
 #[must_use]
-pub fn parse(p: &[u8]) -> Option<Event<'_>> {
+pub fn parse(p: &[u8]) -> Event<'_> {
+    if !packet_whole(p) {
+        return Event::Malformed(p);
+    }
+    let p = &p[..packet_len(p)];
+    let u16_at = |i: usize| u16::from_le_bytes([p[i], p[i + 1]]);
     match p {
         [0x04, 0x0E, _, _num, lo, hi, status, params @ ..] => {
-            Some(Event::CommandComplete { opcode: u16::from_le_bytes([*lo, *hi]), status: *status, params })
+            Event::CommandComplete { opcode: u16::from_le_bytes([*lo, *hi]), status: *status, params }
         }
         [0x04, 0x0F, _, status, _num, lo, hi, ..] => {
-            Some(Event::CommandStatus { opcode: u16::from_le_bytes([*lo, *hi]), status: *status })
+            Event::CommandStatus { opcode: u16::from_le_bytes([*lo, *hi]), status: *status }
         }
-        // Status, handle, role, peer address type and address, then (Enhanced)
-        // two resolvable addresses, then interval and latency.
-        [0x04, 0x3E, _, sub @ (0x01 | 0x0A), 0x00, lo, hi, ..] => {
+        [0x04, 0x05, _, status, _, _, reason, ..] => {
+            Event::Disconnected { handle: u16_at(4), status: *status, reason: *reason }
+        }
+        [0x04, 0x08, _, status, _, _, on, ..] => Event::Encryption { handle: u16_at(4), status: *status, on: *on },
+        // Status, handle, role, peer address type and address, then (Enhanced) two resolvable
+        // addresses, then interval and latency.
+        [0x04, 0x3E, _, sub @ (0x01 | 0x0A), 0x00, _, _, role, kind, a0, a1, a2, a3, a4, a5, ..] => {
             let at = if *sub == 0x01 { 15 } else { 27 };
-            Some(Event::Connected {
-                handle: u16::from_le_bytes([*lo, *hi]),
+            Event::Connected {
+                handle: u16_at(5),
+                central: *role == 0,
+                // An Enhanced event says 2 or 3 for an identity it resolved: still public or random.
+                peer: Address { kind: kind & 0x01, bytes: [*a0, *a1, *a2, *a3, *a4, *a5] },
                 interval: p.get(at..at + 4).map(|v| (u16::from_le_bytes([v[0], v[1]]), u16::from_le_bytes([v[2], v[3]]))),
-            })
+            }
         }
-        [0x04, 0x3E, _, 0x03, 0x00, _, _, iv_lo, iv_hi, lat_lo, lat_hi, ..] => Some(Event::ConnectionUpdate {
-            interval: u16::from_le_bytes([*iv_lo, *iv_hi]),
-            latency: u16::from_le_bytes([*lat_lo, *lat_hi]),
-        }),
-        [0x04, 0x3E, _, 0x02, data @ ..] => Some(Event::Advertising { data }),
-        [0x04, 0x05, _, _status, _lo, _hi, reason] => Some(Event::Disconnected { reason: *reason }),
-        [0x04, 0x08, _, _status, _lo, _hi, on] => Some(Event::Encryption { on: *on }),
-        [0x04, 0xFF, _, lo, hi, params @ ..] => Some(Event::Vendor { code: u16::from_le_bytes([*lo, *hi]), params }),
-        _ => None,
+        [0x04, 0x3E, _, 0x01 | 0x0A, status @ 0x01..=0xFF, ..] => Event::ConnectFailed { status: *status },
+        [0x04, 0x3E, _, 0x03, 0x00, _, _, _, _, _, _, ..] => {
+            Event::ConnectionUpdate { handle: u16_at(5), interval: u16_at(7), latency: u16_at(9) }
+        }
+        [0x04, 0x3E, _, 0x03, status @ 0x01..=0xFF, _, _, ..] => {
+            Event::UpdateFailed { handle: u16_at(5), status: *status }
+        }
+        [0x04, 0x3E, _, 0x02, data @ ..] => Event::Advertising { data },
+        [0x04, 0x3E, _, sub, ..] if !matches!(sub, 0x01 | 0x03 | 0x0A) => Event::LeMeta { sub: *sub },
+        [0x04, 0xFF, _, lo, hi, params @ ..] => Event::Vendor { code: u16::from_le_bytes([*lo, *hi]), params },
+        [0x04, code, _, ..] if !matches!(code, 0x05 | 0x08 | 0x0E | 0x0F | 0x3E | 0xFF) => Event::Other { code: *code },
+        _ => Event::Malformed(p),
     }
 }
 

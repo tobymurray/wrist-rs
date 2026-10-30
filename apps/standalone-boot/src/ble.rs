@@ -185,6 +185,14 @@ static REPEATS: AtomicU32 = AtomicU32::new(0);
 /// Reads and writes after which IRQ did not fall within `IRQ_LOW_TIMEOUT`.
 static IRQ_STUCK_READ: AtomicU32 = AtomicU32::new(0);
 static IRQ_STUCK_WRITE: AtomicU32 = AtomicU32::new(0);
+/// Events that carried an error status, and the last update failure's status.
+static CONNECT_FAILURES: AtomicU32 = AtomicU32::new(0);
+static UPDATE_FAILURES: AtomicU32 = AtomicU32::new(0);
+static LAST_UPDATE_FAILURE: AtomicU8 = AtomicU8::new(0);
+static DISCONNECT_FAILURES: AtomicU32 = AtomicU32::new(0);
+static ENCRYPTION_FAILURES: AtomicU32 = AtomicU32::new(0);
+/// Packets the image does not act on: other events, unhandled vendor events, malformed packets.
+static UNKNOWN: AtomicU32 = AtomicU32::new(0);
 static BONDED: AtomicU8 = AtomicU8::new(0);
 /// Last pairing outcome: 0 none, else 1 + status (so 1 is success).
 static LAST_PAIRING: AtomicU8 = AtomicU8::new(0);
@@ -355,6 +363,16 @@ pub fn write_status(uart: Uart) {
     n(", unsecured writes dropped ", &UNSECURED);
     n(", irq stuck after read ", &IRQ_STUCK_READ);
     n(" write ", &IRQ_STUCK_WRITE);
+    n(", connect failures ", &CONNECT_FAILURES);
+    n(", update failures ", &UPDATE_FAILURES);
+    if UPDATE_FAILURES.load(Ordering::Relaxed) > 0 {
+        uart.write_str(" (last status ");
+        uart.write_hex8(LAST_UPDATE_FAILURE.load(Ordering::Relaxed));
+        uart.write_str(")");
+    }
+    n(", disconnect failures ", &DISCONNECT_FAILURES);
+    n(", encryption failures ", &ENCRYPTION_FAILURES);
+    n(", unknown events ", &UNKNOWN);
     match LAST_PAIRING.load(Ordering::Relaxed) {
         0 => {}
         1 => uart.write_str(", last pairing succeeded"),
@@ -1267,10 +1285,7 @@ impl Link<'_> {
 
     /// One packet from the chip: capture a reply, act on an event.
     fn handle(&mut self, p: &[u8]) {
-        let Some(event) = wrist_aci::parse(p) else {
-            return;
-        };
-        match event {
+        match wrist_aci::parse(p) {
             Event::CommandComplete { opcode, status, params } => {
                 if self.waiting_for == Some(opcode) {
                     let mut reply = Reply { status, params: [0; 64], len: params.len().min(64) };
@@ -1283,7 +1298,7 @@ impl Link<'_> {
                     self.reply = Some(Reply { status, params: [0; 64], len: 0 });
                 }
             }
-            Event::Connected { handle, interval } => {
+            Event::Connected { handle, interval, .. } => {
                 CONN_HANDLE.store(handle, Ordering::Relaxed);
                 self.pair_ask.connected(Instant::now().as_ticks(), embassy_time::TICK_HZ);
                 self.interval_ask.connected(Instant::now().as_ticks(), embassy_time::TICK_HZ);
@@ -1303,7 +1318,10 @@ impl Link<'_> {
                 self.advertised = None;
                 self.uart.write_line("[ble] connected");
             }
-            Event::ConnectionUpdate { interval: iv, latency: lat } => {
+            Event::ConnectFailed { .. } => {
+                CONNECT_FAILURES.fetch_add(1, Ordering::Relaxed);
+            }
+            Event::ConnectionUpdate { interval: iv, latency: lat, .. } => {
                 INTERVAL.store(iv, Ordering::Relaxed);
                 LATENCY.store(lat, Ordering::Relaxed);
                 self.uart.write_str("[ble] connection interval ");
@@ -1312,7 +1330,14 @@ impl Link<'_> {
                 self.uart.write_u32(u32::from(lat));
                 self.uart.write_line("");
             }
-            Event::Disconnected { reason } => {
+            Event::UpdateFailed { status, .. } => {
+                UPDATE_FAILURES.fetch_add(1, Ordering::Relaxed);
+                LAST_UPDATE_FAILURE.store(status, Ordering::Relaxed);
+            }
+            Event::Disconnected { status, reason, .. } => {
+                if status != 0 {
+                    DISCONNECT_FAILURES.fetch_add(1, Ordering::Relaxed);
+                }
                 STATE.store(STATE_IDLE, Ordering::Relaxed);
                 CONN_HANDLE.store(0, Ordering::Relaxed);
                 ENCRYPTED.store(false, Ordering::Relaxed);
@@ -1331,7 +1356,10 @@ impl Link<'_> {
                 self.uart.write_line(" (13 = the central hung up)");
                 self.readvertise = true;
             }
-            Event::Encryption { on } => {
+            Event::Encryption { status, on, .. } => {
+                if status != 0 {
+                    ENCRYPTION_FAILURES.fetch_add(1, Ordering::Relaxed);
+                }
                 let on = on != 0;
                 ENCRYPTED.store(on, Ordering::Relaxed);
                 if on {
@@ -1346,6 +1374,9 @@ impl Link<'_> {
             }
             Event::Advertising { data } => self.scanner.advertising(data, self.uart),
             Event::Vendor { code, params } => self.vendor(code, params),
+            Event::LeMeta { .. } | Event::Other { .. } | Event::Malformed(_) => {
+                UNKNOWN.fetch_add(1, Ordering::Relaxed);
+            }
         }
     }
 
@@ -1439,6 +1470,7 @@ impl Link<'_> {
                 }
             }
             _ => {
+                UNKNOWN.fetch_add(1, Ordering::Relaxed);
                 self.uart.write_str("[ble] vendor event ");
                 self.uart.write_hex8((ecode >> 8) as u8);
                 self.uart.write_hex8((ecode & 0xFF) as u8);
