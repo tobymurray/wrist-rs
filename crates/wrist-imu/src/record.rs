@@ -15,6 +15,15 @@ pub const fn frames(fill: u16) -> usize {
     fill as usize / FRAME
 }
 
+const FIFO_BYTES: usize = 2048;
+const NEAR_FULL: usize = 64;
+
+/// A fill level near enough full that the oldest frames may have been overwritten.
+#[must_use]
+pub const fn overflowed(fill: u16) -> bool {
+    fill as usize + NEAR_FULL > FIFO_BYTES
+}
+
 /// The 14-bit fill level from `FIFO_LENGTH_0` and `FIFO_LENGTH_1`.
 #[must_use]
 pub const fn fill(length: [u8; 2]) -> u16 {

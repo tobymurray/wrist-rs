@@ -15,10 +15,20 @@ import time
 import zlib
 
 
+def check(header, chunks, marks, crc):
+    """A dump's samples' bytes checked against its count and CRC-32, or why they fail."""
+    data = b''.join(chunks[k] for k in sorted(chunks))
+    if len(data) != 6 * header['samples'] or len(marks) != header['marks']:
+        return None, f"incomplete: {len(data) // 6} of {header['samples']} samples, {len(marks)} of {header['marks']} marks"
+    if zlib.crc32(data) != crc:
+        return None, f'CRC mismatch: {zlib.crc32(data):08X}, the watch said {crc:08X}'
+    return data, None
+
+
 def decode(lines):
-    """The samples' bytes and the marks from the console's `[rec]` lines, checked against the
-    dump's count and CRC-32."""
-    header, chunks, marks, crc = None, {}, [], None
+    """The header, samples' bytes and marks of the last dump in the console's `[rec]` lines that
+    passes its checks."""
+    header, chunks, marks, best, problem = None, {}, [], None, None
     for line in lines:
         at = line.find('[rec] ')
         if at < 0:
@@ -34,18 +44,19 @@ def decode(lines):
             chunks[int(words[1])] = bytes.fromhex(words[2])
         elif words[0] == 'm' and len(words) == 4:
             marks.append(tuple(int(w) for w in words[1:]))
-        elif words[0] == 'end' and len(words) == 3:
-            crc = int(words[2], 16)
-        elif words[0] == 'abandoned':
-            sys.exit('the watch abandoned the dump: ' + line.strip())
-    if header is None or crc is None:
-        sys.exit('no complete dump found')
-    data = b''.join(chunks[k] for k in sorted(chunks))
-    if len(data) != 6 * header['samples'] or len(marks) != header['marks']:
-        sys.exit(f"incomplete: {len(data) // 6} of {header['samples']} samples, {len(marks)} of {header['marks']} marks")
-    if zlib.crc32(data) != crc:
-        sys.exit(f'CRC mismatch: {zlib.crc32(data):08X}, the watch said {crc:08X}')
-    return header, data, marks
+        elif words[0] == 'end' and len(words) == 3 and header is not None:
+            data, problem = check(header, chunks, marks, int(words[2], 16))
+            if data is not None:
+                best = header, data, marks
+        elif words[0].startswith('abandoned'):
+            problem = 'the watch abandoned the dump: ' + line.strip()
+        elif words[:2] == ['nothing', 'recorded']:
+            problem = 'the watch holds no recording'
+        elif words[:2] == ['still', 'recording;']:
+            problem = 'the watch is still recording: `imu record stop` first'
+    if best is None:
+        sys.exit(problem or 'no complete dump found')
+    return best
 
 
 def read_console(port, seconds):
@@ -56,7 +67,7 @@ def read_console(port, seconds):
     buf, deadline = b'', time.time() + seconds
     while time.time() < deadline:
         buf += s.read(65536)
-        at = max(buf.find(b'[rec] end'), buf.find(b'[rec] abandoned'), buf.find(b'[rec] nothing'))
+        at = max(buf.find(b'[rec] end'), buf.find(b'[rec] abandoned'), buf.find(b'[rec] nothing'), buf.find(b'[rec] still'))
         if at >= 0 and b'\n' in buf[at:]:
             break
     return buf.decode('utf-8', 'replace')
@@ -70,9 +81,9 @@ def main():
     ap.add_argument('out')
     args = ap.parse_args()
     text = open(args.log).read() if args.log else read_console(args.port, args.seconds)
-    if '[rec] nothing recorded' in text:
-        sys.exit('the watch holds no recording')
     header, data, marks = decode(text.splitlines())
+    if header['range'] > 3:
+        sys.exit('the watch could not read the accelerometer range')
     # ACC_RANGE: 0 is ±2 g at 16384 LSB/g, each step doubles the range.
     lsb_per_g = 16384 >> header['range']
     with open(args.out + '-samples.csv', 'w') as f:
