@@ -149,6 +149,13 @@ class Packaging(unittest.TestCase):
             for font in r.FONT_LICENSES:
                 self.assertIn('Fonts/' + font, shipped)
 
+    def test_the_image_ships_the_imu_configuration_licence(self):
+        metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--locked', '--format-version=1'],
+                                                      cwd=r.ROOT/'apps/standalone-boot'))
+        imu = [p for p in metadata['packages'] if p['name'] == 'wrist-imu']
+        self.assertEqual(len(imu), 1)
+        self.assertIn('LICENSE-BOSCH', [p.as_posix() for p in r.package_licenses(Path(imu[0]['manifest_path']).parent)])
+
     def test_tag_matches_app_versions(self):
         r.require_app_versions(r.app_version((r.ROOT/'apps/standalone-boot/Cargo.toml').read_text()))
         with tempfile.TemporaryDirectory() as tmp:

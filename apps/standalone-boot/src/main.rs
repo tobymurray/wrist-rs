@@ -10,6 +10,7 @@ mod console;
 mod crash;
 mod flash;
 mod glass;
+mod imu;
 mod lcd;
 mod mmio;
 mod modules;
@@ -412,9 +413,8 @@ fn main() -> ! {
         buzzer_en1: p.PB9,
         buzzer_en2: p.PD5,
     };
-    let sensors = modules::allowed(modules::Slot::Link2).then_some(&mut sensor_bus);
-    park::park(parked, sensors, uart);
-    drop(sensor_bus);
+    let mut sensor_bus = modules::allowed(modules::Slot::Link2).then_some(sensor_bus);
+    park::park(parked, sensor_bus.as_mut(), uart);
     uart.flush();
 
     sleep::init();
@@ -436,6 +436,9 @@ fn main() -> ! {
         spawn(spawner, "heartbeat", heartbeat(flash).unwrap());
         spawn(spawner, "report", report(handoff, measured_hz, watchdog).unwrap());
         spawn(spawner, "display", display(bus, pwr_int).unwrap());
+        if let Some(bus) = sensor_bus {
+            spawn(spawner, "imu", imu::run(bus).unwrap());
+        }
         if let Some(pins) = usb {
             spawn(spawner, "console", console::service(pins, flash).unwrap());
         }
