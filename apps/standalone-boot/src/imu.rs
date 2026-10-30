@@ -197,14 +197,7 @@ pub async fn run(mut bus: Bus, mut irq: ExtiInput<'static, Async>) -> ! {
                     None => core::future::pending().await,
                 }
             };
-            let raise = async {
-                if irq.is_high() {
-                    irq.wait_for_rising_edge().await;
-                } else {
-                    irq.wait_for_high().await;
-                }
-            };
-            match select3(READ.wait(), raise, tick).await {
+            match select3(READ.wait(), raised_line(&mut irq), tick).await {
                 Either3::First(()) => break,
                 Either3::Second(()) => service_raise(&mut bus).await,
                 Either3::Third(()) => {
@@ -219,6 +212,15 @@ pub async fn run(mut bus: Bus, mut irq: ExtiInput<'static, Async>) -> ! {
                 }
             }
         }
+    }
+}
+
+/// A line still high after `service_raise` is held by something else, and waits for an edge.
+async fn raised_line(irq: &mut ExtiInput<'static, Async>) {
+    if irq.is_high() {
+        irq.wait_for_rising_edge().await;
+    } else {
+        irq.wait_for_high().await;
     }
 }
 
