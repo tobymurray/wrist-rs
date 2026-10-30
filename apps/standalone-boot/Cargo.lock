@@ -1007,6 +1007,7 @@ dependencies = [
  "wrist-pages",
  "wrist-panel",
  "wrist-power",
+ "wrist-steps",
  "wrist-time",
  "wrist-vcom",
  "wrist-wake",
@@ -1285,6 +1286,10 @@ version = "0.0.0"
 
 [[package]]
 name = "wrist-power"
+version = "0.0.0"
+
+[[package]]
+name = "wrist-steps"
 version = "0.0.0"
 
 [[package]]

@@ -24,6 +24,7 @@ fn cases() -> Vec<(&'static str, Status)> {
                 clock: Some(Clock { h: 23, m: 59, s: 59 }),
                 date: Some(Date { year: u16::MAX, month: 9, day: 30 }),
                 soc_pct: Some(u8::MAX),
+                steps: Some(wrist_glass::pages::STEPS_SHOWN_MAX),
             },
         ),
         (
@@ -32,6 +33,7 @@ fn cases() -> Vec<(&'static str, Status)> {
                 clock: Some(Clock { h: 0, m: 0, s: 0 }),
                 date: Some(Date { year: 0, month: 13, day: 0 }),
                 soc_pct: Some(0),
+                steps: Some(0),
             },
         ),
         ("none", Status::default()),
@@ -42,6 +44,7 @@ fn cases() -> Vec<(&'static str, Status)> {
                 clock: Some(Clock { h: 23, m: 59, s: 0 }),
                 date: Some(Date { year: 2026, month: 9, day: 30 }),
                 soc_pct: Some(100),
+                steps: None,
             },
         ),
     ]
@@ -52,6 +55,7 @@ fn typical() -> Status {
         clock: Some(Clock { h: 16, m: 27, s: 33 }),
         date: Some(Date { year: 2026, month: 10, day: 17 }),
         soc_pct: Some(100),
+        steps: Some(4321),
     }
 }
 
@@ -121,8 +125,8 @@ fn lines_do_not_overlap() {
 
 #[test]
 fn the_face_is_centred() {
-    for faces in FAMILIES {
-        let (glass, _) = compose(&typical(), &EN_GB, faces);
+    for (faces, steps) in FAMILIES.into_iter().flat_map(|f| [(f, None), (f, Some(4321))]) {
+        let (glass, _) = compose(&Status { steps, ..typical() }, &EN_GB, faces);
         let top = glass.lines().map(|l| l.ink_rows().start).min().unwrap();
         let bottom = glass.lines().map(|l| l.ink_rows().end).max().unwrap();
         assert!((top - (HI - bottom)).abs() <= 2, "{}: rows {top} to {bottom} are off centre", faces.name);
@@ -203,9 +207,11 @@ fn a_wrong_sized_buffer_draws_nothing() {
 fn the_face_reads_right() {
     for faces in FAMILIES {
         let (glass, _) = compose(&typical(), &EN_GB, faces);
-        assert_eq!(texts(&glass), ["Sat 17 Oct", "16:27", "100 %"]);
+        assert_eq!(texts(&glass), ["Sat 17 Oct", "16:27", "100 %", "4321 steps"]);
         let faces_used: Vec<u8> = glass.lines().map(|l| l.font.face.px).collect();
-        assert_eq!(faces_used, [faces.words.face.px, faces.time.face.px, faces.words.face.px]);
+        assert_eq!(faces_used, [faces.words.face.px, faces.time.face.px, faces.words.face.px, faces.id.face.px]);
+        let one = Status { steps: Some(1), ..typical() };
+        assert_eq!(texts(&compose(&one, &EN_GB, faces).0)[3], "1 step");
         let (glass, _) = compose(&Status::default(), &EN_GB, faces);
         assert_eq!(texts(&glass), ["set time", "‒‒:‒‒", "‒‒ %"]);
         let a_second_later = Status { clock: Some(Clock { h: 16, m: 27, s: 34 }), ..typical() };
