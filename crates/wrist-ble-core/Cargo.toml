@@ -1,0 +1,16 @@
+[package]
+name = "wrist-ble-core"
+version = "0.0.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+publish = false
+description = "The Bluetooth subsystem's decisions without a radio: goals, the phone, chip and peripheral machines, the planner's interface and the status every display renders. no_std, no allocation"
+
+[dependencies]
+wrist-ble = { path = "../wrist-ble" }
+
+[dev-dependencies]
+proptest = { version = "1.11.0", default-features = false, features = ["std"] }
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
