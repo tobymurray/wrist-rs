@@ -126,6 +126,22 @@ fn write_time_driver(uart: Uart) {
     uart.write_str(", unchanged and skipped "); uart.write_u32(s.compare_skipped);
     write_cycles(uart, "; DIEROK waits ", s.dierok_waits, s.dierok_cycles, s.dierok_max_cycles);
     uart.write_line("");
+    uart.write_str("[lptim] waits over 2 ms: DIEROK "); uart.write_u32(s.dierok_timeouts);
+    uart.write_str(", CMPOK "); uart.write_u32(s.cmpok_timeouts);
+    uart.write_str("; given up after writing again: DIEROK "); uart.write_u32(s.dierok_given_up);
+    uart.write_str(", CMPOK "); uart.write_u32(s.cmpok_given_up);
+    uart.write_line("");
+    if s.dierok_timeouts + s.cmpok_timeouts != 0 {
+        let t = s.last_timeout;
+        uart.write_str(if t.dier { "[lptim] the last: DIER" } else { "[lptim] the last: CCR" });
+        uart.write_str(" written "); uart.write_hex32(t.written);
+        uart.write_str(", read back "); uart.write_hex32(t.read_back);
+        uart.write_str(", CR "); uart.write_hex32(t.cr);
+        uart.write_str(", ISR "); uart.write_hex32(t.isr);
+        uart.write_str(", RCC_BDCR "); uart.write_hex32(t.bdcr);
+        uart.write_str("; the counter moved "); uart.write_u32(u32::from(t.counter_ticks));
+        uart.write_line(" ticks while the second write was waited on");
+    }
     uart.write_str("[lptim] alarms handled over 5 ms late "); uart.write_u32(s.late_alarms);
     uart.write_str(", the latest by at most "); uart.write_u32(ms(s.late_max_ticks));
     uart.write_line(" ms");
