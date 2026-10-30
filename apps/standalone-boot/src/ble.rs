@@ -66,7 +66,7 @@ use wrist_aci::opcode::{
     ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_REQ, HCI_LE_RAND, HCI_READ_LOCAL_VERSION, HCI_SET_EVENT_MASK,
 };
 use wrist_aci::{address, config, permission, role, vendor, AttributeModified, Event};
-use wrist_wake::ble::{timing, Lines, Outbox, PairAsk, Power, Radio, Scan, Sink, Timing};
+use wrist_wake::ble::{timing, IntervalAsk, Lines, Outbox, PairAsk, Power, Radio, Scan, Sink, Timing};
 
 use crate::console::Target;
 use crate::uart::Uart;
@@ -451,6 +451,7 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
             console_at: Instant::from_ticks(0),
             outbox: Outbox::default(),
             pair_ask: PairAsk::default(),
+            interval_ask: IntervalAsk::default(),
             scanner: scan::Scanner::default(),
         };
         link.bring_up().await;
@@ -516,6 +517,7 @@ struct Link<'d> {
     console_at: Instant,
     outbox: Outbox<NUS_VALUE_LEN>,
     pair_ask: PairAsk,
+    interval_ask: IntervalAsk,
     scanner: scan::Scanner,
 }
 
@@ -589,6 +591,7 @@ impl Link<'_> {
                 .then(|| Console { pending: !OUT.is_empty() || self.outbox.holding(), next_at: tick(self.console_at) }),
             abandon_at: self.transfer.as_ref().map(|_| tick(self.last_data + TRANSFER_IDLE + one)),
             ask_at: self.pair_ask.due(),
+            interval_at: self.interval_ask.due(),
             scan_end: self.scanner.until().map(tick),
         };
         wrist_wake::ble::due(&state).map(Instant::from_ticks)
@@ -660,7 +663,7 @@ impl Link<'_> {
                     self.advertise().await;
                 }
             }
-            STATE_CONNECTED if self.asked != Some(want) => {
+            STATE_CONNECTED if self.asked != Some(want) && self.interval_ask.open(Instant::now().as_ticks()) => {
                 self.asked = Some(want);
                 self.ask_connection(want.interval_min, want.interval_max, want.latency, want.timeout).await;
             }
@@ -1283,6 +1286,7 @@ impl Link<'_> {
             Event::Connected { handle, interval } => {
                 CONN_HANDLE.store(handle, Ordering::Relaxed);
                 self.pair_ask.connected(Instant::now().as_ticks(), embassy_time::TICK_HZ);
+                self.interval_ask.connected(Instant::now().as_ticks(), embassy_time::TICK_HZ);
                 if let Some((iv, lat)) = interval {
                     INTERVAL.store(iv, Ordering::Relaxed);
                     LATENCY.store(lat, Ordering::Relaxed);
@@ -1317,6 +1321,7 @@ impl Link<'_> {
                 self.confirm_for = None;
                 self.request_interval = None;
                 self.pair_ask.settled();
+                self.interval_ask.disconnected();
                 clear_prompt();
                 if let Some(session) = self.transfer.take() {
                     crate::update::abort(session);
@@ -1331,6 +1336,7 @@ impl Link<'_> {
                 ENCRYPTED.store(on, Ordering::Relaxed);
                 if on {
                     self.pair_ask.settled();
+                    self.interval_ask.encrypted();
                 }
                 if on && !PROVEN.swap(true, Ordering::Relaxed) {
                     PROVEN_NOW.signal(());
@@ -1380,10 +1386,12 @@ impl Link<'_> {
             vendor::HAL_EVENTS_LOST => self.uart.write_line("[ble] the chip dropped events: the host read too slowly"),
             vendor::GAP_PASS_KEY_REQ => {
                 self.pair_ask.settled();
+                self.interval_ask.pairing();
                 self.passkey_for = Some(handle(rest));
             }
             vendor::GAP_NUMERIC_COMPARISON_VALUE if rest.len() >= 6 => {
                 self.pair_ask.settled();
+                self.interval_ask.pairing();
                 let (conn, value) = wrist_aci::numeric_comparison(rest).unwrap_or_default();
                 PROMPT_VALUE.store(value, Ordering::Relaxed);
                 PROMPT_KIND.store(2, Ordering::Relaxed);
@@ -1403,6 +1411,7 @@ impl Link<'_> {
                 if status == 0 {
                     self.uart.write_line("[ble] paired and bonded");
                 } else {
+                    self.interval_ask.pairing_failed();
                     self.uart.write_str("[ble] pairing failed: status ");
                     self.uart.write_hex8(status);
                     self.uart.write_str(" (1 timeout, 2 failed, 3/4 LTK missing), reason ");

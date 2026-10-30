@@ -53,6 +53,9 @@ pub mod ble {
         pub abandon_at: Option<u64>,
         /// An unencrypted central is asked to pair at this tick ([`PairAsk`]).
         pub ask_at: Option<u64>,
+        /// A central that neither encrypts nor pairs is asked for the interval at this tick
+        /// ([`IntervalAsk`]).
+        pub interval_at: Option<u64>,
         /// A scan ends at this tick.
         pub scan_end: Option<u64>,
     }
@@ -64,7 +67,7 @@ pub mod ble {
         let now = s.now;
         let quiet = s.transfer == Transfer::Started;
         let console = s.console.and_then(|c| (c.pending && !quiet).then_some(c.next_at.max(now)));
-        earliest([s.work.then_some(now), s.confirm_by, console, s.abandon_at, s.ask_at, s.scan_end])
+        earliest([s.work.then_some(now), s.confirm_by, console, s.abandon_at, s.ask_at, s.interval_at, s.scan_end])
     }
 
     /// How long a link stays unencrypted before the watch asks its central to pair: well past a
@@ -101,6 +104,69 @@ pub mod ble {
                 self.at = None;
             }
             due
+        }
+    }
+
+    /// How long the interval request waits on a link that is neither encrypted nor pairing:
+    /// past a bonded central's own encryption (HARDWARE.md).
+    pub const ASK_INTERVAL_AFTER_MS: u64 = 1_500;
+
+    /// When the watch may ask its central for connection parameters: once the link is
+    /// encrypted, or after [`ASK_INTERVAL_AFTER_MS`] from a central that neither encrypts nor
+    /// pairs. Never at connect, where with ST's Service Changed indication it ended a bonded
+    /// macOS central's link (HARDWARE.md).
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub enum IntervalAsk {
+        #[default]
+        NoLink,
+        Until(u64),
+        Pairing,
+        Open,
+    }
+
+    impl IntervalAsk {
+        /// A central connected at `now`, on a clock of `ticks_per_second`.
+        pub fn connected(&mut self, now: u64, ticks_per_second: u64) {
+            *self = Self::Until(now + ASK_INTERVAL_AFTER_MS * ticks_per_second / 1_000);
+        }
+
+        /// A pairing has begun: wait for its encryption.
+        pub fn pairing(&mut self) {
+            if matches!(self, Self::Until(_)) {
+                *self = Self::Pairing;
+            }
+        }
+
+        /// A pairing failed on a link still unencrypted: ask now.
+        pub fn pairing_failed(&mut self) {
+            if matches!(self, Self::Until(_) | Self::Pairing) {
+                *self = Self::Open;
+            }
+        }
+
+        pub fn encrypted(&mut self) {
+            *self = Self::Open;
+        }
+
+        pub fn disconnected(&mut self) {
+            *self = Self::NoLink;
+        }
+
+        /// Whether the watch may ask now; once it may, it may for the rest of the link.
+        pub fn open(&mut self, now: u64) -> bool {
+            if matches!(*self, Self::Until(at) if now >= at) {
+                *self = Self::Open;
+            }
+            *self == Self::Open
+        }
+
+        /// The tick the hold ends at, while one is running.
+        #[must_use]
+        pub fn due(&self) -> Option<u64> {
+            match *self {
+                Self::Until(at) => Some(at),
+                _ => None,
+            }
         }
     }
 
