@@ -165,6 +165,7 @@ impl Peripheral {
             (Stage::Off, Event::Want) | (Stage::Stopped(_), Event::Retry) => self.fresh(now),
             (Stage::Stopped(StopReason::RadioBusy(_)), Event::Free) => {
                 self.heard_at = now;
+                self.slow_until = None;
                 self.seek(now, 0);
             }
             (Stage::Off | Stage::Stopped(_), _) | (_, Event::Want | Event::Retry | Event::Free) | (Stage::Dropping { .. }, Event::Busy(_)) => {}
@@ -248,21 +249,25 @@ impl Peripheral {
     #[must_use]
     pub fn deadline(&self, ctx: &Ctx<'_>, now: Instant) -> Option<Instant> {
         let p = ctx.profile;
-        let give_up = (self.give_up_applies(p) && self.slow_until.is_none()).then_some(self.heard_at + GIVE_UP);
+        let give_up = self.give_up_applies(p).then(|| self.slow_until.filter(|_| ctx.workout).unwrap_or(self.heard_at + GIVE_UP));
         let stage = match self.stage {
             Stage::Seeking { since, .. } => Some(since + self.window(ctx)),
             Stage::Backoff { until } | Stage::SlowWait { until } | Stage::Waiting { until } => Some(until),
             Stage::Live { since, .. } => {
                 let heard = self.last.map_or(since, |(at, _)| at.max(since));
                 let stale = (p.silence == Silence::Fault).then_some(heard + p.stale);
-                let marks = [heard + fresh_for(p), heard + p.quiet, heard + crate::status::HIDE_AFTER];
+                let marks = [heard + fresh_for(p), heard + p.quiet, heard + crate::status::HIDE_AFTER].map(|m| m + Millis(1));
                 let trouble = self.trouble.iter().flatten().map(|&t| t + UNSTABLE_WINDOW);
-                let status = marks.into_iter().chain(trouble).filter(|&t| t > now).min();
+                let block = match (p.silence, p.cadence) {
+                    (Silence::Fault, Cadence::Every(_)) => self.coverage.next_block(now),
+                    _ => None,
+                };
+                let status = marks.into_iter().chain(trouble).chain(block).filter(|&t| t > now).min();
                 [stale, status].into_iter().flatten().min()
             }
             _ => None,
         };
-        [give_up, self.slow_until, stage].into_iter().flatten().min()
+        [give_up, stage].into_iter().flatten().min()
     }
 
     /// Drops and quiet spells within the window, with an ongoing spell counted if `ongoing`.
@@ -348,7 +353,7 @@ impl Peripheral {
         let p = ctx.profile;
         if self.give_up_applies(p) && now >= self.heard_at + GIVE_UP {
             let reason = if self.linked_since_heard { StopReason::KeptDropping } else { StopReason::NotFound };
-            let slow = reason == StopReason::NotFound && ctx.workout;
+            let slow = ctx.workout && (reason == StopReason::NotFound || self.slow_until.is_some());
             match self.slow_until {
                 None if slow => {
                     self.slow_until = Some(now + SLOW_FOR);
@@ -435,6 +440,10 @@ impl Coverage {
         }
         let c = &mut self.counts[b as usize % BLOCKS];
         *c = c.saturating_add(1);
+    }
+
+    fn next_block(&self, now: Instant) -> Option<Instant> {
+        self.start.map(|start| start + Millis((Self::block(start, now) + 1) * COVERAGE_BLOCK.0))
     }
 
     fn low(&self, now: Instant, period: Millis) -> bool {
