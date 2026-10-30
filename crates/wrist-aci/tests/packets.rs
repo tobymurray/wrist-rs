@@ -130,12 +130,12 @@ fn shortened(p: &[u8], n: usize) -> Vec<u8> {
 #[test]
 fn command_complete_and_status() {
     let p = [0x04, 0x0E, 0x05, 0x01, 0x06, 0xFD, 0x00, 0xAA];
-    assert_eq!(parse(&p), Event::CommandComplete { opcode: 0xFD06, status: 0, params: &[0xAA] });
+    assert_eq!(parse(&p), Event::CommandComplete { cmd_opcode: 0xFD06, status: 0, return_param_bytes: &[0xAA] });
     let p = [0x04, 0x0F, 0x04, 0x00, 0x01, 0x13, 0xFD];
-    assert_eq!(parse(&p), Event::CommandStatus { opcode: 0xFD13, status: 0 });
+    assert_eq!(parse(&p), Event::CommandStatus { cmd_opcode: 0xFD13, status: 0 });
     // A refusal: Command Disallowed.
     let p = [0x04, 0x0F, 0x04, 0x0C, 0x01, 0x9E, 0xFC];
-    assert_eq!(parse(&p), Event::CommandStatus { opcode: 0xFC9E, status: 0x0C });
+    assert_eq!(parse(&p), Event::CommandStatus { cmd_opcode: 0xFC9E, status: 0x0C });
     // Without a status, or without the whole opcode.
     let short = shortened(&[0x04, 0x0E, 0x05, 0x01, 0x06, 0xFD, 0x00, 0xAA], 3);
     assert_eq!(parse(&short), Event::Malformed(&short));
@@ -163,20 +163,27 @@ fn connection_complete_gives_handle_role_peer_interval_and_latency() {
     let p = connection_complete();
     assert_eq!(p.len(), 3 + 19);
     let peer = Address { kind: 0, bytes: [0x11, 0x22, 0x33, 0x44, 0x55, 0x66] };
-    assert_eq!(parse(&p), Event::Connected { handle: 0x0801, central: false, peer, interval: Some((24, 0)) });
+    assert_eq!(
+        parse(&p),
+        Event::LeConnectionComplete { handle: 0x0801, central: false, peer, conn_interval: Some((24, 0)) }
+    );
     let mut e = enhanced_connection_complete();
     assert_eq!(e.len(), 3 + 31);
     let peer = Address { kind: 0, bytes: [0x11; 6] };
-    assert_eq!(parse(&e), Event::Connected { handle: 0x0801, central: false, peer, interval: Some((39, 0)) });
+    assert_eq!(
+        parse(&e),
+        Event::LeConnectionComplete { handle: 0x0801, central: false, peer, conn_interval: Some((39, 0)) }
+    );
     // The watch as the central (role 0), to a random address resolved (type 3).
     e[7] = 0x00;
     e[8] = 0x03;
-    let Event::Connected { central, peer, .. } = parse(&e) else { panic!("not connected") };
+    let Event::LeConnectionComplete { central, peer, .. } = parse(&e) else { panic!("not connected") };
     assert!(central);
     assert_eq!(peer.kind, 1);
     // Short of the latency: the handle and peer still, no interval.
-    assert!(matches!(parse(&shortened(&p, 15)), Event::Connected { handle: 0x0801, interval: None, .. }));
-    assert!(matches!(parse(&shortened(&e, 27)), Event::Connected { handle: 0x0801, interval: None, .. }));
+    for q in [shortened(&p, 15), shortened(&e, 27)] {
+        assert!(matches!(parse(&q), Event::LeConnectionComplete { handle: 0x0801, conn_interval: None, .. }));
+    }
     // Short of the peer's address: nothing to act on.
     for q in [shortened(&p, 11), shortened(&e, 11), shortened(&p, 1)] {
         assert_eq!(parse(&q), Event::Malformed(&q));
@@ -189,9 +196,9 @@ fn a_connection_that_never_formed_carries_its_status() {
     for (sub, status) in [(0x01, 0x3E), (0x0A, 0x3C)] {
         let mut p = if sub == 0x01 { connection_complete() } else { enhanced_connection_complete() };
         p[4] = status;
-        assert_eq!(parse(&p), Event::ConnectFailed { status });
+        assert_eq!(parse(&p), Event::LeConnectionFailed { status });
         // The status is all it needs.
-        assert_eq!(parse(&shortened(&p, 2)), Event::ConnectFailed { status });
+        assert_eq!(parse(&shortened(&p, 2)), Event::LeConnectionFailed { status });
     }
 }
 
@@ -199,14 +206,17 @@ fn a_connection_that_never_formed_carries_its_status() {
 fn connection_update_complete_succeeds_or_fails_with_its_handle() {
     // Install 48: BlueZ moved to 15 ms (12 units) on request.
     let p = le_event(0x03, &[0x00, 0x01, 0x08, 12, 0, 0, 0, 0xF4, 0x01]);
-    assert_eq!(parse(&p), Event::ConnectionUpdate { handle: 0x0801, interval: 12, latency: 0 });
+    assert_eq!(
+        parse(&p),
+        Event::LeConnectionUpdateComplete { handle: 0x0801, conn_interval: 12, peripheral_latency: 0 }
+    );
     // Unacceptable Connection Parameters, Unsupported Remote Feature, LL Response Timeout:
     // the interval and latency fields mean nothing then.
     for status in [0x3B, 0x1A, 0x22] {
         let mut f = p.clone();
         f[4] = status;
-        assert_eq!(parse(&f), Event::UpdateFailed { handle: 0x0801, status });
-        assert_eq!(parse(&shortened(&f, 4)), Event::UpdateFailed { handle: 0x0801, status });
+        assert_eq!(parse(&f), Event::LeConnectionUpdateFailed { handle: 0x0801, status });
+        assert_eq!(parse(&shortened(&f, 4)), Event::LeConnectionUpdateFailed { handle: 0x0801, status });
     }
     // A failure short of its handle, and a success short of its latency.
     let mut f = p.clone();
@@ -221,18 +231,21 @@ fn connection_update_complete_succeeds_or_fails_with_its_handle() {
 fn disconnection_complete_carries_handle_status_and_reason() {
     assert_eq!(
         parse(&hci_event(0x05, &[0x00, 0x01, 0x08, 0x13])),
-        Event::Disconnected { handle: 0x0801, status: 0, reason: 0x13 }
+        Event::DisconnectionComplete { handle: 0x0801, status: 0, reason: 0x13 }
     );
     // Supervision timeout, and MIC failure.
     assert_eq!(
         parse(&hci_event(0x05, &[0x00, 0x02, 0x08, 0x08])),
-        Event::Disconnected { handle: 0x0802, status: 0, reason: 0x08 }
+        Event::DisconnectionComplete { handle: 0x0802, status: 0, reason: 0x08 }
     );
-    assert!(matches!(parse(&hci_event(0x05, &[0x00, 0x01, 0x08, 0x3D])), Event::Disconnected { reason: 0x3D, .. }));
+    assert!(matches!(
+        parse(&hci_event(0x05, &[0x00, 0x01, 0x08, 0x3D])),
+        Event::DisconnectionComplete { reason: 0x3D, .. }
+    ));
     // A disconnection that failed: Command Disallowed, the link still up.
     assert_eq!(
         parse(&hci_event(0x05, &[0x0C, 0x01, 0x08, 0x00])),
-        Event::Disconnected { handle: 0x0801, status: 0x0C, reason: 0 }
+        Event::DisconnectionComplete { handle: 0x0801, status: 0x0C, reason: 0 }
     );
     let short = hci_event(0x05, &[0x00, 0x01, 0x08]);
     assert_eq!(parse(&short), Event::Malformed(&short));
@@ -242,12 +255,12 @@ fn disconnection_complete_carries_handle_status_and_reason() {
 fn encryption_change_carries_handle_status_and_state() {
     assert_eq!(
         parse(&hci_event(0x08, &[0x00, 0x01, 0x08, 0x01])),
-        Event::Encryption { handle: 0x0801, status: 0, on: 1 }
+        Event::EncryptionChange { handle: 0x0801, status: 0, enabled: 1 }
     );
     // The central's key was missing on the watch: PIN or Key Missing, encryption off.
     assert_eq!(
         parse(&hci_event(0x08, &[0x06, 0x01, 0x08, 0x00])),
-        Event::Encryption { handle: 0x0801, status: 0x06, on: 0 }
+        Event::EncryptionChange { handle: 0x0801, status: 0x06, enabled: 0 }
     );
     let short = hci_event(0x08, &[0x00, 0x01]);
     assert_eq!(parse(&short), Event::Malformed(&short));
@@ -257,12 +270,12 @@ fn encryption_change_carries_handle_status_and_state() {
 fn events_the_image_does_not_decode_are_named() {
     // LE: Read Remote Features Complete, Data Length Change, PHY Update Complete.
     for sub in [0x04, 0x07, 0x0C] {
-        assert_eq!(parse(&le_event(sub, &[0x00, 0x01, 0x08])), Event::LeMeta { sub });
+        assert_eq!(parse(&le_event(sub, &[0x00, 0x01, 0x08])), Event::LeUnknown { subevent_code: sub });
     }
     // Hardware Error, Number Of Completed Packets, Data Buffer Overflow, Encryption Key Refresh Complete.
     for code in [0x10, 0x13, 0x1A, 0x30] {
-        assert_eq!(parse(&hci_event(code, &[0x00, 0x01, 0x08])), Event::Other { code });
-        assert_eq!(parse(&hci_event(code, &[])), Event::Other { code });
+        assert_eq!(parse(&hci_event(code, &[0x00, 0x01, 0x08])), Event::Unknown { code });
+        assert_eq!(parse(&hci_event(code, &[])), Event::Unknown { code });
     }
     // A vendor event with no parameters is still one.
     assert_eq!(parse(&vendor_event(vendor::GAP_SLAVE_SECURITY_INITIATED, &[])), Event::Vendor {
@@ -297,7 +310,7 @@ fn a_packet_is_read_no_further_than_its_own_length() {
     // Two events in one read: the first only.
     let mut read = hci_event(0x05, &[0x00, 0x01, 0x08, 0x13]);
     read.extend(vendor_event(vendor::BLUE_INITIALIZED, &[0x01]));
-    assert_eq!(parse(&read), Event::Disconnected { handle: 0x0801, status: 0, reason: 0x13 });
+    assert_eq!(parse(&read), Event::DisconnectionComplete { handle: 0x0801, status: 0, reason: 0x13 });
     let mut read = vendor_event(vendor::GATT_PROC_COMPLETE, &[0x01, 0x08, 0x00]);
     read.extend(hci_event(0x05, &[0x00, 0x01, 0x08, 0x13]));
     assert_eq!(parse(&read), Event::Vendor { code: vendor::GATT_PROC_COMPLETE, params: &[0x01, 0x08, 0x00] });
@@ -403,7 +416,7 @@ fn advertising_reports_decode() {
     // A scan response from a public address, carrying only a name.
     p.extend([0x04, 0x00, 1, 2, 3, 4, 5, 6, 4, 3, 0x08, b'P', b'M', 0xB0]);
     p[2] = u8::try_from(p.len() - 3).unwrap();
-    let Event::Advertising { data } = parse(&p) else { panic!("not a report") };
+    let Event::LeAdvertisingReport { data } = parse(&p) else { panic!("not a report") };
     let all: Vec<_> = reports(data).collect();
     assert_eq!(all.len(), 2);
     let strap = all[0];

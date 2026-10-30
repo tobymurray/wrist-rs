@@ -276,32 +276,32 @@ pub struct Address {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Event<'a> {
     /// Command Complete (7.7.14): the opcode answered, its status, the return parameters.
-    CommandComplete { opcode: u16, status: u8, params: &'a [u8] },
+    CommandComplete { cmd_opcode: u16, status: u8, return_param_bytes: &'a [u8] },
     /// Command Status (7.7.15): a command accepted (0) or refused, results to follow.
-    CommandStatus { opcode: u16, status: u8 },
+    CommandStatus { cmd_opcode: u16, status: u8 },
     /// LE (Enhanced) Connection Complete (7.7.65.1, 7.7.65.10) with success: the handle,
     /// whether the watch is the central, the peer, and the interval (1.25 ms units) and
     /// latency when the packet carries them.
-    Connected { handle: u16, central: bool, peer: Address, interval: Option<(u16, u16)> },
+    LeConnectionComplete { handle: u16, central: bool, peer: Address, conn_interval: Option<(u16, u16)> },
     /// LE (Enhanced) Connection Complete with an error: no connection formed.
-    ConnectFailed { status: u8 },
+    LeConnectionFailed { status: u8 },
     /// LE Connection Update Complete (7.7.65.3) with success: interval (1.25 ms units), latency.
-    ConnectionUpdate { handle: u16, interval: u16, latency: u16 },
+    LeConnectionUpdateComplete { handle: u16, conn_interval: u16, peripheral_latency: u16 },
     /// LE Connection Update Complete with an error: the link keeps the parameters it had.
-    UpdateFailed { handle: u16, status: u8 },
+    LeConnectionUpdateFailed { handle: u16, status: u8 },
     /// Disconnection Complete (7.7.5): a nonzero status is a disconnection that failed, the
     /// link still up; else the reason (0x13: the peer hung up).
-    Disconnected { handle: u16, status: u8, reason: u8 },
+    DisconnectionComplete { handle: u16, status: u8, reason: u8 },
     /// Encryption Change (7.7.8): a nonzero status is a change that failed; 1 on, 0 off.
-    Encryption { handle: u16, status: u8, on: u8 },
+    EncryptionChange { handle: u16, status: u8, enabled: u8 },
     /// LE Advertising Report (7.7.65.2): one or more reports ([`reports`]).
-    Advertising { data: &'a [u8] },
+    LeAdvertisingReport { data: &'a [u8] },
     /// One of ST's events (event code 0xFF): its code and the bytes after it.
     Vendor { code: u16, params: &'a [u8] },
     /// Another LE meta event, by subevent code.
-    LeMeta { sub: u8 },
+    LeUnknown { subevent_code: u8 },
     /// Another HCI event, by event code.
-    Other { code: u8 },
+    Unknown { code: u8 },
     /// Not an HCI event, cut short by the end of the read, or too short for its layout.
     Malformed(&'a [u8]),
 }
@@ -315,39 +315,49 @@ pub fn parse(p: &[u8]) -> Event<'_> {
     let p = &p[..packet_len(p)];
     let u16_at = |i: usize| u16::from_le_bytes([p[i], p[i + 1]]);
     match p {
-        [0x04, 0x0E, _, _num, lo, hi, status, params @ ..] => {
-            Event::CommandComplete { opcode: u16::from_le_bytes([*lo, *hi]), status: *status, params }
-        }
+        [0x04, 0x0E, _, _num, lo, hi, status, return_param_bytes @ ..] => Event::CommandComplete {
+            cmd_opcode: u16::from_le_bytes([*lo, *hi]),
+            status: *status,
+            return_param_bytes,
+        },
         [0x04, 0x0F, _, status, _num, lo, hi, ..] => {
-            Event::CommandStatus { opcode: u16::from_le_bytes([*lo, *hi]), status: *status }
+            Event::CommandStatus { cmd_opcode: u16::from_le_bytes([*lo, *hi]), status: *status }
         }
         [0x04, 0x05, _, status, _, _, reason, ..] => {
-            Event::Disconnected { handle: u16_at(4), status: *status, reason: *reason }
+            Event::DisconnectionComplete { handle: u16_at(4), status: *status, reason: *reason }
         }
-        [0x04, 0x08, _, status, _, _, on, ..] => Event::Encryption { handle: u16_at(4), status: *status, on: *on },
+        [0x04, 0x08, _, status, _, _, enabled, ..] => {
+            Event::EncryptionChange { handle: u16_at(4), status: *status, enabled: *enabled }
+        }
         // Status, handle, role, peer address type and address, then (Enhanced) two resolvable
         // addresses, then interval and latency.
         [0x04, 0x3E, _, sub @ (0x01 | 0x0A), 0x00, _, _, role, kind, a0, a1, a2, a3, a4, a5, ..] => {
             let at = if *sub == 0x01 { 15 } else { 27 };
-            Event::Connected {
+            Event::LeConnectionComplete {
                 handle: u16_at(5),
                 central: *role == 0,
                 // An Enhanced event says 2 or 3 for an identity it resolved: still public or random.
                 peer: Address { kind: kind & 0x01, bytes: [*a0, *a1, *a2, *a3, *a4, *a5] },
-                interval: p.get(at..at + 4).map(|v| (u16::from_le_bytes([v[0], v[1]]), u16::from_le_bytes([v[2], v[3]]))),
+                conn_interval: p
+                    .get(at..at + 4)
+                    .map(|v| (u16::from_le_bytes([v[0], v[1]]), u16::from_le_bytes([v[2], v[3]]))),
             }
         }
-        [0x04, 0x3E, _, 0x01 | 0x0A, status @ 0x01..=0xFF, ..] => Event::ConnectFailed { status: *status },
-        [0x04, 0x3E, _, 0x03, 0x00, _, _, _, _, _, _, ..] => {
-            Event::ConnectionUpdate { handle: u16_at(5), interval: u16_at(7), latency: u16_at(9) }
-        }
+        [0x04, 0x3E, _, 0x01 | 0x0A, status @ 0x01..=0xFF, ..] => Event::LeConnectionFailed { status: *status },
+        [0x04, 0x3E, _, 0x03, 0x00, _, _, _, _, _, _, ..] => Event::LeConnectionUpdateComplete {
+            handle: u16_at(5),
+            conn_interval: u16_at(7),
+            peripheral_latency: u16_at(9),
+        },
         [0x04, 0x3E, _, 0x03, status @ 0x01..=0xFF, _, _, ..] => {
-            Event::UpdateFailed { handle: u16_at(5), status: *status }
+            Event::LeConnectionUpdateFailed { handle: u16_at(5), status: *status }
         }
-        [0x04, 0x3E, _, 0x02, data @ ..] => Event::Advertising { data },
-        [0x04, 0x3E, _, sub, ..] if !matches!(sub, 0x01 | 0x03 | 0x0A) => Event::LeMeta { sub: *sub },
+        [0x04, 0x3E, _, 0x02, data @ ..] => Event::LeAdvertisingReport { data },
+        [0x04, 0x3E, _, sub, ..] if !matches!(sub, 0x01 | 0x03 | 0x0A) => Event::LeUnknown { subevent_code: *sub },
         [0x04, 0xFF, _, lo, hi, params @ ..] => Event::Vendor { code: u16::from_le_bytes([*lo, *hi]), params },
-        [0x04, code, _, ..] if !matches!(code, 0x05 | 0x08 | 0x0E | 0x0F | 0x3E | 0xFF) => Event::Other { code: *code },
+        [0x04, code, _, ..] if !matches!(code, 0x05 | 0x08 | 0x0E | 0x0F | 0x3E | 0xFF) => {
+            Event::Unknown { code: *code }
+        }
         _ => Event::Malformed(p),
     }
 }

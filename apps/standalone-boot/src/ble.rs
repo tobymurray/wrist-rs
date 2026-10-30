@@ -1286,23 +1286,23 @@ impl Link<'_> {
     /// One packet from the chip: capture a reply, act on an event.
     fn handle(&mut self, p: &[u8]) {
         match wrist_aci::parse(p) {
-            Event::CommandComplete { opcode, status, params } => {
-                if self.waiting_for == Some(opcode) {
+            Event::CommandComplete { cmd_opcode, status, return_param_bytes: params } => {
+                if self.waiting_for == Some(cmd_opcode) {
                     let mut reply = Reply { status, params: [0; 64], len: params.len().min(64) };
                     reply.params[..reply.len].copy_from_slice(&params[..reply.len]);
                     self.reply = Some(reply);
                 }
             }
-            Event::CommandStatus { opcode, status } => {
-                if self.waiting_for == Some(opcode) {
+            Event::CommandStatus { cmd_opcode, status } => {
+                if self.waiting_for == Some(cmd_opcode) {
                     self.reply = Some(Reply { status, params: [0; 64], len: 0 });
                 }
             }
-            Event::Connected { handle, interval, .. } => {
+            Event::LeConnectionComplete { handle, conn_interval, .. } => {
                 CONN_HANDLE.store(handle, Ordering::Relaxed);
                 self.pair_ask.connected(Instant::now().as_ticks(), embassy_time::TICK_HZ);
                 self.interval_ask.connected(Instant::now().as_ticks(), embassy_time::TICK_HZ);
-                if let Some((iv, lat)) = interval {
+                if let Some((iv, lat)) = conn_interval {
                     INTERVAL.store(iv, Ordering::Relaxed);
                     LATENCY.store(lat, Ordering::Relaxed);
                 }
@@ -1318,10 +1318,10 @@ impl Link<'_> {
                 self.advertised = None;
                 self.uart.write_line("[ble] connected");
             }
-            Event::ConnectFailed { .. } => {
+            Event::LeConnectionFailed { .. } => {
                 CONNECT_FAILURES.fetch_add(1, Ordering::Relaxed);
             }
-            Event::ConnectionUpdate { interval: iv, latency: lat, .. } => {
+            Event::LeConnectionUpdateComplete { conn_interval: iv, peripheral_latency: lat, .. } => {
                 INTERVAL.store(iv, Ordering::Relaxed);
                 LATENCY.store(lat, Ordering::Relaxed);
                 self.uart.write_str("[ble] connection interval ");
@@ -1330,11 +1330,11 @@ impl Link<'_> {
                 self.uart.write_u32(u32::from(lat));
                 self.uart.write_line("");
             }
-            Event::UpdateFailed { status, .. } => {
+            Event::LeConnectionUpdateFailed { status, .. } => {
                 UPDATE_FAILURES.fetch_add(1, Ordering::Relaxed);
                 LAST_UPDATE_FAILURE.store(status, Ordering::Relaxed);
             }
-            Event::Disconnected { status, reason, .. } => {
+            Event::DisconnectionComplete { status, reason, .. } => {
                 if status != 0 {
                     DISCONNECT_FAILURES.fetch_add(1, Ordering::Relaxed);
                 }
@@ -1356,11 +1356,11 @@ impl Link<'_> {
                 self.uart.write_line(" (13 = the central hung up)");
                 self.readvertise = true;
             }
-            Event::Encryption { status, on, .. } => {
+            Event::EncryptionChange { status, enabled, .. } => {
                 if status != 0 {
                     ENCRYPTION_FAILURES.fetch_add(1, Ordering::Relaxed);
                 }
-                let on = on != 0;
+                let on = enabled != 0;
                 ENCRYPTED.store(on, Ordering::Relaxed);
                 if on {
                     self.pair_ask.settled();
@@ -1372,9 +1372,9 @@ impl Link<'_> {
                 self.uart.write_line(if on { "[ble] link encrypted" } else { "[ble] link encryption off" });
                 self.set_mirror();
             }
-            Event::Advertising { data } => self.scanner.advertising(data, self.uart),
+            Event::LeAdvertisingReport { data } => self.scanner.advertising(data, self.uart),
             Event::Vendor { code, params } => self.vendor(code, params),
-            Event::LeMeta { .. } | Event::Other { .. } | Event::Malformed(_) => {
+            Event::LeUnknown { .. } | Event::Unknown { .. } | Event::Malformed(_) => {
                 UNKNOWN.fetch_add(1, Ordering::Relaxed);
             }
         }
