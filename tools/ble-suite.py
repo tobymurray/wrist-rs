@@ -27,6 +27,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 
 try:
     from termios import error as TermiosError
@@ -53,8 +54,9 @@ wrist_update = load('wrist-update')
 
 SCENARIOS = ['console', 'reconnect', 'lateness', 'soak', 'update']
 FORBIDDEN = re.compile(r'^\s*ble\s+forget\b')
-OTHER_TOOLS = re.compile(r'(wrist-(ble|cmd|update|time|frame|crash)|ble-suite|hr-sim|gate)\.py|picocom|minicom|screen /dev/')
+OTHER_TOOLS = re.compile(r'(wrist-(ble|cmd|update|time|frame|crash)|ble-suite|hr-sim(-bumble)?|gate)\.py|picocom|minicom|screen /dev/')
 LATENESS = re.compile(r'executor late by at most ([0-9.]+) ms at \d+ ms, over 5 ms (\d+) times')
+STATUS = r'\[ble\] .*, timing '
 HANG_UP = re.compile(r'\[ble\] disconnected, reason (\w+)')
 
 
@@ -92,7 +94,12 @@ class Host:
         return [line.strip() for line in out.splitlines()]
 
     def other_tools(self):
-        mine = {os.getpid(), os.getppid()}
+        out = subprocess.run(['ps', '-eo', 'pid=,ppid='], capture_output=True, text=True).stdout
+        parent = dict(tuple(map(int, line.split())) for line in out.splitlines())
+        mine, pid = set(), os.getpid()
+        while pid and pid not in mine:
+            mine.add(pid)
+            pid = parent.get(pid, 0)
         return [p for p in self.ps() if OTHER_TOOLS.search(p) and int(p.split()[0]) not in mine]
 
     def holders(self, port):
@@ -357,7 +364,7 @@ async def reconnect(s, usb, phone, build, a):
             failures.append(i)
     s.data['connected_to_encrypted_s'] = spread(times)
     s.data['failed'] = failures
-    s.check(not failures, f'{a.reconnects} reconnects, each: ping answered, encrypted within {a.encrypt_limit} s, '
+    s.check(a.reconnects > 0 and not failures, f'{a.reconnects} reconnects, each: ping answered, encrypted within {a.encrypt_limit} s, '
             f'reason 13, no pairing failure (failed: {failures or "none"}; connected to encrypted {spread(times)})')
 
 
@@ -369,11 +376,12 @@ async def page(usb):
 
 async def traffic(link, seconds):
     end = time.time() + seconds
-    while time.time() < end:
+    while True:
         if not await link.command('ble', r'\[ble\] connected') or not await link.command('ping', r'\bpong\b'):
             return False
+        if time.time() >= end:
+            return True
         await asyncio.sleep(1)
-    return True
 
 
 async def lateness(s, usb, phone, build, a):
@@ -398,7 +406,7 @@ async def lateness(s, usb, phone, build, a):
 
 
 async def soak(s, usb, phone, build, a):
-    before = await usb.ask('ble', r'\[ble\] (advertising|connected|up)', 3) or ''
+    before = await usb.ask('ble', STATUS, 3) or ''
     up_before = await usb.ask('uptime', r'\[usb\] uptime (\d+)', 3)
     first = usb.mark()
     await page(usb)
@@ -433,7 +441,7 @@ async def soak(s, usb, phone, build, a):
 
     await asyncio.gather(pager(), phone_cycles())
     readings.append(await page(usb))
-    after = await usb.ask('ble', r'\[ble\] (advertising|connected|up)', 3) or ''
+    after = await usb.ask('ble', STATUS, 3) or ''
     up_after = await usb.ask('uptime', r'\[usb\] uptime (\d+)', 3)
     grew = {k: (v, counters(after).get(k)) for k, v in counters(before).items() if counters(after).get(k) != v}
     got = [r for r in readings if r]
@@ -459,8 +467,8 @@ async def update(s, usb, phone, build, a):
     s.data['seconds_to_state_boot'] = took
     s.check(kept, f'the update over the air reached `state boot` ({took} s)')
     s.check(not [l for _, l in usb.since(mark) if 'revert' in l], 'the loader never reverted')
-    s.check(await usb.ask('version', rf'build {re.escape(build)}\b', 10), f'the watch runs build {build} after it')
-    s.check(await usb.ask('ble', r'\[ble\] (advertising|connected)', 5), 'the radio is back on after the reset')
+    s.check(await usb.ask('version', rf'build {re.escape(build)}$', 10), f'the watch runs build {build} after it')
+    s.check(await usb.ask('ble', r'\[ble\] (advertising as \S+|connected), ', 5), 'the radio is back on after the reset')
 
 
 # -- pre-flight and install --
@@ -485,7 +493,7 @@ def build_of(text):
 async def snapshot(usb):
     version = await usb.ask('version', r'standalone-boot \S+ build', 5)
     boot = await usb.ask('boot', r'\[boot\] state', 5)
-    ble = await usb.ask('ble', r'\[ble\]|unknown command', 5)
+    ble = await usb.ask('ble', STATUS + '|unknown command', 5)
     bonds = await usb.ask('ble bonds', r'\[ble\] bonded devices|\[ble\] off|unknown command', 5)
     return {'version': version, 'build': build_of(version), 'boot': boot, 'ble': ble, 'bonds': bonds}
 
@@ -507,7 +515,7 @@ def image_problems(path, build, what):
     why = wrist_update.mismatch(data, False)
     if why:
         return [f'{what} {path}: {why}']
-    if build and build.encode() not in data:
+    if build and not re.search(re.escape(build.encode()) + rb'(?!-dirty)', data):
         return [f'{what} {path} is not build {build}']
     return []
 
@@ -631,6 +639,8 @@ def main():
     unknown = set(a.scenarios) - set(SCENARIOS)
     if unknown:
         ap.error(f'unknown scenarios: {", ".join(sorted(unknown))}')
+    if not a.scenarios:
+        ap.error('no scenarios')
     if a.install and not a.restore:
         ap.error('--install needs --restore, the running image to put back')
 
@@ -643,6 +653,10 @@ def main():
     except KeyboardInterrupt:
         ok = False
         result['stopped'] = 'interrupted'
+    except Exception as e:
+        ok = False
+        result['stopped'] = repr(e)
+        traceback.print_exc(file=sys.stdout)
     result['finished'] = time.strftime('%Y-%m-%dT%H:%M:%S%z')
     result['passed'] = bool(ok) and result.get('restored', True) is not False
     (out / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
