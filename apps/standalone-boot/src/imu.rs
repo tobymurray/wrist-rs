@@ -96,7 +96,6 @@ pub async fn run(mut bus: Bus) -> ! {
 
 fn write_report(uart: Uart) {
     match STATE.load(Ordering::Relaxed) {
-        STARTING => uart.write_line("[imu] starting"),
         FAILED => uart.write_line("[imu] not counting (see the boot log)"),
         state => {
             uart.write_str(if state == ADOPTED { "[imu] counting, carried on: " } else { "[imu] counting since boot: " });
@@ -147,21 +146,31 @@ async fn outputs(bus: &mut Bus) -> Result<Outputs, ()> {
 /// the same, leaving the chip on page 0 and `PWR_CONF` at `restore`.
 async fn feature_read(bus: &mut Bus, page: u8, out: &mut [u8], restore: u8) -> Result<(), ()> {
     put(bus, reg::PWR_CONF, 0).await?;
-    put(bus, reg::FEAT_PAGE, page).await?;
-    let read = bus.blocking_write_read(ADDR, &[reg::FEATURES], out).map_err(|_| ());
+    let read = put(bus, reg::FEAT_PAGE, page)
+        .await
+        .and_then(|()| bus.blocking_write_read(ADDR, &[reg::FEATURES], out).map_err(|_| ()));
     let back = put(bus, reg::FEAT_PAGE, OUT_PAGE).await;
     put(bus, reg::PWR_CONF, restore).await?;
     read.and(back)
 }
 
 /// Bosch's sequence (datasheet section 4.2): reset, power save off, the image in bursts, the
-/// engine's check, then the counter, the accelerometer and power save on.
+/// engine's check, then the counter, the accelerometer and power save on. A failure after the
+/// reset resets it again, into suspend.
 async fn load(bus: &mut Bus) -> Result<(), &'static str> {
     if get(bus, reg::CHIP_ID) != Ok(CHIP_ID) {
         return Err("no BMI270 at 0x68");
     }
     put(bus, reg::CMD, wrist_imu::SOFT_RESET).await.map_err(|()| "reset")?;
     Timer::after_millis(2).await;
+    let set_up = set_up(bus).await;
+    if set_up.is_err() {
+        let _ = put(bus, reg::CMD, wrist_imu::SOFT_RESET).await;
+    }
+    set_up
+}
+
+async fn set_up(bus: &mut Bus) -> Result<(), &'static str> {
     put(bus, reg::PWR_CONF, 0).await.map_err(|()| "power save")?;
     put(bus, reg::INIT_CTRL, 0).await.map_err(|()| "upload")?;
     for chunk in wrist_imu::chunks() {
