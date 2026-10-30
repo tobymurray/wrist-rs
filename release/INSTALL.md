@@ -140,8 +140,8 @@ power cut while it is written needs the recovery below. Keep the cable in, and c
 `boot;version` afterwards.
 
 If the watch reports a crash, `power` shows its record, and [`tools/wrist-crash.py`](../tools/wrist-crash.py)
-decodes it with this exact `app.bin`; keep the debug zip and `manifest.json` with any
-report.
+decodes it if this release wrote it: `.venv/bin/python tools/wrist-crash.py manifest.json
+"<the [crash] line>"`. Keep the debug zip and `manifest.json` with any report.
 
 ## Back to stock, and out of any failure
 

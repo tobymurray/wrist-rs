@@ -29,6 +29,7 @@ wrist-board = { path = "../../crates/wrist-board" }
 wrist-glass = { path = "../../crates/wrist-glass" }
 wrist-pages = { path = "../../crates/wrist-pages" }
 wrist-time = { path = "../../crates/wrist-time" }
+wrist-crash = { path = "../../crates/wrist-crash" }
 wrist-eeprom = { path = "../../crates/wrist-eeprom" }
 wrist-power = { path = "../../crates/wrist-power" }
 wrist-vcom = { path = "../../crates/wrist-vcom" }

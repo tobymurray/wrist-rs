@@ -447,13 +447,17 @@ unplug and the plug, and `samples` by one a minute.
 
 ## Retained failure record
 
-The top two unused SRAM words, `0x2026FFF8` and `0x2026FFFC`, keep a tagged panic line and
-file hash, or a HardFault's `CFSR` and `PC`, across a software reset. They sit above the
-loader's RCC mailbox (`0x2026FFF0`/`0x2026FFF4`) and the stack's start (`0x2026FFE0`).
-Neither flash nor the backup registers are written. `power` reports the record and `power
-sleep clear-crash` clears it; nothing survives a complete power loss. [`tools/wrist-crash.py`](tools/wrist-crash.py)
-resolves a panic's hash using the source paths in the exact failing image. **MEASURED**:
-it found the DMA interrupt's bounds-check panic. The image clears `RCC_CSR`'s reset flags
+Six SRAM words keep the last panic or fault across a software reset
+([`crates/wrist-crash`](crates/wrist-crash)). `0x2026FFF8` and `0x2026FFFC` hold a tagged panic line and file
+hash, or a fault's `CFSR` and `PC`, above the loader's RCC mailbox (`0x2026FFF0`/`0x2026FFF4`).
+`0x2026FFE0` to `0x2026FFEC` hold the build ID, the uptime in seconds, how many records in a
+row since the last clear, and a check word: the 16 bytes above the stack's start that the
+vendor bootloader's handoff reads and nothing writes. A record whose check fails is an
+older image's, reported without them. Neither flash nor the backup registers are written.
+`power` reports the record, saying when another build wrote it, and `power sleep
+clear-crash` clears it; nothing survives a complete power loss. [`tools/wrist-crash.py`](tools/wrist-crash.py)
+resolves a panic's hash using the source paths in the failing image, and refuses an image
+of another build. **MEASURED**: it found the DMA interrupt's bounds-check panic. The image clears `RCC_CSR`'s reset flags
 (`RMVF`) after reporting them, so each boot's `reset flags` names only its own cause.
 
 ## Stop modes

@@ -81,8 +81,8 @@ python3 -m venv .venv && .venv/bin/pip install -r tools/requirements.txt
 
 Stop anything else holding the port first. After an update, wait until `boot` says
 `state boot` before resetting, or the previous version comes back.
-[`tools/wrist-crash.py`](tools/wrist-crash.py) decodes the crash record `power` shows, given the exact failing
-image. The UNA Dev Tool hears the image's UART as well, under the conditions in
+[`tools/wrist-crash.py`](tools/wrist-crash.py) decodes the crash record `power` shows, given the failing
+build's release zip, `manifest.json` or image. The UNA Dev Tool hears the image's UART as well, under the conditions in
 [HARDWARE.md](HARDWARE.md#debug-and-boot).
 
 Two commands test the watch without touching it. `press <up|down|back|select> [long]` hands
