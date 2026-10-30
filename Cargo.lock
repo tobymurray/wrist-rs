@@ -978,6 +978,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "wrist-imu"
+version = "0.0.0"
+dependencies = [
+ "wrist-flash",
+]
+
+[[package]]
 name = "wrist-installer-ui"
 version = "0.0.0"
 dependencies = [

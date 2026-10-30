@@ -327,6 +327,8 @@ def verify_archive(path, debug=False):
                 for font in FONT_LICENSES:
                     require(any(re.fullmatch(r'licenses/' + tree + r'/incised-text-[^/]+/Fonts/' + re.escape(font), n)
                                 for n in names), 'missing user asset: the ' + tree + ' tree\'s font licence ' + font)
+            require(any(re.fullmatch(r'licenses/app/wrist-imu-[^/]+/LICENSE-BOSCH', n) for n in names),
+                    'missing user asset: the BMI270 configuration image\'s licence')
 
 
 def main():

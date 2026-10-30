@@ -9,3 +9,4 @@
 /.venv/
 /_site/
 __pycache__/
+!crates/wrist-imu/bosch/bmi270_config.bin

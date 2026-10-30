@@ -24,7 +24,7 @@ Q = SMPS pinout.
 | Test points for SWDIO, SWCLK, BOOT0, RST_L, SWO and DEBUG_TX on the core board (sheet 2) | CONFIRMED |
 | SWD can also route through the USB-C connector, only with `R27`–`R30` fitted (marked NOPOP) | CONFIRMED |
 | `DEBUG_TX` is on PC4 | CONFIRMED on the schematic itself, not only the ECN 4 note: sheet 2 draws `DEBUG_TX` on `PC4` at ball **M3** (ST's package database puts PC4 at M3), with test point **TP35** directly on the net and an off-sheet port to sheet 6. Nothing sits between the ball and TP35. |
-| Backup registers across a system reset: `TAMP_BKP3R` is **zeroed on every reset** before this image runs (the vendor bootloader, presumably), `TAMP_BKP5R` holds `0x00A60602`, which this project never writes, and `BKP0R`, `BKP1R`, `BKP2R`, `BKP4R`, `BKP6R` to `BKP10R` and `BKP31R` survive. The image's allocation: `BKP1R` the zone, tag `TZ` and minutes east of UTC; `BKP2R` who last set the calendar, tag `SR`; `BKP11R` to `BKP14R` the zone's next two changes, tags `T1` and `T2` with the new offset, then the UTC second each takes effect; `BKP31R` the local time last set, seconds since 1970 ([`crates/wrist-time/src/zone.rs`](crates/wrist-time/src/zone.rs), [`apps/standalone-boot/src/rtc.rs`](apps/standalone-boot/src/rtc.rs)). `BKP16R` whether the radio is on, tag `BL` (`ble` builds, [`apps/standalone-boot/src/rtc.rs`](apps/standalone-boot/src/rtc.rs)). `BKP4R` and `BKP6R` to `BKP10R` are reserved for an alarm and compass calibration; `BKP15R` and `BKP17R` to `BKP30R` are free. All are lost with the backup domain on a PMIC hard reset | **MEASURED**: markers written, reset, read back. `BKP16R` survives a reset and an update's reset (the radio came back on after both, 2026-10-24). `BKP15R` and `BKP17R` to `BKP30R` untested |
+| Backup registers across a system reset: `TAMP_BKP3R` is **zeroed on every reset** before this image runs (the vendor bootloader, presumably), `TAMP_BKP5R` holds `0x00A60602`, which this project never writes, and `BKP0R`, `BKP1R`, `BKP2R`, `BKP4R`, `BKP6R` to `BKP10R` and `BKP31R` survive. The image's allocation: `BKP1R` the zone, tag `TZ` and minutes east of UTC; `BKP2R` who last set the calendar, tag `SR`; `BKP11R` to `BKP14R` the zone's next two changes, tags `T1` and `T2` with the new offset, then the UTC second each takes effect; `BKP31R` the local time last set, seconds since 1970 ([`crates/wrist-time/src/zone.rs`](crates/wrist-time/src/zone.rs), [`apps/standalone-boot/src/rtc.rs`](apps/standalone-boot/src/rtc.rs)). `BKP16R` whether the radio is on, tag `BL` (`ble` builds, [`apps/standalone-boot/src/rtc.rs`](apps/standalone-boot/src/rtc.rs)). `BKP4R` and `BKP6R` to `BKP10R` are reserved for an alarm and compass calibration; `BKP15R` and `BKP17R` to `BKP30R` are free. All are lost with the backup domain on a PMIC hard reset | **MEASURED**: markers written, reset, read back. `BKP16R` survives a reset and an update's reset (the radio came back on after both, 2026-10-24). **MEASURED**: `BKP15R` and `BKP17R` to `BKP30R` survive a reset and an update (2026-10-29) |
 | I2C1 is embassy's async DMA driver: **a blocking call on it after async transfers have run put every later read a byte out** (PMIC and gauge garbage) until a reset | **MEASURED**. Blocking calls are used only at boot, before the first async transfer. The mechanism is not pinned down |
 | **`DEBUG_TX` reaches the UNA Dev Tool 2.0 only while the MCU drives `DAM_DETECT` (PB15) high** — the tap is *not* firmware-independent | CONFIRMED (sheet 6). The only route from `DEBUG_TX` to the outside is `R40` (200 Ω) → `U22` NX20P0407 SBU switch → USB-C `SBU1` (`J6`). `U22`'s `SBUEN` is the net `DEBUG_EN`, which header `J11` (the "debug-enable jumper") connects to `DAM_DETECT`; `DAM_DETECT` is MCU pin **PB15** (ball K12, ECN 7: "Connected DAM_DETECT to U1.K12") and nothing else. NX20P0407 datasheet Rev 1.3, pin table and Table 4: `SBUEN` is active high with a **460 kΩ internal pull-down**, and the SBU switch is OFF while it is low. The vendor kernel detects Debug Accessory Mode and drives PB15; a standalone image that leaves PB15 at its reset state (input, floating) has its UART physically disconnected from the connector, at every baud. **A standalone image must set PB15 high before its first byte.** `U22` is also powered from `3V3_USB` (`U23`, enabled by `5V0_USB`), so the path only exists with VBUS present — which is the real reason the watch must be powered through the tool. The tool is a T-shaped PCB the watch clips onto at J1; `U1` is an **FTDI FT231X** (`0403:6015`) that enumerates as `/dev/ttyUSB0` and takes the watch's `DEBUG_TX` at **1.8 V logic** into its RX. It taps the pin rather than riding a kernel-side USB channel, so a standalone image's output *can* reach it with no kernel running — **but only through `U22`, and only if the image itself drives PB15 high** (above). Four conditions all have to hold: PB15 high; the **debug-enable jumper** is fitted (pads by the battery, T3 screws to get in); the watch is powered **through the dev tool, not a data cable** (a data cable forces charge mode, where apps do not run); and the host baud matches. |
 | **The dev tool is monitor-only — no SWD, and no RX path to the watch** | CONFIRMED for the data path; **one caveat from sheet 6**: `U22`'s second channel joins USB-C `SBU2` to `RST_L` through `R39`. ECN 9 (Rev 3.2, BOM only) made `R39` NOPOP, but the Rev 3.1 core module these notes were taken on has **`R39` fitted (200 Ω)** — so whenever `DAM_DETECT` is high and the tool is attached, the tool's SBU2 line sits on the MCU's `NRST`. Whether the tool ever drives it is UNKNOWN (no tool schematic). Same source otherwise. It cannot program or dump flash, so it does not substitute for a debug probe; recovery stays the bootloader long-press rollback. No RX also means an image that only transmits, and never waits on input, loses nothing. |
@@ -46,7 +46,7 @@ Checked independently against the STM32U5A5 datasheet's alternate-function table
 |---|---|---|---|
 | `MAIN_SCL/SDA` | PB6, PB7 | I2C1 (AF4 per ST's GPIO database), which an I2C scan found hosting 0x36, 0x5A, 0x61; sheet 5 wires it to the PCA9420 `SCL`/`SDA` and the MAX17262 | CONFIRMED |
 | `SENSOR1_SCL/SDA` | PC0, PC1 | I2C3 | CONFIRMED; MEASURED: the Bluetooth module's EEPROM answers at 0x50 at 100 kHz |
-| `SENSOR2_SCL/SDA` | PD12, PD13 | I2C4, which hosts the BMI270 (0x68) and the BMM350 (0x14) | CONFIRMED; MEASURED: BMI270 chip id 0x24, BMM350 chip id 0x33. The image only resets both into suspend |
+| `SENSOR2_SCL/SDA` | PD12, PD13 | I2C4, which hosts the BMI270 (0x68) and the BMM350 (0x14) | CONFIRMED; MEASURED: BMI270 chip id 0x24, BMM350 chip id 0x33. **MEASURED**: data-ready on the BMI270's `INT2` reaches PA1 at its rate, on `INT1` never. The BMI270 keeps its configuration, its feature engine and its count across a software reset and an update: neither the vendor bootloader nor the loader touches it. With advanced power save on, a feature-page read returned the step counter's enables clear; with power save off around it, as Bosch's driver does, it reads what was written. The image counts steps on it ([`imu.rs`](apps/standalone-boot/src/imu.rs)) and resets the BMM350 into suspend |
 | `SENSORBODY_SCL/SDA` | PB13, PB14 | I2C2 | CONFIRMED |
 | `SENSOR1_SCK/MISO/MOSI` | PG2, PG3, PB5 | SPI1 (found configured on the watch) | CONFIRMED |
 | `SENSOR2_SCK/MISO/MOSI` | PD1, PC2, PC3 | SPI2 | CONFIRMED |
@@ -97,7 +97,7 @@ The IMU and magnetometer are on the GNSS module, so a watch without that module 
 IMU. GNSS talks UART, not I2C; the I2C pair on that module reaches the IMU,
 magnetometer and EEPROM.
 
-The image drives none of them but the display. It holds each slot's reset or enable
+The image drives the display and the IMU's step counter. It holds each slot's reset or enable
 low and sets the slot's other lines to analog ("What the image turns off", below).
 
 ## The module EEPROM
@@ -526,12 +526,12 @@ At boot ([`apps/standalone-boot/src/park.rs`](apps/standalone-boot/src/park.rs))
   `WAKE_HOST_TO_GNSS` (PD1), `SENSORBODY_RST_L` (PF13) and the body slot's CS (PG12),
   `ALTIMETER_EN` (PG0), `HAPTIC_RST_N` (PF2), `BUZZER_EN1/2` (PB9, PD5). Each is a
   core-board enable or a slot's active-low reset, so low is safe whatever module is fitted.
-  The BMI270 and BMM350 sit on the GNSS module's own supply whatever `GNSS_EN` says; each
-  gets a soft reset (`CMD` 0x7E = 0xB6) into suspend, only when the slot's EEPROM names the
-  expected module.
+  The BMI270 and BMM350 sit on the GNSS module's own supply whatever `GNSS_EN` says. When
+  the slot's EEPROM names the expected module, the BMM350 gets a soft reset (`CMD` 0x7E = 0xB6)
+  into suspend and the BMI270 is left counting steps.
 - **The unused lines.** The slots' buses and interrupts, `BUZZER_PWM`, the touch lines, and
   the gauge's and USB switch's open-drain alerts: with the eMMC's six, 35 pins set
-  to analog, no pull. I2C4's pair follows once the boot's module checks are done.
+  to analog, no pull. I2C4's pair follows when the GNSS slot holds another module.
 - **RTC alarm A**, disarmed in case an earlier image armed it.
 - **SRAM the image does not use**, powered down in the Stop modes through `PWR_CR2` and
   `PWR_CR4`: SRAM1 above the pages `.data` and `.bss` fill, SRAM2, SRAM3, SRAM4, SRAM5
@@ -550,3 +550,5 @@ On battery ([`apps/standalone-boot/src/power.rs`](apps/standalone-boot/src/power
 
 What stays on is what the face needs: the panel and its light, the buttons, I2C1 to the
 PMIC, gauge and USB-PD controller, the RTC and LPTIM1, LPTIM3 and LPTIM4 on the LSE, the IWDG, and SWD.
+Beside it, I2C4 to the BMI270, whose accelerometer runs at 50 Hz in the datasheet's low-power
+mode for the step counter; what that costs is not measured.

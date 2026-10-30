@@ -60,8 +60,8 @@ The watch runs an earlier wrist-rs.
    time` shows no zone record.
 6. `cmd report 10`, under `[step] park`: SDMMC1 now off, the unused lines analog, RTC
    alarm A off, unused SRAM off in Stop with the SRAM bits of
-   [`apps/standalone-boot/src/mmio.rs`](../apps/standalone-boot/src/mmio.rs) set in `PWR_CR2` and `PWR_CR4`, and the IMU and
-   compass reset to suspend. Under `-- clocks on --`: `ICACHE_CR_EN` set and
+   [`apps/standalone-boot/src/mmio.rs`](../apps/standalone-boot/src/mmio.rs) set in `PWR_CR2` and `PWR_CR4`, and the compass
+   reset to suspend. `cmd imu`: counting, carried on, with `steps on`. Under `-- clocks on --`: `ICACHE_CR_EN` set and
    `RCC_AHB2ENR1_SDMMC1EN` clear (`mmio.rs`).
 7. `cmd modules`: both records as expected. `cmd "page lag 10"`, wait ten seconds, then
    `cmd page`: the longest time a task kept the executor is a few milliseconds at most.
