@@ -54,6 +54,7 @@ const REC_CLEAR: u8 = 5;
 static REC_REQUEST: AtomicU8 = AtomicU8::new(0);
 /// The FIFO holds 6.8 s at 50 Hz.
 const DRAIN_EVERY: Duration = Duration::from_secs(4);
+const DRAIN_AGAIN: Duration = Duration::from_millis(500);
 const SAMPLE_HZ: u32 = 50;
 
 /// Today's steps, once the chip is counting.
@@ -200,16 +201,7 @@ pub async fn run(mut bus: Bus, mut irq: ExtiInput<'static, Async>) -> ! {
             match select3(READ.wait(), raised_line(&mut irq), tick).await {
                 Either3::First(()) => break,
                 Either3::Second(()) => service_raise(&mut bus).await,
-                Either3::Third(()) => {
-                    next_drain = Some(Instant::now() + DRAIN_EVERY);
-                    if let Some(r) = rec.as_mut() {
-                        if drain(&mut bus, r).await == Err(true) {
-                            let _ = fifo(&mut bus, wrist_imu::FIFO_OFF, false).await;
-                            next_drain = None;
-                            uart.write_line("[rec] full; stopped");
-                        }
-                    }
-                }
+                Either3::Third(()) => next_drain = drain_due(&mut bus, rec.as_mut(), uart).await,
             }
         }
     }
@@ -257,13 +249,16 @@ async fn rec_command(bus: &mut Bus, req: u8, rec: &mut Option<Recording<'static>
         },
         REC_STOP => {
             if let (Some(r), Some(_)) = (rec.as_mut(), *next_drain) {
-                let _ = drain(bus, r).await;
+                if let Err(why) = drain(bus, r).await {
+                    write_stopped(uart, why.unwrap_or("the last samples not read"));
+                }
                 let _ = fifo(bus, wrist_imu::FIFO_OFF, false).await;
                 *next_drain = None;
             }
             write_rec(uart, rec.as_ref(), next_drain.is_some());
         }
         REC_DUMP => match &*rec {
+            Some(_) if next_drain.is_some() => uart.write_line("[rec] still recording; `imu record stop` first"),
             Some(r) => dump(bus, r).await,
             None => uart.write_line("[rec] nothing recorded"),
         },
@@ -297,31 +292,57 @@ async fn mark(bus: &mut Bus, r: &mut Recording<'static>) -> Result<(), ()> {
     if r.push_mark(out.steps, out.activity as u8) { Ok(()) } else { Err(()) }
 }
 
-/// The FIFO into the recording, then a mark. `Err(true)` when the recording is full.
-async fn drain(bus: &mut Bus, r: &mut Recording<'static>) -> Result<(), bool> {
-    put(bus, reg::PWR_CONF, 0).await.map_err(|()| false)?;
+/// A drain on time, and when the next is due.
+async fn drain_due(bus: &mut Bus, rec: Option<&mut Recording<'static>>, uart: Uart) -> Option<Instant> {
+    let now = Instant::now();
+    match drain(bus, rec?).await {
+        Ok(()) => Some(now + DRAIN_EVERY),
+        Err(None) => Some(Instant::now() + DRAIN_AGAIN),
+        Err(Some(why)) => {
+            let _ = fifo(bus, wrist_imu::FIFO_OFF, false).await;
+            write_stopped(uart, why);
+            None
+        }
+    }
+}
+
+fn write_stopped(uart: Uart, why: &str) {
+    uart.write_str("[rec] ");
+    uart.write_str(why);
+    uart.write_line("; stopped");
+}
+
+/// The FIFO into the recording, then a mark. `Err(None)` to be tried again soon; `Err(Some(why))`
+/// when the recording stops, holding nothing from after a gap, not even a mark.
+async fn drain(bus: &mut Bus, r: &mut Recording<'static>) -> Result<(), Option<&'static str>> {
+    put(bus, reg::PWR_CONF, 0).await.map_err(|()| None)?;
     let mut length = [0; 2];
-    let read = bus.blocking_write_read(ADDR, &[reg::FIFO_LENGTH_0], &mut length).map_err(|_| false);
+    let read = bus.blocking_write_read(ADDR, &[reg::FIFO_LENGTH_0], &mut length).map_err(|_| None);
+    let mut stop = (read.is_ok() && record::overflowed(record::fill(length))).then_some("samples lost");
     let mut left = record::frames(record::fill(length));
-    let mut full = false;
     let mut buf = [0; record::READ];
-    while read.is_ok() && left > 0 {
+    while read.is_ok() && stop.is_none() && left > 0 {
         let n = left.min(record::READ / record::FRAME);
         if !r.has_room(n) {
-            full = true;
+            stop = Some("full");
             break;
         }
         let bytes = &mut buf[..n * record::FRAME];
+        // A failed read may have taken frames from the FIFO.
         if bus.blocking_write_read(ADDR, &[reg::FIFO_DATA], bytes).is_err() || !r.push_frames(bytes) {
+            stop = Some("samples lost");
             break;
         }
         left -= n;
         yield_now().await;
     }
-    put(bus, reg::PWR_CONF, wrist_imu::PWR_CONF).await.map_err(|()| false)?;
+    put(bus, reg::PWR_CONF, wrist_imu::PWR_CONF).await.map_err(|()| stop)?;
     read?;
-    mark(bus, r).await.map_err(|()| true)?;
-    if full { Err(true) } else { Ok(()) }
+    if stop.is_some() {
+        return Err(stop);
+    }
+    let out = outputs(bus).await.map_err(|()| None)?;
+    if r.push_mark(out.steps, out.activity as u8) { Ok(()) } else { Err(Some("full")) }
 }
 
 fn write_rec(uart: Uart, rec: Option<&Recording<'static>>, running: bool) {
