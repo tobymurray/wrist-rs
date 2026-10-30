@@ -5,9 +5,11 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 
+use embassy_futures::select::{select, Either};
 use embassy_futures::yield_now;
+use embassy_stm32::exti::ExtiInput;
 use embassy_stm32::i2c::{I2c, Master};
-use embassy_stm32::mode::Blocking;
+use embassy_stm32::mode::{Async, Blocking};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{with_timeout, Duration, Timer};
@@ -37,6 +39,9 @@ static DONE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 static TODAY: AtomicU32 = AtomicU32::new(0);
 /// Set by the first reading, so the face never shows a count not yet read.
 static TODAY_KNOWN: AtomicBool = AtomicBool::new(false);
+static RAISES: AtomicU32 = AtomicU32::new(0);
+/// Set by `imu raise on|off`, for the task to apply.
+static RAISE_CHANGED: AtomicBool = AtomicBool::new(false);
 static YESTERDAY: AtomicU32 = AtomicU32::new(u32::MAX);
 
 /// Today's steps, once the chip is counting.
@@ -66,15 +71,26 @@ pub fn request_read(report: bool) {
 pub fn command(args: &[u8], uart: Uart) {
     if !RUNNING.load(Ordering::Relaxed) {
         uart.write_line("[imu] no IMU: the GNSS slot holds another module (`modules`)");
-    } else if core::str::from_utf8(args).unwrap_or("").trim().is_empty() {
-        request_read(true);
-    } else {
-        uart.write_line("[imu] usage: imu");
+        return;
     }
+    let on = match core::str::from_utf8(args).unwrap_or("").trim() {
+        "" => None,
+        "raise on" => Some(true),
+        "raise off" => Some(false),
+        _ => {
+            uart.write_line("[imu] usage: imu [raise on|off]");
+            return;
+        }
+    };
+    if let Some(on) = on {
+        crate::rtc::set_raise_wanted(on);
+        RAISE_CHANGED.store(true, Ordering::Relaxed);
+    }
+    request_read(true);
 }
 
 #[embassy_executor::task]
-pub async fn run(mut bus: Bus) -> ! {
+pub async fn run(mut bus: Bus, mut irq: ExtiInput<'static, Async>) -> ! {
     RUNNING.store(true, Ordering::Relaxed);
     let uart = Uart::best_effort();
     let found = found(&mut bus).await;
@@ -101,7 +117,15 @@ pub async fn run(mut bus: Bus) -> ! {
         uart.write_line(if state == ADOPTED { "[imu] counting, carried on" } else { "[imu] counting from 0" });
     }
     let mut ledger = Ledger::restore(&crate::rtc::steps_words(), state == ADOPTED);
+    RAISE_CHANGED.store(state != FAILED, Ordering::Relaxed);
     loop {
+        if RAISE_CHANGED.swap(false, Ordering::Relaxed) && state != FAILED {
+            let on = crate::rtc::raise_wanted();
+            if route_raise(&mut bus, on).await.is_err() {
+                uart.write_line("[imu] raise setting not applied");
+                RAISE_CHANGED.store(true, Ordering::Relaxed);
+            }
+        }
         if state != FAILED {
             match outputs(&mut bus).await {
                 Ok(out) => {
@@ -123,8 +147,58 @@ pub async fn run(mut bus: Bus) -> ! {
         if REPORT.swap(false, Ordering::Relaxed) {
             write_report(uart);
         }
-        READ.wait().await;
+        loop {
+            // A raise latched while the task was busy left the line high, with no edge to wait for.
+            for _ in 0..3 {
+                if !irq.is_high() {
+                    break;
+                }
+                service_raise(&mut bus).await;
+            }
+            let woke = if irq.is_high() {
+                select(READ.wait(), irq.wait_for_rising_edge()).await
+            } else {
+                select(READ.wait(), irq.wait_for_high()).await
+            };
+            if let Either::First(()) = woke {
+                break;
+            }
+            service_raise(&mut bus).await;
+        }
     }
+}
+
+/// Reading `INT_STATUS_0` clears the latched line; a failed read waits a little to be tried again.
+async fn service_raise(bus: &mut Bus) {
+    match get(bus, reg::INT_STATUS_0) {
+        Ok(status) if wrist_imu::raised(status) && crate::rtc::raise_wanted() => {
+            RAISES.fetch_add(1, Ordering::Relaxed);
+            crate::light_for_raise();
+        }
+        Ok(_) => {}
+        Err(()) => Timer::after_millis(10).await,
+    }
+}
+
+/// The wrist-wear wake-up on or off, and its output on `INT2`.
+async fn route_raise(bus: &mut Bus, on: bool) -> Result<(), ()> {
+    put(bus, reg::PWR_CONF, 0).await?;
+    put(bus, reg::FEAT_PAGE, wrist_imu::RAISE_PAGE).await?;
+    let mut page = [0; PAGE_LEN];
+    bus.blocking_write_read(ADDR, &[reg::FEATURES], &mut page).map_err(|_| ())?;
+    wrist_imu::enable_raise(&mut page, on);
+    let mut write = [0; 1 + PAGE_LEN];
+    write[0] = reg::FEATURES;
+    write[1..].copy_from_slice(&page);
+    bus.blocking_write(ADDR, &write).map_err(|_| ())?;
+    Timer::after_millis(1).await;
+    put(bus, reg::FEAT_PAGE, OUT_PAGE).await?;
+    for (r, v) in wrist_imu::raise_routing(on) {
+        put(bus, r, v).await?;
+    }
+    put(bus, reg::PWR_CONF, wrist_imu::PWR_CONF).await?;
+    // A raise latched before this would light the face as soon as the setting changed.
+    get(bus, reg::INT_STATUS_0).map(|_| ())
 }
 
 fn write_report(uart: Uart) {
@@ -150,6 +224,9 @@ fn write_report(uart: Uart) {
                 _ => Activity::Unknown,
             };
             uart.write_line(activity.name());
+            uart.write_str(if crate::rtc::raise_wanted() { "[imu] raise lights the face; raises since boot " } else { "[imu] raise off; raises since boot " });
+            uart.write_u32(RAISES.load(Ordering::Relaxed));
+            uart.write_line("");
         }
     }
     write_found(uart);

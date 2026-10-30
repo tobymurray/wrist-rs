@@ -42,7 +42,7 @@ use embassy_stm32::time::Hertz;
 use embassy_stm32::{peripherals, Peri};
 use embassy_time::{Duration, Instant, Timer};
 use static_cell::{ConstStaticCell, StaticCell};
-use embassy_futures::select::{select3, select4, Either3};
+use embassy_futures::select::{select3, select4, Either4};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::channel::Channel;
@@ -437,7 +437,9 @@ fn main() -> ! {
         spawn(spawner, "report", report(handoff, measured_hz, watchdog).unwrap());
         spawn(spawner, "display", display(bus, pwr_int).unwrap());
         if let Some(bus) = sensor_bus {
-            spawn(spawner, "imu", imu::run(bus).unwrap());
+            // The IMU drives it only while a raise is routed to it.
+            let irq = ExtiInput::new(p.PA1, p.EXTI1, Pull::Down, ExtiIrqs);
+            spawn(spawner, "imu", imu::run(bus, irq).unwrap());
         }
         if let Some(pins) = usb {
             spawn(spawner, "console", console::service(pins, flash).unwrap());
@@ -649,6 +651,7 @@ pub(crate) unsafe fn start_hse(polls: u32) -> bool {
 }
 
 bind_interrupts!(struct ExtiIrqs {
+    EXTI1 => exti::InterruptHandler<embassy_stm32::interrupt::typelevel::EXTI1>;
     EXTI4 => exti::InterruptHandler<embassy_stm32::interrupt::typelevel::EXTI4>;
     EXTI5 => exti::InterruptHandler<embassy_stm32::interrupt::typelevel::EXTI5>;
     EXTI7 => exti::InterruptHandler<embassy_stm32::interrupt::typelevel::EXTI7>;
@@ -683,6 +686,12 @@ static INJECTED: AtomicU32 = AtomicU32::new(0);
 
 const PRESS_QUEUE: usize = 4;
 static PRESS_IN: Channel<CriticalSectionRawMutex, Press, PRESS_QUEUE> = Channel::new();
+static RAISE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+/// A raise of the wrist lights the face as a short press does.
+pub(crate) fn light_for_raise() {
+    RAISE.signal(());
+}
 
 /// Hand the button task a press, as if released after debouncing; false while the queue is full.
 pub fn inject_press(press: Press) -> bool {
@@ -787,11 +796,12 @@ async fn button_watch(mut lines: ButtonLines) -> ! {
         if deliberate == 0 {
             let feed = Instant::now() + FEED;
             let until = light_until.map_or(feed, |off| off.min(feed));
-            match select3(lines.any_press(), Timer::at(until), PRESS_IN.ready_to_receive()).await {
-                Either3::First(()) => {
+            match select4(lines.any_press(), Timer::at(until), PRESS_IN.ready_to_receive(), RAISE.wait()).await {
+                Either4::First(()) => {
                     PRESS_EDGES.fetch_add(1, Ordering::Relaxed);
                 }
-                Either3::Second(()) | Either3::Third(()) => {}
+                Either4::Fourth(()) => on_raise(uart, &mut light_until),
+                Either4::Second(()) | Either4::Third(()) => {}
             }
         } else {
             Timer::after_millis(SAMPLE_MS).await;
@@ -799,10 +809,21 @@ async fn button_watch(mut lines: ButtonLines) -> ! {
     }
 }
 
+/// A raise lights the face for as long as a press does, but leaves a light the console switched on.
+fn on_raise(uart: Uart, light_until: &mut Option<Instant>) {
+    if light_until.is_none() && lcd::light_on() {
+        return;
+    }
+    backlight(true);
+    *light_until = Some(Instant::now() + LIT_FOR);
+    uart.write_line("[imu] raise: face lit for 3 s");
+}
+
+const LIT_FOR: Duration = Duration::from_secs(3);
+
 /// What a debounced press does: a short one lights the face, or turns off a light the console
 /// switched on, on every page; then the pages' model moves where it says.
 fn on_press(uart: Uart, press: Press, injected: bool, light_until: &mut Option<Instant>) {
-    const LIT_FOR: Duration = Duration::from_secs(3);
     uart.write_str(if injected { "[button] injected " } else { "[button] " });
     uart.write_str(if press.long { "long press " } else { "short press " });
     uart.write_str(press.button.label());
