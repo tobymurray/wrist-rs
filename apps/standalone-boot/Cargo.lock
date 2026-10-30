@@ -1004,6 +1004,7 @@ dependencies = [
  "wrist-flash",
  "wrist-glass",
  "wrist-haptic",
+ "wrist-imu",
  "wrist-pages",
  "wrist-panel",
  "wrist-power",
@@ -1269,6 +1270,10 @@ dependencies = [
 
 [[package]]
 name = "wrist-haptic"
+version = "0.0.0"
+
+[[package]]
+name = "wrist-imu"
 version = "0.0.0"
 
 [[package]]
