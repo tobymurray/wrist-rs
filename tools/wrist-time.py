@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Set the watch's clock to this machine's local time over the USB console,
 with the zone's offset and its next two changes, so the watch follows
-daylight saving for a year.
+daylight saving for a year; and, given --alarm, the daily alarm.
 
-    tools/wrist-time.py [--port /dev/ttyACM0] [--print]
+    tools/wrist-time.py [--port /dev/ttyACM0] [--print] [--alarm HH:MM|on|off]
 """
 import argparse
 import os
+import re
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -71,11 +72,16 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--port')
     ap.add_argument('--print', action='store_true',
-                    help="print the two lines it would send and exit")
+                    help="print the lines it would send and exit")
+    ap.add_argument('--alarm', metavar='HH:MM|on|off',
+                    help="also set the daily alarm, in the watch's local time, or turn it on or off")
     args = ap.parse_args()
+    if args.alarm is not None and not re.fullmatch(r'([01]?\d|2[0-3]):[0-5]\d|on|off', args.alarm):
+        ap.error("--alarm takes HH:MM on the 24-hour clock, on or off")
+    extra = (f"alarm {args.alarm}",) if args.alarm is not None else ()
     tz = local_zone()
     if args.print:
-        for line in lines(tz, datetime.now(timezone.utc)):
+        for line in lines(tz, datetime.now(timezone.utc)) + extra:
             print(line)
         return
     try:
@@ -87,15 +93,15 @@ def main():
     # Send on a second boundary, so the watch's seconds start in step.
     now = time.time()
     time.sleep(1.0 - (now % 1.0))
-    sent = lines(tz, datetime.now(timezone.utc).replace(microsecond=0))
+    sent = lines(tz, datetime.now(timezone.utc).replace(microsecond=0)) + extra
     for line in sent:
         s.write(f"{line}\r\n".encode())
     deadline = time.time() + 4.0
     buf = b''
-    while time.time() < deadline and buf.count(b'[rtc]') < 2:
+    while time.time() < deadline and (buf.count(b'[rtc]') < 2 or extra and b'[alarm]' not in buf):
         buf += s.read(4096)
     for line in buf.decode('ascii', 'replace').splitlines():
-        if line.startswith(('[rtc]', '[usb] unknown')):
+        if line.startswith(('[rtc]', '[alarm]', '[usb] unknown')):
             print(line)
     for line in sent:
         print(f"sent {line}")
