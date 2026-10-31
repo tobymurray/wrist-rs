@@ -417,6 +417,9 @@ impl<'a> Core<'a> {
             Ok(id) => {
                 let deadline = now + (self.caps.op_deadline)(op.kind());
                 self.pending = Some(Pending { id, op, deadline });
+                if matches!(op, Op::Advertise(Some(_))) {
+                    self.chip(now, chip::Event::Accepted, out);
+                }
             }
             Err(f) => {
                 self.counters.refused += 1;

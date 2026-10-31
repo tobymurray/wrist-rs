@@ -1,7 +1,7 @@
 mod common;
 
 use common::*;
-use wrist_ble::{Activities, Admitted, Change, ConnParams, Duration, Exclusion, FailureKind, PairingStep, SchedKind, Schedule, Status};
+use wrist_ble::{Activities, Admitted, Change, ConnParams, Duration, Exclusion, FailureKind, Millis, PairingStep, SchedKind, Schedule, Status};
 use wrist_ble_core::chip::{self, Chip, ChipMachine, FaultCause};
 use wrist_ble_core::goals::Power;
 use wrist_ble_core::peripheral::{self as per, Event, Peripheral, Stage, StopReason, Then, GIVE_UP};
@@ -102,7 +102,7 @@ fn phone_ignores_another_link() {
 }
 
 #[test]
-fn chip_resets_within_its_budget_then_faults_and_retries_hourly() {
+fn chip_resets_within_its_budget_then_faults_and_starts_once_an_hour() {
     let mut c = ChipMachine::OFF.step(t(0), chip::Event::RadioOn).0;
     for i in 0..chip::RESETS_PER_HOUR {
         let (next, a) = c.step(t(i as u64), chip::Event::StartFailed);
@@ -113,10 +113,21 @@ fn chip_resets_within_its_budget_then_faults_and_retries_hourly() {
     assert_eq!(a, Some(chip::Action::Hold));
     assert_eq!(c.state, Chip::Fault { cause: FaultCause::StartFailed, retry_at: t(10) + chip::FAULT_RETRY });
     assert_eq!(c.step(t(20), chip::Event::Tick).1, None);
-    let (c, a) = c.step(t(10) + chip::FAULT_RETRY, chip::Event::Tick);
+    let retry = t(10) + chip::FAULT_RETRY;
+    let (c, a) = c.step(retry, chip::Event::Tick);
     assert_eq!(a, Some(chip::Action::Start));
+    let (failed, a) = c.step(retry + Millis(1), chip::Event::StartFailed);
+    assert_eq!(a, Some(chip::Action::Hold));
+    assert_eq!(failed.state, Chip::Fault { cause: FaultCause::StartFailed, retry_at: retry + Millis(1) + chip::FAULT_RETRY });
+    let (timed_out, a) = c.step(retry + chip::START_WITHIN, chip::Event::Tick);
+    assert_eq!(a, Some(chip::Action::Hold));
+    assert!(matches!(timed_out.state, Chip::Fault { cause: FaultCause::StartFailed, .. }));
     let c = c.step(t(3_700_000), chip::Event::Ready(INFO)).0;
     assert_eq!(c.state, Chip::Ready(INFO));
+    let (refused, a) = c.step(t(3_750_000), chip::Event::BaselineRefused);
+    assert_eq!(a, Some(chip::Action::Hold));
+    assert!(matches!(refused.state, Chip::Fault { cause: FaultCause::BaselineRefused, .. }));
+    let c = c.step(t(3_750_000), chip::Event::Accepted).0;
     assert_eq!(c.step(t(3_800_000), chip::Event::BaselineRefused).1, Some(chip::Action::Start));
 }
 

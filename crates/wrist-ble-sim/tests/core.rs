@@ -186,3 +186,23 @@ fn a_chip_that_never_comes_up_is_reset_within_its_budget() {
     let out = core.step(next, Input::Tick);
     assert_eq!(out.chip, Some(wrist_ble_core::chip::Action::Start));
 }
+
+#[test]
+fn a_chip_that_never_comes_up_is_started_once_an_hour_after_its_fault() {
+    use wrist_ble_core::chip::{Action, FAULT_RETRY, RESETS_PER_HOUR, START_WITHIN};
+    let mut core = Core::new(&CAPABILITIES, &Scheduler, &MENU);
+    let mut now = Instant(0);
+    let mut out = core.step(now, Input::Goals(Goals { radio_on: true, power: Power::Cable, ..Goals::OFF }));
+    let mut starts = Vec::new();
+    while now < Instant(4 * 3_600_000) {
+        if out.chip == Some(Action::Start) {
+            starts.push(now);
+        }
+        now = out.next.unwrap();
+        out = core.step(now, Input::Tick);
+    }
+    let (budget, hourly) = starts.split_at(RESETS_PER_HOUR + 1);
+    assert_eq!(budget.last(), Some(&(Instant(0) + START_WITHIN + START_WITHIN + START_WITHIN)), "{starts:?}");
+    assert_eq!(hourly.len(), 3, "{starts:?}");
+    assert!(hourly.windows(2).all(|w| w[1].since(w[0]) == FAULT_RETRY + START_WITHIN), "{starts:?}");
+}
