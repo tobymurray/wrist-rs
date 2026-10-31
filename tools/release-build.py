@@ -258,6 +258,33 @@ def package_licenses(base):
     return sorted(p.relative_to(base) for p in top + list(base.glob('Fonts/OFL*.txt')))
 
 
+# What ships, per licence tree: its workspace, the packages linked into it and their features.
+LINKED = [('installer', '.', ['wrist-flash', 'wrist-installer-ui'], ['wrist-flash/panic-handler', 'wrist-installer-ui/device']),
+          ('app', 'apps/standalone-boot', ['standalone-boot'], []),
+          ('loader', 'apps/wrist-loader', ['wrist-loader'], [])]
+
+
+def cargo_metadata(workspace, features, env=None):
+    return json.loads(subprocess.check_output(
+        ['cargo', 'metadata', '--locked', '--format-version=1', '--filter-platform', TARGET]
+        + (['--features', ','.join(features)] if features else []), cwd=ROOT/workspace, env=env))
+
+
+def linked_packages(metadata, roots):
+    """The packages of `metadata` that `roots` reach through normal dependencies."""
+    packages = {p['id']: p for p in metadata['packages']}
+    nodes = {n['id']: n for n in metadata['resolve']['nodes']}
+    todo = [i for i in metadata['workspace_members'] if packages[i]['name'] in roots]
+    require(len(todo) == len(roots), 'missing linked package: ' + ', '.join(roots))
+    seen = set()
+    while todo:
+        i = todo.pop()
+        if i not in seen:
+            seen.add(i)
+            todo += [d['pkg'] for d in nodes[i]['deps'] if any(k['kind'] is None for k in d['dep_kinds'])]
+    return [packages[i] for i in sorted(seen)]
+
+
 def path_replacements(*paths):
     return sorted(((str(Path(path).resolve()), token) for path, token in paths if path),
                   key=lambda pair: len(pair[0]), reverse=True)
@@ -323,7 +350,7 @@ def verify_archive(path, debug=False):
                          'licenses/sdk/libstdc++/GPL-3.0-or-later.txt', 'licenses/sdk/libstdc++/GCC-exception-3.1.txt',
                          'licenses/gnu-arm-toolchain/license.txt']:
                 require(name in names, 'missing user asset: ' + name)
-            for tree in ['root', 'app']:
+            for tree in ['installer', 'app']:
                 for font in FONT_LICENSES:
                     require(any(re.fullmatch(r'licenses/' + tree + r'/incised-text-[^/]+/Fonts/' + re.escape(font), n)
                                 for n in names), 'missing user asset: the ' + tree + ' tree\'s font licence ' + font)
@@ -424,12 +451,13 @@ def main():
         copy(ROOT/'release'/image, user/image)
     copy(ROOT/'LICENSE', user/'LICENSE')
     licenses = user/'licenses'
-    for label, cwd in [('root', ROOT), ('app', ROOT/'apps/standalone-boot'), ('loader', ROOT/'apps/wrist-loader')]:
-        metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--locked', '--format-version=1'], cwd=cwd, env=env))
+    for label, workspace, roots, features in LINKED:
+        cwd = ROOT/workspace
+        metadata = cargo_metadata(workspace, features, env)
         normalized_metadata = normalize_paths(metadata, replacements)
         (debug / (label + '-dependencies.json')).write_text(json.dumps(normalized_metadata, indent=2) + '\n')
         copy(cwd/'Cargo.lock', debug/label/'Cargo.lock')
-        for pkg in metadata['packages']:
+        for pkg in linked_packages(metadata, roots):
             base = Path(pkg['manifest_path']).parent
             for p in package_licenses(base):
                 copy(base/p, licenses/label/(pkg['name']+'-'+pkg['version'])/p)
