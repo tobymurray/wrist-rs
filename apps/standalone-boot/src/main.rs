@@ -3,6 +3,7 @@
 #![no_std]
 #![no_main]
 
+mod alarm;
 #[cfg(feature = "ble")]
 mod ble;
 mod busy;
@@ -440,6 +441,7 @@ fn main() -> ! {
         spawn(spawner, "report", report(handoff, measured_hz, watchdog).unwrap());
         spawn(spawner, "display", display(pwr_int).unwrap());
         spawn(spawner, "haptic", haptic::serve().unwrap());
+        spawn(spawner, "alarm", alarm::run().unwrap());
         if let Some(pins) = usb {
             spawn(spawner, "console", console::service(pins, flash).unwrap());
         }
@@ -697,6 +699,11 @@ fn now_ms() -> u64 {
     Instant::now().as_millis()
 }
 
+/// Back on the face at once, for the alarm's ring.
+pub fn to_face() {
+    NAV.lock(|n| n.set(Nav::new()));
+}
+
 /// The page to draw now, back on the face once a page's timeout has passed; and when that
 /// timeout falls, if a page other than the face is up.
 pub fn nav_now() -> (Page, Option<Instant>) {
@@ -762,7 +769,10 @@ async fn button_watch(mut lines: ButtonLines) -> ! {
             on_press(uart, press, true, &mut light_until);
         }
         if light_until.is_some_and(|off| Instant::now() >= off) {
-            backlight(false);
+            // A ring keeps the light it turned on.
+            if !alarm::ringing() {
+                backlight(false);
+            }
             light_until = None;
         }
         was_down = deliberate;
@@ -800,10 +810,25 @@ async fn button_watch(mut lines: ButtonLines) -> ! {
     }
 }
 
-/// What a debounced press does: a short one lights the face, or turns off a light the console
-/// switched on, on every page; then the pages' model moves where it says.
+/// What a debounced press does: while the alarm rings, stop it and nothing else. Otherwise it
+/// clears a missed alarm's notice; a short one lights the face, or turns off a light the
+/// console switched on, on every page; then the pages' model moves where it says.
 fn on_press(uart: Uart, press: Press, injected: bool, light_until: &mut Option<Instant>) {
     const LIT_FOR: Duration = Duration::from_secs(3);
+    if let Some(rang) = alarm::dismiss() {
+        *light_until = Some(Instant::now() + LIT_FOR);
+        uart.write_str(if injected { "[alarm] dismissed by an injected " } else { "[alarm] dismissed by " });
+        uart.write_str(if press.long { "long press " } else { "short press " });
+        uart.write_str(press.button.label());
+        uart.write_str(" after ");
+        uart.write_u32(u32::try_from(rang.as_secs()).unwrap_or(u32::MAX));
+        uart.write_line(" s; face lit for 3 s, page unchanged");
+        wake_display();
+        return;
+    }
+    if alarm::seen() {
+        uart.write_line("[alarm] the missed alarm seen");
+    }
     uart.write_str(if injected { "[button] injected " } else { "[button] " });
     uart.write_str(if press.long { "long press " } else { "short press " });
     uart.write_str(press.button.label());
@@ -861,18 +886,7 @@ async fn display(mut pwr_int: ExtiInput<'static, Async>) -> ! {
             panel = Some(started);
             drawn = None;
         }
-        match rtc::apply_zone_change() {
-            Ok(None) => {}
-            Ok(Some(shift)) => {
-                uart.write_str("[rtc] zone change applied: now ");
-                rtc::write_zone(uart, rtc::zone().map_or(0, |z| z.offset));
-                uart.write_line(if shift < 0 { ", calendar back" } else { ", calendar forward" });
-            }
-            Err(why) => {
-                uart.write_str("[rtc] zone change not applied: ");
-                uart.write_line(why);
-            }
-        }
+        apply_zone_change(uart);
         let minute = minute_now();
         let new_minute = last_minute != Some(minute);
         last_minute = Some(minute);
@@ -934,6 +948,23 @@ async fn display(mut pwr_int: ExtiInput<'static, Async>) -> ! {
             }
         };
         select3(Timer::at(due), DISPLAY_WAKE.wait(), input_changed).await;
+    }
+}
+
+/// A pending zone change applied to the calendar, and what it did said on the console.
+fn apply_zone_change(uart: Uart) {
+    match rtc::apply_zone_change() {
+        Ok(None) => {}
+        Ok(Some(shift)) => {
+            alarm::calendar_moved(shift);
+            uart.write_str("[rtc] zone change applied: now ");
+            rtc::write_zone(uart, rtc::zone().map_or(0, |z| z.offset));
+            uart.write_line(if shift < 0 { ", calendar back" } else { ", calendar forward" });
+        }
+        Err(why) => {
+            uart.write_str("[rtc] zone change not applied: ");
+            uart.write_line(why);
+        }
     }
 }
 
