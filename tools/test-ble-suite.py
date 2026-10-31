@@ -472,5 +472,88 @@ class Judgements(unittest.TestCase):
         self.assertEqual([p.closed for p in opened], [True])
 
 
+def load(name):
+    spec = importlib.util.spec_from_file_location(name.replace('-', '_'), Path(__file__).with_name(f'{name}.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@unittest.skipUnless(importlib.util.find_spec('dbus_fast'), 'hr-sim.py needs dbus-fast (Linux)')
+class Consume(unittest.TestCase):
+    def test_each_state_once_a_loud_subscribe_and_the_link_closed(self):
+        hr_sim = load('hr-sim')
+        Variant = hr_sim.Variant
+        dev_path = '/org/bluez/hci0/dev_02_80_E1_00_00_01'
+        hrm = {f'{dev_path}/service1/char2': {'org.bluez.GattCharacteristic1': {'UUID': Variant('s', hr_sim.HRM)}}}
+
+        def device(connected, resolved=True, chars=False):
+            found = {dev_path: {'org.bluez.Device1': {'Connected': Variant('b', connected),
+                                                      'ServicesResolved': Variant('b', resolved)}}}
+            return {**found, **(hrm if chars else {})}
+        states = iter([{}, device(False), device(False), device(True, chars=False), device(True, chars=False),
+                       device(True, chars=True), device(True, chars=True), device(True, chars=True), device(False)])
+        calls = []
+        stop = asyncio.Event()
+
+        class Bus:
+            async def introspect(self, name, path):
+                return None
+
+            def get_proxy_object(self, name, path, intro):
+                return self
+
+            def get_interface(self, name):
+                return self
+
+            async def call_get_managed_objects(self):
+                state = next(states, None)
+                if state is None:
+                    stop.set()
+                    return device(False)
+                return state
+
+            async def call_connect(self):
+                calls.append('connect')
+                if calls.count('connect') < 3:
+                    raise RuntimeError('le-connection-abort-by-local')
+
+            async def call_disconnect(self):
+                calls.append('disconnect')
+
+            async def call_start_notify(self):
+                calls.append('start_notify')
+                if calls.count('start_notify') == 1:
+                    raise RuntimeError('org.bluez.Error.NotPermitted')
+
+            def on_properties_changed(self, f):
+                pass
+
+            def off_properties_changed(self, f):
+                pass
+        sleep = asyncio.sleep
+        link = {}
+
+        async def go():
+            with mock.patch.object(hr_sim.asyncio, 'sleep', lambda s: sleep(0)):
+                await hr_sim.consume(Bus(), 'hci0', '02:80:E1:00:00:01', True, stop, link)
+            await hr_sim.disconnect(Bus(), 'hci0', '02:80:E1:00:00:01')
+        with mock.patch('sys.stdout', io.StringIO()) as out, mock.patch('sys.stderr', io.StringIO()) as err:
+            asyncio.run(go())
+        said = [re.sub(r'^-- \d\d:\d\d:\d\d consume: ', '', l) for l in out.getvalue().splitlines()]
+        self.assertEqual(said, [
+            "waiting for the watch to connect (BlueZ hasn't seen it)",
+            "waiting for the watch to connect (it isn't connected)",
+            'connect failed: le-connection-abort-by-local',
+            'the watch is connected but shows no Heart Rate Measurement',
+            f"subscribed to the watch's heart rate ({dev_path}/service1/char2)",
+            "the watch's link is down",
+            "waiting for the watch to connect (it isn't connected)",
+            'disconnected the link it opened'])
+        self.assertIn("FAILED to subscribe to the watch's heart rate", err.getvalue())
+        self.assertTrue(link['opened'])
+        self.assertEqual(calls[-1], 'disconnect')
+
+
 if __name__ == '__main__':
     unittest.main()

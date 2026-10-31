@@ -148,30 +148,52 @@ def measurement(t):
     return bytes([0x16, bpm, rr & 0xFF, rr >> 8]), bpm
 
 
-async def consume(bus, adapter, address, connect, stop):
+class Say:
+    """Prints a state once, with the time, until it changes."""
+
+    def __init__(self):
+        self.last = None
+
+    def __call__(self, text):
+        if text != self.last:
+            self.last = text
+            print(f"-- {time.strftime('%H:%M:%S')} consume: {text}", flush=True)
+
+
+async def consume(bus, adapter, address, connect, stop, link):
     """Subscribe to the watch's Heart Rate Measurement over whichever link joins us, and print
     what it sends. BlueZ is this host's GATT client on a link in either role, so when the
     watch connects to the simulated strap, the host reads the watch's heart rate back over
     that same link (two links between the same two devices are refused). With `connect`,
-    the host opens the link itself, as a rower or a bike would."""
+    the host opens the link itself, as a rower or a bike would, and `link["opened"]` says so."""
     dev_path = f"/org/bluez/{adapter}/dev_{address.upper().replace(':', '_')}"
     root = bus.get_proxy_object("org.bluez", "/", await bus.introspect("org.bluez", "/"))
     manager = root.get_interface("org.freedesktop.DBus.ObjectManager")
-    asked = False
+    say = Say()
+    asked, failed = False, None
     while not stop.is_set():
         objects = await manager.call_get_managed_objects()
         dev = objects.get(dev_path, {}).get("org.bluez.Device1")
         if dev is None:
+            say("waiting for the watch to connect (BlueZ hasn't seen it)")
             await asyncio.sleep(1)
             continue
+        if not dev["Connected"].value:
+            say(failed or "waiting for the watch to connect (it isn't connected)")
+        else:
+            failed = None
+            if not dev["ServicesResolved"].value:
+                say("the watch is connected; waiting for its services")
         if not dev["Connected"].value or not dev["ServicesResolved"].value:
             if connect and not asked:
                 asked = True
                 obj = bus.get_proxy_object("org.bluez", dev_path, await bus.introspect("org.bluez", dev_path))
                 try:
                     await obj.get_interface("org.bluez.Device1").call_connect()
+                    link["opened"], failed = True, None
                 except Exception as e:
-                    print(f"-- consume: connect: {e}", flush=True)
+                    failed = f"connect failed: {e}"
+                    say(failed)
                     asked = False
             await asyncio.sleep(1)
             continue
@@ -179,7 +201,7 @@ async def consume(bus, adapter, address, connect, stop):
                  if path.startswith(dev_path + "/")
                  and ifaces.get("org.bluez.GattCharacteristic1", {}).get("UUID", Variant("s", "")).value == HRM]
         if not chars:
-            print("-- consume: the watch is connected but shows no Heart Rate Measurement", flush=True)
+            say("the watch is connected but shows no Heart Rate Measurement")
             await asyncio.sleep(3)
             continue
         obj = bus.get_proxy_object("org.bluez", chars[0], await bus.introspect("org.bluez", chars[0]))
@@ -192,16 +214,34 @@ async def consume(bus, adapter, address, connect, stop):
                       f"({data[1] if len(data) > 1 else '?'} bpm)", flush=True)
 
         props.on_properties_changed(changed)
-        await obj.get_interface("org.bluez.GattCharacteristic1").call_start_notify()
-        print(f"-- {time.strftime('%H:%M:%S')} subscribed to the watch's heart rate ({chars[0]})", flush=True)
+        try:
+            await obj.get_interface("org.bluez.GattCharacteristic1").call_start_notify()
+        except Exception as e:
+            props.off_properties_changed(changed)
+            say.last = None
+            print(f"!! {time.strftime('%H:%M:%S')} consume: FAILED to subscribe to the watch's heart rate "
+                  f"({chars[0]}): {e}", file=sys.stderr, flush=True)
+            await asyncio.sleep(3)
+            continue
+        say(f"subscribed to the watch's heart rate ({chars[0]})")
         while not stop.is_set():
             await asyncio.sleep(1)
             dev = (await manager.call_get_managed_objects()).get(dev_path, {}).get("org.bluez.Device1")
             if dev is None or not dev["Connected"].value:
-                print(f"-- {time.strftime('%H:%M:%S')} the watch's link is down", flush=True)
+                say("the watch's link is down")
                 props.off_properties_changed(changed)
                 asked = False
                 break
+
+
+async def disconnect(bus, adapter, address):
+    dev_path = f"/org/bluez/{adapter}/dev_{address.upper().replace(':', '_')}"
+    try:
+        obj = bus.get_proxy_object("org.bluez", dev_path, await bus.introspect("org.bluez", dev_path))
+        await obj.get_interface("org.bluez.Device1").call_disconnect()
+        print(f"-- {time.strftime('%H:%M:%S')} consume: disconnected the link it opened", flush=True)
+    except Exception as e:
+        print(f"!! {time.strftime('%H:%M:%S')} consume: disconnecting the link it opened failed: {e}", file=sys.stderr, flush=True)
 
 
 async def main():
@@ -229,11 +269,12 @@ async def main():
     print("-- advertising HR-SIM (0x180D); Ctrl-C stops", flush=True)
 
     stop = asyncio.Event()
-    task = asyncio.create_task(consume(bus, args.adapter, args.consume, args.connect, stop)) if args.consume else None
+    link = {}
+    task = asyncio.create_task(consume(bus, args.adapter, args.consume, args.connect, stop, link)) if args.consume else None
     start = time.time()
     sent = 0
     try:
-        while not args.seconds or time.time() - start < args.seconds:
+        while (not args.seconds or time.time() - start < args.seconds) and not (task and task.done()):
             value, bpm = measurement(time.time() - start)
             hrm.notify(value)
             if hrm.notifying:
@@ -247,7 +288,13 @@ async def main():
         stop.set()
         if task:
             task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        if link.get("opened"):
+            await disconnect(bus, args.adapter, args.consume)
         print(f"-- stopped after {sent} notifications", flush=True)
+    if task and not task.cancelled() and task.exception():
+        print(f"!! {time.strftime('%H:%M:%S')} consume stopped: {task.exception()!r}", file=sys.stderr, flush=True)
+        return 1
     return 0
 
 
