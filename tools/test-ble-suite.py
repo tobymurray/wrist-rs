@@ -4,14 +4,17 @@ import argparse
 import asyncio
 import importlib.util
 import io
+import json
 import os
 from pathlib import Path
 import re
 import shlex
+import signal
 import struct
 import subprocess
 import sys
 import tempfile
+import textwrap
 import time
 import unittest
 from unittest import mock
@@ -361,6 +364,54 @@ class Judgements(unittest.TestCase):
         found = [l for l in out.splitlines() if l.startswith('found')]
         self.assertEqual(len(found), 2)
         self.assertTrue(all('ble-suite.py' in l for l in found), found)
+
+    def test_sigterm_writes_the_result_and_restores(self):
+        with tempfile.TemporaryDirectory() as d:
+            driver = textwrap.dedent(f"""
+                import asyncio, importlib.util, sys
+                from pathlib import Path
+                from unittest import mock
+                sys.path.insert(0, {str(Path(__file__).resolve().parent)!r})
+                spec = importlib.util.spec_from_file_location('t', {str(Path(__file__).resolve())!r})
+                t = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(t)
+                suite = t.suite
+                builds = iter(['a1a1a1a1a1a1', 'b2b2b2b2b2b2', 'a1a1a1a1a1a1', 'a1a1a1a1a1a1'])
+
+                async def snapshot(usb):
+                    return t.snap(next(builds))
+
+                async def install(usb, a, path, out):
+                    print('installed', path, flush=True)
+                    return True, usb
+
+                async def console(s, usb, phone, build, a):
+                    print('scenario started', flush=True)
+                    await asyncio.sleep(60)
+                old, new = t.image('a1a1a1a1a1a1'), t.image('b2b2b2b2b2b2')
+                sys.argv = ['ble-suite.py', '--install', new.name, '--restore', old.name, '--scenarios', 'console',
+                            '--out', {d + '/run'!r}]
+                with mock.patch.object(suite, 'host', t.Quiet), \\
+                        mock.patch.object(suite.wrist_port, 'find', return_value='/dev/watch'), \\
+                        mock.patch.object(suite, 'Usb', lambda port, path: t.Console({{}})), \\
+                        mock.patch.object(suite, 'snapshot', snapshot), mock.patch.object(suite, 'install', install), \\
+                        mock.patch.object(suite, 'console', console), \\
+                        mock.patch.object(suite.wrist_update, 'mismatch', return_value=None):
+                    suite.main()
+                """)
+            p = subprocess.Popen([sys.executable, '-c', driver], stdout=subprocess.PIPE, text=True)
+            lines = []
+            for line in p.stdout:
+                lines.append(line)
+                if 'scenario started' in line:
+                    p.send_signal(signal.SIGTERM)
+            p.wait(10)
+            result = json.loads((Path(d) / 'run/result.json').read_text())
+        self.assertNotEqual(p.returncode, 0)
+        self.assertEqual(result['stopped'], 'terminated')
+        self.assertTrue(result['restored'])
+        self.assertFalse(result['passed'])
+        self.assertEqual([l.split()[1] for l in lines if l.startswith('installed')], [result['argv'][1], result['argv'][3]])
 
 
 if __name__ == '__main__':

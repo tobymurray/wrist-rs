@@ -13,7 +13,8 @@ if any check fails. It never runs `ble forget`.
 
 --image is the running image's app.bin, which the update scenario sends again. With --install,
 --restore must be the running image's app.bin, and the update scenario sends --image (which must
-then be the installed build) or, without it, the installed image.
+then be the installed build) or, without it, the installed image. SIGTERM ends a run as Ctrl-C does:
+result.json is written and --restore put back.
 """
 import argparse
 import asyncio
@@ -23,6 +24,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import signal
 import statistics
 import subprocess
 import sys
@@ -599,7 +601,19 @@ def ready(snap):
     return problems
 
 
+def on_sigterm(result):
+    task = asyncio.current_task()
+
+    def stop():
+        if result.get('stopped') != 'terminated':
+            result['stopped'] = 'terminated'
+            print('-- SIGTERM: stopping; result.json and any --restore follow', flush=True)
+            task.cancel()
+    asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, stop)
+
+
 async def run(a, out, result):
+    on_sigterm(result)
     h = host()
     result['host'] = {'system': h.name, 'python': platform.python_version()}
     port, problems = preflight_host(h, a.port)
@@ -663,6 +677,8 @@ async def run(a, out, result):
             result['scenarios'].append(s.result())
         return all(s['passed'] for s in result['scenarios'])
     finally:
+        asyncio.get_running_loop().add_signal_handler(
+            signal.SIGTERM, lambda: print('-- SIGTERM: already finishing the run', flush=True))
         if capture:
             died = capture.poll()
             capture.terminate()
@@ -735,15 +751,16 @@ def main():
     result = {'started': time.strftime('%Y-%m-%dT%H:%M:%S%z'), 'argv': sys.argv[1:], 'scenarios': []}
     try:
         ok = asyncio.run(run(a, out, result))
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, asyncio.CancelledError):
         ok = False
-        result['stopped'] = 'interrupted'
+        result.setdefault('stopped', 'interrupted')
     except Exception as e:
         ok = False
         result['stopped'] = repr(e)
         traceback.print_exc(file=sys.stdout)
     result['finished'] = time.strftime('%Y-%m-%dT%H:%M:%S%z')
-    result['passed'] = bool(ok) and result.get('restored', True) is not False and result.get('capture') != 'failed'
+    result['passed'] = bool(ok) and 'stopped' not in result and result.get('restored', True) is not False \
+        and result.get('capture') != 'failed'
     (out / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
     print(f'\n{"PASSED" if result["passed"] else "FAILED"}; see {out}', flush=True)
     for s in result['scenarios']:
