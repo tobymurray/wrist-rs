@@ -1,4 +1,4 @@
-# wrist-rs 0.3.0
+# wrist-rs 0.3.1
 
 | | |
 |---|---|
@@ -12,7 +12,21 @@ charge, with pages for the battery and the build, in place of the stock firmware
 
 ## In this release
 
-New since 0.2.0:
+Fixes on 0.3.0. New since 0.3.0:
+
+- The watch no longer restarts by itself when its timer driver gives up waiting on the
+  hardware, as 0.3.0 and 0.2.0 rarely did: it makes the write once more and, if the
+  hardware still does not answer, leaves that wakeup to the next one, 2 s later at most.
+- The watch selects its own power regulator before it sleeps, rather than relying on the
+  stock bootloader's choice: a restart in deep sleep on the other regulator can leave the
+  processor stuck, drawing tens of mA until the battery runs down (ST erratum ES0553
+  2.2.10). Nothing changes on a watch that already ran from the right one.
+- [`tools/wrist-update.py`](../tools/wrist-update.py) and the other tools quiet the console
+  before their first command: the computer can echo the watch's greeting back, and the
+  watch then read `update` glued to it and refused the install.
+- The loader is unchanged: no loader update is needed.
+
+From earlier releases:
 
 - The face and pages in Atkinson Hyperlegible Next. Digits that do not change stay where
   they are when the minute turns.
@@ -22,10 +36,6 @@ New since 0.2.0:
   `Install` glance: its dry run shows the image's CRC on screen, and holding Select 3 s
   installs ([install guide](INSTALL.md)).
 - The console's `flash survey` reports which flash pages hold anything, without writing.
-- The loader is unchanged: no loader update is needed.
-
-From earlier releases:
-
 - The face, lit by a short press of any button, with pages for the battery and the build:
   Down steps from the face to the battery, then to about, then back to the face; Up steps
   the other way, and Back or 10 s without a press returns to the face.
@@ -39,13 +49,7 @@ From earlier releases:
 
 ## Checked on the watch
 
-With this build's package, updating from 0.2.0: updates over USB, including a pulled cable
-and a killed tool, which leave the watch on its current version; the rollback of an image
-no computer keeps; the clock across restarts and daylight-saving changes; every button and
-every page; and deep sleep on battery.
-
-On stock firmware 1.6.2: the Wrist-rs app's dry run and its refusals, the install, the way
-back to stock, and the install again over this release's own record.
+To be written from this release's gate run ([GATE.md](GATE.md), step 22).
 
 ## Limits
 
@@ -58,6 +62,4 @@ back to stock, and the install again over this release's own record.
   Back and Select only light it; Up and Down also move between pages.
 - After a cable is pulled during an update, the next update can get no answer from the
   watch. Run it again.
-- Rarely, the watch restarts by itself: its timer driver gives up waiting on the hardware.
-  The time and zone survive. 0.2.0 does the same.
 - No stock apps, notifications, sensors, Bluetooth or activity storage.
