@@ -125,6 +125,15 @@ them, `bluetoothctl remove <address>` and pair again.
 The watch can also scan for any Bluetooth LE device: `ble scan [s]` lists advertisers by
 address, signal, name and services.
 
+[`tools/ble-suite.py`](tools/ble-suite.py) runs the Bluetooth regression scenarios
+unattended against a bonded watch on USB, judges each from the console, and writes its log
+and `result.json` under `target/ble-suite/`; `--help` lists the scenarios and their options.
+[`tools/hr-sim.py`](tools/hr-sim.py) plays a heart-rate strap from a Linux host.
+
+```sh
+.venv/bin/python tools/ble-suite.py --image app.bin --soak-minutes 30   # app.bin: the running image
+```
+
 ## Working on InscribedDisc
 
 The face is drawn with [InscribedDisc](https://crates.io/crates/inscribed-disc), developed

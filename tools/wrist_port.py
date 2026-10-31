@@ -50,3 +50,10 @@ def settle(s):
     s.reset_input_buffer()
     s.timeout = timeout
     return s
+
+
+def write_command(s, text):
+    """One console command, in packets the watch's receive path keeps up with."""
+    data = (text.strip() + '\r\n').encode()
+    for i in range(0, len(data), 60):
+        s.write(data[i:i + 60]); s.flush(); time.sleep(0.005)
