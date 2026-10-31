@@ -12,6 +12,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -46,6 +47,62 @@ class Link:
     async def command(self, text, pattern, timeout=3):
         self.sent.append(text)
         return 'ok'
+
+
+class Console:
+    """A watch console that answers commands by `replies`, a dict of command to lines."""
+
+    def __init__(self, replies):
+        self.replies, self.lines, self.sent = replies, [], []
+
+    def mark(self):
+        return len(self.lines)
+
+    def since(self, mark):
+        return self.lines[mark:]
+
+    def send(self, text):
+        self.sent.append(text)
+        reply = self.replies.get(text, [])
+        for line in (reply(self) if callable(reply) else reply):
+            self.lines.append((time.time(), line))
+
+    async def wait(self, pattern, mark, timeout):
+        return next(((t, l) for t, l in self.lines[mark:] if re.search(pattern, l)), (None, None))
+
+    async def ask(self, text, pattern, timeout=3):
+        mark = self.mark()
+        self.send(text)
+        return (await self.wait(pattern, mark, timeout))[1]
+
+    def close(self):
+        pass
+
+
+def image(build):
+    f = tempfile.NamedTemporaryFile(suffix='.bin')
+    f.write(b'\0[step] build : ' + build.encode() + b'\0\0unknown command\0')
+    f.flush()
+    return f
+
+
+class Quiet(suite.Host):
+    def other_tools(self):
+        return []
+
+    def holders(self, port):
+        return []
+
+
+def snap(build, ble=True):
+    return {'version': f'[usb] standalone-boot 0.3.0 build {build}', 'build': build, 'boot': '[boot] state boot',
+            'ble': '[ble] advertising as UNA, timing cable' if ble else None, 'bonds': '[ble] bonded devices: 1'}
+
+
+def suite_args(**kw):
+    base = dict(port=None, install=None, restore=None, image=None, btmon=False, name='UNA', scenarios=['console'], sessions=1)
+    base.update(kw)
+    return argparse.Namespace(**base)
 
 
 def run(scenario, usb, phone, build, **a):
@@ -157,6 +214,63 @@ class Judgements(unittest.TestCase):
             f.write(b'not a capture')
             f.flush()
             self.assertIsNone(suite.failed_to_establish(f.name))
+
+    def test_the_build_is_matched_exactly(self):
+        with mock.patch.object(suite.wrist_update, 'mismatch', return_value=None):
+            with image('20b5b6c11988') as f:
+                self.assertFalse(suite.image_problems(f.name, '20b5b6c11988', '--image'))
+                self.assertTrue(suite.image_problems(f.name, '20b5b6c1198', '--image'))
+                self.assertTrue(suite.image_problems(f.name, '0b5b6c11988', '--image'))
+                self.assertTrue(suite.image_problems(f.name, 'unknown', '--image'))
+            with image('20b5b6c11988.1') as f:
+                self.assertTrue(suite.image_problems(f.name, '20b5b6c11988', '--image'))
+            with image('unknown') as f:
+                self.assertIn('unknown', suite.image_problems(f.name, 'unknown', '--restore')[0])
+
+    def install_run(self, image_build):
+        """run() with --install, a clean installed build and an --image of `image_build`."""
+        installs = []
+
+        async def install(usb, a, path, out):
+            installs.append(path)
+            return True, usb
+
+        builds = iter(['0ld0ld0ld0ld', 'c1ea2c1ea2c1', '0ld0ld0ld0ld', '0ld0ld0ld0ld'])
+
+        async def snapshot(usb):
+            return snap(next(builds))
+
+        files = {name: image(build) for name, build in
+                 [('old', '0ld0ld0ld0ld'), ('new', 'c1ea2c1ea2c1'), ('image', image_build)]}
+        a = suite_args(install=Path(files['new'].name), restore=Path(files['old'].name), image=Path(files['image'].name))
+        result = {'scenarios': []}
+        seen = {}
+
+        async def console(s, usb, phone, build, a):
+            seen['image'] = a.update_image
+            s.check(True, 'ran')
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(suite, 'host', Quiet), \
+                mock.patch.object(suite.wrist_port, 'find', return_value='/dev/watch'), \
+                mock.patch.object(suite, 'Usb', lambda port, path: Console({})), \
+                mock.patch.object(suite, 'snapshot', snapshot), mock.patch.object(suite, 'install', install), \
+                mock.patch.object(suite, 'console', console), \
+                mock.patch.object(suite.wrist_update, 'mismatch', return_value=None), \
+                mock.patch('sys.stdout', io.StringIO()):
+            ok = asyncio.run(suite.run(a, Path(d), result))
+        for f in files.values():
+            f.close()
+        return ok, result, installs, seen, a
+
+    def test_image_beside_install_is_the_one_sent_and_must_be_the_installed_build(self):
+        ok, result, installs, seen, a = self.install_run('c1ea2c1ea2c1-dirty')
+        self.assertFalse(ok)
+        self.assertIn(f'--image {a.image} is not build c1ea2c1ea2c1', result['preflight'])
+        self.assertEqual(installs, [a.install, a.restore])
+        self.assertTrue(result['restored'])
+        self.assertNotIn('image', seen)
+        ok, result, installs, seen, a = self.install_run('c1ea2c1ea2c1')
+        self.assertTrue(ok, result.get('preflight'))
+        self.assertEqual(seen['image'], a.image)
 
 
 if __name__ == '__main__':

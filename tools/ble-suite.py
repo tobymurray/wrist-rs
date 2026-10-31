@@ -12,7 +12,8 @@ suite.log, console.log and result.json under target/ble-suite/ (or --out), and e
 if any check fails. It never runs `ble forget`.
 
 --image is the running image's app.bin, which the update scenario sends again. With --install,
---restore must be the running image's app.bin, and the update scenario sends the installed one.
+--restore must be the running image's app.bin, and the update scenario sends --image (which must
+then be the installed build) or, without it, the installed image.
 """
 import argparse
 import asyncio
@@ -56,6 +57,7 @@ SCENARIOS = ['console', 'reconnect', 'lateness', 'soak', 'update']
 FORBIDDEN = re.compile(r'^\s*ble\s+forget\b')
 OTHER_TOOLS = re.compile(r'(wrist-(ble|cmd|update|time|frame|crash)|ble-suite|hr-sim(-bumble)?|gate)\.py|picocom|minicom|screen /dev/')
 LATENESS = re.compile(r'executor late by at most ([0-9.]+) ms at \d+ ms, over 5 ms (\d+) times')
+BUILD_CHAR = rb'[0-9A-Za-z._-]'
 STATUS = r'\[ble\] .*, timing '
 HANG_UP = re.compile(r'\[ble\] disconnected, reason (\w+)')
 
@@ -537,7 +539,9 @@ def image_problems(path, build, what):
     why = wrist_update.mismatch(data, False)
     if why:
         return [f'{what} {path}: {why}']
-    if build and not re.search(re.escape(build.encode()) + rb'(?!-dirty)', data):
+    if build == 'unknown':
+        return [f'{what} {path}: the running build is `unknown` (built outside git), so no image can be matched to it']
+    if build and not re.search(rb'(?<!%s)%s(?!%s)' % (BUILD_CHAR, re.escape(build.encode()), BUILD_CHAR), data):
         return [f'{what} {path} is not build {build}']
     return []
 
@@ -575,7 +579,7 @@ async def run(a, out, result):
         problems = ready(before) if not a.install else ([] if before['build'] else ['`version` did not answer'])
         problems += image_problems(a.restore, before['build'], '--restore')
         if a.install:
-            problems += image_problems(a.install, None, '--install')
+            problems += image_problems(a.install, None, '--install') + image_problems(a.image, None, '--image')
         elif 'update' in a.scenarios:
             problems += ['the update scenario needs --image (the running app.bin)'] if not a.image else \
                 image_problems(a.image, before['build'], '--image')
@@ -594,11 +598,14 @@ async def run(a, out, result):
                 return False
             now = await snapshot(usb)
             result['installed'] = now
-            problems = ready(now) + image_problems(a.install, now['build'], '--install')
+            problems = ready(now) + image_problems(a.install, now['build'], '--install') \
+                + image_problems(a.image, now['build'], '--image')
             if problems:
                 result['preflight'] = problems
+                for p in problems:
+                    print(f'  pre-flight: {p}', flush=True)
                 return False
-            build, a.update_image = now['build'], a.install
+            build, a.update_image = now['build'], a.image or a.install
         result['build_under_test'] = build
         if a.btmon:
             capture = h.capture(out / 'btmon.btsnoop')
