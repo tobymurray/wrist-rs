@@ -19,6 +19,9 @@ pub enum RadioEvent {
     /// The peer has no bond for a link the chip had bonded keys for.
     BondLost(ConnHandle),
     Mtu(ConnHandle, u16),
+    /// The largest link-layer payload each way, in octets (Core Vol 6 Part B §4.5.10); every link
+    /// reports one.
+    DataLength { link: ConnHandle, tx: u16, rx: u16 },
     /// As the central, the peer asked for new parameters; answer with
     /// [`crate::Op::AnswerParamRequest`].
     PeerParamRequest { link: ConnHandle, range: ParamRange },
