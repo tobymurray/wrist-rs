@@ -21,7 +21,10 @@ rustup component add llvm-tools
 
 `cargo build --release --features usb-log` also keeps `embassy-usb`'s own log of the link,
 which the console's `usblog` prints. `--features ble` adds the console and updates over
-Bluetooth ([below](#bluetooth)); release images are built without it.
+Bluetooth ([below](#bluetooth)); release images are built without it. `--features haptic`
+drives the vibration motor: `haptic tap` and `haptic alarm` play, `haptic stop` ends one,
+and a bare `haptic` reads the driver back. Without it the driver stays in reset; release
+images are built without it too.
 
 The console's `version` prints the image's build ID: 12 hex digits hashing the tracked
 files that go into the binaries, listed in [release/build-inputs.txt](release/build-inputs.txt),

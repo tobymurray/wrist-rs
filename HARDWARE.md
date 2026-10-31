@@ -267,6 +267,38 @@ the link1 module `BLUENRG2` rev 1.3, from Linux (BlueZ 5.87) unless a row says o
 | While the watch advertises, a scan gets about one window per advertising period: advertising every 995 ms, 6 s scans heard 3 reports at 20 ms every 100 ms, 7 at 30 ms every 50 ms, 20 at 100 ms every 500 ms and 51 at 200 ms every second | `ble scan 6 <interval> <window>` |
 | ST ends a general discovery by itself about 10.2 s after it starts, with `GAP_PROC_COMPLETE` status 0: a scan asked for 30 s reported done at 10.2 s | `ble scan 30` on a cable |
 
+## Haptics (DRV2625)
+
+Sheet 4 ("Vibration Motor Driver and ERM Motor"), the Rev 3.2 BOM and TI's DRV2625 datasheet
+(SLOS879C, revised June 2025). A `haptic` build
+([`apps/standalone-boot/src/haptic.rs`](apps/standalone-boot/src/haptic.rs), registers in
+[`crates/wrist-haptic`](crates/wrist-haptic)) relies on these; none of it has yet been seen on
+a watch running this project's image.
+
+| Claim | Status |
+|---|---|
+| `U6` is a DRV2625YFF on `MAIN_SCL`/`MAIN_SDA` (I2C1), address 0x5A printed beside it | CONFIRMED (sheet 4, BOM). MEASURED: an I2C scan finds 0x5A only with PF2 high |
+| Its `NRST` (B2) is `HAPTIC_RST_N`, PF2; nothing else resets it. Low is shutdown, 105 nA typical, and loses every register; out of shutdown it takes 1 ms (`t(on)`) | CONFIRMED (sheets 2 and 4); figures from SLOS879C 5.5 and 5.6, not measured |
+| `VDD` (C2) is `VSYS` through `R26` 0 Ω; `R25` to `VBAT` is NOPOP (ECN 4: "U6 VDD connected to VSYS"). `C43` and `C44`, 100 nF, decouple `VDD` and `REG`. So the driver sees about 5 V on a cable and the cell on battery, inside its 2.7 to 5.5 V | CONFIRMED (sheet 4); the voltage at the pin on this watch UNKNOWN. The chip reports it while playing (`VBAT`, 5.6 V / 255 a step), which `haptic tap` prints |
+| `TRIG/INTZ` (A1) goes to ground, which SLOS879C asks of an unused pin; no MCU pin carries a haptic trigger or interrupt net | LIKELY: the text layer places a `GND` under A1; CONFIRMED that the 76 nets of `pins.rs` hold only `HAPTIC_RST_N` for the haptics. So playback starts and stops on the `GO` bit, with `TRIG_PIN_FUNC` set to 0: the reset value, 1, is level trigger, which ignores `GO` |
+| `M1` is an **ERM**, Vybronics `VZ30C1T8219732L`: "Vibration ERM motor, 2.7V DC, 3.4mm Height"; its casing is grounded (ECN 4) | CONFIRMED (BOM item, sheet 4) |
+| The motor's rated current, start-up time, overdrive limit and resistance | UNKNOWN: not in the BOM, and the vendor's sheet was not consulted |
+| `CHIP_ID` reads `0x13` after reset: chip 1 (DRV2625), revision 3; revisions 2 and 3 were both released | Datasheet Table 8-1; this watch's value UNKNOWN until `haptic` runs on it |
+| How hard the motor feels at 2.7 V, and how long a tap must be to be felt | UNKNOWN |
+
+What the image does with it, chosen without a measurement:
+
+- **Open-loop ERM through real-time playback.** `CONTROL1` = `0x40` (ERM, open loop, no
+  automatic braking, which needs a calibrated closed loop); `MODE` = `0x40` (RTP, `GO`
+  trigger). The ROM library's ERM set (library B) is tuned for a 1.3 V motor overdriven at
+  3 V, so it is not used.
+- **Full scale is the rated 2.7 V and never more**: `OD_CLAMP` 125 is 2.699 V at 21.59 mV a
+  step (Equation 8); `RATED_VOLTAGE` 123, which open loop ignores, is 2.69 V. The reset value
+  of `OD_CLAMP`, 137, would be 2.96 V.
+- **In shutdown except while a pattern plays.** Each pattern releases PF2, waits 2 ms, checks
+  the ID, writes and reads back the four registers, plays, and drives PF2 low again whatever
+  happened. `report` prints PF2's level under `[step] park`.
+
 ## What the schematics settle
 
 | Question | Answer | Status |
@@ -274,7 +306,7 @@ the link1 module `BLUENRG2` rev 1.3, from Linux (BlueZ 5.87) unless a row says o
 | Where is the MS5837? | On `SENSORBODY_SCL/SDA` (I2C2, PB13/PB14), behind a TXS0102 level translator, powered by a 3.0 V LDO gated by `ALTIMETER_EN` (**PG0**, sheet 4) | **MEASURED**: with PG0 high it answers at 0x76 (an MS5837-02BA). The image holds PG0 low |
 | Display interface | `LCD_R1/R2/G1/G2/B1/B2` plus `LCD_QSPI_*` named signals (`VST`, `HST`, `XRST`, `ENB`, `HCK`, `VCK`) and `FRP`/`XFRP`, through a TXB0108 level shifter on the display module. A memory-LCD parallel interface, not plain SPI. | LIKELY |
 | Touch controller | `TOUCH_INT_L` (PC13) and `TOUCH_RST_L` reach the display connector, so a touch-capable module is wired for. | CONFIRMED wiring, UNKNOWN fitted |
-| I2C addresses | PCA9420 0x61, MAX17262 0x36, DRV2625 0x5A, STUSB4500 0x29 | CONFIRMED; DRV2625 MEASURED: it answers only once `HAPTIC_RST_N` (PF2) is high, and the image holds PF2 low |
+| I2C addresses | PCA9420 0x61, MAX17262 0x36, DRV2625 0x5A, STUSB4500 0x29 | CONFIRMED; DRV2625 MEASURED: it answers only once `HAPTIC_RST_N` (PF2) is high, and the image holds PF2 low except while a `haptic` build plays a pattern ("Haptics") |
 | STUSB4500 (I2C1 0x29) | USB-PD sink controller on the USB-C port | MEASURED: `DEVICE_ID` 0x25 (STUSB4500, not the B cut), answering with VBUS present. Its NVM offers **one sink PDO, 5 V 1 A** (`DPM_SNK_PDO_NUMB` 1; PDO2/3 hold 15 V and 20 V but are not offered). The laptop's USB-C port and a USB-C PD charger both read Rp 3.0 A with **no PD contract** (RDO 0). Our images never write to it. **MEASURED**: on battery, STUSB4500 read failed while PCA9420 CHG_STATUS_1=0x00 (VIN below UVLO); after reconnection, STUSB4500 PORT_STATUS_1=0x41 and PCA9420 CHG_STATUS_1=0xC0. Use PMIC input status as well as PD attachment for power-source detection |
 | eMMC power | Behind two NCP335 load switches on `EMMC_EN` (sheet 3: `3V3_EMMC` for VCC, `1V8_EMMC` for VCCQ, 10 kOhm on `EN`); firmware must enable them before the card appears. | CONFIRMED; MEASURED: **the bootloader hands over with the card on** (PD10 output high, SDMMC1 clocked, `POWER` 0x3, `CLKCR` 0x00025000: 4-bit bus, divider bypassed). Card on and idle costs about 3 mA. |
 | MCU part | **`STM32U5A5QJI6Q`**, CONFIRMED three ways: BOM Rev 3.2 item 35 (U1, "4MB Flash, 2.5MB RAM, UFBGA132"), the sheet 2 symbol title, and the watch's own `DBGMCU_IDCODE` `DEV_ID` = `0x481`, which OpenOCD's `stm32l4x.c` names `STM32U59/U5Axx`. The ECN 4 note "U1 changed to STM32U595QII6Q" belongs to Rev 2.0 (10/04/25) and was superseded. The watch measured here has a **Rev 3.1** core module; Rev 3.2 differs only by ECN 9, a BOM-only change (`R39` → NOPOP), so every Rev 3.2 wiring claim applies, and `R39` is fitted on Rev 3.1. | CONFIRMED |
@@ -528,6 +560,7 @@ At boot ([`apps/standalone-boot/src/park.rs`](apps/standalone-boot/src/park.rs))
   `WAKE_HOST_TO_GNSS` (PD1), `SENSORBODY_RST_L` (PF13) and the body slot's CS (PG12),
   `ALTIMETER_EN` (PG0), `HAPTIC_RST_N` (PF2), `BUZZER_EN1/2` (PB9, PD5). Each is a
   core-board enable or a slot's active-low reset, so low is safe whatever module is fitted.
+  A `haptic` build raises PF2 only while a pattern plays ("Haptics").
   The BMI270 and BMM350 sit on the GNSS module's own supply whatever `GNSS_EN` says; each
   gets a soft reset (`CMD` 0x7E = 0xB6) into suspend, only when the slot's EEPROM names the
   expected module.
