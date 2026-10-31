@@ -16,6 +16,10 @@ face-date-invalid = ?
 charge-percent = { $pct } %
 # The charge before the gauge has a reading, its digits as figure dashes.
 charge-unset = ‒‒ %
+# In place of the date while the alarm rings, in capitals like the pages' titles.
+face-alarm-ringing = ALARM
+# In place of the date after the alarm was found too late to ring, until a press.
+face-alarm-missed = MISSED
 
 ## Battery
 
