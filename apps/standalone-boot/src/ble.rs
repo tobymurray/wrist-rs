@@ -65,7 +65,7 @@ use wrist_aci::opcode::{
     ACI_GATT_UPDATE_CHAR_VALUE, ACI_HAL_GET_FW_BUILD_NUMBER, ACI_HAL_SET_TX_POWER_LEVEL, ACI_HAL_WRITE_CONFIG_DATA,
     ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_REQ, HCI_LE_RAND, HCI_READ_LOCAL_VERSION, HCI_SET_EVENT_MASK,
 };
-use wrist_aci::{address, config, permission, role, vendor, AttributeModified, Event};
+use wrist_aci::{address, config, permission, role, vendor, AttributeModified, Event, L2capUpdateResponse};
 use wrist_wake::ble::{timing, IntervalAsk, Lines, Outbox, PairAsk, Power, Radio, Scan, Sink, Timing};
 
 use crate::console::Target;
@@ -185,6 +185,16 @@ static REPEATS: AtomicU32 = AtomicU32::new(0);
 /// Reads and writes after which IRQ did not fall within `IRQ_LOW_TIMEOUT`.
 static IRQ_STUCK_READ: AtomicU32 = AtomicU32::new(0);
 static IRQ_STUCK_WRITE: AtomicU32 = AtomicU32::new(0);
+/// Events that carried an error status, and the last update failure's status.
+static CONNECT_FAILURES: AtomicU32 = AtomicU32::new(0);
+static UPDATE_FAILURES: AtomicU32 = AtomicU32::new(0);
+static LAST_UPDATE_FAILURE: AtomicU8 = AtomicU8::new(0);
+/// The central's L2CAP answers refusing the watch's parameter request.
+static UPDATES_REFUSED: AtomicU32 = AtomicU32::new(0);
+static DISCONNECT_FAILURES: AtomicU32 = AtomicU32::new(0);
+static ENCRYPTION_FAILURES: AtomicU32 = AtomicU32::new(0);
+/// Packets the image does not act on: other events, unhandled vendor events, malformed packets.
+static UNKNOWN: AtomicU32 = AtomicU32::new(0);
 static BONDED: AtomicU8 = AtomicU8::new(0);
 /// Last pairing outcome: 0 none, else 1 + status (so 1 is success).
 static LAST_PAIRING: AtomicU8 = AtomicU8::new(0);
@@ -355,6 +365,17 @@ pub fn write_status(uart: Uart) {
     n(", unsecured writes dropped ", &UNSECURED);
     n(", irq stuck after read ", &IRQ_STUCK_READ);
     n(" write ", &IRQ_STUCK_WRITE);
+    n(", connect failures ", &CONNECT_FAILURES);
+    n(", update failures ", &UPDATE_FAILURES);
+    if UPDATE_FAILURES.load(Ordering::Relaxed) > 0 {
+        uart.write_str(" (last status ");
+        uart.write_hex8(LAST_UPDATE_FAILURE.load(Ordering::Relaxed));
+        uart.write_str(")");
+    }
+    n(", updates refused ", &UPDATES_REFUSED);
+    n(", disconnect failures ", &DISCONNECT_FAILURES);
+    n(", encryption failures ", &ENCRYPTION_FAILURES);
+    n(", unknown events ", &UNKNOWN);
     match LAST_PAIRING.load(Ordering::Relaxed) {
         0 => {}
         1 => uart.write_str(", last pairing succeeded"),
@@ -453,6 +474,7 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
             pair_ask: PairAsk::default(),
             interval_ask: IntervalAsk::default(),
             scanner: scan::Scanner::default(),
+            seen: Seen::default(),
         };
         link.bring_up().await;
         if Radio::from_u8(STATE.load(Ordering::Relaxed)).start_failed() {
@@ -519,6 +541,26 @@ struct Link<'d> {
     pair_ask: PairAsk,
     interval_ask: IntervalAsk,
     scanner: scan::Scanner,
+    seen: Seen,
+}
+
+/// Codes of unknown events already named on the console: each is named once.
+#[derive(Default)]
+struct Seen {
+    codes: [u16; 16],
+    len: usize,
+}
+
+impl Seen {
+    /// True the first time `code` comes; once full, never.
+    fn first(&mut self, code: u16) -> bool {
+        if self.codes[..self.len].contains(&code) || self.len == self.codes.len() {
+            return false;
+        }
+        self.codes[self.len] = code;
+        self.len += 1;
+        true
+    }
 }
 
 impl Link<'_> {
@@ -1267,27 +1309,24 @@ impl Link<'_> {
 
     /// One packet from the chip: capture a reply, act on an event.
     fn handle(&mut self, p: &[u8]) {
-        let Some(event) = wrist_aci::parse(p) else {
-            return;
-        };
-        match event {
-            Event::CommandComplete { opcode, status, params } => {
-                if self.waiting_for == Some(opcode) {
+        match wrist_aci::parse(p) {
+            Event::CommandComplete { cmd_opcode, status, return_param_bytes: params } => {
+                if self.waiting_for == Some(cmd_opcode) {
                     let mut reply = Reply { status, params: [0; 64], len: params.len().min(64) };
                     reply.params[..reply.len].copy_from_slice(&params[..reply.len]);
                     self.reply = Some(reply);
                 }
             }
-            Event::CommandStatus { opcode, status } => {
-                if self.waiting_for == Some(opcode) {
+            Event::CommandStatus { cmd_opcode, status } => {
+                if self.waiting_for == Some(cmd_opcode) {
                     self.reply = Some(Reply { status, params: [0; 64], len: 0 });
                 }
             }
-            Event::Connected { handle, interval } => {
+            Event::LeConnectionComplete { handle, conn_interval, .. } => {
                 CONN_HANDLE.store(handle, Ordering::Relaxed);
                 self.pair_ask.connected(Instant::now().as_ticks(), embassy_time::TICK_HZ);
                 self.interval_ask.connected(Instant::now().as_ticks(), embassy_time::TICK_HZ);
-                if let Some((iv, lat)) = interval {
+                if let Some((iv, lat)) = conn_interval {
                     INTERVAL.store(iv, Ordering::Relaxed);
                     LATENCY.store(lat, Ordering::Relaxed);
                 }
@@ -1303,7 +1342,10 @@ impl Link<'_> {
                 self.advertised = None;
                 self.uart.write_line("[ble] connected");
             }
-            Event::ConnectionUpdate { interval: iv, latency: lat } => {
+            Event::LeConnectionFailed { .. } => {
+                CONNECT_FAILURES.fetch_add(1, Ordering::Relaxed);
+            }
+            Event::LeConnectionUpdateComplete { conn_interval: iv, peripheral_latency: lat, .. } => {
                 INTERVAL.store(iv, Ordering::Relaxed);
                 LATENCY.store(lat, Ordering::Relaxed);
                 self.uart.write_str("[ble] connection interval ");
@@ -1312,7 +1354,14 @@ impl Link<'_> {
                 self.uart.write_u32(u32::from(lat));
                 self.uart.write_line("");
             }
-            Event::Disconnected { reason } => {
+            Event::LeConnectionUpdateFailed { status, .. } => {
+                UPDATE_FAILURES.fetch_add(1, Ordering::Relaxed);
+                LAST_UPDATE_FAILURE.store(status, Ordering::Relaxed);
+            }
+            Event::DisconnectionComplete { status, reason, .. } => {
+                if status != 0 {
+                    DISCONNECT_FAILURES.fetch_add(1, Ordering::Relaxed);
+                }
                 STATE.store(STATE_IDLE, Ordering::Relaxed);
                 CONN_HANDLE.store(0, Ordering::Relaxed);
                 ENCRYPTED.store(false, Ordering::Relaxed);
@@ -1331,8 +1380,11 @@ impl Link<'_> {
                 self.uart.write_line(" (13 = the central hung up)");
                 self.readvertise = true;
             }
-            Event::Encryption { on } => {
-                let on = on != 0;
+            Event::EncryptionChange { status, enabled, .. } => {
+                if status != 0 {
+                    ENCRYPTION_FAILURES.fetch_add(1, Ordering::Relaxed);
+                }
+                let on = enabled != 0;
                 ENCRYPTED.store(on, Ordering::Relaxed);
                 if on {
                     self.pair_ask.settled();
@@ -1344,8 +1396,37 @@ impl Link<'_> {
                 self.uart.write_line(if on { "[ble] link encrypted" } else { "[ble] link encryption off" });
                 self.set_mirror();
             }
-            Event::Advertising { data } => self.scanner.advertising(data, self.uart),
+            Event::LeDataLengthChange { max_tx_octets, max_tx_time, max_rx_octets, max_rx_time, .. } => {
+                self.data_length((max_tx_octets, max_tx_time), (max_rx_octets, max_rx_time));
+            }
+            Event::LeAdvertisingReport { data } => self.scanner.advertising(data, self.uart),
             Event::Vendor { code, params } => self.vendor(code, params),
+            Event::LeUnknown { subevent_code } => self.unknown("[ble] LE event ", 0x3E, subevent_code),
+            Event::Unknown { code } => self.unknown("[ble] event ", code, 0),
+            Event::Malformed(_) => {
+                UNKNOWN.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// `[ble] data length TX 251 octets in 2120 us, RX 27 octets in 328 us`.
+    fn data_length(&self, tx: (u16, u16), rx: (u16, u16)) {
+        for (label, (octets, time)) in [("[ble] data length TX ", tx), (" us, RX ", rx)] {
+            self.uart.write_str(label);
+            self.uart.write_u32(u32::from(octets));
+            self.uart.write_str(" octets in ");
+            self.uart.write_u32(u32::from(time));
+        }
+        self.uart.write_line(" us");
+    }
+
+    /// Named on the console the first time its code comes.
+    fn unknown(&mut self, label: &str, code: u8, subevent: u8) {
+        UNKNOWN.fetch_add(1, Ordering::Relaxed);
+        if self.seen.first(u16::from_be_bytes([code, subevent])) {
+            self.uart.write_str(label);
+            self.uart.write_hex8(if code == 0x3E { subevent } else { code });
+            self.uart.write_line("");
         }
     }
 
@@ -1433,12 +1514,19 @@ impl Link<'_> {
                     self.attribute_modified(write);
                 }
             }
+            vendor::L2CAP_CONNECTION_UPDATE_RESP if rest.len() >= 4 => {
+                if L2capUpdateResponse::decode(rest).is_some_and(|r| !r.accepted()) {
+                    UPDATES_REFUSED.fetch_add(1, Ordering::Relaxed);
+                    self.uart.write_line("[ble] the central refused the interval request");
+                }
+            }
             vendor::GAP_PROC_COMPLETE => {
                 if let Some((code, status)) = wrist_aci::gap_proc_complete(rest) {
                     self.scanner.gap_proc_complete(code, status, self.uart);
                 }
             }
             _ => {
+                UNKNOWN.fetch_add(1, Ordering::Relaxed);
                 self.uart.write_str("[ble] vendor event ");
                 self.uart.write_hex8((ecode >> 8) as u8);
                 self.uart.write_hex8((ecode & 0xFF) as u8);
