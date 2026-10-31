@@ -128,6 +128,21 @@ fn chip_reset_by_itself_is_started_again() {
 }
 
 #[test]
+fn a_chip_that_keeps_resetting_itself_faults() {
+    let mut c = ready_chip(t(0));
+    for i in 1..=chip::RESETS_PER_HOUR as u64 {
+        let (next, a) = c.step(secs(i * 60), chip::Event::Reset(wrist_ble::ResetCause::Watchdog));
+        assert_eq!(a, Some(chip::Action::Start));
+        c = next.step(secs(i * 60 + 1), chip::Event::Ready(INFO)).0;
+    }
+    let (c, a) = c.step(secs(600), chip::Event::Reset(wrist_ble::ResetCause::Lockup));
+    assert_eq!(a, Some(chip::Action::Hold));
+    assert_eq!(c.state, Chip::Fault { cause: FaultCause::KeptResetting, retry_at: secs(600) + chip::FAULT_RETRY });
+    let state = wrist_ble_core::State { chip: c, ..wrist_ble_core::State::OFF };
+    assert!(line(&state, secs(601)).contains("phone=fault(kept-resetting)"), "{}", line(&state, secs(601)));
+}
+
+#[test]
 fn quick_retries_after_a_failed_establishment() {
     let c = ctx(&HR);
     let mut p = Peripheral::default().step(&c, t(0), Event::Want);

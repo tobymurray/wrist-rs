@@ -13,6 +13,10 @@ pub const ASK_PARAMS_AFTER: Millis = Millis(1_500);
 /// A numeric comparison the user has not answered is rejected after this long.
 pub const NUMERIC_DEADLINE: Millis = Millis::secs(60);
 
+/// A pairing with no outcome this long after its comparison was answered or timed out has failed:
+/// the Security Manager's own timeout (Core Vol 3 Part H §3.4).
+pub const PAIRING_OUTCOME: Millis = Millis::secs(30);
+
 /// No central start this soon after the phone connects or its parameters change.
 pub const SETTLE: Millis = Millis::secs(3);
 
@@ -129,6 +133,7 @@ impl Phone {
         let Phone::Up(l) = self else { return None };
         let numeric = match l.security {
             Security::Pairing { deadline, answered: false, .. } => Some(deadline),
+            Security::Pairing { deadline, answered: true, .. } => Some(deadline + PAIRING_OUTCOME),
             _ => None,
         };
         let params = match l.params {
@@ -210,6 +215,10 @@ impl PhoneLink {
                         *a = true;
                         out.push(Action::ConfirmNumeric(link, false));
                     }
+                }
+                if matches!(self.security, Security::Pairing { deadline, answered: true, .. } if now >= deadline + PAIRING_OUTCOME) {
+                    self.security = Security::Unsecured;
+                    self.params = Params::Open;
                 }
                 if self.ask_pair.is_some_and(|at| now >= at) {
                     self.ask_pair = None;

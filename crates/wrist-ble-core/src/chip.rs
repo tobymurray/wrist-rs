@@ -2,11 +2,14 @@
 
 use wrist_ble::{ChipInfo, Instant, Millis, ResetCause};
 
-/// Resets the core may ask for in any hour before it declares a fault.
+/// Resets in any hour, the core's and the chip's own alike, before the core declares a fault.
 pub const RESETS_PER_HOUR: usize = 3;
 
 /// A chip in fault is tried again this often, or when the user asks.
 pub const FAULT_RETRY: Millis = Millis::mins(60);
+
+/// A chip not ready this long after its reset has failed to start (HARDWARE.md: ready within 3 s).
+pub const START_WITHIN: Millis = Millis::secs(5);
 
 const HOUR: Millis = Millis::mins(60);
 
@@ -30,6 +33,8 @@ pub enum FaultCause {
     StartFailed,
     /// The chip refused even the safe baseline.
     BaselineRefused,
+    /// The chip reset itself more often than the budget allows.
+    KeptResetting,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,7 +74,7 @@ impl ChipMachine {
                 self.state = Chip::Off;
                 Some(Action::Hold)
             }
-            (Chip::Off, Event::RadioOn) | (Chip::Ready(_), Event::Reset(_)) | (Chip::Fault { .. }, Event::Retry) => {
+            (Chip::Off, Event::RadioOn) | (Chip::Fault { .. }, Event::Retry) => {
                 self.state = Chip::Starting { since: now };
                 Some(Action::Start)
             }
@@ -82,7 +87,9 @@ impl ChipMachine {
                 None
             }
             (Chip::Starting { .. }, Event::StartFailed) => Some(self.escalate(now, FaultCause::StartFailed)),
+            (Chip::Starting { since }, Event::Tick) if now >= since + START_WITHIN => Some(self.escalate(now, FaultCause::StartFailed)),
             (Chip::Ready(_), Event::BaselineRefused) => Some(self.escalate(now, FaultCause::BaselineRefused)),
+            (Chip::Ready(_) | Chip::Starting { .. }, Event::Reset(_)) => Some(self.escalate(now, FaultCause::KeptResetting)),
             _ => None,
         };
         (self, action)
@@ -92,6 +99,7 @@ impl ChipMachine {
     pub fn deadline(&self) -> Option<Instant> {
         match self.state {
             Chip::Fault { retry_at, .. } => Some(retry_at),
+            Chip::Starting { since } => Some(since + START_WITHIN),
             _ => None,
         }
     }
