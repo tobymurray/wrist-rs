@@ -757,7 +757,10 @@ def main():
         ap.error('--btmon needs Linux')
 
     out = a.out or ROOT / 'target/ble-suite' / time.strftime('%Y%m%d-%H%M%S')
-    out.mkdir(parents=True, exist_ok=False)
+    try:
+        out.mkdir(parents=True, exist_ok=False)
+    except FileExistsError:
+        sys.exit(f'ble-suite.py: {out} already exists; pick a new --out')
     sys.stdout = Tee(sys.stdout, out / 'suite.log')
     result = {'started': time.strftime('%Y-%m-%dT%H:%M:%S%z'), 'argv': sys.argv[1:], 'scenarios': []}
     try:

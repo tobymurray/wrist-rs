@@ -413,6 +413,12 @@ class Judgements(unittest.TestCase):
         self.assertFalse(result['passed'])
         self.assertEqual([l.split()[1] for l in lines if l.startswith('installed')], [result['argv'][1], result['argv'][3]])
 
+    def test_an_existing_out_is_one_line(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(sys, 'argv', ['ble-suite.py', '--out', d]):
+            with self.assertRaises(SystemExit) as end:
+                suite.main()
+        self.assertEqual(end.exception.code, f'ble-suite.py: {d} already exists; pick a new --out')
+
     def test_lateness_needs_the_probe_through_the_traffic(self):
         class Phone:
             async def connect(self):
