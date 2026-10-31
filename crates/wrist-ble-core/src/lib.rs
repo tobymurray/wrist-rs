@@ -4,6 +4,7 @@
 //! phone and each peripheral, the planner's interface, and the status every display renders.
 
 pub mod chip;
+pub mod engine;
 pub mod goals;
 pub mod invariants;
 pub mod peripheral;
@@ -12,7 +13,7 @@ pub mod plan;
 pub mod profile;
 pub mod status;
 
-use wrist_ble::{AdvParams, Instant};
+use wrist_ble::{Activities, Instant};
 
 use crate::chip::ChipMachine;
 use crate::goals::{Want, MAX_PERIPHERALS};
@@ -26,8 +27,8 @@ pub struct State {
     pub chip: ChipMachine,
     pub phone: Phone,
     pub phone_verdict: Verdict,
-    /// As the radio last reported it.
-    pub advertising: Option<AdvParams>,
+    /// What the radio runs, as its events last reported it.
+    pub radio: Activities,
     /// When connectable advertising last stopped, or the chip became ready without it.
     pub silent_since: Instant,
     pub peers: [Option<Peer>; MAX_PERIPHERALS],
@@ -47,7 +48,7 @@ impl State {
         chip: ChipMachine::OFF,
         phone: Phone::Off,
         phone_verdict: Verdict::NotWanted,
-        advertising: None,
+        radio: Activities::IDLE,
         silent_since: Instant(0),
         peers: [None; MAX_PERIPHERALS],
         plan: PlanHealth::Ok,

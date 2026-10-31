@@ -75,7 +75,7 @@ fn phone_unsecured_after_five_seconds() {
 #[test]
 fn phone_discoverable_with_the_interval() {
     let mut state = ready(t(0));
-    state.advertising = Some(ADV_995);
+    state.radio.advertising = Some(ADV_995);
     assert_eq!(status(&state, t(60_000)).phone, PhoneStatus::Discoverable { interval_ms: Some(995) });
     assert_eq!(phone_token(&state, t(60_000)), "discoverable(995ms)");
 }
@@ -205,6 +205,28 @@ fn peer_reconnecting_since_the_link_was_lost() {
     let state = hr(run(p, &c, t(2_000), t(14_000)));
     assert!(matches!(peer_state(&state, t(14_000)), PeerState::Reconnecting { since: Millis(12_000), .. }));
     assert_eq!(peer_token(&state, t(14_000)), "hr:reconnecting(12s)");
+}
+
+#[test]
+fn peer_rechecking_while_it_waits_to_look_for_the_service_again() {
+    let c = ctx(&HR);
+    let p = Peripheral::default().step(&c, t(0), Event::Want).step(&c, t(100), Event::LinkUp(sensor())).step(&c, t(200), Event::Discovered(false));
+    assert_eq!(peer_token(&hr(p), t(250)), "hr:rechecking");
+    let p = p.step(&c, t(300), Event::LinkDown(sensor(), Status::CONN_TERMINATED_BY_LOCAL_HOST));
+    let state = hr(p);
+    assert_eq!(peer_state(&state, t(2_300)), PeerState::Rechecking { left: Some(Millis::secs(8)) });
+    assert_eq!(peer_token(&state, t(2_300)), "hr:rechecking(8s)");
+    let state = hr(run(p, &c, t(300), t(10_400)));
+    assert!(matches!(peer_state(&state, t(10_400)), PeerState::Reconnecting { since: Millis(10_200), .. }), "{:?}", peer_state(&state, t(10_400)));
+}
+
+#[test]
+fn peer_reconnecting_after_a_procedure_failed_on_its_link() {
+    let c = ctx(&HR);
+    let p = Peripheral::default().step(&c, t(0), Event::Want).step(&c, t(100), Event::LinkUp(sensor())).step(&c, t(5_000), Event::ProcedureFailed);
+    assert_eq!(peer_token(&hr(p), t(5_000)), "hr:reconnecting(0s)");
+    let p = p.step(&c, t(5_100), Event::LinkDown(sensor(), Status::CONN_TERMINATED_BY_LOCAL_HOST));
+    assert_eq!(peer_token(&hr(p), t(7_100)), "hr:reconnecting(2s)");
 }
 
 #[test]

@@ -279,8 +279,8 @@ impl Fake {
             if let Some(e) = self.out.pop_front() {
                 return Some(e);
             }
-            let Reverse((at, _, _)) = *self.agenda.peek()?;
-            if at > until {
+            let next = self.agenda.peek().map(|Reverse((at, _, _))| *at);
+            if next.is_none_or(|at| at > until) {
                 self.now = self.now.max(until);
                 return None;
             }
@@ -295,6 +295,7 @@ impl Fake {
     /// The chip is reset and brought up: [`RadioEvent::Ready`] follows.
     pub fn start(&mut self) {
         self.wipe();
+        self.lose = 0;
         self.power = Power::Booting;
         let boot = self.rng.range(BOOT.0, BOOT.1);
         self.after(ms(boot), Do::Ready);
@@ -312,12 +313,13 @@ impl Fake {
             return;
         }
         self.wipe();
+        self.lose = 0;
         self.power = Power::Halted;
         self.notes.push((self.now, Note::Reset));
         self.emit(RadioEvent::ChipReset(cause));
     }
 
-    /// The next `n` events are lost; the chip says so.
+    /// The next `n` events are lost; the chip says so in the place of each.
     pub fn lose_events(&mut self, n: usize) {
         self.lose = n;
     }
@@ -347,6 +349,9 @@ impl Fake {
 
     /// The phone hangs up (0x13).
     pub fn phone_leaves(&mut self, i: usize) {
+        if i >= self.phones.len() {
+            return;
+        }
         self.phones[i].wants = false;
         if let Some(h) = self.phones[i].link {
             let at = ms(self.rng.range(5, 30));
@@ -356,6 +361,9 @@ impl Fake {
 
     /// The phone goes out of range: its link times out (0x08).
     pub fn phone_vanishes(&mut self, i: usize) {
+        if i >= self.phones.len() {
+            return;
+        }
         self.phones[i].wants = false;
         self.phones[i].gone = true;
         if let Some(l) = self.phones[i].link.and_then(|h| self.link(h)) {
@@ -379,6 +387,13 @@ impl Fake {
         let links: Vec<_> = self.links.iter().flatten().filter(|l| l.peer == Peer::Sensor(i)).map(|l| (l.handle, l.params.timeout)).collect();
         for (h, timeout) in links {
             self.after(Millis(u32::from(timeout.as_u16()) * 10), Do::Lost(h, Status::CONN_TIMEOUT));
+        }
+    }
+
+    /// The clock moves to `now` if nothing is due before it.
+    pub fn sync(&mut self, now: Instant) {
+        if self.out.is_empty() && self.agenda.peek().is_none_or(|Reverse((at, _, _))| *at > now) {
+            self.now = self.now.max(now);
         }
     }
 
@@ -1114,9 +1129,7 @@ impl Fake {
     fn emit(&mut self, e: RadioEvent) {
         if self.lose > 0 {
             self.lose -= 1;
-            if self.lose == 0 {
-                self.out.push_back((self.now, RadioEvent::EventsLost));
-            }
+            self.out.push_back((self.now, RadioEvent::EventsLost));
             return;
         }
         self.out.push_back((self.now, e));
