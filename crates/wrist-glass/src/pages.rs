@@ -108,12 +108,14 @@ pub struct Battery {
     pub external: Option<bool>,
 }
 
-/// What the about page shows: the image's version and build ID.
+/// What the about page shows: the image's version, build ID and CRC.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct About<'a> {
     pub version: &'a str,
     /// 12 hex digits, then `-dirty` for an uncommitted tree, or a name a build was given.
     pub build: &'a str,
+    /// The CRC-32 of the image's bytes, once known.
+    pub crc: Option<u32>,
 }
 
 const TITLE: i32 = 79;
@@ -124,6 +126,7 @@ const ABOUT_NAME: i32 = 109;
 const ABOUT_VERSION: i32 = 137;
 const ABOUT_BUILD: i32 = 160;
 const ABOUT_SUFFIX: i32 = 180;
+const ABOUT_CRC: i32 = 202;
 /// Twelve hex digits.
 const ID_CHARS: usize = 12;
 
@@ -151,7 +154,7 @@ pub fn compose_battery(battery: &Battery, locale: &Locale, faces: &Faces) -> (Gl
 }
 
 /// The version, and the build ID in upper case; a suffix after the ID's first twelve characters
-/// goes on a line of its own.
+/// goes on a line of its own, and the CRC on the next.
 #[must_use]
 pub fn compose_about(a: &About<'_>, locale: &Locale, faces: &Faces) -> (Glass, Short) {
     let mut b = Builder::new();
@@ -163,6 +166,14 @@ pub fn compose_about(a: &About<'_>, locale: &Locale, faces: &Faces) -> (Glass, S
     b.at(faces.id, ABOUT_BUILD, |l| push_upper(l, id));
     if !rest.is_empty() {
         b.at(faces.id, ABOUT_SUFFIX, |l| push_upper(l, rest.strip_prefix('-').unwrap_or(rest)));
+    }
+    if let Some(crc) = a.crc {
+        let mut text = *b"CRC 00000000";
+        for (i, digit) in text[4..].iter_mut().enumerate() {
+            *digit = b"0123456789ABCDEF"[(crc >> (28 - 4 * i) & 0xF) as usize];
+        }
+        let at = if rest.is_empty() { ABOUT_SUFFIX } else { ABOUT_CRC };
+        b.at(faces.id, at, |l| l.push_verbatim(core::str::from_utf8(&text).unwrap_or("")));
     }
     (b.glass, b.short)
 }

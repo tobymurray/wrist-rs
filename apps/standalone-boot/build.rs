@@ -3,7 +3,8 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-/// What the release recipe builds with, from `.cargo/config.toml` and `[profile.release]`.
+/// What the release recipe builds with, from `.cargo/config.toml` and `[profile.release]`;
+/// tools/test-release.py checks that they agree.
 const TARGET: &str = "thumbv8m.main-none-eabihf";
 const OPT_LEVEL: &str = "z";
 /// The profile settings Cargo takes from the environment that change the code; `--config` and
@@ -61,10 +62,15 @@ impl Variant {
         let mut v = Variant { shown: Vec::new(), hashed: String::new() };
         let var = |name: &str| env::var(name).unwrap_or_default();
 
+        // Against the features the recipe builds, `app_features` in release/toolchain.json: each
+        // one added by name, and each one left out as `no-<name>`.
         let mut features: Vec<_> = var("CARGO_CFG_FEATURE").split(',').filter(|f| !f.is_empty()).map(String::from).collect();
         features.sort();
-        if !features.is_empty() {
-            v.add(&features.join("."), &format!("features {}", features.join(",")));
+        let pinned = pinned_features(&manifest.join("../../release/toolchain.json"));
+        if features != pinned {
+            let added = features.iter().filter(|f| !pinned.contains(f)).cloned();
+            let dropped = pinned.iter().filter(|f| !features.contains(f)).map(|f| format!("no-{f}"));
+            v.add(&added.chain(dropped).collect::<Vec<_>>().join("."), &format!("features {}", features.join(",")));
         }
         if var("PROFILE") != "release" {
             v.add("dev", &format!("profile {} opt-level {}", var("PROFILE"), var("OPT_LEVEL")));
@@ -129,6 +135,23 @@ impl Variant {
     fn suffix(&self) -> String {
         if self.shown.is_empty() { String::new() } else { format!("+{}", self.shown.join(".")) }
     }
+}
+
+/// `app_features` of `toolchain`, sorted: a list of strings, read without a JSON parser.
+fn pinned_features(toolchain: &Path) -> Vec<String> {
+    println!("cargo::rerun-if-changed={}", toolchain.display());
+    let text = std::fs::read_to_string(toolchain).unwrap_or_default();
+    let list = text
+        .split_once("\"app_features\"")
+        .and_then(|(_, rest)| rest.split_once('[')?.1.split_once(']'))
+        .map_or("", |(list, _)| list);
+    let mut features: Vec<_> = list
+        .split(',')
+        .map(|f| f.trim().trim_matches('"').to_string())
+        .filter(|f| !f.is_empty())
+        .collect();
+    features.sort();
+    features
 }
 
 /// `CARGO_ENCODED_RUSTFLAGS` with each flag and its value as one word: `-Cname=value` and

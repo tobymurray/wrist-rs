@@ -5,6 +5,7 @@ Everything here shapes app.bin, loader.bin, image.bin or the installer, so this 
 of the build ID's inputs (release/build-inputs.txt); tools/release-build.py checks and
 packages around it.
 """
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -23,6 +24,18 @@ def inputs(root=ROOT):
     """The pathspecs of release/build-inputs.txt."""
     lines = (root/'release/build-inputs.txt').read_text().splitlines()
     return [line.strip() for line in lines if line.strip() and not line.startswith('#')]
+
+
+def app_features(root=ROOT):
+    """The image's features in the recipe's build, `app_features` in release/toolchain.json,
+    which apps/standalone-boot/build.rs also reads."""
+    return sorted(json.loads((root/'release/toolchain.json').read_text())['app_features'])
+
+
+def feature_args(app, root=ROOT):
+    """Cargo's arguments for the recipe's features of `app`, one of APPS."""
+    features = app_features(root) if app == 'standalone-boot' else []
+    return ['--features', ','.join(features)] if features else []
 
 
 def build_id(root=ROOT):
@@ -74,7 +87,7 @@ def with_map(env, map_path):
 def build_app(execute, env, app, binary, root=ROOT, target='thumbv8m.main-none-eabihf'):
     """Compile one of APPS and copy out its raw binary; returns its ELF."""
     cwd = root/'apps'/app
-    execute('cargo', 'build', '--locked', '--release', cwd=cwd, env=env)
+    execute('cargo', 'build', '--locked', '--release', *feature_args(app, root), cwd=cwd, env=env)
     elf = cwd/'target'/target/'release'/app
     execute('arm-none-eabi-objcopy', '-O', 'binary', elf, binary, env=env)
     return elf

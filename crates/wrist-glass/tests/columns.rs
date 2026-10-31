@@ -52,8 +52,8 @@ fn a_partial_redraw_is_the_full_redraw() {
         frames.push(compose(&Status::default(), &EN_GB, faces).0);
         frames.push(compose_battery(&Battery { soc_pct: Some(87), cell_mv: Some(4012), external: Some(false) }, &EN_GB, faces).0);
         frames.push(compose_battery(&Battery { soc_pct: Some(100), cell_mv: Some(4405), external: Some(true) }, &EN_GB, faces).0);
-        frames.push(compose_about(&About { version: "0.2.0", build: "5784ec72019b-dirty" }, &EN_GB, faces).0);
-        frames.push(compose_about(&About { version: "0.2.0", build: "5784ec72019b" }, &EN_GB, faces).0);
+        frames.push(compose_about(&About { version: "0.2.0", build: "5784ec72019b-dirty", crc: None }, &EN_GB, faces).0);
+        frames.push(compose_about(&About { version: "0.2.0", build: "5784ec72019b", crc: None }, &EN_GB, faces).0);
         frames.push(glass(faces, 9, 41, 30, Some(55)));
         frames.extend(Stress::ALL.into_iter().flat_map(|k| (0..12).map(move |step| compose_stress(k, step, faces).0)));
         for pair in frames.windows(2) {

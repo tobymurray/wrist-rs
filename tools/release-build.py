@@ -260,7 +260,7 @@ def package_licenses(base):
 
 # What ships, per licence tree: its workspace, the packages linked into it and their features.
 LINKED = [('installer', '.', ['wrist-flash', 'wrist-installer-ui'], ['wrist-flash/panic-handler', 'wrist-installer-ui/device']),
-          ('app', 'apps/standalone-boot', ['standalone-boot'], []),
+          ('app', 'apps/standalone-boot', ['standalone-boot'], firmware_build.app_features()),
           ('loader', 'apps/wrist-loader', ['wrist-loader'], [])]
 
 
@@ -364,6 +364,8 @@ def main():
     ap.add_argument('--container-id', default='native-uncontainerized')
     ap.add_argument('--allow-dirty', action='store_true', help='local candidates only')
     ap.add_argument('--skip-checks', action='store_true', help='local iteration only; recorded')
+    ap.add_argument('--test-build-id', action='store_true',
+                    help='also run tools/test-build-id.py, which builds the image several ways')
     a = ap.parse_args()
     require(re.fullmatch(r'\d{1,3}\.\d{1,3}\.\d{1,3}(?:-[A-Za-z0-9][A-Za-z0-9.-]*)?', a.version), 'unsafe version')
     require(all(int(x) <= 255 for x in a.version.split('-')[0].split('.')), 'version byte overflow')
@@ -415,14 +417,20 @@ def main():
         app_env = firmware_build.with_map(env, map_path)
         elf = firmware_build.build_app(execute, app_env, app, user / (bin_name + '.bin'), target=TARGET)
         if not a.skip_checks:
-            execute('cargo', 'clippy', '--locked', '--release', '--', '-D', 'warnings', cwd=ROOT/'apps'/app, env=app_env)
+            execute('cargo', 'clippy', '--locked', '--release', *firmware_build.feature_args(app), '--', '-D', 'warnings',
+                    cwd=ROOT/'apps'/app, env=app_env)
         validate_elf(elf, *(layout()[0] if bin_name == 'loader' else layout()[1]))
         copy(elf, debug / (bin_name + '.elf'))
         copy(map_path, debug / (bin_name + '.map'))
     if not a.skip_checks:
-        # The Bluetooth build is not packaged, but stays clean. The release ID is not its ID.
-        execute('cargo', 'clippy', '--locked', '--release', '--features', 'ble', '--', '-D', 'warnings',
-                cwd=ROOT/'apps'/'standalone-boot', env={k: v for k, v in env.items() if k != 'WRIST_RELEASE_BUILD_ID'})
+        # Each feature set the image is not released with stays clean too; the release ID is not theirs.
+        for features in [[], ['ble']]:
+            if features != firmware_build.app_features():
+                execute('cargo', 'clippy', '--locked', '--release', *(['--features', ','.join(features)] if features else []),
+                        '--', '-D', 'warnings', cwd=ROOT/'apps'/'standalone-boot',
+                        env={k: v for k, v in env.items() if k != 'WRIST_RELEASE_BUILD_ID'})
+    if a.test_build_id:
+        execute(sys.executable, ROOT/'tools/test-build-id.py')
     first = user / 'first-install/Apps/ImageInstaller'
     first.mkdir(parents=True)
     firmware_build.combine(execute, env, user / 'loader.bin', user / 'app.bin', first / 'image.bin')
@@ -479,9 +487,15 @@ def main():
     for reason in blockers:
         print('Not releasable:', reason)
     require(not release or not blockers, f'v{a.version} is not the gated build: ' + '; '.join(blockers))
+    # Cargo hashes the absolute paths of the crates outside the image's workspace into its symbols,
+    # so only a checkout at /src, as the build image mounts it, rebuilds the published bytes.
+    at_src = ROOT == Path('/src')
+    if not at_src:
+        print('Not releasable: the checkout is not at /src, so its binaries differ from the build image\'s')
     manifest = {'schema': 1, 'version': a.version, 'build_id': build_id, 'source_commit': commit, 'tags': tags, 'dirty': dirty,
-                'release_ready': not blockers and not dirty and not a.skip_checks, 'release_gate': gate, 'configuration': 'default features; UNAcore + LS012 + original modules',
-                'toolchain': CONFIG, 'features': {'standalone-boot': [], 'wrist-loader': [], 'wrist-flash': ['panic-handler'], 'wrist-installer-ui': ['device']}, 'container_id': a.container_id, 'checks_skipped': a.skip_checks,
+                'release_ready': not blockers and not dirty and not a.skip_checks and at_src, 'checkout_at_src': at_src, 'release_gate': gate,
+                'configuration': f'features: {", ".join(firmware_build.app_features()) or "none"}; UNAcore + LS012 + original modules',
+                'toolchain': CONFIG, 'features': {'standalone-boot': firmware_build.app_features(), 'wrist-loader': [], 'wrist-flash': ['panic-handler'], 'wrist-installer-ui': ['device']}, 'container_id': a.container_id, 'checks_skipped': a.skip_checks,
                 'tracked_diff_and_recipe_sha256': hashlib.sha256(subprocess.check_output(['git', 'diff', '--binary', 'HEAD']) + (ROOT/'tools/release-build.py').read_bytes() + (ROOT/'tools/firmware_build.py').read_bytes() + (ROOT/'release/toolchain.json').read_bytes()).hexdigest(),
                 'tools': {t: output(*cmd) for t, cmd in {
                     'rustc': ['rustc', '-Vv'], 'nightly': ['rustc', '+'+CONFIG['nightly'], '-Vv'],

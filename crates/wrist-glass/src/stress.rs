@@ -145,7 +145,7 @@ pub fn compose_stress(kind: Stress, step: u32, faces: &Faces) -> (Glass, Short) 
                     compose(&Status { clock, date, soc_pct: Some(56) }, &EN_GB, faces)
                 }
                 1 => compose_battery(&Battery { soc_pct: Some(56), cell_mv: Some(3871), external: Some(false) }, &EN_GB, faces),
-                _ => compose_about(&About { version: "0.2.0", build: "5784ec72019b" }, &EN_GB, faces),
+                _ => compose_about(&About { version: "0.2.0", build: "5784ec72019b", crc: None }, &EN_GB, faces),
             };
         }
     }

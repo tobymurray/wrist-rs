@@ -83,10 +83,12 @@ fn every_reading_fits_the_battery_page() {
 fn the_about_page_fits() {
     for (faces, l) in FAMILIES.iter().flat_map(|f| BUILT_IN.iter().map(move |l| (f, l))) {
         for build in ["5784ec72019b", "5784ec72019b-dirty", "888888888888-dirty"] {
-            whole(&format!("{} {} {build}", faces.name, l.tag), compose_about(&About { version: "100.100.100", build }, l, faces));
+            for crc in [None, Some(0x8888_8888), Some(0xDDDD_DDDD)] {
+                whole(&format!("{} {} {build} {crc:?}", faces.name, l.tag), compose_about(&About { version: "100.100.100", build, crc }, l, faces));
+            }
         }
         // A feature build outside the recipe.
         let version = "0.3.0+ble.local";
-        whole(&format!("{} {} {version}", faces.name, l.tag), compose_about(&About { version, build: "5784ec72019b" }, l, faces));
+        whole(&format!("{} {} {version}", faces.name, l.tag), compose_about(&About { version, build: "5784ec72019b", crc: None }, l, faces));
     }
 }

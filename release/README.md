@@ -24,20 +24,40 @@ gate's record, docs, the site or host tools rebuilds the same bytes
 the tree as it stands, then `-dirty`. [`tools/firmware_build.py`](../tools/firmware_build.py)
 holds the part of the recipe that shapes the binaries, and computes the ID.
 
-That ID is the recipe's build's: no features, the pinned compiler and target, the release
-profile as [`Cargo.toml`](../apps/standalone-boot/Cargo.toml) sets it, and the recipe's
-flags. Any other build of the image hashes how it differs into its own ID, in
+That ID is the recipe's build's: the features `app_features` in
+[`toolchain.json`](toolchain.json) names (none yet), the pinned compiler and target, the
+release profile as [`Cargo.toml`](../apps/standalone-boot/Cargo.toml) sets it, and the
+recipe's flags. Any other build of the image hashes how it differs into its own ID, in
 [`build.rs`](../apps/standalone-boot/build.rs), and names the differences after the
-version, as SemVer build metadata: `+` and each enabled feature, `opt-<level>` or `dev`,
-`profile` for a `CARGO_PROFILE_RELEASE_*` override, `target`, `rustc` for another
-compiler, `rustflags`, and `local` for a build outside the recipe, whose panic messages and
-symbol names hold the builder's paths. So `cargo build --release --features ble` prints
+version, as SemVer build metadata: `+` and each feature beyond `app_features`, `no-<feature>`
+for each one of them left out, `opt-<level>` or `dev`, `profile` for a
+`CARGO_PROFILE_RELEASE_*` override, `target`, `rustc` for another compiler, `rustflags`, and
+`local` for a build outside the recipe. So `cargo build --release --features ble` prints
 `standalone-boot 0.3.0+ble.local build <its own ID>`, and the report's `[step] build`
 line adds the source hash it came from, `(<firmware hash>+ble.local)`.
-`WRIST_RELEASE_BUILD_ID` is for the recipe's build only: build.rs refuses it on any other.
+`WRIST_RELEASE_BUILD_ID` is for the recipe's features only: build.rs refuses it on any
+other build, and the recipe and the gate pass `app_features` as `--features`.
+build.rs's target and opt-level are copies, which
+[`tools/test-release.py`](../tools/test-release.py) checks against `.cargo/config.toml` and
+`[profile.release]`.
+
+`local` stays in the hash because a build's paths change its bytes. Panic messages hold the
+source paths, and Cargo hashes each path crate outside the image's workspace, everything
+under `crates/` and `vendor/`, into its symbols by its absolute path, which moves code.
+`--remap-path-prefix` rewrites the messages but cannot undo the hashing, so two checkouts
+of one commit build two images. Only the recipe's image, which mounts every checkout at
+`/src`, is the same from anywhere; a native run of the recipe from elsewhere records
+`checkout_at_src: false` in `manifest.json` and is never release-ready.
+
 Profile settings given by `--config` or a parent directory's `.cargo/config.toml`, a
 feature of a dependency given as `--features crate/feature`, and edits to the crates under
-Cargo's home are not seen; a release's `manifest.json` records each file's SHA-256.
+Cargo's home are not seen. The image's CRC covers those too: at boot it hashes its own
+bytes in flash, from the vector table to the end of `.data`'s load image, which is exactly
+app.bin, and `version`, `report` and the about page show it as `crc XXXXXXXX`, the CRC-32
+that [`tools/wrist-update.py`](../tools/wrist-update.py) prints for that app.bin.
+`manifest.json`'s `image_crc32` is over image.bin, the loader padded with `FF` to 32 KiB
+and then app.bin, so it is app.bin's CRC continued from the padded loader's:
+`zlib.crc32(app, zlib.crc32(loader_padded))`, not the image's own CRC.
 
 ## Build locally
 
@@ -85,9 +105,8 @@ In the same build image, a clean build of a commit is meant to rebuild byte for 
 any checkout path: the recipe fixes the paths, time and timezone the binaries embed
 (`environment` in [`tools/firmware_build.py`](../tools/firmware_build.py)), and the zips
 their timestamps, modes and order. The image mounts every checkout at `/src`, which matters
-beyond the remapped paths: Cargo hashes the absolute path of each crate under `crates/`
-and `vendor/` into its symbols, which moves code. A native run of the recipe from two
-paths gives two images under one ID.
+beyond the remapped paths ([above](#the-recipe)): a native run of the recipe from two
+paths gives two images under one ID, and so is marked `checkout_at_src: false`.
 
 The image is pinned by digest because building [`Dockerfile`](Dockerfile) again gives a new
 image, however closely its pins narrow it.

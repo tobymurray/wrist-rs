@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Package safety checks without firmware compilation or hardware."""
+import argparse
 import importlib.util
 import json
 import os
@@ -317,6 +318,22 @@ class BuildId(unittest.TestCase):
         digest = subprocess.check_output(['git', 'hash-object', '--stdin'], cwd=self.d, input=listing).decode()
         self.assertEqual(r.firmware_build.build_id(self.d), digest[:12])
 
+    def test_build_rs_pins_what_the_recipe_builds(self):
+        """build.rs marks a build whose target or opt-level is not the recipe's; its copies agree."""
+        app = r.ROOT/'apps/standalone-boot'
+        build_rs = (app/'build.rs').read_text()
+        pin = lambda name: re.search(rf'(?m)^const {name}: &str = "([^"]*)";$', build_rs)[1]
+        config = (app/'.cargo/config.toml').read_text()
+        self.assertEqual(re.search(r'(?ms)^\[build\]$.*?^target = "([^"]*)"$', config)[1], pin('TARGET'))
+        self.assertEqual(pin('TARGET'), r.CONFIG['target'])
+        profile = re.search(r'(?ms)^\[profile\.release\]$(.*?)^\[', (app/'Cargo.toml').read_text())[1]
+        self.assertEqual(re.search(r'(?m)^opt-level = "([^"]*)"$', profile)[1], pin('OPT_LEVEL'))
+        # The features are read from toolchain.json, not copied.
+        self.assertIn('release/toolchain.json', build_rs)
+        self.assertNotRegex(build_rs, r'(?m)^const \w*FEATURES')
+        self.assertEqual(r.firmware_build.app_features(), sorted(r.CONFIG['app_features']))
+        self.assertEqual(r.firmware_build.feature_args('wrist-loader'), [])
+
 
 class BuildImage(unittest.TestCase):
     """CI and a local build run the recipe the same way, in the image toolchain.json pins."""
@@ -364,7 +381,9 @@ class BuildImage(unittest.TestCase):
         self.assertNotIn('docker ', workflow)
         self.assertIn('release-docker.py --pins', workflow)
         self.assertIn('release-docker.py --sdk "$PWD/sdk" --out "$RUNNER_TEMP/firmware" --version "$version" \\\n'
-                      '            --cargo-home "$PWD/cargo-home"\n', workflow)
+                      '            --cargo-home "$PWD/cargo-home" "${extra[@]}"\n', workflow)
+        # Only a pull request adds the build-ID builds.
+        self.assertIn('if [ "$EVENT" = pull_request ]; then extra=(--test-build-id); fi\n', workflow)
         image = 'ghcr.io/tobymurray/wrist-rs-build@sha256:' + 'ab' * 32
         argv = self.d.command(image, Path('/w/sdk'), Path('/runner/temp/firmware'), ['--version', '1.2.3'],
                               image, 1001, 118, root=Path('/w/source'))
@@ -489,6 +508,20 @@ class GateScript(unittest.TestCase):
                          ['no refusal', 'dry run passed'])
         self.assertEqual(self.failed(DRY_RUN.replace('unlock test: 3', 'unlock test: 1')), ['unlock and re-unlock'])
         self.assertFalse(all(ok for ok, _ in gate.witness_checks(DRY_RUN, '00000000')))
+
+    def test_version_names_the_build_and_the_app_bin(self):
+        with tempfile.TemporaryDirectory() as d:
+            g = gate.Gate(argparse.Namespace())
+            g.log = lambda text: None
+            g.pkg = Path(d)
+            (g.pkg/'app.bin').write_bytes(b'\x00' * 64)
+            crc = f'{zlib.crc32(bytes(64)):08X}'
+            for build, line, ok in [('20b5b6c11988', f'build 20b5b6c11988 crc {crc}', True),
+                                    ('20b5b6c11988', f'build 20b5b6c11988-dirty crc {crc}', False),
+                                    ('20b5b6c11988', 'build 20b5b6c11988 crc 00000000', False),
+                                    ('20b5b6c11988', 'build 20b5b6c11988', False)]:
+                g.booted = lambda: f'[boot] state boot\n[usb] standalone-boot 0.3.0 {line}\n'
+                self.assertEqual(g.version_is(4, build), ok, line)
 
     def test_wake_rate(self):
         power = ('[power] last on battery: 11 min, mean -560 uA over 12 readings\n'

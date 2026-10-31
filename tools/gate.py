@@ -22,6 +22,7 @@ import sys
 import threading
 import time
 import zipfile
+import zlib
 
 try:
     from termios import error as TermiosError
@@ -375,7 +376,7 @@ class Gate:
         if not self.check(3, here == manifest['build_id'], f'this checkout builds {manifest["build_id"]} (it builds {here})'):
             sys.exit('check out the candidate\'s commit first')
         app = ROOT / 'apps/standalone-boot'
-        subprocess.run(['cargo', 'build', '--release'], cwd=app, check=True,
+        subprocess.run(['cargo', 'build', '--release', *firmware_build.feature_args('standalone-boot')], cwd=app, check=True,
                        env=dict(os.environ, WRIST_RELEASE_BUILD_ID='gate-test'))
         objcopy = next(filter(None, map(shutil.which, ['llvm-objcopy', 'arm-none-eabi-objcopy', 'rust-objcopy'])))
         self.gate_test = self.out / 'gate-test.bin'
@@ -388,10 +389,15 @@ class Gate:
         self.save(f'step{step}-update-{int(time.time())}.txt', out)
         return rc == 0 and ('done: state boot' in out or '--no-reset' in flags and '[update] ok' in out)
 
+    def app_crc(self):
+        """The CRC-32 of the candidate's app.bin, which the image prints as `crc` in `version`."""
+        return f'{zlib.crc32((self.pkg / "app.bin").read_bytes()):08X}'
+
     def version_is(self, step, build):
         text = self.booted()
         self.check(step, 'state boot' in text, 'state boot')
-        return self.check(step, f'build {build}' in text, f'the build is {build}')
+        ok = self.check(step, re.search(rf'build {re.escape(build)}(?: |$)', text, re.M) is not None, f'the build is {build}')
+        return self.check(step, f'crc {self.app_crc()}' in text, f'the image is app.bin, CRC {self.app_crc()}') and ok
 
     def step4(self):
         self.refusals_and_update()
@@ -545,7 +551,7 @@ class Gate:
         cargo = (ROOT / 'apps/standalone-boot/Cargo.toml').read_text()
         version = re.search(r'(?m)^version\s*=\s*"([^"]*)"', cargo)[1]
         for button, page, seen in [('Down', 'battery', 'the charge, the voltage and input USB'),
-                                   ('Up', 'about', f'wrist-rs, {version} and {self.m["build_id"].upper()}')]:
+                                   ('Up', 'about', f'wrist-rs, {version}, {self.m["build_id"].upper()} and CRC {self.app_crc()}')]:
             mark = len(text())
             short(button, f'[page] {page}')
             self.ask(8, f'the {page} page: {seen}?')

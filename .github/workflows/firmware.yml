@@ -60,13 +60,17 @@ jobs:
         env:
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
+          EVENT: ${{ github.event_name }}
         run: |
           set -euo pipefail
           commit=$(git -C source rev-parse HEAD)
           version="0.0.0-candidate.${commit:0:12}"
           if [ "$REF_TYPE" = tag ]; then version="${REF_NAME#v}"; fi
+          # A pull request also builds the image several ways, to check each has its own ID.
+          extra=()
+          if [ "$EVENT" = pull_request ]; then extra=(--test-build-id); fi
           python3 source/tools/release-docker.py --sdk "$PWD/sdk" --out "$RUNNER_TEMP/firmware" --version "$version" \
-            --cargo-home "$PWD/cargo-home"
+            --cargo-home "$PWD/cargo-home" "${extra[@]}"
       # Incremental state is redone for every change, so it is not kept.
       - name: Trim the build cache
         if: steps.cache.outcome == 'success' && steps.cache.outputs.cache-hit != 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'

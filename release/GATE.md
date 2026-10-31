@@ -28,7 +28,8 @@ sections in the order below: A, C, D when it runs, then B.
 2. Download the stock `.ota` of the version the release notes name and check it as
    INSTALL.md says. Charge the watch above 50 %.
 3. Build a second copy of the image that names itself `gate-test` in place of the build
-   ID, for step 12:
+   ID, for step 12, with the release's features, `app_features` in
+   [`toolchain.json`](toolchain.json) (`--features ble,...`; none today):
 
    ```sh
    cd apps/standalone-boot

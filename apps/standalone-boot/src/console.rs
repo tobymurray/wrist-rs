@@ -558,7 +558,9 @@ pub fn command(cmd: &[u8], flash: &'static FlashMutex) {
             uart.write_str("[usb] standalone-boot ");
             uart.write_str(crate::version::VERSION);
             uart.write_str(" build ");
-            uart.write_line(crate::version::BUILD_ID);
+            uart.write_str(crate::version::BUILD_ID);
+            crate::version::write_crc(uart);
+            uart.write_line("");
         }
         b"reset" => {
             uart.write_line("[usb] resetting now");

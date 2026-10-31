@@ -409,7 +409,7 @@ async def console(s, usb, phone, build, a):
         if not s.check(link, f'session {i}: attached over the air'):
             continue
         s.check(await link.command('ping', r'\bpong\b'), f'session {i}: ping answered')
-        s.check(await link.command('version', rf'build {re.escape(build)}\b'), f'session {i}: version is build {build}')
+        s.check(await link.command('version', rf'build {re.escape(build)}(?: |$)'), f'session {i}: version is build {build}')
         s.check(await link.command('ble', r'\[ble\] connected, encrypted'), f'session {i}: ble reports the link encrypted')
         await link.close()
         reason = await hang_up(usb, mark)
@@ -552,7 +552,7 @@ async def update(s, usb, phone, build, a):
     s.data['seconds_to_state_boot'] = took
     s.check(kept, f'the update over the air reached `state boot` ({took} s)')
     s.check(not [l for _, l in usb.since(mark) if 'revert' in l], 'the loader never reverted')
-    s.check(await usb.ask('version', rf'build {re.escape(build)}$', 10), f'the watch runs build {build} after it')
+    s.check(await usb.ask('version', rf'build {re.escape(build)}(?: |$)', 10), f'the watch runs build {build} after it')
     s.check(await usb.ask('ble', r'\[ble\] (advertising as \S+|connected), ', 5), 'the radio is back on after the reset')
 
 
