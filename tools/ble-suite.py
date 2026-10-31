@@ -202,6 +202,14 @@ class Usb:
         self.log.flush()
 
     def _read(self):
+        try:
+            self._reading()
+        finally:
+            if self.s:
+                self.s.close()
+                self.s = None
+
+    def _reading(self):
         buf = b''
         while not self.stopping.is_set():
             if self.s is None:
@@ -228,11 +236,11 @@ class Usb:
                 self._note(line.decode('utf-8', 'replace').rstrip('\r'))
 
     def close(self):
+        """Stop reading; the reader closes the port itself, even mid-open."""
         self.stopping.set()
-        self.thread.join(2)
-        if self.s:
-            self.s.close()
-            self.s = None
+        self.thread.join(10)
+        if self.thread.is_alive():
+            print('-- the console reader is still busy; it closes the port when it returns', flush=True)
 
     def mark(self):
         return len(self.lines)

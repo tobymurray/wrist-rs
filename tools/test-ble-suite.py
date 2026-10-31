@@ -445,6 +445,32 @@ class Judgements(unittest.TestCase):
         self.assertFalse(expired.passed)
         self.assertIn('the probe ran through the traffic (0 s of 2 s', ' '.join(c['what'] for c in expired.checks))
 
+    def test_closing_the_console_mid_open_leaves_no_port_open(self):
+        opened = []
+
+        class Port:
+            def __init__(self, *a, **kw):
+                self.closed = False
+                opened.append(self)
+
+            def read(self, n):
+                time.sleep(0.01)
+                return b''
+
+            def close(self):
+                self.closed = True
+
+        def settle(s):
+            time.sleep(2.5)
+            return s
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(suite.wrist_port, 'find', return_value='/dev/watch'), \
+                mock.patch.object(suite.serial, 'Serial', Port), mock.patch.object(suite.wrist_port, 'settle', settle):
+            usb = suite.Usb(None, Path(d) / 'console.log')
+            time.sleep(0.2)
+            usb.close()
+            self.assertFalse(usb.thread.is_alive())
+        self.assertEqual([p.closed for p in opened], [True])
+
 
 if __name__ == '__main__':
     unittest.main()
