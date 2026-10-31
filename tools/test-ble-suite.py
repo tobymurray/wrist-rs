@@ -312,6 +312,42 @@ class Judgements(unittest.TestCase):
         self.assertIsNone(result['failed_to_establish'])
         self.assertIn('btmon capture failed', shown.getvalue())
 
+    def test_holders_the_suite_cannot_see(self):
+        listdir = os.listdir
+
+        def proc(path):
+            if path == '/proc':
+                return ['1', '2']
+            if path == '/proc/1/fd':
+                raise PermissionError(path)
+            return [] if path.startswith('/proc/') else listdir(path)
+        ps = ['1 sudo sh -c exec 3</dev/ttyACM0; sleep 120', '2 bash']
+        with mock.patch.object(suite.os, 'listdir', proc), mock.patch.object(suite.Linux, 'ps', lambda self: ps):
+            with mock.patch.object(suite.Linux, 'fuser', lambda self, port: ['1']):
+                self.assertEqual(suite.Linux().holders('/dev/ttyACM0'), ps[:1])
+            with mock.patch.object(suite.Linux, 'fuser', lambda self, port: None), \
+                    mock.patch('sys.stdout', io.StringIO()) as shown:
+                self.assertEqual(suite.Linux().holders('/dev/ttyACM0'), [])
+            self.assertIn('can\'t see 1 processes of other users', shown.getvalue())
+        with tempfile.TemporaryDirectory() as d:
+            with fake_sudo(d, 'echo "sudo: a password is required" >&2; exit 1\n'):
+                self.assertIsNone(suite.Linux().fuser('/dev/ttyACM0'))
+            with fake_sudo(d, 'echo " 4242"; echo "/dev/ttyACM0:" >&2\n'):
+                self.assertEqual(suite.Linux().fuser('/dev/ttyACM0'), ['4242'])
+            with fake_sudo(d, 'echo "sudo: fuser: command not found" >&2; exit 1\n'):
+                self.assertIsNone(suite.Linux().fuser('/dev/ttyACM0'))
+
+    def test_macos_holders_include_the_tty_twin(self):
+        asked = []
+
+        def lsof(argv, **kw):
+            asked.append(argv)
+            return subprocess.CompletedProcess(argv, 0, '7\n', '')
+        with mock.patch.object(suite.subprocess, 'run', lsof), mock.patch.object(suite.os.path, 'exists', return_value=True), \
+                mock.patch.object(suite.Host, 'ps', lambda self: ['7 screen /dev/tty.usbmodem101']):
+            self.assertEqual(suite.Host().holders('/dev/cu.usbmodem101'), ['7 screen /dev/tty.usbmodem101'])
+        self.assertEqual(asked, [['lsof', '-t', '/dev/cu.usbmodem101', '/dev/tty.usbmodem101']])
+
 
 if __name__ == '__main__':
     unittest.main()

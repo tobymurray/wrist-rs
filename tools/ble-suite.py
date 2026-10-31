@@ -105,7 +105,9 @@ class Host:
         return [p for p in self.ps() if OTHER_TOOLS.search(p) and int(p.split()[0]) not in mine]
 
     def holders(self, port):
-        out = subprocess.run(['lsof', '-t', port], capture_output=True, text=True).stdout
+        twin = re.sub(r'/(cu|tty)\.', lambda m: '/tty.' if m[1] == 'cu' else '/cu.', port, count=1)
+        nodes = [port] + ([twin] if twin != port and os.path.exists(twin) else [])
+        out = subprocess.run(['lsof', '-t'] + nodes, capture_output=True, text=True).stdout
         return [p for p in self.ps() if p.split()[0] in out.split()]
 
     def capture(self, path):
@@ -115,10 +117,13 @@ class Host:
 class Linux(Host):
     def holders(self, port):
         target = os.path.realpath(port)
-        found = []
+        found, unseen = [], []
         for pid in filter(str.isdigit, os.listdir('/proc')):
             try:
                 fds = os.listdir(f'/proc/{pid}/fd')
+            except PermissionError:
+                unseen.append(pid)
+                continue
             except OSError:
                 continue
             for fd in fds:
@@ -128,7 +133,23 @@ class Linux(Host):
                         break
                 except OSError:
                     pass
+        if unseen:
+            asked = self.fuser(port)
+            if asked is None:
+                print(f'  pre-flight: can\'t see {len(unseen)} processes of other users (no `sudo -n fuser`); '
+                      f'if one has {port} open, stop it', flush=True)
+            found += asked or []
         return [p for p in self.ps() if p.split()[0] in found]
+
+    def fuser(self, port):
+        """The pids holding `port`, by `sudo -n fuser`, or None when that can't be asked."""
+        try:
+            p = subprocess.run(['sudo', '-n', 'fuser', port], capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if p.stderr.startswith('sudo:'):
+            return None
+        return re.findall(r'\d+', p.stdout)
 
     def capture(self, path):
         sudo = [] if os.geteuid() == 0 else ['sudo', '-n']
