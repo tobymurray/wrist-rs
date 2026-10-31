@@ -10,6 +10,7 @@ mod console;
 mod crash;
 mod flash;
 mod glass;
+mod haptic;
 mod lcd;
 mod mmio;
 mod modules;
@@ -437,6 +438,8 @@ fn main() -> ! {
         spawn(spawner, "heartbeat", heartbeat(flash).unwrap());
         spawn(spawner, "report", report(handoff, measured_hz, watchdog).unwrap());
         spawn(spawner, "display", display(pwr_int).unwrap());
+        #[cfg(feature = "haptic")]
+        spawn(spawner, "haptic", haptic::serve().unwrap());
         if let Some(pins) = usb {
             spawn(spawner, "console", console::service(pins, flash).unwrap());
         }
