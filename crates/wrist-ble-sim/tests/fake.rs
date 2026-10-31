@@ -137,6 +137,19 @@ fn a_discovery_ends_by_itself_at_10_2_s() {
 }
 
 #[test]
+fn a_discovery_restarted_runs_its_own_time() {
+    let mut f = ready(1);
+    f.submit(Op::Scan(Some(SCAN_30))).unwrap();
+    run(&mut f, 2_000);
+    f.submit(Op::Scan(None)).unwrap();
+    run(&mut f, 3_000);
+    let t0 = f.now();
+    f.submit(Op::Scan(Some(SCAN_30))).unwrap();
+    let done = run(&mut f, 40_000).into_iter().find(|(_, e)| *e == RadioEvent::ScanDone).unwrap();
+    assert_eq!(done.0.since(t0), Millis(10_200));
+}
+
+#[test]
 fn a_stopped_discovery_reports_nothing_more() {
     let mut f = ready(1);
     f.sensor_on(Sensor::strap(1));
