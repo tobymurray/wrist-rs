@@ -474,11 +474,12 @@ pub fn command(cmd: &[u8], flash: &'static FlashMutex) {
     match cmd.strip_suffix(b" ").unwrap_or(cmd) {
         b"help" | b"?" => {
             uart.write_line(
-                "[usb] commands: help ping uptime version boot reset report usblog time [set YYYY-MM-DD HH:MM:SS|zone <min> [<utc s> <min>]...] power [sleep on|off|status|clear-crash] page [lag [s]|vcom [auto|low|high]|light on|off|dump|stress [...]] press <up|down|back|select> [long] modules [force view|link1] flash survey|ecc-test staging <len>|<off> <n> update <len> <crc32> loader <len> <crc32>",
+                "[usb] commands: help ping uptime version boot reset report usblog time [set YYYY-MM-DD HH:MM:SS|zone <min> [<utc s> <min>]...] alarm [HH:MM|on|off|test] power [sleep on|off|status|clear-crash] page [lag [s]|vcom [auto|low|high]|light on|off|dump|stress [...]] press <up|down|back|select> [long] modules [force view|link1] flash survey|ecc-test staging <len>|<off> <n> update <len> <crc32> loader <len> <crc32>",
             );
             uart.write_line("[usb]   boot: the loader's state word; update: stream a new application (tools/wrist-update.py)");
             uart.write_line("[usb]   time set: the calendar in local time (tools/wrist-time.py sends the host's)");
             uart.write_line("[usb]   time zone: minutes east of UTC, then up to two changes as UTC seconds since 1970 and the new offset");
+            uart.write_line("[usb]   alarm: one a day at a local HH:MM, rung on the face; on and off keep the time; test rings it now");
             uart.write_line("[usb]   report: the full report (clocks, RTC, USB registers and log), written in pieces");
             uart.write_line("[usb]   reset: software reset; hold Select through it for the bootloader's USB mode");
             uart.write_line("[usb]   power: the input, the last stretch on battery, sleep counters, the retained crash record");
@@ -503,6 +504,7 @@ pub fn command(cmd: &[u8], flash: &'static FlashMutex) {
         rest if rest == b"modules" || rest.starts_with(b"modules ") => crate::modules::command(&rest[7..], uart),
         b"rtc" | b"time" => crate::rtc::write_report(uart),
         rest if rest == b"power" || rest.starts_with(b"power ") => crate::power::command(&rest[5..], uart),
+        rest if rest == b"alarm" || rest.starts_with(b"alarm ") => crate::alarm::command(&rest[5..], uart),
         set if set.starts_with(b"time set ") => {
             let text = core::str::from_utf8(&set[9..]).unwrap_or("");
             match crate::rtc::parse_civil(text) {
@@ -513,6 +515,7 @@ pub fn command(cmd: &[u8], flash: &'static FlashMutex) {
                             crate::rtc::note_set(crate::rtc::Source::Host, civil);
                             // A bare `time set` says nothing about the zone; `time zone` follows it.
                             crate::rtc::clear_zone();
+                            crate::alarm::clock_set(civil);
                             uart.write_str("[rtc] set; running from ");
                             uart.write_line(src);
                         }
