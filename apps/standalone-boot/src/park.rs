@@ -34,6 +34,7 @@ pub struct Pins {
     pub body_rst: Peri<'static, peripherals::PF13>,
     pub body_cs: Peri<'static, peripherals::PG12>,
     pub altimeter_en: Peri<'static, peripherals::PG0>,
+    /// Left an output for `haptic.rs`.
     pub haptic_rst: Peri<'static, peripherals::PF2>,
     pub buzzer_en1: Peri<'static, peripherals::PB9>,
     pub buzzer_en2: Peri<'static, peripherals::PD5>,
@@ -118,6 +119,7 @@ pub fn write_report(uart: Uart) {
     uart.write_str("     ");
     uart.write_u32(u32::try_from(ANALOG.len()).unwrap_or(0));
     uart.write_line(" unused lines analog; RTC alarm A off");
+    crate::haptic::write_pin(uart);
     uart.write_line(if on_smps() {
         "     off in Stop: SRAM1 above .bss, SRAM2, SRAM3 outside an update, SRAM4, SRAM5 below its top 64 KB, DCACHE1/DMA2D/PKA RAM"
     } else {

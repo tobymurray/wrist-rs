@@ -1003,6 +1003,7 @@ dependencies = [
  "wrist-eeprom",
  "wrist-flash",
  "wrist-glass",
+ "wrist-haptic",
  "wrist-pages",
  "wrist-panel",
  "wrist-power",
@@ -1265,6 +1266,10 @@ dependencies = [
  "inscribed-disc",
  "wrist-l10n",
 ]
+
+[[package]]
+name = "wrist-haptic"
+version = "0.0.0"
 
 [[package]]
 name = "wrist-l10n"
