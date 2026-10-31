@@ -132,7 +132,19 @@ class Linux(Host):
 
     def capture(self, path):
         sudo = [] if os.geteuid() == 0 else ['sudo', '-n']
-        return subprocess.Popen(sudo + ['btmon', '-w', str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+        try:
+            p = subprocess.Popen(sudo + ['btmon', '-w', str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        except OSError as e:
+            print(f'-- btmon capture failed: {e}', flush=True)
+            return None
+        try:
+            p.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            return p
+        why = p.stderr.read().strip().splitlines()
+        print(f'-- btmon capture failed (exit {p.returncode}{": " + why[-1] if why else ""}); '
+              '--btmon needs btmon and `sudo -n btmon`', flush=True)
+        return None
 
 
 def host():
@@ -569,8 +581,14 @@ async def run(a, out, result):
     if problems:
         result['preflight'] = problems
         return False
-    usb = Usb(a.port, out / 'console.log')
     capture = None
+    if a.btmon:
+        capture = h.capture(out / 'btmon.btsnoop')
+        if capture is None:
+            result['capture'] = 'failed'
+            result['preflight'] = ['--btmon: no capture']
+            return False
+    usb = Usb(a.port, out / 'console.log')
     installed = False
     try:
         before = await snapshot(usb)
@@ -607,10 +625,6 @@ async def run(a, out, result):
                 return False
             build, a.update_image = now['build'], a.image or a.install
         result['build_under_test'] = build
-        if a.btmon:
-            capture = h.capture(out / 'btmon.btsnoop')
-            if capture is None:
-                print('-- no btmon capture on this host', flush=True)
         phone = BleakPhone(a.name)
         for name in a.scenarios:
             s = Scenario(name, CRITERIA[name].format(a=a))
@@ -622,12 +636,19 @@ async def run(a, out, result):
         return all(s['passed'] for s in result['scenarios'])
     finally:
         if capture:
+            died = capture.poll()
             capture.terminate()
             try:
                 capture.wait(timeout=5)
-                result['failed_to_establish'] = failed_to_establish(out / 'btmon.btsnoop')
-            except (OSError, subprocess.TimeoutExpired):
+            except subprocess.TimeoutExpired:
                 pass
+            path = out / 'btmon.btsnoop'
+            count = failed_to_establish(path) if path.is_file() and path.stat().st_size else None
+            result['failed_to_establish'] = count
+            result['capture'] = 'failed' if died is not None or count is None else 'ok'
+            if result['capture'] == 'failed':
+                print(f'-- btmon capture failed{f" (btmon exited {died} during the run)" if died is not None else ""}; '
+                      'no count of connections that failed to establish', flush=True)
         if installed:
             ok, usb = await install(usb, a, a.restore, out)
             after = await snapshot(usb)
@@ -677,6 +698,8 @@ def main():
         ap.error('no scenarios')
     if a.install and not a.restore:
         ap.error('--install needs --restore, the running image to put back')
+    if a.btmon and not sys.platform.startswith('linux'):
+        ap.error('--btmon needs Linux')
 
     out = a.out or ROOT / 'target/ble-suite' / time.strftime('%Y%m%d-%H%M%S')
     out.mkdir(parents=True, exist_ok=False)
@@ -692,12 +715,14 @@ def main():
         result['stopped'] = repr(e)
         traceback.print_exc(file=sys.stdout)
     result['finished'] = time.strftime('%Y-%m-%dT%H:%M:%S%z')
-    result['passed'] = bool(ok) and result.get('restored', True) is not False
+    result['passed'] = bool(ok) and result.get('restored', True) is not False and result.get('capture') != 'failed'
     (out / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
     print(f'\n{"PASSED" if result["passed"] else "FAILED"}; see {out}', flush=True)
     for s in result['scenarios']:
         print(f'  {"pass" if s["passed"] else "FAIL"}  {s["name"]} ({s["seconds"]} s) {s["measurements"]}', flush=True)
-    if result.get('failed_to_establish') is not None:
+    if result.get('capture') == 'failed':
+        print('  btmon: the capture failed', flush=True)
+    elif result.get('failed_to_establish') is not None:
         print(f'  btmon: {result["failed_to_establish"]} connections failed to establish (0x3E)', flush=True)
     sys.exit(0 if result['passed'] else 1)
 

@@ -86,6 +86,12 @@ def image(build):
     return f
 
 
+def fake_sudo(d, script):
+    Path(d, 'sudo').write_text('#!/bin/sh\n' + script)
+    os.chmod(Path(d, 'sudo'), 0o755)
+    return mock.patch.dict(os.environ, {'PATH': f'{d}:{os.environ["PATH"]}'})
+
+
 class Quiet(suite.Host):
     def other_tools(self):
         return []
@@ -271,6 +277,40 @@ class Judgements(unittest.TestCase):
         ok, result, installs, seen, a = self.install_run('c1ea2c1ea2c1')
         self.assertTrue(ok, result.get('preflight'))
         self.assertEqual(seen['image'], a.image)
+
+    def test_a_failed_capture_is_said_and_fails_the_run(self):
+        with tempfile.TemporaryDirectory() as d, fake_sudo(d, 'echo "sudo: a password is required" >&2; exit 1\n'), \
+                mock.patch('sys.stdout', io.StringIO()) as shown:
+            self.assertIsNone(suite.Linux().capture(Path(d) / 'btmon.btsnoop'))
+        self.assertIn('btmon capture failed (exit 1: sudo: a password is required)', shown.getvalue())
+
+        class NoCapture(Quiet):
+            def capture(self, path):
+                return None
+        result = {'scenarios': []}
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(suite, 'host', NoCapture), \
+                mock.patch.object(suite.wrist_port, 'find', return_value='/dev/watch'), \
+                mock.patch('sys.stdout', io.StringIO()):
+            self.assertFalse(asyncio.run(suite.run(suite_args(btmon=True), Path(d), result)))
+        self.assertEqual(result['capture'], 'failed')
+
+    def test_a_capture_that_wrote_nothing_is_failed_not_absent(self):
+        class Silent(Quiet):
+            def capture(self, path):
+                return subprocess.Popen(['sleep', '30'])
+
+        async def console(s, usb, phone, build, a):
+            s.check(True, 'ran')
+        result = {'scenarios': []}
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(suite, 'host', Silent), \
+                mock.patch.object(suite.wrist_port, 'find', return_value='/dev/watch'), \
+                mock.patch.object(suite, 'Usb', lambda port, path: Console({})), \
+                mock.patch.object(suite, 'snapshot', lambda usb: asyncio.sleep(0, snap('b'))), \
+                mock.patch.object(suite, 'console', console), mock.patch('sys.stdout', io.StringIO()) as shown:
+            asyncio.run(suite.run(suite_args(btmon=True), Path(d), result))
+        self.assertEqual(result['capture'], 'failed')
+        self.assertIsNone(result['failed_to_establish'])
+        self.assertIn('btmon capture failed', shown.getvalue())
 
 
 if __name__ == '__main__':
