@@ -24,7 +24,7 @@ Q = SMPS pinout.
 | Test points for SWDIO, SWCLK, BOOT0, RST_L, SWO and DEBUG_TX on the core board (sheet 2) | CONFIRMED |
 | SWD can also route through the USB-C connector, only with `R27`–`R30` fitted (marked NOPOP) | CONFIRMED |
 | `DEBUG_TX` is on PC4 | CONFIRMED on the schematic itself, not only the ECN 4 note: sheet 2 draws `DEBUG_TX` on `PC4` at ball **M3** (ST's package database puts PC4 at M3), with test point **TP35** directly on the net and an off-sheet port to sheet 6. Nothing sits between the ball and TP35. |
-| Backup registers across a system reset: `TAMP_BKP3R` is **zeroed on every reset** before this image runs (the vendor bootloader, presumably), `TAMP_BKP5R` holds `0x00A60602`, which this project never writes, and `BKP0R`, `BKP1R`, `BKP2R`, `BKP4R`, `BKP6R` to `BKP10R` and `BKP31R` survive. The image's allocation: `BKP1R` the zone, tag `TZ` and minutes east of UTC; `BKP2R` who last set the calendar, tag `SR`; `BKP11R` to `BKP14R` the zone's next two changes, tags `T1` and `T2` with the new offset, then the UTC second each takes effect; `BKP31R` the local time last set, seconds since 1970 ([`crates/wrist-time/src/zone.rs`](crates/wrist-time/src/zone.rs), [`apps/standalone-boot/src/rtc.rs`](apps/standalone-boot/src/rtc.rs)). `BKP16R` whether the radio is on, tag `BL` (`ble` builds, [`apps/standalone-boot/src/rtc.rs`](apps/standalone-boot/src/rtc.rs)). `BKP4R` and `BKP6R` to `BKP10R` are reserved for an alarm and compass calibration; `BKP15R` and `BKP17R` to `BKP30R` are free. All are lost with the backup domain on a PMIC hard reset | **MEASURED**: markers written, reset, read back. `BKP16R` survives a reset and an update's reset (the radio came back on after both, 2026-10-24). `BKP15R` and `BKP17R` to `BKP30R` untested |
+| Backup registers across a system reset: `TAMP_BKP3R` is **zeroed on every reset** before this image runs (the vendor bootloader, presumably), `TAMP_BKP5R` holds `0x00A60602`, which this project never writes, and `BKP0R`, `BKP1R`, `BKP2R`, `BKP4R`, `BKP6R` to `BKP10R` and `BKP31R` survive. The image's allocation: `BKP1R` the zone, tag `TZ` and minutes east of UTC; `BKP2R` who last set the calendar, tag `SR`; `BKP4R` the daily alarm, tag `AL`, then bit 13 while a missed alarm waits for a press, bit 12 while the day's ring is spent, bit 11 while it is on, and the local minute of the day in bits 0 to 10, bits 14 and 15 zero (`07:00` on reads `0x414C09A4`; [`crates/wrist-time/src/alarm.rs`](crates/wrist-time/src/alarm.rs)); `BKP11R` to `BKP14R` the zone's next two changes, tags `T1` and `T2` with the new offset, then the UTC second each takes effect; `BKP31R` the local time last set, seconds since 1970 ([`crates/wrist-time/src/zone.rs`](crates/wrist-time/src/zone.rs), [`apps/standalone-boot/src/rtc.rs`](apps/standalone-boot/src/rtc.rs)). `BKP16R` whether the radio is on, tag `BL` (`ble` builds, [`apps/standalone-boot/src/rtc.rs`](apps/standalone-boot/src/rtc.rs)). `BKP6R` to `BKP10R` are reserved for compass calibration; `BKP15R` and `BKP17R` to `BKP30R` are free. All are lost with the backup domain on a PMIC hard reset | **MEASURED**: markers written, reset, read back. `BKP16R` survives a reset and an update's reset (the radio came back on after both, 2026-10-24). `BKP15R` and `BKP17R` to `BKP30R` untested. `BKP4R` as the alarm's record survived two resets with its ring spent, so neither rang it again (install 223) |
 | I2C1 is embassy's async DMA driver: **a blocking call on it after async transfers have run put every later read a byte out** (PMIC and gauge garbage) until a reset | **MEASURED**. Blocking calls are used only at boot, before the first async transfer. The mechanism is not pinned down |
 | **`DEBUG_TX` reaches the UNA Dev Tool 2.0 only while the MCU drives `DAM_DETECT` (PB15) high** — the tap is *not* firmware-independent | CONFIRMED (sheet 6). The only route from `DEBUG_TX` to the outside is `R40` (200 Ω) → `U22` NX20P0407 SBU switch → USB-C `SBU1` (`J6`). `U22`'s `SBUEN` is the net `DEBUG_EN`, which header `J11` (the "debug-enable jumper") connects to `DAM_DETECT`; `DAM_DETECT` is MCU pin **PB15** (ball K12, ECN 7: "Connected DAM_DETECT to U1.K12") and nothing else. NX20P0407 datasheet Rev 1.3, pin table and Table 4: `SBUEN` is active high with a **460 kΩ internal pull-down**, and the SBU switch is OFF while it is low. The vendor kernel detects Debug Accessory Mode and drives PB15; a standalone image that leaves PB15 at its reset state (input, floating) has its UART physically disconnected from the connector, at every baud. **A standalone image must set PB15 high before its first byte.** `U22` is also powered from `3V3_USB` (`U23`, enabled by `5V0_USB`), so the path only exists with VBUS present — which is the real reason the watch must be powered through the tool. The tool is a T-shaped PCB the watch clips onto at J1; `U1` is an **FTDI FT231X** (`0403:6015`) that enumerates as `/dev/ttyUSB0` and takes the watch's `DEBUG_TX` at **1.8 V logic** into its RX. It taps the pin rather than riding a kernel-side USB channel, so a standalone image's output *can* reach it with no kernel running — **but only through `U22`, and only if the image itself drives PB15 high** (above). Four conditions all have to hold: PB15 high; the **debug-enable jumper** is fitted (pads by the battery, T3 screws to get in); the watch is powered **through the dev tool, not a data cable** (a data cable forces charge mode, where apps do not run); and the host baud matches. |
 | **The dev tool is monitor-only — no SWD, and no RX path to the watch** | CONFIRMED for the data path; **one caveat from sheet 6**: `U22`'s second channel joins USB-C `SBU2` to `RST_L` through `R39`. ECN 9 (Rev 3.2, BOM only) made `R39` NOPOP, but the Rev 3.1 core module these notes were taken on has **`R39` fitted (200 Ω)** — so whenever `DAM_DETECT` is high and the tool is attached, the tool's SBU2 line sits on the MCU's `NRST`. Whether the tool ever drives it is UNKNOWN (no tool schematic). Same source otherwise. It cannot program or dump flash, so it does not substitute for a debug probe; recovery stays the bootloader long-press rollback. No RX also means an image that only transmits, and never waits on input, loses nothing. |
@@ -180,6 +180,20 @@ and the domain survives: a zone record set the day before came through that, sto
 installed over it, two installer dry runs and two installs from stock. Any embassy-based image must give `embassy_stm32::init` a low-speed
 config that matches those bits, `LSESYSEN` included, or embassy resets the domain and the
 RTC calendar with it; both `wrist-loader` and `standalone-boot` mirror what they find.
+
+**RTC alarm A (MEASURED, installs 61, 223 and 225):** `RTC_ALRMAR` with `MSK4` set (the date
+masked) and `MASKSS` 0 matches `hh:mm:00` every day, once, on the non-secure `RTC`
+interrupt, IRQ 2. On USB the match reached the console 14 to 26 ms after the host clock's
+minute (install 223, with the calendar just set from the host). Writing `RTC_CR`, as `time
+set` and a zone's change do, disarms it, so the image arms it again after each. A match while
+the image was down left `ALRAF` set (install 61); the image doesn't rely on that, since its
+check at boot goes by the calendar. To wake the core from Stop, the RTC's bus clock must run
+there: bit 21 of `RCC_APB3SMENR` and of `RCC_SRDAMR` (RM0456 RCC; `stm32-metapac` 21), which
+the image sets when it arms. It wakes the core from Stop 2: on battery, armed for a second 30 s
+from the minute's redraw, its interrupt ran 1 ms before that second by the uptime clock,
+within the RTC's 4 ms resolution, the core 117.8 s of the run in Stop 2 (install 225,
+`alarm wake-test`; the same on USB, where the core never enters Stop, read −4 ms). A ring
+on battery started on its minute by the owner's reference clock (install 223).
 
 **`VCK` and `VST` are fixed by the display module's drawing** (UNAview_LS012
 Rev 1.3 sheet 2): its 30-pin connector carries `LCD_VST` on pin 17 and
@@ -524,7 +538,10 @@ until it drains. **MEASURED**: on battery the image wakes about 40 times a minut
 overflow, the watchdog's feed, then every 8 s, the minute's redraw and the face's timers; 39.2
 worn for 71 min with 17 presses), spends about 99.7 % of the time in Stop2, and restores its clocks
 in 0.12 ms an exit. A lit face wakes the core only to turn its light off: sampling the
-buttons every 50 ms while lit adds about 60 wakes a press.
+buttons every 50 ms while lit adds about 60 wakes a press. The daily alarm wakes the core with RTC
+alarm A ("RTC alarm A", below) twice a day while it is on: at its minute, and 13 hours later
+to clear the day's ring; a ring adds one more, a minute later, to stop it if no press has.
+Alarm A wakes the core from Stop 2 (MEASURED, install 225).
 
 The IWDG counts the LSI through /256 from 4095, so it resets about 32.8 s after a feed
 at 32 kHz, and 31.2 to 34.5 s over the datasheet's LSI range (30.4 to 33.6 kHz). The button task feeds it every 16 s, and the image's longest hold, an update's
@@ -574,7 +591,8 @@ At boot ([`apps/standalone-boot/src/park.rs`](apps/standalone-boot/src/park.rs))
 - **The unused lines.** The slots' buses and interrupts, `BUZZER_PWM`, the touch lines, and
   the gauge's and USB switch's open-drain alerts: with the eMMC's six, 35 pins set
   to analog, no pull. I2C4's pair follows once the boot's module checks are done.
-- **RTC alarm A**, disarmed in case an earlier image armed it.
+- **RTC alarm A**, disarmed in case an earlier image armed it; the alarm's task arms it again
+  once the executor runs.
 - **SRAM the image does not use**, powered down in the Stop modes through `PWR_CR2` and
   `PWR_CR4`: SRAM1 above the pages `.data` and `.bss` fill, SRAM2, SRAM3, SRAM4, SRAM5
   below its top page, and the DCACHE1, DMA2D and PKA RAMs. The linker's RAM is SRAM1; the
