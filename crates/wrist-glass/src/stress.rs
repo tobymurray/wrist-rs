@@ -142,7 +142,7 @@ pub fn compose_stress(kind: Stress, step: u32, faces: &Faces) -> (Glass, Short) 
                 0 => {
                     let clock = Some(Clock { h: 12, m: 34, s: 0 });
                     let date = Some(Date { year: 2026, month: 10, day: 27 });
-                    compose(&Status { clock, date, soc_pct: Some(56) }, &EN_GB, faces)
+                    compose(&Status { clock, date, soc_pct: Some(56), ..Status::default() }, &EN_GB, faces)
                 }
                 1 => compose_battery(&Battery { soc_pct: Some(56), cell_mv: Some(3871), external: Some(false) }, &EN_GB, faces),
                 _ => compose_about(&About { version: "0.2.0", build: "5784ec72019b" }, &EN_GB, faces),

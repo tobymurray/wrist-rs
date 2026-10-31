@@ -54,6 +54,8 @@ fn every_built_in_string_is_in_its_slot_s_face() {
             clock.extend(l.time.iter().filter_map(|p| if let TimePiece::Text(t) = p { Some(*t) } else { None }));
             message(l, Msg::FaceTimeUnset, &mut clock);
             assert_covers(&format!("{} {name} time", l.tag), time, &clock);
+            // The alarm's time, below the charge.
+            assert_covers(&format!("{} {name} alarm", l.tag), id, &clock[..clock.len() - 1]);
 
             let mut pct = vec![DIGITS];
             message(l, Msg::ChargePercent { pct: 0 }, &mut pct);
