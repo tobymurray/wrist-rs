@@ -20,7 +20,7 @@ pub const PAIRING_OUTCOME: Millis = Millis::secs(30);
 /// No central start this soon after the phone connects or its parameters change.
 pub const SETTLE: Millis = Millis::secs(3);
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Phone {
     /// The radio is off.
     #[default]
@@ -30,7 +30,7 @@ pub enum Phone {
     Up(PhoneLink),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PhoneLink {
     pub link: ConnHandle,
     pub since: Instant,
@@ -44,21 +44,21 @@ pub struct PhoneLink {
     told_bond_lost: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Security {
     Unsecured,
     Pairing { value: u32, deadline: Instant, answered: bool },
     Secure,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Params {
     Until(Instant),
     Pairing,
     Open,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Event {
     RadioOn,
     RadioOff,

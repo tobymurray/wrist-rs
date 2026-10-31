@@ -154,10 +154,18 @@ pub trait Reconciler {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Fingerprint(pub u64);
 
+/// What a change replaces is left out, so that one refused setting is not tried again from each
+/// setting it would have replaced.
 #[must_use]
 pub fn fingerprint(current: &Activities, change: &Change) -> Fingerprint {
+    let mut base = *current;
+    match change {
+        Change::Advertise(_) => base.advertising = None,
+        Change::Scan(_) => base.scanning = None,
+        _ => {}
+    }
     let mut h = Fnv(0xcbf2_9ce4_8422_2325);
-    current.hash(&mut h);
+    base.hash(&mut h);
     change.hash(&mut h);
     Fingerprint(h.finish())
 }
