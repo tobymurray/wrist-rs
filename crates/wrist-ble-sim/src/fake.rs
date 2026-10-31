@@ -632,6 +632,7 @@ impl Fake {
                 let p = LinkParams { interval: granted, latency: params.latency, timeout: params.timeout };
                 self.after(ms(lead), Do::UpdateApplied(l, p, id));
             }
+            Peer::Sensor(i) if self.sensors[i].sensor.refuses_updates => self.after(ms(lead), Do::UpdateFailed(l, id)),
             Peer::Sensor(_) => {
                 let slot = link.slot.and_then(|slot| self.acts.walk(&Scheduler, &[Change::Retime { slot, params }]).ok().and_then(|a| a.central[usize::from(slot)]));
                 let interval = slot.map_or(params.interval_max, |s| s.interval);
@@ -1007,6 +1008,9 @@ impl Fake {
         self.after(dl, Do::Emit(RadioEvent::DataLength { link: h, tx: DATA_LENGTH.0, rx: DATA_LENGTH.1 }));
         if let Some((after, _)) = s.asks {
             self.after(after, Do::SensorAsks(h));
+        }
+        if let Some(after) = s.hangs_up_after {
+            self.after(after, Do::Lost(h, Status::REMOTE_USER_TERMINATED_CONN));
         }
     }
 
