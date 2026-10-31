@@ -416,6 +416,7 @@ fn main() -> ! {
     park::park(parked, sensors, uart);
     drop(sensor_bus);
     uart.flush();
+    pmic::share(bus);
 
     sleep::init();
     uart::track_sleep();
@@ -435,7 +436,7 @@ fn main() -> ! {
         spawn(spawner, "lag", glass::lag_probe().unwrap());
         spawn(spawner, "heartbeat", heartbeat(flash).unwrap());
         spawn(spawner, "report", report(handoff, measured_hz, watchdog).unwrap());
-        spawn(spawner, "display", display(bus, pwr_int).unwrap());
+        spawn(spawner, "display", display(pwr_int).unwrap());
         if let Some(pins) = usb {
             spawn(spawner, "console", console::service(pins, flash).unwrap());
         }
@@ -827,7 +828,7 @@ fn on_press(uart: Uart, press: Press, injected: bool, light_until: &mut Option<I
 }
 
 #[embassy_executor::task]
-async fn display(mut bus: pmic::AsyncBus, mut pwr_int: ExtiInput<'static, Async>) -> ! {
+async fn display(mut pwr_int: ExtiInput<'static, Async>) -> ! {
     /// On USB; on battery the gauge is read with each new minute's face.
     const READING: Duration = Duration::from_secs(10);
     let uart = Uart::best_effort();
@@ -877,7 +878,9 @@ async fn display(mut bus: pmic::AsyncBus, mut pwr_int: ExtiInput<'static, Async>
             drawn = None;
         }
         if power.due(pwr_int.is_low(), new_minute) {
-            power.service(&mut bus).await;
+            if let Some(bus) = pmic::BUS.lock().await.as_mut() {
+                power.service(bus).await;
+            }
         }
         let page = nav_now().0;
         let reading_due = if power::on_battery() { new_minute } else { Instant::now() >= next_reading };
@@ -885,7 +888,9 @@ async fn display(mut bus: pmic::AsyncBus, mut pwr_int: ExtiInput<'static, Async>
         if reading_due || (page == Page::Battery && shown_page != Page::Battery) {
             next_reading = Instant::now() + READING;
             n = n.wrapping_add(1);
-            (soc_pct, cell_mv) = read_power(uart, &mut bus, n).await;
+            if let Some(bus) = pmic::BUS.lock().await.as_mut() {
+                (soc_pct, cell_mv) = read_power(uart, bus, n).await;
+            }
         }
         if let Some(panel) = panel.as_mut() {
             let t0 = Instant::now();
