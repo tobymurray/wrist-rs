@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 
 use wrist_ble::{Instant, Millis, RadioEvent};
 use wrist_ble_core::chip::Action;
-use wrist_ble_core::engine::{Core, Input, Outputs};
+use wrist_ble_core::engine::{Core, Input, Outputs, Tell};
 use wrist_ble_core::goals::{Goals, Power};
 use wrist_ble_core::status::{status, Status};
 use wrist_bluenrg2::{Scheduler, CAPABILITIES, MENU};
@@ -24,6 +24,8 @@ pub struct Sim {
     pub core: Core<'static>,
     pub fake: Fake,
     pub checks: Checks,
+    /// Everything the core said beyond the status.
+    pub tells: Vec<(Instant, Tell)>,
     next: Option<Instant>,
     spins: (Instant, u32),
     trace: VecDeque<String>,
@@ -44,6 +46,7 @@ impl Sim {
             core: Core::new(&CAPABILITIES, &Scheduler, &MENU),
             fake: Fake::new(seed),
             checks: Checks::default(),
+            tells: Vec::new(),
             next: None,
             spins: (Instant(0), 0),
             trace: VecDeque::new(),
@@ -137,6 +140,7 @@ impl Sim {
     }
 
     fn act(&mut self, out: &Outputs) {
+        self.tells.extend(out.tell.iter().flatten().map(|&t| (self.now, t)));
         match out.chip {
             Some(Action::Start) => self.fake.start(),
             Some(Action::Hold) => self.fake.stop(),

@@ -13,7 +13,7 @@ pub const START_WITHIN: Millis = Millis::secs(5);
 
 const HOUR: Millis = Millis::mins(60);
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Chip {
     /// Held in reset: the radio is off.
     #[default]
@@ -37,7 +37,7 @@ pub enum FaultCause {
     KeptResetting,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Event {
     RadioOn,
     RadioOff,
@@ -60,7 +60,7 @@ pub enum Action {
     Hold,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct ChipMachine {
     pub state: Chip,
     resets: [Option<Instant>; RESETS_PER_HOUR],
