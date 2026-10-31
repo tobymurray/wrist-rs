@@ -96,13 +96,20 @@ class Host:
         return [line.strip() for line in out.splitlines()]
 
     def other_tools(self):
+        """Other tools on the watch, leaving out this run's ancestors and a shell's forks of them
+        (`... | while read`), which carry their parent's args."""
         out = subprocess.run(['ps', '-eo', 'pid=,ppid='], capture_output=True, text=True).stdout
         parent = dict(tuple(map(int, line.split())) for line in out.splitlines())
+        args = {int(p.split(None, 1)[0]): p.split(None, 1)[1:] for p in self.ps()}
         mine, pid = set(), os.getpid()
         while pid and pid not in mine:
             mine.add(pid)
             pid = parent.get(pid, 0)
-        return [p for p in self.ps() if OTHER_TOOLS.search(p) and int(p.split()[0]) not in mine]
+
+        def ours(pid):
+            up = parent.get(pid)
+            return pid in mine or (up in mine and args.get(pid) == args.get(up))
+        return [p for p in self.ps() if OTHER_TOOLS.search(p) and not ours(int(p.split()[0]))]
 
     def holders(self, port):
         twin = re.sub(r'/(cu|tty)\.', lambda m: '/tty.' if m[1] == 'cu' else '/cu.', port, count=1)

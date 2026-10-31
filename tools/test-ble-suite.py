@@ -348,6 +348,20 @@ class Judgements(unittest.TestCase):
             self.assertEqual(suite.Host().holders('/dev/cu.usbmodem101'), ['7 screen /dev/tty.usbmodem101'])
         self.assertEqual(asked, [['lsof', '-t', '/dev/cu.usbmodem101', '/dev/tty.usbmodem101']])
 
+    def test_a_pipeline_subshell_is_ours_and_a_twin_is_not(self):
+        probe = (f'import importlib.util, time; s = importlib.util.spec_from_file_location("s", {str(spec.origin)!r}); '
+                 'm = importlib.util.module_from_spec(s); s.loader.exec_module(m); time.sleep(0.5); '
+                 'print("found", m.Host().other_tools())')
+        inner = subprocess.list2cmdline([sys.executable, '-c', probe])
+        piped = f'{inner} | while read l; do echo "$l"; done; : ble-suite.py #me{os.getpid()}'
+        out = subprocess.run(['sh', '-c', piped], capture_output=True, text=True).stdout
+        self.assertIn('found', out)
+        self.assertNotIn(f'#me{os.getpid()}', out)
+        out = subprocess.run(['sh', '-c', f'{inner} & {inner}; wait'], capture_output=True, text=True).stdout
+        found = [l for l in out.splitlines() if l.startswith('found')]
+        self.assertEqual(len(found), 2)
+        self.assertTrue(all('ble-suite.py' in l for l in found), found)
+
 
 if __name__ == '__main__':
     unittest.main()
