@@ -93,6 +93,7 @@ pub struct Activities {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct CentralSlot {
     pub interval: Interval,
+    /// The link has an event once in this many periods of the time base.
     pub latency: u16,
     pub ce_len: Slots,
 }
@@ -122,6 +123,7 @@ pub struct Admitted {
 }
 
 impl Admitted {
+    /// For a change that takes no slot.
     pub const AS_ASKED: Self = Self { slot: None, latency_scale: 1 };
 }
 
@@ -146,8 +148,11 @@ impl Activities {
     }
 
     /// The activities after `change`, as the chip set them when it admitted it.
-    #[must_use]
-    pub fn with(&self, change: &Change, admitted: &Admitted) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// [`SchedKind::NoSlot`] for a link the admission gave no slot, or one with nowhere to go.
+    pub fn with(&self, change: &Change, admitted: &Admitted) -> Result<Self, SchedKind> {
         let mut next = *self;
         let scale = |next: &mut Self, except: Option<usize>| {
             for (i, slot) in next.central.iter_mut().enumerate() {
@@ -161,27 +166,34 @@ impl Activities {
             Change::Scan(p) => next.scanning = p,
             Change::Initiate(p) => next.initiating = p,
             Change::Connected => {
+                let slot = admitted.slot.ok_or(SchedKind::NoSlot)?;
+                let free = next.central.iter().position(Option::is_none).ok_or(SchedKind::NoSlot)?;
                 next.initiating = None;
                 scale(&mut next, None);
-                if let Some(free) = next.central.iter_mut().find(|s| s.is_none()) {
-                    *free = admitted.slot;
-                }
+                next.central[free] = Some(slot);
             }
             Change::Retime { slot, .. } => {
-                scale(&mut next, Some(usize::from(slot)));
-                if let Some(s) = next.central.get_mut(usize::from(slot)) {
-                    *s = admitted.slot;
+                let granted = admitted.slot.ok_or(SchedKind::NoSlot)?;
+                let i = usize::from(slot);
+                if next.central.get(i).copied().flatten().is_none() {
+                    return Err(SchedKind::NoSlot);
                 }
+                scale(&mut next, Some(i));
+                next.central[i] = Some(granted);
             }
             Change::Close { slot } => {
                 if let Some(s) = next.central.get_mut(usize::from(slot)) {
                     *s = None;
                 }
             }
-            Change::PeripheralUp => next.peripheral = next.peripheral.saturating_add(1),
+            Change::PeripheralUp => {
+                // A connection ends advertising (PM0257 §4.2.3).
+                next.advertising = None;
+                next.peripheral = next.peripheral.saturating_add(1);
+            }
             Change::PeripheralDown => next.peripheral = next.peripheral.saturating_sub(1),
         }
-        next
+        Ok(next)
     }
 
     /// Apply `steps` in order, each admitted by `schedule` beside the state before it.
@@ -192,7 +204,7 @@ impl Activities {
     pub fn walk(&self, schedule: &dyn Schedule, steps: &[Change]) -> Result<Self, (usize, SchedKind)> {
         steps.iter().enumerate().try_fold(*self, |at, (i, step)| {
             let admitted = schedule.admit(&at, step).map_err(|e| (i, e))?;
-            Ok(at.with(step, &admitted))
+            at.with(step, &admitted).map_err(|e| (i, e))
         })
     }
 }
