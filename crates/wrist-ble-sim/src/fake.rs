@@ -11,7 +11,7 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, VecDeque};
 
 use wrist_ble::{
-    Activities, Admitted, AdvParams, AdvReport, AttRef, Bytes, Cccd, Change, ChipInfo, ConnHandle, ConnParams, CoreSpecificationVersion, DiscoverWhat,
+    Activities, AdvParams, AdvReport, AttRef, Bytes, Cccd, Change, ChipInfo, ConnHandle, ConnParams, CoreSpecificationVersion, DiscoverWhat,
     Duration, Failure, FailureKind, Instant, LeConnRole, LinkParams, LinkStatus, Millis, Op, OpId, OpKind, Outcome, PairingEvent,
     PairingStep, PeerAddr, RadioEvent, ResetCause, ScanParams, SchedKind, Schedule, ServerAttr, ServiceRef, CharRef, Snapshot, Status,
     MAX_LINKS,
@@ -145,12 +145,36 @@ enum Power {
     Halted,
 }
 
+mod modelled {
+    use wrist_ble::{Activities, Admitted, Change, SchedKind, Schedule};
+    use wrist_bluenrg2::Scheduler;
+
+    /// The scheduler's state, which moves only as the model admits.
+    pub struct Modelled(Activities);
+
+    impl Modelled {
+        pub const IDLE: Self = Self(Activities::IDLE);
+
+        pub fn get(&self) -> &Activities {
+            &self.0
+        }
+
+        pub fn apply(&mut self, change: Change) -> Result<Admitted, SchedKind> {
+            let admitted = Scheduler.admit(&self.0, &change)?;
+            self.0 = self.0.with(&change, &admitted)?;
+            Ok(admitted)
+        }
+    }
+}
+
+use modelled::Modelled;
+
 /// The fake chip and the air around it. Time moves only through [`Fake::advance`].
 pub struct Fake {
     now: Instant,
     rng: Rng,
     power: Power,
-    acts: Activities,
+    acts: Modelled,
     links: [Option<Link>; MAX_LINKS],
     next_handle: u16,
     next_op: u16,
@@ -208,7 +232,7 @@ impl Fake {
             now: Instant(0),
             rng: Rng::new(seed),
             power: Power::Off,
-            acts: Activities::IDLE,
+            acts: Modelled::IDLE,
             links: [None; MAX_LINKS],
             next_handle: 0x0801,
             next_op: 1,
@@ -234,7 +258,7 @@ impl Fake {
     /// What the chip's scheduler holds now.
     #[must_use]
     pub fn activities(&self) -> &Activities {
-        &self.acts
+        self.acts.get()
     }
 
     #[must_use]
@@ -245,7 +269,7 @@ impl Fake {
     /// Connectable advertising on air.
     #[must_use]
     pub fn advertising(&self) -> Option<AdvParams> {
-        self.acts.advertising.filter(|a| a.connectable)
+        self.acts.get().advertising.filter(|a| a.connectable)
     }
 
     #[must_use]
@@ -287,6 +311,7 @@ impl Fake {
             let Reverse((at, _, Item(what))) = self.agenda.pop()?;
             self.now = self.now.max(at);
             self.happen(what);
+            self.audit();
         }
     }
 
@@ -406,6 +431,7 @@ impl Fake {
     /// The chip refused it.
     pub fn submit(&mut self, op: Op) -> Result<OpId, Failure> {
         let r = self.take(op);
+        self.audit();
         self.notes.push((self.now, Note::Submitted { op, accepted: r.is_ok() }));
         r
     }
@@ -419,9 +445,9 @@ impl Fake {
         Snapshot {
             at: self.now,
             links,
-            advertising: self.acts.advertising.is_some(),
-            scanning: self.acts.scanning.is_some(),
-            initiating: self.acts.initiating.is_some(),
+            advertising: self.acts.get().advertising.is_some(),
+            scanning: self.acts.get().scanning.is_some(),
+            initiating: self.acts.get().initiating.is_some(),
             anchor: None,
         }
     }
@@ -453,7 +479,8 @@ impl Fake {
             }
             Op::Scan(None) => {
                 let id = self.accept(op);
-                if self.acts.scanning.take().is_some() {
+                if self.acts.get().scanning.is_some() {
+                    let _ = self.acts.apply(Change::Scan(None));
                     self.scan_gen += 1;
                     self.emit_after(ms(2), RadioEvent::ScanDone);
                 }
@@ -467,14 +494,14 @@ impl Fake {
                 self.admit(Change::Initiate(Some(params)))?;
                 self.central_start();
                 let id = self.accept(op);
-                self.acts.initiating = Some(params);
+                let _ = self.acts.apply(Change::Initiate(Some(params)));
                 self.initiating = Some((id, peer, params));
                 self.try_sensor_connect();
                 Ok(id)
             }
             Op::CancelConnect => {
                 let Some((cid, ..)) = self.initiating.take() else { return Err(failure(FailureKind::Busy, 0x0C)) };
-                self.acts.initiating = None;
+                let _ = self.acts.apply(Change::Initiate(None));
                 let id = self.accept(op);
                 self.done_after(cid, ms(1), Err(failure(FailureKind::NotConnected, 0x02)));
                 self.done_after(id, ms(1), Ok(Outcome::Done));
@@ -539,12 +566,12 @@ impl Fake {
     }
 
     /// Admitted by the model and by every injected divergence, or refused with the chip's code.
-    fn admit(&mut self, change: Change) -> Result<Admitted, Failure> {
-        let verdict = Scheduler.admit(&self.acts, &change);
+    fn admit(&mut self, change: Change) -> Result<(), Failure> {
+        let verdict = Scheduler.admit(self.acts.get(), &change);
         let refused = verdict.err().map(|k| (k, false));
-        let refused = refused.or_else(|| self.divergences.iter().find_map(|d| d(&self.acts, &change)).map(|k| (k, true)));
+        let refused = refused.or_else(|| self.divergences.iter().find_map(|d| d(self.acts.get(), &change)).map(|k| (k, true)));
         match refused {
-            None => Ok(verdict.unwrap_or(Admitted::AS_ASKED)),
+            None => Ok(()),
             Some((kind, unpredicted)) => {
                 if unpredicted {
                     self.notes.push((self.now, Note::Unpredicted(change)));
@@ -577,7 +604,7 @@ impl Fake {
     }
 
     fn set_adv(&mut self, p: Option<AdvParams>) {
-        self.acts.advertising = p;
+        let _ = self.acts.apply(Change::Advertise(p));
         for i in 0..self.phones.len() {
             self.try_phone(i);
         }
@@ -585,7 +612,7 @@ impl Fake {
 
     fn start_scan(&mut self, p: ScanParams) {
         self.central_start();
-        self.acts.scanning = Some(p);
+        let _ = self.acts.apply(Change::Scan(Some(p)));
         self.scan_gen += 1;
         let gen = self.scan_gen;
         let end = CAPABILITIES.discovery_max.map_or(p.duration, |max| p.duration.min(max));
@@ -619,8 +646,8 @@ impl Fake {
         if let Some(slot) = link.slot {
             // UNVERIFIED: the new slot is held from the moment the chip accepts the update.
             let change = Change::Retime { slot, params };
-            let admitted = self.admit(change)?;
-            self.acts = self.acts.with(&change, &admitted).map_err(|k| failure(FailureKind::Schedule(k), native(k)))?;
+            self.admit(change)?;
+            let admitted = self.acts.apply(change).map_err(|k| failure(FailureKind::Schedule(k), native(k)))?;
             granted = admitted.slot;
         }
         self.procedure(l);
@@ -759,7 +786,7 @@ impl Fake {
             Do::Deadline(id) => {
                 if self.initiating.is_some_and(|(cid, ..)| cid == id) {
                     self.initiating = None;
-                    self.acts.initiating = None;
+                    let _ = self.acts.apply(Change::Initiate(None));
                 }
                 if self.end(id).is_some() {
                     self.emit(RadioEvent::Done(id, Err(failure(FailureKind::Timeout, 0xFF))));
@@ -831,12 +858,6 @@ impl Fake {
                 }
                 link.updating = None;
                 link.params = p;
-                let slot = link.slot;
-                if let Some(s) = slot {
-                    if let Some(c) = self.acts.central[usize::from(s)].as_mut() {
-                        c.interval = p.interval;
-                    }
-                }
                 self.end(id);
                 self.emit(RadioEvent::Params { link: l, result: Ok(p) });
             }
@@ -873,7 +894,8 @@ impl Fake {
             Do::Reading(l) => self.reading(l),
             Do::Report(gen) => self.report(gen),
             Do::ScanEnds(gen) => {
-                if gen == self.scan_gen && self.acts.scanning.take().is_some() {
+                if gen == self.scan_gen && self.acts.get().scanning.is_some() {
+                    let _ = self.acts.apply(Change::Scan(None));
                     self.emit(RadioEvent::ScanDone);
                 }
             }
@@ -897,7 +919,7 @@ impl Fake {
         if !p.wants || p.link.is_some() || p.gone || self.power != Power::Ready || self.advertising().is_none() {
             return;
         }
-        if Scheduler.admit(&self.acts, &Change::PeripheralUp).is_err() {
+        if Scheduler.admit(self.acts.get(), &Change::PeripheralUp).is_err() {
             return;
         }
         let units = match p.phone.os {
@@ -908,8 +930,7 @@ impl Fake {
         let params = LinkParams { interval: Duration::from_u16(units), latency: 0, timeout: Duration::from_u16(500) };
         let Some(h) = self.new_link(LeConnRole::Peripheral, Peer::Phone(i), params, None) else { return };
         self.phones[i].link = Some(h);
-        self.acts.advertising = None;
-        self.acts.peripheral += 1;
+        let _ = self.acts.apply(Change::PeripheralUp);
         self.emit(RadioEvent::LinkUp { link: h, role: LeConnRole::Peripheral, peer: p.phone.addr, params });
         self.later(90, 110, Do::Emit(RadioEvent::DataLength { link: h, tx: DATA_LENGTH.0, rx: DATA_LENGTH.1 }));
         match p.phone.keys {
@@ -993,19 +1014,18 @@ impl Fake {
         if cid != id || self.sensors[i].sensor.addr != peer || self.sensors[i].on_since.is_none() {
             return;
         }
-        let admitted = match Scheduler.admit(&self.acts, &Change::Connected) {
+        let free = self.acts.get().central.iter().position(Option::is_none);
+        let admitted = match self.acts.apply(Change::Connected) {
             Ok(a) => a,
             Err(kind) => {
                 self.initiating = None;
-                self.acts.initiating = None;
+                let _ = self.acts.apply(Change::Initiate(None));
                 self.end(id);
                 self.emit(RadioEvent::Done(id, Err(failure(FailureKind::Schedule(kind), native(kind)))));
                 return;
             }
         };
-        let Ok(next) = self.acts.with(&Change::Connected, &admitted) else { return };
-        let slot = next.central.iter().zip(self.acts.central.iter()).position(|(n, o)| n.is_some() && o.is_none());
-        self.acts = next;
+        let slot = free;
         self.initiating = None;
         let interval = admitted.slot.map_or(params.interval_max, |s| s.interval);
         let lp = LinkParams { interval, latency: params.latency, timeout: params.timeout };
@@ -1056,7 +1076,7 @@ impl Fake {
     }
 
     fn report(&mut self, gen: u64) {
-        if gen != self.scan_gen || self.acts.scanning.is_none() {
+        if gen != self.scan_gen || self.acts.get().scanning.is_none() {
             return;
         }
         let on: Vec<Sensor> = self.sensors.iter().filter(|s| s.on_since.is_some()).map(|s| s.sensor).collect();
@@ -1071,11 +1091,11 @@ impl Fake {
     fn link_down(&mut self, l: ConnHandle, reason: Status) {
         let Some(i) = self.links.iter().position(|k| k.is_some_and(|k| k.handle == l)) else { return };
         let Some(link) = self.links[i].take() else { return };
-        if let Some(s) = link.slot {
-            self.acts.central[usize::from(s)] = None;
+        if let Some(slot) = link.slot {
+            let _ = self.acts.apply(Change::Close { slot });
         }
         if link.role == LeConnRole::Peripheral {
-            self.acts.peripheral = self.acts.peripheral.saturating_sub(1);
+            let _ = self.acts.apply(Change::PeripheralDown);
         }
         let ended: Vec<OpId> = self.ops.iter().filter(|p| p.op.link() == Some(l)).map(|p| p.id).collect();
         let disconnect = self.pending(OpKind::Disconnect, l);
@@ -1118,6 +1138,21 @@ impl Fake {
         Some(handle)
     }
 
+    /// The scheduler's state holds the links on air and the initiation.
+    fn audit(&self) {
+        let acts = self.acts.get();
+        let on_air = |role| self.links.iter().flatten().filter(|l| l.role == role).count();
+        let slotted = self.links.iter().flatten().filter_map(|l| l.slot).all(|s| acts.central.get(usize::from(s)).is_some_and(Option::is_some));
+        assert!(
+            on_air(LeConnRole::Central) == acts.centrals()
+                && on_air(LeConnRole::Peripheral) == usize::from(acts.peripheral)
+                && slotted
+                && self.initiating.is_some() == acts.initiating.is_some(),
+            "the scheduler's state has lost the air at {:?}: {acts:?}",
+            self.now
+        );
+    }
+
     fn link(&self, l: ConnHandle) -> Option<Link> {
         self.links.iter().flatten().find(|k| k.handle == l).copied()
     }
@@ -1134,7 +1169,7 @@ impl Fake {
     }
 
     fn wipe(&mut self) {
-        self.acts = Activities::IDLE;
+        self.acts = Modelled::IDLE;
         self.links = [None; MAX_LINKS];
         self.ops.clear();
         self.agenda.clear();

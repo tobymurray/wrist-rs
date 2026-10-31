@@ -98,6 +98,14 @@ fn advertising_is_refused_while_initiating() {
 }
 
 #[test]
+fn a_cancelled_connection_ends_the_initiation() {
+    let mut f = ready(1);
+    f.submit(Op::Connect(Sensor::strap(1).addr, conn(40))).unwrap();
+    f.submit(Op::CancelConnect).unwrap();
+    assert!(f.submit(Op::Advertise(Some(ADV_995))).is_ok());
+}
+
+#[test]
 fn a_refusal_carries_the_chips_code() {
     let mut f = ready(1);
     f.sensor_on(Sensor::strap(1));
@@ -107,13 +115,37 @@ fn a_refusal_carries_the_chips_code() {
     assert_eq!(r.map_err(|e| (e.kind, e.native)), Err((FailureKind::Schedule(SchedKind::IntervalTooLarge), 0x85)));
 }
 
+const SCAN_30: ScanParams = ScanParams { interval: Duration::from_u16(160), window: Duration::from_u16(32), active: false, duration: Millis::secs(30) };
+
+/// The events after the first `ScanDone`.
+fn after_scan_done(events: &[(Instant, RadioEvent)]) -> Option<&[(Instant, RadioEvent)]> {
+    let i = events.iter().position(|(_, e)| *e == RadioEvent::ScanDone)?;
+    Some(&events[i + 1..])
+}
+
 #[test]
 fn a_discovery_ends_by_itself_at_10_2_s() {
     let mut f = ready(1);
+    f.sensor_on(Sensor::strap(1));
     let t0 = f.now();
-    f.submit(Op::Scan(Some(ScanParams { interval: Duration::from_u16(160), window: Duration::from_u16(32), active: false, duration: Millis::secs(30) }))).unwrap();
-    let done = run(&mut f, 40_000).into_iter().find(|(_, e)| *e == RadioEvent::ScanDone).unwrap();
+    f.submit(Op::Scan(Some(SCAN_30))).unwrap();
+    let events = run(&mut f, 40_000);
+    let done = events.iter().find(|(_, e)| *e == RadioEvent::ScanDone).unwrap();
     assert_eq!(done.0.since(t0), Millis(10_200));
+    assert!(!after_scan_done(&events).unwrap().iter().any(|(_, e)| matches!(e, RadioEvent::Report(_))));
+    assert_eq!(f.activities().scanning, None);
+}
+
+#[test]
+fn a_stopped_discovery_reports_nothing_more() {
+    let mut f = ready(1);
+    f.sensor_on(Sensor::strap(1));
+    f.submit(Op::Scan(Some(SCAN_30))).unwrap();
+    assert!(run(&mut f, 2_000).iter().any(|(_, e)| matches!(e, RadioEvent::Report(_))));
+    f.submit(Op::Scan(None)).unwrap();
+    let events = run(&mut f, 40_000);
+    assert!(!after_scan_done(&events).unwrap().iter().any(|(_, e)| matches!(e, RadioEvent::Report(_))));
+    assert_eq!(f.activities().scanning, None);
 }
 
 #[test]
