@@ -3,7 +3,7 @@
 use crate::{DatePiece, Locale, Piece, Plural, TimePiece};
 
 /// How many messages there are.
-pub const MESSAGES: usize = 13;
+pub const MESSAGES: usize = 14;
 
 /// Every message, in `l10n/en.ftl`'s order, with its arguments.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,6 +23,9 @@ pub enum Msg {
     // The charge before the gauge has a reading, its digits as figure dashes.
     /// `‒‒ %`
     ChargeUnset,
+    // In place of the date while the alarm rings, in capitals like the pages' titles.
+    /// `ALARM`
+    FaceAlarmRinging,
     // The page's title, in capitals like the English.
     /// `BATTERY`
     BatteryTitle,
@@ -55,14 +58,15 @@ impl Msg {
             Self::FaceDateInvalid => (2, [0]),
             Self::ChargePercent { pct: a0 } => (3, [a0]),
             Self::ChargeUnset => (4, [0]),
-            Self::BatteryTitle => (5, [0]),
-            Self::BatteryCellMv { mv: a0 } => (6, [a0]),
-            Self::BatteryCellUnset => (7, [0]),
-            Self::BatteryInputUsb => (8, [0]),
-            Self::BatteryInputCell => (9, [0]),
-            Self::BatteryInputUnknown => (10, [0]),
-            Self::AboutTitle => (11, [0]),
-            Self::AboutProduct => (12, [0]),
+            Self::FaceAlarmRinging => (5, [0]),
+            Self::BatteryTitle => (6, [0]),
+            Self::BatteryCellMv { mv: a0 } => (7, [a0]),
+            Self::BatteryCellUnset => (8, [0]),
+            Self::BatteryInputUsb => (9, [0]),
+            Self::BatteryInputCell => (10, [0]),
+            Self::BatteryInputUnknown => (11, [0]),
+            Self::AboutTitle => (12, [0]),
+            Self::AboutProduct => (13, [0]),
         }
     }
 }
@@ -89,6 +93,8 @@ pub static EN_GB: Locale = Locale {
         &[Piece::Arg(0), Piece::Text(" %")],
         // charge-unset
         &[Piece::Text("‒‒ %")],
+        // face-alarm-ringing
+        &[Piece::Text("ALARM")],
         // battery-title
         &[Piece::Text("BATTERY")],
         // battery-cell-mv

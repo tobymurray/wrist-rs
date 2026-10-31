@@ -3,6 +3,7 @@
 #![no_std]
 #![no_main]
 
+mod alarm;
 #[cfg(feature = "ble")]
 mod ble;
 mod busy;
@@ -693,6 +694,11 @@ fn now_ms() -> u64 {
     Instant::now().as_millis()
 }
 
+/// Back on the face at once, for the alarm's ring.
+pub fn to_face() {
+    NAV.lock(|n| n.set(Nav::new()));
+}
+
 /// The page to draw now, back on the face once a page's timeout has passed; and when that
 /// timeout falls, if a page other than the face is up.
 pub fn nav_now() -> (Page, Option<Instant>) {
@@ -758,7 +764,10 @@ async fn button_watch(mut lines: ButtonLines) -> ! {
             on_press(uart, press, true, &mut light_until);
         }
         if light_until.is_some_and(|off| Instant::now() >= off) {
-            backlight(false);
+            // A ring keeps the light it turned on.
+            if !alarm::ringing() {
+                backlight(false);
+            }
             light_until = None;
         }
         was_down = deliberate;
@@ -796,10 +805,23 @@ async fn button_watch(mut lines: ButtonLines) -> ! {
     }
 }
 
-/// What a debounced press does: a short one lights the face, or turns off a light the console
-/// switched on, on every page; then the pages' model moves where it says.
+/// What a debounced press does: while the alarm rings, stop it and nothing else; otherwise a
+/// short one lights the face, or turns off a light the console switched on, on every page;
+/// then the pages' model moves where it says.
 fn on_press(uart: Uart, press: Press, injected: bool, light_until: &mut Option<Instant>) {
     const LIT_FOR: Duration = Duration::from_secs(3);
+    if let Some(rang) = alarm::dismiss() {
+        // `feat/haptic`: `haptic::stop()` goes here, before the light and the face.
+        *light_until = Some(Instant::now() + LIT_FOR);
+        uart.write_str(if injected { "[alarm] dismissed by an injected " } else { "[alarm] dismissed by " });
+        uart.write_str(if press.long { "long press " } else { "short press " });
+        uart.write_str(press.button.label());
+        uart.write_str(" after ");
+        uart.write_u32(u32::try_from(rang.as_secs()).unwrap_or(u32::MAX));
+        uart.write_line(" s; face lit for 3 s, page unchanged");
+        wake_display();
+        return;
+    }
     uart.write_str(if injected { "[button] injected " } else { "[button] " });
     uart.write_str(if press.long { "long press " } else { "short press " });
     uart.write_str(press.button.label());
@@ -869,6 +891,7 @@ async fn display(mut bus: pmic::AsyncBus, mut pwr_int: ExtiInput<'static, Async>
                 uart.write_line(why);
             }
         }
+        alarm::service(uart);
         let minute = minute_now();
         let new_minute = last_minute != Some(minute);
         last_minute = Some(minute);
@@ -907,6 +930,9 @@ async fn display(mut bus: pmic::AsyncBus, mut pwr_int: ExtiInput<'static, Async>
         let mut due = Instant::now() + until_next_minute();
         if let (_, Some(back_to_face)) = nav_now() {
             due = due.min(back_to_face);
+        }
+        if let Some(stop) = alarm::stops_at() {
+            due = due.min(stop);
         }
         if !power::on_battery() {
             due = due.min(next_reading);

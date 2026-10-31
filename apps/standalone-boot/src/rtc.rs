@@ -22,6 +22,8 @@ const WPR_LOCK: u32 = 0xFF;
 const TAMP_BKP0R: u32 = 0x4600_7C00 + 0x100;
 const TAMP_BKP1R: u32 = 0x4600_7C00 + 0x104;
 const TAMP_BKP2R: u32 = 0x4600_7C00 + 0x108;
+/// The alarm (`wrist_time::alarm`).
+const TAMP_BKP4R: u32 = 0x4600_7C00 + 0x110;
 /// Not `BKP3R` or `BKP5R` (`HARDWARE.md`, "Debug and boot").
 const TAMP_BKP31R: u32 = 0x4600_7C00 + 0x17C;
 const SOURCE_TAG: u32 = 0x5352_0000;
@@ -61,6 +63,7 @@ const SRC_NONE: u8 = 0;
 const SRC_LSE: u8 = 1;
 const SRC_LSI: u8 = 2;
 
+pub use wrist_time::alarm::Alarm;
 pub use wrist_time::zone::Zone;
 pub use wrist_time::{civil_of_seconds, parse_civil, seconds_of, Civil};
 
@@ -365,6 +368,9 @@ fn write_sources(uart: Uart) {
         }
         None => uart.write_line("no record (the backup domain was reset)"),
     }
+    uart.write_str("  alarm     : ");
+    crate::alarm::write_record(uart);
+    uart.write_line("");
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -434,6 +440,27 @@ pub fn set_zone(z: &Zone) {
         for (i, &v) in (0u32..).zip(&w[1..]) {
             write32(TAMP_BKP11R + 4 * i, v);
         }
+    }
+}
+
+/// `BKP4R` as it stands.
+#[must_use]
+pub fn alarm_word() -> u32 {
+    clock_bus();
+    unsafe { read32(TAMP_BKP4R) }
+}
+
+/// The alarm, if `alarm` set one since the backup domain was last reset.
+#[must_use]
+pub fn alarm() -> Option<Alarm> {
+    Alarm::decode(alarm_word())
+}
+
+pub fn set_alarm(a: Alarm) {
+    clock_bus();
+    unsafe {
+        write32(PWR_DBPR, DBPR_DBP);
+        write32(TAMP_BKP4R, a.encode());
     }
 }
 

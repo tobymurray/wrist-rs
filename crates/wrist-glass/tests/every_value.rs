@@ -30,7 +30,7 @@ fn every_date_fits_the_face() {
             for month in 1..=12 {
                 for day in 1..=days_in(year, month) {
                     let d = Date { year, month, day };
-                    let status = Status { clock: Some(Clock { h: 23, m: 59, s: 0 }), date: Some(d), soc_pct: Some(100) };
+                    let status = Status { clock: Some(Clock { h: 23, m: 59, s: 0 }), date: Some(d), soc_pct: Some(100), ..Status::default() };
                     whole(&format!("{} {} {year}-{month}-{day}", faces.name, l.tag), compose(&status, l, faces));
                     combos.insert((d.weekday(), day, month));
                 }
@@ -48,13 +48,33 @@ fn every_time_and_charge_fits_the_face() {
     for (faces, l) in FAMILIES.iter().flat_map(|f| BUILT_IN.iter().map(move |l| (f, l))) {
         for h in 0..24 {
             for m in 0..60 {
-                let status = Status { clock: Some(Clock { h, m, s: 0 }), date: None, soc_pct: None };
+                let status = Status { clock: Some(Clock { h, m, s: 0 }), date: None, soc_pct: None, ..Status::default() };
                 whole(&format!("{} {} {h}:{m}", faces.name, l.tag), compose(&status, l, faces));
             }
         }
         for pct in 0..=u8::MAX {
             let status = Status { soc_pct: Some(pct), ..Status::default() };
             whole(&format!("{} {} {pct} %", faces.name, l.tag), compose(&status, l, faces));
+        }
+    }
+}
+
+#[test]
+fn every_alarm_fits_the_face_below_the_widest_lines() {
+    for (faces, l) in FAMILIES.iter().flat_map(|f| BUILT_IN.iter().map(move |l| (f, l))) {
+        for h in 0..24 {
+            for m in 0..60 {
+                for ringing in [false, true] {
+                    let status = Status {
+                        clock: Some(Clock { h: 23, m: 59, s: 0 }),
+                        date: Some(Date { year: 2026, month: 9, day: 30 }),
+                        soc_pct: Some(u8::MAX),
+                        alarm: Some(Clock { h, m, s: 0 }),
+                        ringing,
+                    };
+                    whole(&format!("{} {} alarm {h}:{m} ringing {ringing}", faces.name, l.tag), compose(&status, l, faces));
+                }
+            }
         }
     }
 }
