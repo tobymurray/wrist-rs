@@ -1,0 +1,10 @@
+[package]
+name = "wrist-haptic"
+version = "0.0.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+publish = false
+description = "The DRV2625's registers and the patterns the watch plays on its motor"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }

@@ -27,6 +27,7 @@ wrist-aci = { path = "../../crates/wrist-aci", optional = true }
 wrist-wake = { path = "../../crates/wrist-wake", optional = true }
 wrist-board = { path = "../../crates/wrist-board" }
 wrist-glass = { path = "../../crates/wrist-glass" }
+wrist-haptic = { path = "../../crates/wrist-haptic" }
 wrist-pages = { path = "../../crates/wrist-pages" }
 wrist-time = { path = "../../crates/wrist-time" }
 wrist-crash = { path = "../../crates/wrist-crash" }
@@ -41,6 +42,9 @@ usb-log = ["dep:log", "embassy-usb/log"]
 # The console and application updates over Bluetooth, for a bonded central (ble.rs). The radio
 # stays in reset until `ble on`.
 ble = ["dep:wrist-aci", "dep:wrist-wake"]
+# The vibration motor through the DRV2625 (haptic.rs): `haptic tap|alarm|stop` on the console.
+# Without it `haptic::play` plays nothing and the driver stays in reset.
+haptic = []
 
 [[bin]]
 name = "standalone-boot"
