@@ -20,8 +20,24 @@ The image carries a build ID, which the console's `version` prints and `manifest
 records as `build_id` beside `source_commit`: a hash of the files that go into the
 binaries, listed in [`build-inputs.txt`](build-inputs.txt), so that a commit of only the
 gate's record, docs, the site or host tools rebuilds the same bytes
-([GATE.md](GATE.md#publishing)). [`tools/firmware_build.py`](../tools/firmware_build.py)
+([GATE.md](GATE.md#publishing)). With uncommitted changes to those files it is a hash of
+the tree as it stands, then `-dirty`. [`tools/firmware_build.py`](../tools/firmware_build.py)
 holds the part of the recipe that shapes the binaries, and computes the ID.
+
+That ID is the recipe's build's: no features, the pinned compiler and target, the release
+profile as [`Cargo.toml`](../apps/standalone-boot/Cargo.toml) sets it, and the recipe's
+flags. Any other build of the image hashes how it differs into its own ID, in
+[`build.rs`](../apps/standalone-boot/build.rs), and names the differences after the
+version, as SemVer build metadata: `+` and each enabled feature, `opt-<level>` or `dev`,
+`profile` for a `CARGO_PROFILE_RELEASE_*` override, `target`, `rustc` for another
+compiler, `rustflags`, and `local` for a build outside the recipe, whose panic messages and
+symbol names hold the builder's paths. So `cargo build --release --features ble` prints
+`standalone-boot 0.3.0+ble.local build <its own ID>`, and the report's `[step] build`
+line adds the source hash it came from, `(<firmware hash>+ble.local)`.
+`WRIST_RELEASE_BUILD_ID` is for the recipe's build only: build.rs refuses it on any other.
+Profile settings given by `--config` or a parent directory's `.cargo/config.toml`, a
+feature of a dependency given as `--features crate/feature`, and edits to the crates under
+Cargo's home are not seen; a release's `manifest.json` records each file's SHA-256.
 
 ## Build locally
 
@@ -68,7 +84,10 @@ commit built a zip, not that it is safe.
 In the same build image, a clean build of a commit is meant to rebuild byte for byte, from
 any checkout path: the recipe fixes the paths, time and timezone the binaries embed
 (`environment` in [`tools/firmware_build.py`](../tools/firmware_build.py)), and the zips
-their timestamps, modes and order.
+their timestamps, modes and order. The image mounts every checkout at `/src`, which matters
+beyond the remapped paths: Cargo hashes the absolute path of each crate under `crates/`
+and `vendor/` into its symbols, which moves code. A native run of the recipe from two
+paths gives two images under one ID.
 
 The image is pinned by digest because building [`Dockerfile`](Dockerfile) again gives a new
 image, however closely its pins narrow it.

@@ -236,6 +236,9 @@ class Judgements(unittest.TestCase):
             with image('unknown') as f:
                 self.assertIn('unknown', suite.image_problems(f.name, 'unknown', '--restore')[0])
 
+    def test_a_variant_s_version_still_gives_its_build(self):
+        self.assertEqual(suite.build_of('[usb] standalone-boot 0.3.0+ble.local build 4f1e9a07c3d2'), '4f1e9a07c3d2')
+
     def install_run(self, image_build):
         """run() with --install, a clean installed build and an --image of `image_build`."""
         installs = []

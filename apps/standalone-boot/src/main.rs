@@ -397,7 +397,8 @@ fn main() -> ! {
     uart.write_str("[12] flash shared; loader state ");
     uart.write_str(update::state_name(flash));
     uart.write_str("; build ");
-    uart.write_line(version::BUILD_ID);
+    version::write_build(uart);
+    uart.write_line("");
     uart.flush();
 
     let parked = park::Pins {
@@ -1215,7 +1216,8 @@ async fn full_report(
     uart.write_str("[step] wdog  : ");
     uart.write_line(watchdog.as_str());
     uart.write_str("[step] build : ");
-    uart.write_line(version::BUILD_ID);
+    version::write_build(uart);
+    uart.write_line("");
     make_room().await;
 
     uart.write_line("[step] rtc   :");

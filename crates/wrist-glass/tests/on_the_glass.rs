@@ -74,6 +74,7 @@ fn pages(faces: &Faces) -> Vec<(String, (Glass, Short))> {
     let abouts = [
         ("release", About { version: "0.1.0", build: "5784ec72019b" }),
         ("dirty", About { version: "0.1.0", build: "5784ec72019b-dirty" }),
+        ("variant", About { version: "0.1.0+ble.local", build: "5784ec72019b" }),
         ("widest", About { version: "100.100.100", build: "a-name-longer-than-1" }),
         ("long-version", About { version: LONG_VERSION, build: "5784ec72019b" }),
         ("long-build", About { version: "0.1.0", build: "a-name-longer-than-two-lines-of-the-page" }),
@@ -229,6 +230,8 @@ fn the_pages_read_right() {
         assert_eq!(texts(&glass), ["ABOUT", "wrist-rs", "0.1.0", "5784EC72019B", "DIRTY"]);
         let (glass, _) = compose_about(&About { version: "0.1.0", build: "gate-test" }, &EN_GB, faces);
         assert_eq!(texts(&glass), ["ABOUT", "wrist-rs", "0.1.0", "GATE-TEST"]);
+        let (glass, _) = compose_about(&About { version: "0.1.0+ble.local", build: "5784ec72019b" }, &EN_GB, faces);
+        assert_eq!(texts(&glass), ["ABOUT", "wrist-rs", "0.1.0+ble.local", "5784EC72019B"]);
     }
 }
 

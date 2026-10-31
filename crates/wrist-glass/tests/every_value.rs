@@ -85,5 +85,8 @@ fn the_about_page_fits() {
         for build in ["5784ec72019b", "5784ec72019b-dirty", "888888888888-dirty"] {
             whole(&format!("{} {} {build}", faces.name, l.tag), compose_about(&About { version: "100.100.100", build }, l, faces));
         }
+        // A feature build outside the recipe.
+        let version = "0.3.0+ble.local";
+        whole(&format!("{} {} {version}", faces.name, l.tag), compose_about(&About { version, build: "5784ec72019b" }, l, faces));
     }
 }

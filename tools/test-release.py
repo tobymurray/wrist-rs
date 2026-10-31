@@ -278,11 +278,37 @@ class BuildId(unittest.TestCase):
         (self.d/'README.md').write_text('edited\n')
         (self.d/'site/new.html').write_text('\n')
         self.assertEqual(r.firmware_build.build_id(self.d), base)
+        seen = {base}
         (self.d/'crates/wrist-glass/src/new.rs').write_text('\n')
-        self.assertEqual(r.firmware_build.build_id(self.d), base + '-dirty')
+        seen.add(r.firmware_build.build_id(self.d))
         (self.d/'crates/wrist-glass/src/new.rs').unlink()
-        (self.d/'apps/standalone-boot/src/main.rs').write_text('fn main() { loop {} }\n')
-        self.assertEqual(r.firmware_build.build_id(self.d), base + '-dirty')
+        main = self.d/'apps/standalone-boot/src/main.rs'
+        main.write_text('fn main() { loop {} }\n')
+        seen.add(r.firmware_build.build_id(self.d))
+        main.write_text('fn main() { loop { break } }\n')
+        seen.add(r.firmware_build.build_id(self.d))
+        main.unlink()
+        seen.add(r.firmware_build.build_id(self.d))
+        git(self.d, 'checkout', '--', '.')
+        self.assertEqual(r.firmware_build.build_id(self.d), base)
+        self.assertEqual(len(seen), 5)
+        self.assertTrue(all(i.endswith('-dirty') for i in seen - {base}), seen)
+
+    def test_an_uncommitted_tree_is_hashed_as_it_stands(self):
+        """Two trees that differ by an edit have different IDs; the same edit gives the same one."""
+        main = self.d/'apps/standalone-boot/src/main.rs'
+        main.write_text('fn main() { loop {} }\n')
+        dirty = r.firmware_build.build_id(self.d)
+        self.commit('apps/standalone-boot/src/main.rs', 'fn main() { loop {} }\n', 2000)
+        clean = r.firmware_build.build_id(self.d)
+        git(self.d, 'reset', '-q', '--hard', 'HEAD~1')
+        main.write_text('fn main() { loop {} }\n')
+        self.assertEqual(r.firmware_build.build_id(self.d), dirty)
+        self.assertNotEqual(dirty, clean + '-dirty')
+        # Staged, still uncommitted.
+        git(self.d, 'add', 'apps/standalone-boot/src/main.rs')
+        staged = r.firmware_build.build_id(self.d)
+        self.assertTrue(staged.endswith('-dirty'))
 
     def test_matches_git_alone(self):
         """The computation build.rs repeats, with git alone."""

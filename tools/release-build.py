@@ -420,9 +420,9 @@ def main():
         copy(elf, debug / (bin_name + '.elf'))
         copy(map_path, debug / (bin_name + '.map'))
     if not a.skip_checks:
-        # The Bluetooth build is not packaged, but stays clean.
+        # The Bluetooth build is not packaged, but stays clean. The release ID is not its ID.
         execute('cargo', 'clippy', '--locked', '--release', '--features', 'ble', '--', '-D', 'warnings',
-                cwd=ROOT/'apps'/'standalone-boot', env=env)
+                cwd=ROOT/'apps'/'standalone-boot', env={k: v for k, v in env.items() if k != 'WRIST_RELEASE_BUILD_ID'})
     first = user / 'first-install/Apps/ImageInstaller'
     first.mkdir(parents=True)
     firmware_build.combine(execute, env, user / 'loader.bin', user / 'app.bin', first / 'image.bin')

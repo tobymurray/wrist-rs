@@ -3,8 +3,10 @@
 # the first 12 hex digits of `git hash-object` over `git ls-files -s -z` of these paths,
 # so it names the blobs that build app.bin, loader.bin, image.bin and the installer's
 # .uapp, and a commit that touches nothing here keeps it. `-dirty` follows it when any of
-# these paths has an uncommitted change or an untracked file.
-# tools/firmware_build.py and apps/standalone-boot/build.rs both compute it from this list.
+# these paths has an uncommitted change or an untracked file, and the hash then also covers
+# each such file's contents.
+# tools/firmware_build.py and apps/standalone-boot/build.rs both compute it from this list;
+# build.rs also hashes in how a build differs from the recipe's (release/README.md).
 #
 # Left out, because none of it reaches a binary: gate.json and the other release/ docs,
 # site/, the workflows (firmware.yml's SDK revision is toolchain.json's, which the recipe

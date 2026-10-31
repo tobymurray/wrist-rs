@@ -5,6 +5,7 @@ Everything here shapes app.bin, loader.bin, image.bin or the installer, so this 
 of the build ID's inputs (release/build-inputs.txt); tools/release-build.py checks and
 packages around it.
 """
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -25,12 +26,25 @@ def inputs(root=ROOT):
 
 
 def build_id(root=ROOT):
-    """The firmware hash; apps/standalone-boot/build.rs computes the same for builds outside the recipe."""
+    """The firmware hash, the ID of the recipe's build. apps/standalone-boot/build.rs computes the
+    same, and for any other build hashes how it differs from the recipe's into its own ID."""
     specs = inputs(root)
     listing = git('ls-files', '-s', '-z', '--', *specs, root=root)
-    digest = git('hash-object', '--stdin', root=root, stdin=listing).decode().strip()
     dirty = git('status', '--porcelain', '--untracked-files=normal', '--', *specs, root=root)
+    if dirty:
+        listing += worktree(root, specs)
+    digest = git('hash-object', '--stdin', root=root, stdin=listing).decode().strip()
     return digest[:12] + ('-dirty' if dirty else '')
+
+
+def worktree(root, specs):
+    """After `worktree\\0`, each input that differs from the index as `<blob> <path>\\0`, with `-`
+    for a deleted one's blob, so that two uncommitted trees that differ have different IDs."""
+    listed = git('ls-files', '-z', '--modified', '--deleted', '--others', '--exclude-standard', '--', *specs, root=root)
+    paths = sorted({p for p in listed.split(b'\0') if p})
+    present = [p for p in paths if (root/os.fsdecode(p)).is_file()]
+    blobs = iter(git('hash-object', '--stdin-paths', root=root, stdin=b'\n'.join(present)).split(b'\n'))
+    return b'worktree\0' + b''.join((next(blobs) if p in present else b'-') + b' ' + p + b'\0' for p in paths)
 
 
 def environment(base, sdk, build_id, root=ROOT):
