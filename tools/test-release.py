@@ -138,11 +138,30 @@ class Packaging(unittest.TestCase):
             self.assertEqual([p.as_posix() for p in r.package_licenses(d)],
                              ['COPYRIGHT', 'Fonts/OFL-Poppins.txt', 'LICENSE-MIT'])
 
+    def test_licenses_follow_only_what_is_linked(self):
+        def dep(pkg, *kinds):
+            return {'pkg': pkg, 'dep_kinds': [{'kind': k, 'target': None} for k in kinds]}
+        metadata = {
+            'workspace_members': ['app', 'tool'],
+            'packages': [{'id': i, 'name': i} for i in ['app', 'tool', 'path-crate', 'used', 'macro', 'test-only',
+                                                         'build-only', 'both', 'tool-dep']],
+            'resolve': {'nodes': [
+                {'id': 'app', 'deps': [dep('path-crate', None), dep('test-only', 'dev'), dep('build-only', 'build'),
+                                       dep('both', 'dev', None)]},
+                {'id': 'path-crate', 'deps': [dep('used', None), dep('macro', None), dep('test-only', 'dev')]},
+                {'id': 'tool', 'deps': [dep('tool-dep', None)]},
+                *({'id': i, 'deps': []} for i in ['used', 'macro', 'test-only', 'build-only', 'both', 'tool-dep'])]}}
+        self.assertEqual([p['name'] for p in r.linked_packages(metadata, ['app'])],
+                         ['app', 'both', 'macro', 'path-crate', 'used'])
+        with self.assertRaises(ValueError):
+            r.linked_packages(metadata, ['used'])
+
     def test_the_installer_and_the_image_ship_their_font_licences(self):
-        for cwd in [r.ROOT, r.ROOT/'apps/standalone-boot']:
-            metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--locked', '--format-version=1'],
-                                                          cwd=cwd))
-            incised = [p for p in metadata['packages'] if p['name'] == 'incised-text']
+        for label, workspace, roots, features in r.LINKED:
+            if label == 'loader':
+                continue
+            metadata = r.cargo_metadata(workspace, features)
+            incised = [p for p in r.linked_packages(metadata, roots) if p['name'] == 'incised-text']
             self.assertEqual(len(incised), 1)
             base = Path(incised[0]['manifest_path']).parent
             shipped = [p.as_posix() for p in r.package_licenses(base)]

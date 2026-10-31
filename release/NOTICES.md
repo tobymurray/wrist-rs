@@ -7,9 +7,9 @@ which must stay publicly available for any published release. Third-party materi
 its own licence, and none of it may be linked into wrist-rs on terms incompatible with the
 AGPL; in particular, TouchGFX (SLA0048) must stay out of anything wrist-rs ships.
 
-`licenses/` collects the license and notice files of every Cargo dependency, of what the
-installer links from the SDK and the GNU Arm toolchain, and of the fonts; collecting them is
-not legal clearance, and host-only dependencies may be over-included.
+`licenses/` collects the license and notice files of the Cargo packages linked into the
+installer, the image and the loader, of what the installer links from the SDK and the GNU Arm
+toolchain, and of the fonts; collecting them is not legal clearance.
 
 Known bundled material:
 
@@ -31,7 +31,7 @@ Known bundled material:
 - **IncisedText** draws the installer's text and the face's. Its code is MIT OR Apache-2.0;
   its glyph data is rendered from Poppins and Atkinson Hyperlegible Next, which makes it a
   Modified Version of each under the SIL Open Font License 1.1, whose texts are in
-  `licenses/root/incised-text-*/Fonts/` for the installer and `licenses/app/incised-text-*/Fonts/`
+  `licenses/installer/incised-text-*/Fonts/` for the installer and `licenses/app/incised-text-*/Fonts/`
   for the image.
 - **Embassy**, including the vendored and patched HAL and USB driver: MIT OR Apache-2.0.
   Other Rust crates carry their own licences.
