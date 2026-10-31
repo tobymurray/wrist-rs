@@ -136,25 +136,40 @@ def remember_service_changed(device):
         peers = set()
     changed = device.gatt_service.service_changed_characteristic
 
-    def on_subscription(bearer, characteristic, _notify, indicate):
-        if characteristic is not changed:
-            return
-        connection = getattr(bearer, "connection", bearer)
-        peer = str(connection.peer_address)
-        keep = indicate and connection.is_encrypted
+    def remember(peer, keep):
         if keep == (peer in peers):
             return
         (peers.add if keep else peers.discard)(peer)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(sorted(peers)))
 
+    def on_subscription(bearer, characteristic, _notify, indicate):
+        if characteristic is not changed:
+            return
+        connection = getattr(bearer, "connection", bearer)
+        remember(str(connection.peer_address), indicate and connection.is_encrypted)
+
     def on_connection(connection):
+        state = {"pairing": False, "restored": False}
+
         def restore():
-            if connection.is_encrypted and str(connection.peer_address) in peers:
+            if connection.is_encrypted and not state["pairing"] and str(connection.peer_address) in peers:
                 device.gatt_server.subscribers.setdefault(connection, {})[changed.handle] = bytes([2, 0])
+                state["restored"] = True
                 log("the central is subscribed to Service Changed from an earlier run")
 
+        def paired(_keys):
+            if state["restored"]:
+                state["restored"] = False
+                device.gatt_server.subscribers.get(connection, {}).pop(changed.handle, None)
+            if str(connection.peer_address) in peers:
+                remember(str(connection.peer_address), False)
+                log("a new bond: the earlier run's Service Changed subscription is dropped")
+
         connection.on("connection_encryption_change", restore)
+        connection.on("pairing_start", lambda: state.update(pairing=True))
+        connection.on("pairing", paired)
+        connection.on("pairing_failure", lambda _reason: state.update(pairing=False))
 
     device.gatt_server.on(device.gatt_server.EVENT_CHARACTERISTIC_SUBSCRIPTION, on_subscription)
     device.on(device.EVENT_CONNECTION, on_connection)
