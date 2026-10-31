@@ -1,6 +1,7 @@
 //! A page as the firmware draws it, as raw ABGR2222 bytes, to compare with `page dump`:
 //!
 //!     cargo run -p wrist-glass --example face -- 09:11 2026-10-23 100 face.raw
+//!     cargo run -p wrist-glass --example face -- 09:11 2026-10-23 100 07:00 face.raw
 //!     cargo run -p wrist-glass --example face -- battery 100 4405 usb battery.raw
 //!     cargo run -p wrist-glass --example face -- about 0.1.0 5784ec72019b about.raw
 //!     cargo run -p wrist-glass --example face -- stress churn 7 stress.raw
@@ -34,7 +35,7 @@ fn main() {
             FACES,
         ),
         [page, version, build, _] if page == "about" => compose_about(&About { version, build, crc: None }, &EN_GB, FACES),
-        [time, date, soc, _] => {
+        [time, date, soc, _] | [time, date, soc, _, _] => {
             let nums = |s: &str, sep| -> Vec<u16> { s.split(sep).map(|n| n.parse().expect("a number")).collect() };
             let byte = |n: u16| u8::try_from(n).expect("a field under 256");
             let clock = arg(time).map(|t| {
@@ -46,10 +47,14 @@ fn main() {
                 Date { year: d[0], month: byte(d[1]), day: byte(d[2]) }
             });
             let soc_pct = arg(soc).map(|s| s.parse().expect("a percentage"));
-            compose(&Status { clock, date, soc_pct }, &EN_GB, FACES)
+            let alarm = args.get(3).filter(|_| args.len() == 5).and_then(|a| arg(a)).map(|t| {
+                let t = nums(t, ':');
+                Clock { h: byte(t[0]), m: byte(t[1]), s: 0 }
+            });
+            compose(&Status { clock, date, soc_pct, alarm, ringing: false, missed: false }, &EN_GB, FACES)
         }
         _ => {
-            eprintln!("usage: face HH:MM YYYY-MM-DD PERCENT OUT.raw");
+            eprintln!("usage: face HH:MM YYYY-MM-DD PERCENT [ALARM-HH:MM] OUT.raw");
             eprintln!("       face battery PERCENT MV usb|cell OUT.raw");
             eprintln!("       face about VERSION BUILD OUT.raw   ('-' for unset)");
             eprintln!("       face stress KIND STEP OUT.raw");

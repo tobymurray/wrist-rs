@@ -21,7 +21,7 @@ fn pixels(g: &Glass) -> Vec<u8> {
 }
 
 fn face(faces: &Faces, h: u8, m: u8, day: u8, soc_pct: Option<u8>) -> Glass {
-    let status = Status { clock: Some(Clock { h, m, s: 0 }), date: Some(Date { year: 2026, month: 10, day }), soc_pct };
+    let status = Status { clock: Some(Clock { h, m, s: 0 }), date: Some(Date { year: 2026, month: 10, day }), soc_pct, ..Status::default() };
     compose(&status, &EN_GB, faces).0
 }
 
@@ -83,7 +83,7 @@ fn between_every_page_and_locale() {
         let mut frames = Vec::new();
         for l in BUILT_IN {
             frames.push(compose(&Status::default(), l, faces).0);
-            frames.push(compose(&Status { clock: Some(Clock { h: 23, m: 59, s: 0 }), date: Some(Date { year: 2026, month: 9, day: 30 }), soc_pct: Some(100) }, l, faces).0);
+            frames.push(compose(&Status { clock: Some(Clock { h: 23, m: 59, s: 0 }), date: Some(Date { year: 2026, month: 9, day: 30 }), soc_pct: Some(100), ..Status::default() }, l, faces).0);
             frames.push(compose_battery(&Battery { soc_pct: Some(5), cell_mv: Some(3412), external: Some(true) }, l, faces).0);
             frames.push(compose_battery(&Battery::default(), l, faces).0);
             frames.push(compose_about(&About { version: "0.2.0", build: "5784ec72019b-dirty", crc: None }, l, faces).0);
