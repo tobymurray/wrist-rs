@@ -413,6 +413,32 @@ class Judgements(unittest.TestCase):
         self.assertFalse(result['passed'])
         self.assertEqual([l.split()[1] for l in lines if l.startswith('installed')], [result['argv'][1], result['argv'][3]])
 
+    def test_lateness_needs_the_probe_through_the_traffic(self):
+        class Phone:
+            async def connect(self):
+                return Link()
+
+        class Link:
+            async def command(self, text, pattern, timeout=3):
+                return 'ok'
+
+            async def close(self):
+                pass
+
+        def run_with(ran):
+            page = ['[glass] longest compose 1.0 ms, render 1.0 ms; executor late by at most 1.2 ms at 5 ms, '
+                    'over 5 ms 0 times (maxima since the last `page`)',
+                    f'[glass] latency probe ran {ran} s since the last `page`; off']
+            usb = Console({'page': page, 'page lag 8': ['[glass] executor-latency probe armed for 8 s']})
+            s = suite.Scenario('lateness', '')
+            with mock.patch('sys.stdout', io.StringIO()):
+                asyncio.run(suite.lateness(s, usb, Phone(), 'b', argparse.Namespace(lag_seconds=8)))
+            return s
+        self.assertTrue(run_with(2).passed)
+        expired = run_with(0)
+        self.assertFalse(expired.passed)
+        self.assertIn('the probe ran through the traffic (0 s of 2 s', ' '.join(c['what'] for c in expired.checks))
+
 
 if __name__ == '__main__':
     unittest.main()

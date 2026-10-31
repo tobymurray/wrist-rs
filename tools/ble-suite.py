@@ -59,6 +59,7 @@ SCENARIOS = ['console', 'reconnect', 'lateness', 'soak', 'update']
 FORBIDDEN = re.compile(r'^\s*ble\s+forget\b')
 OTHER_TOOLS = re.compile(r'(wrist-(ble|cmd|update|time|frame|crash)|ble-suite|hr-sim(-bumble)?|gate)\.py|picocom|minicom|screen /dev/')
 LATENESS = re.compile(r'executor late by at most ([0-9.]+) ms at \d+ ms, over 5 ms (\d+) times')
+PROBED = re.compile(r'latency probe ran (\d+) s since the last')
 BUILD_CHAR = rb'[0-9A-Za-z._-]'
 STATUS = r'\[ble\] .*, timing '
 HANG_UP = re.compile(r'\[ble\] disconnected, reason (\w+)')
@@ -434,10 +435,15 @@ async def reconnect(s, usb, phone, build, a):
             f'reason 13, no pairing failure (failed: {failures or "none"}; connected to encrypted {spread(times)})')
 
 
-async def page(usb):
+async def page(usb, probed=False):
+    """(worst ms, times over 5 ms) from `page`, and with `probed` the seconds the probe ran since the last."""
+    mark = usb.mark()
     line = await usb.ask('page', LATENESS.pattern, 5)
     m = LATENESS.search(line or '')
-    return (float(m[1]), int(m[2])) if m else None
+    if not probed:
+        return (float(m[1]), int(m[2])) if m else None
+    _, ran = await usb.wait(PROBED.pattern, mark, 5)
+    return (float(m[1]), int(m[2]), int(PROBED.search(ran)[1])) if m and ran else None
 
 
 async def traffic(link, seconds):
@@ -458,10 +464,15 @@ async def lateness(s, usb, phone, build, a):
     link = await phone.connect()
     if not s.check(link, 'attached over the air for traffic'):
         return
-    readings = []
+    readings, since = [], time.time()
     for _ in range(2):
         s.check(await traffic(link, a.lag_seconds / 2 - 2), 'console traffic over the air answered throughout')
-        readings.append(await page(usb))
+        took = time.time() - since
+        readings.append(await page(usb, probed=True))
+        since = time.time()
+        ran = readings[-1][2] if readings[-1] else None
+        s.check(ran is not None and ran >= int(took) - 1,
+                f'the probe ran through the traffic ({ran} s of {took:.0f} s; a longer --lag-seconds covers it)')
     await link.close()
     s.check(all(readings), f'`page` reported the lateness twice ({readings})')
     got = [r for r in readings if r]
@@ -707,8 +718,8 @@ CRITERIA = {
                '`ble` "connected, encrypted"; the watch logs reason 13 at each hang-up',
     'reconnect': '{a.reconnects} bonded reconnects, each: ping answered, `link encrypted` within {a.encrypt_limit} s '
                  'of `connected` on the watch, reason 13, no pairing failure or lost bond',
-    'lateness': '`page lag {a.lag_seconds}` with console traffic over the air: executor late by at most 5.0 ms, '
-                'over 5 ms 0 times',
+    'lateness': '`page lag {a.lag_seconds}` with console traffic over the air, the probe running throughout: '
+                'executor late by at most 5.0 ms, over 5 ms 0 times',
     'soak': '{a.soak_minutes} min of a phone connecting for {a.hold} s of console traffic and leaving for {a.gap} s: '
             'every cycle answered with reason 13, `ble` counters unchanged, executor at most 5.0 ms late, no reset',
     'update': 'an application update over the air reaches `state boot`, no revert, the same build after it, '
