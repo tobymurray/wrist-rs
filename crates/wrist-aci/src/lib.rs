@@ -296,6 +296,8 @@ pub enum Event<'a> {
     DisconnectionComplete { handle: u16, status: u8, reason: u8 },
     /// Encryption Change (7.7.8): a nonzero status is a change that failed; 1 on, 0 off.
     EncryptionChange { handle: u16, status: u8, enabled: u8 },
+    /// LE Data Length Change (7.7.65.7): the largest payload each way, octets and microseconds.
+    LeDataLengthChange { handle: u16, max_tx_octets: u16, max_tx_time: u16, max_rx_octets: u16, max_rx_time: u16 },
     /// LE Advertising Report (7.7.65.2): one or more reports ([`reports`]).
     LeAdvertisingReport { data: &'a [u8] },
     /// One of ST's events (event code 0xFF): its code and the bytes after it.
@@ -354,8 +356,15 @@ pub fn parse(p: &[u8]) -> Event<'_> {
         [0x04, 0x3E, _, 0x03, status @ 0x01..=0xFF, _, _, ..] => {
             Event::LeConnectionUpdateFailed { handle: u16_at(5), status: *status }
         }
+        [0x04, 0x3E, _, 0x07, _, _, _, _, _, _, _, _, _, _, ..] => Event::LeDataLengthChange {
+            handle: u16_at(4),
+            max_tx_octets: u16_at(6),
+            max_tx_time: u16_at(8),
+            max_rx_octets: u16_at(10),
+            max_rx_time: u16_at(12),
+        },
         [0x04, 0x3E, _, 0x02, data @ ..] => Event::LeAdvertisingReport { data },
-        [0x04, 0x3E, _, sub, ..] if !matches!(sub, 0x01 | 0x03 | 0x0A) => Event::LeUnknown { subevent_code: *sub },
+        [0x04, 0x3E, _, sub, ..] if !matches!(sub, 0x01 | 0x03 | 0x07 | 0x0A) => Event::LeUnknown { subevent_code: *sub },
         [0x04, 0xFF, _, lo, hi, params @ ..] => Event::Vendor { code: u16::from_le_bytes([*lo, *hi]), params },
         [0x04, code, _, ..] if !matches!(code, 0x05 | 0x08 | 0x0E | 0x0F | 0x3E | 0xFF) => {
             Event::Unknown { code: *code }

@@ -1396,6 +1396,9 @@ impl Link<'_> {
                 self.uart.write_line(if on { "[ble] link encrypted" } else { "[ble] link encryption off" });
                 self.set_mirror();
             }
+            Event::LeDataLengthChange { max_tx_octets, max_tx_time, max_rx_octets, max_rx_time, .. } => {
+                self.data_length((max_tx_octets, max_tx_time), (max_rx_octets, max_rx_time));
+            }
             Event::LeAdvertisingReport { data } => self.scanner.advertising(data, self.uart),
             Event::Vendor { code, params } => self.vendor(code, params),
             Event::LeUnknown { subevent_code } => self.unknown("[ble] LE event ", 0x3E, subevent_code),
@@ -1404,6 +1407,17 @@ impl Link<'_> {
                 UNKNOWN.fetch_add(1, Ordering::Relaxed);
             }
         }
+    }
+
+    /// `[ble] data length TX 251 octets in 2120 us, RX 27 octets in 328 us`.
+    fn data_length(&self, tx: (u16, u16), rx: (u16, u16)) {
+        for (label, (octets, time)) in [("[ble] data length TX ", tx), (" us, RX ", rx)] {
+            self.uart.write_str(label);
+            self.uart.write_u32(u32::from(octets));
+            self.uart.write_str(" octets in ");
+            self.uart.write_u32(u32::from(time));
+        }
+        self.uart.write_line(" us");
     }
 
     /// Named on the console the first time its code comes.

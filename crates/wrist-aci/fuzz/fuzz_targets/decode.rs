@@ -68,6 +68,7 @@ fuzz_target!(|read: &[u8]| {
                 within(packet, params);
                 vendor(params);
             }
+            Event::LeDataLengthChange { .. } => assert!(packet.len() >= 14),
             _ => assert!(packet_whole(rest)),
         }
         // A packet cut short ends the read.

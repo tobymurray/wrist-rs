@@ -228,6 +228,26 @@ fn connection_update_complete_succeeds_or_fails_with_its_handle() {
 }
 
 #[test]
+fn data_length_change_carries_both_directions() {
+    // 251 octets out in 2120 us, the default 27 in 328 us.
+    let p = le_event(0x07, &[0x01, 0x08, 0xFB, 0x00, 0x48, 0x08, 0x1B, 0x00, 0x48, 0x01]);
+    assert_eq!(
+        parse(&p),
+        Event::LeDataLengthChange {
+            handle: 0x0801,
+            max_tx_octets: 251,
+            max_tx_time: 2120,
+            max_rx_octets: 27,
+            max_rx_time: 328
+        }
+    );
+    for n in 1..11 {
+        let short = shortened(&p, n);
+        assert_eq!(parse(&short), Event::Malformed(&short), "{n}");
+    }
+}
+
+#[test]
 fn disconnection_complete_carries_handle_status_and_reason() {
     assert_eq!(
         parse(&hci_event(0x05, &[0x00, 0x01, 0x08, 0x13])),
@@ -268,8 +288,8 @@ fn encryption_change_carries_handle_status_and_state() {
 
 #[test]
 fn events_the_image_does_not_decode_are_named() {
-    // LE: Read Remote Features Complete, Data Length Change, PHY Update Complete.
-    for sub in [0x04, 0x07, 0x0C] {
+    // LE: Read Remote Features Complete, PHY Update Complete.
+    for sub in [0x04, 0x0C] {
         assert_eq!(parse(&le_event(sub, &[0x00, 0x01, 0x08])), Event::LeUnknown { subevent_code: sub });
     }
     // Hardware Error, Number Of Completed Packets, Data Buffer Overflow, Encryption Key Refresh Complete.
