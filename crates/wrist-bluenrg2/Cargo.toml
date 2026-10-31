@@ -1,0 +1,14 @@
+[package]
+name = "wrist-bluenrg2"
+version = "0.0.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+publish = false
+description = "The BlueNRG-2 as the Bluetooth core sees it: its limits, its link-layer scheduler from ST's PM0257, its own refusal codes, and the timings that fit it. no_std, no allocation"
+
+[dependencies]
+wrist-ble = { path = "../wrist-ble" }
+wrist-ble-core = { path = "../wrist-ble-core" }
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }

@@ -1195,6 +1195,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "wrist-ble-sim"
+version = "0.0.0"
+dependencies = [
+ "proptest",
+ "wrist-ble",
+ "wrist-ble-core",
+ "wrist-bluenrg2",
+]
+
+[[package]]
+name = "wrist-bluenrg2"
+version = "0.0.0"
+dependencies = [
+ "wrist-ble",
+ "wrist-ble-core",
+]
+
+[[package]]
 name = "wrist-board"
 version = "0.0.0"
 
