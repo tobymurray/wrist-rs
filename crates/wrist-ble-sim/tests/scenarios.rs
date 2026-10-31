@@ -132,7 +132,7 @@ fn unpredicted_refusal_is_quarantined() {
 }
 
 #[test]
-fn everything_refused_ends_in_a_fault_retried_hourly() {
+fn everything_refused_ends_in_a_fault_started_once_an_hour() {
     let mut s = Sim::new(6);
     s.fake.diverge(Box::new(|_, c| matches!(c, Change::Advertise(Some(_))).then_some(SchedKind::LengthFailed)));
     s.goals(on(Power::Battery));
@@ -141,8 +141,13 @@ fn everything_refused_ends_in_a_fault_retried_hourly() {
     assert!(!s.fake.ready());
     let attempts = submitted(&s, |op| matches!(op, Op::Advertise(_))).len();
     assert_eq!(attempts, 2 * (wrist_ble_core::chip::RESETS_PER_HOUR + 1));
-    s.run_for(Millis::mins(60));
-    assert_eq!(submitted(&s, |op| matches!(op, Op::Advertise(_))).len(), 2 * attempts);
+    let resets = s.core.counters.resets;
+    for hour in 1..=3 {
+        s.run_for(Millis::mins(60));
+        assert!(s.line().contains("phone=fault(baseline-refused)"), "{}", s.line());
+        assert_eq!(submitted(&s, |op| matches!(op, Op::Advertise(_))).len(), attempts + 2 * hour);
+        assert_eq!(s.core.counters.resets, resets);
+    }
 }
 
 #[test]

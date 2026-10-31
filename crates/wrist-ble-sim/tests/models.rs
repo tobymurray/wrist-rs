@@ -335,6 +335,8 @@ struct ChipModel {
     now: Instant,
     /// When the machine reset the chip without being asked, newest first.
     starts: [Option<Instant>; 6],
+    /// Starts since the hourly retry left the fault, until the chip takes the advertising.
+    retry_starts: u8,
 }
 
 struct Chips;
@@ -348,7 +350,7 @@ impl Model for Chips {
 
     fn init_states(&self) -> Vec<ChipModel> {
         let chip = ChipMachine::OFF.step(Instant(0), chip::Event::RadioOn).0;
-        vec![ChipModel { chip, now: Instant(0), starts: [None; 6] }]
+        vec![ChipModel { chip, now: Instant(0), starts: [None; 6], retry_starts: 0 }]
     }
 
     fn actions(&self, s: &ChipModel, out: &mut Vec<chip::Event>) {
@@ -358,7 +360,7 @@ impl Model for Chips {
         out.push(chip::Event::Tick);
         match s.chip.state {
             Chip::Starting { .. } => out.extend([chip::Event::Ready(INFO), chip::Event::StartFailed]),
-            Chip::Ready(_) => out.extend([chip::Event::Reset(ResetCause::Watchdog), chip::Event::BaselineRefused]),
+            Chip::Ready(_) => out.extend([chip::Event::Reset(ResetCause::Watchdog), chip::Event::BaselineRefused, chip::Event::Accepted]),
             _ => {}
         }
     }
@@ -377,6 +379,12 @@ impl Model for Chips {
             n.starts.rotate_right(1);
             n.starts[0] = Some(n.now);
         }
+        if action == Some(chip::Action::Start) && (s.retry_starts > 0 || matches!(s.chip.state, Chip::Fault { .. })) {
+            n.retry_starts = s.retry_starts.saturating_add(1);
+        }
+        if e == chip::Event::Accepted || matches!(n.chip.state, Chip::Off | Chip::Fault { .. }) {
+            n.retry_starts = 0;
+        }
         Some(n)
     }
 
@@ -388,7 +396,9 @@ impl Model for Chips {
                     _ => true,
                 })
             }),
+            Property::always("the hourly retry starts the chip once", |_, s: &ChipModel| s.retry_starts <= 1),
             Property::sometimes("a fault", |_, s: &ChipModel| matches!(s.chip.state, Chip::Fault { .. })),
+            Property::sometimes("an hourly retry", |_, s: &ChipModel| s.retry_starts == 1),
         ]
     }
 }
