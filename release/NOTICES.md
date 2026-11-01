@@ -33,6 +33,9 @@ Known bundled material:
   Modified Version of each under the SIL Open Font License 1.1, whose texts are in
   `licenses/installer/incised-text-*/Fonts/` for the installer and `licenses/app/incised-text-*/Fonts/`
   for the image.
+- **Bosch Sensortec's BMI270 configuration image**, which the image writes to the IMU before
+  its step counter runs: BSD-3-Clause, from the BMI270 Sensor API. The text is
+  `crates/wrist-imu/LICENSE-BOSCH`, collected under `licenses/app/wrist-imu-*/`.
 - **Embassy**, including the vendored and patched HAL and USB driver: MIT OR Apache-2.0.
   Other Rust crates carry their own licences.
 - **pyserial** (BSD) is installed separately and not bundled.
