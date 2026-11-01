@@ -123,7 +123,8 @@ fn dier_write(r: Regs, val: u32) {
     }
 }
 
-/// wrist-rs: an acknowledgement has taken at most 7 LSE cycles (215 us); this is 65.
+/// wrist-rs: an acknowledgement has taken at most 7 LSE cycles (215 us) undivided; this is 65,
+/// and about 16 of the /4 prescaler's counter clocks.
 #[cfg(any(stm32wba, stm32u5, stm32u3))]
 const ACK_TIMEOUT_US: u32 = 2_000;
 
@@ -251,7 +252,8 @@ pub mod stats {
         pub late: [Late; 8],
     }
 
-    const LATE_TICKS: u64 = 164;
+    /// wrist-rs: 5 ms, whatever the tick.
+    const LATE_TICKS: u64 = (super::TICK_HZ * 5).div_ceil(1000);
     const NO_LATE: Late = Late { at_ticks: 0, late_ticks: 0, alarm_lo: 0, flags: 0 };
     const NO_TIMEOUT: Timeout =
         Timeout { dier: false, cr: 0, isr: 0, bdcr: 0, written: 0, read_back: 0, counter_ticks: 0 };
@@ -762,7 +764,8 @@ impl RtcDriver {
 impl super::LPTimeDriver for RtcDriver {
     /// Compute the approximate amount of time until the next alarm
     fn time_until_next_alarm(&self, cs: CriticalSection) -> embassy_time::Duration {
-        let now = self.now() + 32;
+        // wrist-rs: upstream's 32 ticks, about 1 ms at 32768 Hz, kept at 1 ms whatever the tick.
+        let now = self.now() + TICK_HZ / 1024;
 
         embassy_time::Duration::from_ticks(self.alarm.borrow(cs).timestamp.get().saturating_sub(now))
     }

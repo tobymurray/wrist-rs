@@ -14,7 +14,7 @@ cortex-m = { version = "0.7.9", features = ["critical-section-single-core"] }
 # No `memory-x`: memory.x here places the image at its partition.
 embassy-stm32 = { version = "0.6.0", features = ["stm32u5a5qj", "time-driver-lptim4", "low-power", "executor-thread", "rt", "time", "exti"] }
 embassy-executor = { version = "0.10.0", features = ["trace"] }
-embassy-time = { version = "0.5.1", features = ["tick-hz-32_768"] }
+embassy-time = { version = "0.5.1", features = ["tick-hz-8_192"] }
 static_cell = "2.1.1"
 critical-section = "1.2"
 embassy-usb = { version = "0.6.0", default-features = false }

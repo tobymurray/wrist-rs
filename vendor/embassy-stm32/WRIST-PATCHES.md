@@ -30,12 +30,14 @@ revision. Remove this copy once upstream has all of these, or equivalents:
 - **LPTIM4 time driver (U5).** `time-driver-lptim4` runs the time driver on LPTIM4's basic
   register block, leaving LPTIM1 and LPTIM3 to the panel's `VCOM`; it selects the LSE for
   LPTIM3/4 itself (`CCIPR3.LPTIM34SEL`), which the RCC configuration has no field for, or
-  the LSI when the LSE is not ready, counting its 32 kHz as 32768 Hz (2.3 % slow).
+  the LSI when the LSE is not ready, counting its 32 kHz as 32768 Hz (2.3 % slow). The
+  late-alarm threshold (5 ms) and `time_until_next_alarm`'s lead (upstream's 32 ticks, 1 ms)
+  are in time, not ticks, so they hold at the image's 8,192 Hz tick.
 - **LPTIM `DIER` writes (U5, WBA, U3).** Each change waits for `DIEROK` (bounded), and an
   unchanged value is not written: entering Stop 2 with a `CCIE` enable unacknowledged loses
-  the compare wakeup, and the alarm runs one 2 s period late. `set_alarm` writes `CCIE` once, to its final value,
+  the compare wakeup, and the alarm runs one counter period late. `set_alarm` writes `CCIE` once, to its final value,
   and an alarm already due after `next_period` runs at the overflow (ES0553 2.12.3).
-  A `DIEROK` or `CMPOK` not seen within 2 ms, against at most 215 us measured, does not
+  A `DIEROK` or `CMPOK` not seen within 2 ms, against at most 215 us measured undivided, does not
   stop the driver: the write is made once more and, if still unacknowledged, left to the
   overflow, which handles an alarm whose wakeup it lost.
 - **Alarms armed for the current counter cycle** (upstream
