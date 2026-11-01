@@ -65,7 +65,12 @@ fn a_scan_as_the_phone_connects() {
     s.fake.phone_leaves(0);
     s.run_for(Millis::secs(3));
     s.fake.phone_arrives(Phone::new(Os::Linux, 1));
-    while s.fake.phone_link().is_none() {
+    // Within 10 s, counted in steps: a broken sim might never move the clock.
+    for step in 0.. {
+        if s.fake.phone_link().is_some() {
+            break;
+        }
+        assert!(step < 1_000, "the phone never connected");
         s.run_for(Millis(10));
     }
     let scan = ScanParams { interval: Duration::from_u16(160), window: Duration::from_u16(32), active: false, duration: Millis::secs(10) };

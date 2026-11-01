@@ -1250,3 +1250,19 @@ impl wrist_ble::Radio for Fake {
         Ok(Fake::snapshot(self))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A link on air that the scheduler's state never admitted is caught at the next happening.
+    #[test]
+    #[should_panic(expected = "the scheduler's state has lost the air")]
+    fn the_audit_catches_a_link_the_scheduler_never_admitted() {
+        let mut f = Fake::new(1);
+        f.start();
+        let params = LinkParams { interval: Duration::from_u16(24), latency: 0, timeout: Duration::from_u16(500) };
+        f.new_link(LeConnRole::Peripheral, Peer::Phone(0), params, None).unwrap();
+        f.advance(Instant(5_000));
+    }
+}

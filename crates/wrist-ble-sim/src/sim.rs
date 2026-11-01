@@ -93,6 +93,9 @@ impl Sim {
         self.run_until(self.now + d);
     }
 
+    /// # Panics
+    ///
+    /// A check fails, or the fake owes something it never gets past: this would spin forever.
     pub fn run_until(&mut self, until: Instant) {
         loop {
             let core = self.next.filter(|&t| t <= until);
@@ -102,16 +105,19 @@ impl Sim {
                     self.now = self.now.max(c);
                     self.feed(Input::Tick);
                 }
-                (_, Some(f)) => match self.fake.advance(f) {
-                    Some((at, e)) => {
+                (_, Some(f)) => {
+                    if let Some((at, e)) = self.fake.advance(f) {
                         self.now = self.now.max(at);
                         if matches!(e, RadioEvent::LinkUp { .. } | RadioEvent::LinkDown { .. } | RadioEvent::ChipReset(_) | RadioEvent::EventsLost) {
                             self.checks.disturbed(self.now);
                         }
                         self.feed(Input::Radio(e));
+                    } else {
+                        // The fake owed something by `f`; it must have moved past it, or this loop spins.
+                        assert!(self.fake.next_at().is_none_or(|n| n > f), "seed {}: the fake stands still at {f:?}\n{}", self.seed, self.report());
+                        self.now = self.now.max(f);
                     }
-                    None => self.now = self.now.max(f),
-                },
+                }
                 (None, None) => break,
                 (Some(_), None) => unreachable!(),
             }
