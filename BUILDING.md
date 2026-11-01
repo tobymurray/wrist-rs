@@ -99,6 +99,17 @@ cargo run -p wrist-glass --example face -- 09:11 2026-10-23 100 host.raw
 .venv/bin/python tools/wrist-frame.py --raw face.raw --compare host.raw face.png
 ```
 
+`imu record start` keeps the accelerometer's samples at 50 Hz, with the step counter's count
+every 4 s, for up to 28 minutes; `imu record stop` ends it, and
+[`tools/wrist-imu-record.py`](tools/wrist-imu-record.py) saves it as CSV. The recording holds
+the RAM an update is staged in until `imu record clear`.
+
+```sh
+.venv/bin/python tools/wrist-cmd.py "imu record start"
+.venv/bin/python tools/wrist-cmd.py "imu record stop"
+.venv/bin/python tools/wrist-imu-record.py walk
+```
+
 ## Bluetooth
 
 A `--features ble` image keeps the radio in reset until `ble on` on the console; `ble off`
