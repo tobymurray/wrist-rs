@@ -6,11 +6,22 @@ use embassy_stm32::i2c::{Error, I2c, Master};
 use embassy_stm32::mode::Async;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex;
+use embassy_sync::mutex::Mutex as AsyncMutex;
 
 use crate::uart::Lines;
 
 /// Blocking calls only before the first async transfer (`HARDWARE.md`, "Debug and boot").
 pub type AsyncBus = I2c<'static, Async, Master>;
+
+/// I2C1 once the executor runs, shared by its async users.
+pub static BUS: AsyncMutex<CriticalSectionRawMutex, Option<AsyncBus>> = AsyncMutex::new(None);
+
+/// Before the executor starts, so nothing else holds the lock.
+pub fn share(bus: AsyncBus) {
+    if let Ok(mut shared) = BUS.try_lock() {
+        *shared = Some(bus);
+    }
+}
 
 const PCA9420: u8 = wrist_board::i2c::PCA9420_PMIC;
 const MAX17262: u8 = wrist_board::i2c::MAX17262_GAUGE;

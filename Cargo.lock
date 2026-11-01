@@ -1231,6 +1231,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "wrist-haptic"
+version = "0.0.0"
+
+[[package]]
 name = "wrist-installer-ui"
 version = "0.0.0"
 dependencies = [
