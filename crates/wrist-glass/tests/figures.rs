@@ -32,7 +32,7 @@ fn each(f: impl Fn(&str, &Faces, &Locale)) {
 }
 
 fn face(l: &Locale, faces: &Faces, clock: Option<Clock>, soc_pct: Option<u8>) -> Glass {
-    compose(&Status { clock, date: None, soc_pct }, l, faces).0
+    compose(&Status { clock, date: None, soc_pct, steps: None }, l, faces).0
 }
 
 #[test]
