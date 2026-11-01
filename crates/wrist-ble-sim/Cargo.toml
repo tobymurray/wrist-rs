@@ -1,0 +1,18 @@
+[package]
+name = "wrist-ble-sim"
+version = "0.0.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+publish = false
+description = "A fake BlueNRG-2 and the peers around it, on virtual time, for testing the Bluetooth core on the host"
+
+[dependencies]
+wrist-ble = { path = "../wrist-ble" }
+wrist-ble-core = { path = "../wrist-ble-core" }
+wrist-bluenrg2 = { path = "../wrist-bluenrg2" }
+
+[dev-dependencies]
+proptest = { version = "1.11.0", default-features = false, features = ["std"] }
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }

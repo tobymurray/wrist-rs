@@ -321,10 +321,23 @@ impl Schedule for NoAdvertiseWhileInitiating {
     fn admit(&self, current: &Activities, change: &Change) -> Result<Admitted, SchedKind> {
         match change {
             Change::Advertise(Some(_)) if current.initiating.is_some() => Err(SchedKind::Excluded(Exclusion::NoAdvertiseWhileInitiating)),
+            Change::Connected => Ok(Admitted { slot: Some(SLOT), latency_scale: 1 }),
+            Change::Retime { params, .. } => Ok(Admitted { slot: Some(wrist_ble::CentralSlot { interval: params.interval_max, ..SLOT }), latency_scale: 1 }),
             _ => Ok(Admitted::AS_ASKED),
         }
     }
 }
+
+/// Admits everything as asked, as a careless model would.
+struct Careless;
+
+impl Schedule for Careless {
+    fn admit(&self, _: &Activities, _: &Change) -> Result<Admitted, SchedKind> {
+        Ok(Admitted::AS_ASKED)
+    }
+}
+
+const SLOT: wrist_ble::CentralSlot = wrist_ble::CentralSlot { interval: Duration::from_u16(40), latency: 1, ce_len: Duration::from_u16(2) };
 
 const CONNECT: ConnParams = ConnParams { interval_min: Duration::from_u16(40), interval_max: Duration::from_u16(40), latency: 0, timeout: Duration::from_u16(400), ce_len: Duration::from_u16(2) };
 
@@ -339,17 +352,36 @@ fn a_transition_is_checked_at_every_step() {
 }
 
 #[test]
+fn a_link_admitted_without_a_slot_is_refused_not_dropped() {
+    let connect = [Change::Initiate(Some(CONNECT)), Change::Connected];
+    assert_eq!(Activities::IDLE.walk(&Careless, &connect), Err((1, SchedKind::NoSlot)));
+    let one = Activities::IDLE.walk(&NoAdvertiseWhileInitiating, &connect).unwrap();
+    assert_eq!(one.centrals(), 1);
+    assert_eq!(one.walk(&Careless, &[Change::Retime { slot: 0, params: CONNECT }]), Err((0, SchedKind::NoSlot)));
+    assert_eq!(one.walk(&NoAdvertiseWhileInitiating, &[Change::Retime { slot: 1, params: CONNECT }]), Err((0, SchedKind::NoSlot)));
+}
+
+#[test]
+fn a_ninth_link_is_refused_not_dropped() {
+    let full = Activities { central: [Some(SLOT); wrist_ble::MAX_LINKS], ..Activities::IDLE };
+    let connect = [Change::Initiate(Some(CONNECT)), Change::Connected];
+    assert_eq!(full.walk(&NoAdvertiseWhileInitiating, &connect), Err((1, SchedKind::NoSlot)));
+    let seven = Activities { central: [Some(SLOT), Some(SLOT), Some(SLOT), None, Some(SLOT), Some(SLOT), Some(SLOT), Some(SLOT)], ..Activities::IDLE };
+    assert_eq!(seven.walk(&NoAdvertiseWhileInitiating, &connect).unwrap().central[3], Some(SLOT));
+}
+
+#[test]
 fn a_connection_takes_its_admitted_slot_and_rescales_the_others() {
     let slot = wrist_ble::CentralSlot { interval: Duration::from_u16(400), latency: 0, ce_len: Duration::from_u16(2) };
-    let a = Activities::IDLE.with(&Change::Initiate(Some(CONNECT)), &Admitted::AS_ASKED);
-    let a = a.with(&Change::Connected, &Admitted { slot: Some(slot), latency_scale: 1 });
+    let a = Activities::IDLE.with(&Change::Initiate(Some(CONNECT)), &Admitted::AS_ASKED).unwrap();
+    let a = a.with(&Change::Connected, &Admitted { slot: Some(slot), latency_scale: 1 }).unwrap();
     assert_eq!((a.initiating, a.centrals()), (None, 1));
     let fast = wrist_ble::CentralSlot { interval: Duration::from_u16(200), latency: 0, ce_len: Duration::from_u16(2) };
-    let a = a.with(&Change::Connected, &Admitted { slot: Some(fast), latency_scale: 2 });
+    let a = a.with(&Change::Connected, &Admitted { slot: Some(fast), latency_scale: 2 }).unwrap();
     assert_eq!(a.central[0], Some(slot));
     let busy = wrist_ble::CentralSlot { latency: 1, ..slot };
     let a = Activities { central: [Some(busy), None, None, None, None, None, None, None], ..Activities::IDLE };
-    let a = a.with(&Change::Connected, &Admitted { slot: Some(fast), latency_scale: 2 });
+    let a = a.with(&Change::Connected, &Admitted { slot: Some(fast), latency_scale: 2 }).unwrap();
     assert_eq!(a.central[..2], [Some(wrist_ble::CentralSlot { latency: 2, ..slot }), Some(fast)]);
 }
 

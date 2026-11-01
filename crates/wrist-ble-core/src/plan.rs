@@ -75,6 +75,8 @@ pub struct Menu {
     pub connecting: &'static [Choice<ConnParams>],
     /// A central link once it delivers readings.
     pub live: &'static [Choice<ConnParams>],
+    /// What this device asks of the phone's link, as its peripheral.
+    pub phone: &'static [Choice<ConnParams>],
 }
 
 pub struct PlanInput<'a> {
