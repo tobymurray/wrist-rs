@@ -37,24 +37,25 @@ jobs:
           ref: ${{ steps.pins.outputs.sdk_commit }}
           persist-credentials: false
           path: sdk
-      - uses: actions/cache@v6
+      # One cache: the three target directories and Cargo's downloads (CARGO_HOME without bin/
+      # or the unpacked sources). Only main saves it, once for each set of inputs, so a pull
+      # request reads main's and never pushes it out of the repository's 10 GB. A tag builds
+      # cold: nothing from an earlier build reaches a release.
+      - name: Restore the build cache
+        id: cache
+        if: github.ref_type != 'tag'
+        uses: actions/cache/restore@v6
         with:
-          path: source/target
-          key: firmware-root-${{ runner.os }}-${{ hashFiles('source/Cargo.lock', 'source/release/Dockerfile', 'source/release/toolchain.json') }}-${{ github.sha }}
+          path: |
+            source/target
+            source/apps/standalone-boot/target
+            source/apps/wrist-loader/target
+            cargo-home/registry/index
+            cargo-home/registry/cache
+            cargo-home/git/db
+          key: firmware-v2-${{ runner.os }}-${{ hashFiles('source/Cargo.lock', 'source/apps/standalone-boot/Cargo.lock', 'source/apps/wrist-loader/Cargo.lock', 'source/release/Dockerfile', 'source/release/toolchain.json') }}
           restore-keys: |
-            firmware-root-${{ runner.os }}-${{ hashFiles('source/Cargo.lock', 'source/release/Dockerfile', 'source/release/toolchain.json') }}-
-      - uses: actions/cache@v6
-        with:
-          path: source/apps/standalone-boot/target
-          key: firmware-app-${{ runner.os }}-${{ hashFiles('source/apps/standalone-boot/Cargo.lock', 'source/release/Dockerfile', 'source/release/toolchain.json') }}-${{ github.sha }}
-          restore-keys: |
-            firmware-app-${{ runner.os }}-${{ hashFiles('source/apps/standalone-boot/Cargo.lock', 'source/release/Dockerfile', 'source/release/toolchain.json') }}-
-      - uses: actions/cache@v6
-        with:
-          path: source/apps/wrist-loader/target
-          key: firmware-loader-${{ runner.os }}-${{ hashFiles('source/apps/wrist-loader/Cargo.lock', 'source/release/Dockerfile', 'source/release/toolchain.json') }}-${{ github.sha }}
-          restore-keys: |
-            firmware-loader-${{ runner.os }}-${{ hashFiles('source/apps/wrist-loader/Cargo.lock', 'source/release/Dockerfile', 'source/release/toolchain.json') }}-
+            firmware-v2-${{ runner.os }}-
       - name: Build, lint, test and package in the pinned build image
         env:
           REF_TYPE: ${{ github.ref_type }}
@@ -64,7 +65,24 @@ jobs:
           commit=$(git -C source rev-parse HEAD)
           version="0.0.0-candidate.${commit:0:12}"
           if [ "$REF_TYPE" = tag ]; then version="${REF_NAME#v}"; fi
-          python3 source/tools/release-docker.py --sdk "$PWD/sdk" --out "$RUNNER_TEMP/firmware" --version "$version"
+          python3 source/tools/release-docker.py --sdk "$PWD/sdk" --out "$RUNNER_TEMP/firmware" --version "$version" \
+            --cargo-home "$PWD/cargo-home"
+      # Incremental state is redone for every change, so it is not kept.
+      - name: Trim the build cache
+        if: steps.cache.outcome == 'success' && steps.cache.outputs.cache-hit != 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: rm -rf source/target/debug/incremental
+      - name: Save the build cache
+        if: steps.cache.outcome == 'success' && steps.cache.outputs.cache-hit != 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            source/target
+            source/apps/standalone-boot/target
+            source/apps/wrist-loader/target
+            cargo-home/registry/index
+            cargo-home/registry/cache
+            cargo-home/git/db
+          key: ${{ steps.cache.outputs.cache-primary-key }}
       # Every candidate is attested, so the gate can check the zips it installs; publish
       # releases these same zips.
       - uses: actions/attest-build-provenance@v4

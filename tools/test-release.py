@@ -337,8 +337,8 @@ class BuildImage(unittest.TestCase):
         workflow = (r.ROOT/'.github/workflows/firmware.yml').read_text()
         self.assertNotIn('docker ', workflow)
         self.assertIn('release-docker.py --pins', workflow)
-        self.assertIn('release-docker.py --sdk "$PWD/sdk" --out "$RUNNER_TEMP/firmware" --version "$version"\n',
-                      workflow)
+        self.assertIn('release-docker.py --sdk "$PWD/sdk" --out "$RUNNER_TEMP/firmware" --version "$version" \\\n'
+                      '            --cargo-home "$PWD/cargo-home"\n', workflow)
         image = 'ghcr.io/tobymurray/wrist-rs-build@sha256:' + 'ab' * 32
         argv = self.d.command(image, Path('/w/sdk'), Path('/runner/temp/firmware'), ['--version', '1.2.3'],
                               image, 1001, 118, root=Path('/w/source'))
@@ -347,6 +347,11 @@ class BuildImage(unittest.TestCase):
             '--env', 'HOME=/tmp', '--env', 'CARGO_HOME=/tmp/wrist-rs-cargo', '--workdir', '/src', '--entrypoint', 'bash',
             '-v', '/w/source:/src', '-v', '/w/sdk:/sdk:ro', '-v', '/runner/temp:/stage', image, '-c', self.d.SCRIPT, '--',
             '--sdk', '/sdk', '--out', '/stage/firmware', '--container-id', image, '--version', '1.2.3'])
+        # A kept CARGO_HOME is mounted where a new one would be, so the recorded paths are the same.
+        kept = self.d.command(image, Path('/w/sdk'), Path('/runner/temp/firmware'), ['--version', '1.2.3'],
+                              image, 1001, 118, root=Path('/w/source'), cargo_home=Path('/w/cargo-home'))
+        self.assertEqual(kept, argv[:argv.index(image)] + ['-v', '/w/cargo-home:/tmp/wrist-rs-cargo']
+                         + argv[argv.index(image):])
         self.assertIn('umask 022;', self.d.SCRIPT)
         self.assertTrue(self.d.SCRIPT.endswith('exec python3 tools/release-build.py "$@"'))
 
