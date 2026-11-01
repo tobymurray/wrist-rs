@@ -18,7 +18,8 @@ that writes flash is a numbered install in the validation records, failures incl
 
 [`tools/gate.py`](../tools/gate.py), run from a checkout at the candidate's commit, walks
 this checklist: it does the console and drive work, checks what it can read, asks for each
-press, hold and unplug, and keeps every step's output under one directory.
+press, hold and unplug, and keeps every step's output under one directory. It runs the
+sections in the order below: A, C, D when it runs, then B.
 
 ### Prepare
 
@@ -63,7 +64,7 @@ The watch runs an earlier wrist-rs.
    [`apps/standalone-boot/src/mmio.rs`](../apps/standalone-boot/src/mmio.rs) set in `PWR_CR2` and `PWR_CR4`, and the IMU and
    compass reset to suspend. Under `-- clocks on --`: `ICACHE_CR_EN` set and
    `RCC_AHB2ENR1_SDMMC1EN` clear (`mmio.rs`).
-7. `cmd modules`: both records as expected. `cmd "page lag 10"`, wait ten seconds, then
+7. `cmd modules`: each of `view`, `link1` and `link2` reads `expected`. `cmd "page lag 10"`, wait ten seconds, then
    `cmd page`: the longest time a task kept the executor is a few milliseconds at most.
    `cmd "page bus"`: the bus keeps the data window, and `failed 0`.
 8. Buttons. A short press of each of Up, Down, Back and Select lights the face. `cmd "page
@@ -72,30 +73,10 @@ The watch runs an earlier wrist-rs.
    USB`), Down again about (the version and `build_id` in upper case), and Down again the
    face; Up goes the other way, and Back returns to the face from either page. Left on the
    battery page, the face comes back within 10 s. Hold Back until the watch restarts, then
-   let go: it comes back to the face with the time still right, and `report` shows `reset
-   flags` naming only that reset, with no `IWDG`. Select held on through a restart would
+   let go: it comes back to the face with the time still right, and `report`'s `RCC_CSR`
+   at handoff names `PIN`, with no `IWDG` or `WWDG` (`SFT` reads set too, as at 0.3.0's and
+   0.3.1's gates). Select held on through a restart would
    continue into the bootloader's USB mode.
-
-### B. On battery
-
-9. Unplug for at least ten minutes; an hour or a night gives better figures. The face
-   keeps time, and a short press lights it.
-10. Plug back in. The console comes back within a few seconds. If it has not within a
-    minute, record the failure; holding Back until the watch restarts, with the cable in,
-    brings USB back up.
-11. `cmd power`: the input is external, and the last stretch on battery shows its length,
-    mean current, charge at each end and the gauge's time to empty; `unanswered input
-    reads in a row 0; Stop follows the input`. `stop2_wakes` divided
-    by that length in minutes is the wake rate on battery: expect about thirty-six a minute, from
-    the time driver every 2 s, the watchdog's feed every 16 s and the minute's redraw.
-    `PWR_INT_L` reads high, and `input interrupts` has gone up by two, the unplug and the
-    plug. Under `[lptim]`: `alarms handled over 5 ms late 0`, `Stop entered with one
-    unacknowledged 0` and `waits over 2 ms: DIEROK 0, CMPOK 0`; a late alarm is a press
-    whose light comes on late. `[crash] no
-    retained failure`: nothing panicked or faulted since step 4, through every restart (a
-    record resolves with [`tools/wrist-crash.py`](../tools/wrist-crash.py) and this release's zip). Record the mean
-    current, the time to empty and the wake rate; a meter in series with the cell gives the
-    real floor, if you have one.
 
 ### C. The update safety net
 
@@ -132,6 +113,30 @@ are byte for byte the ones it ran, and the recipe holds the image to the install
     outcome record for this CRC in the witness page, the right first page and count, and
     the staging area as the recovery left it.
 18. Install the same candidate again, as in step 16: wrist-rs, `state boot`, the build.
+
+### B. On battery, last
+
+The gate's one long wait, so it runs after C, and after D when D runs: once it starts, the
+rest is unplugging, waiting and plugging back in.
+
+9. Unplug for at least ten minutes; an hour or a night gives better figures. The face
+   keeps time, and a short press lights it.
+10. Plug back in. The console comes back within a few seconds. If it has not within a
+    minute, record the failure; holding Back until the watch restarts, with the cable in,
+    brings USB back up.
+11. `cmd power`: the input is external, and the last stretch on battery shows its length,
+    mean current, charge at each end and the gauge's time to empty; `unanswered input
+    reads in a row 0; Stop follows the input`. `stop2_wakes` divided
+    by that length in minutes is the wake rate on battery: expect about thirty-six a minute, from
+    the time driver every 2 s, the watchdog's feed every 16 s and the minute's redraw.
+    `PWR_INT_L` reads high, and `input interrupts` has gone up by two, the unplug and the
+    plug. Under `[lptim]`: `alarms handled over 5 ms late 0`, `Stop entered with one
+    unacknowledged 0` and `waits over 2 ms: DIEROK 0, CMPOK 0`; a late alarm is a press
+    whose light comes on late. `[crash] no
+    retained failure`: nothing panicked or faulted since step 4, through every restart (a
+    record resolves with [`tools/wrist-crash.py`](../tools/wrist-crash.py) and this release's zip). Record the mean
+    current, the time to empty and the wake rate; a meter in series with the cell gives the
+    real floor, if you have one.
 
 ### Record
 
