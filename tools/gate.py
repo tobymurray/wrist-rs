@@ -135,6 +135,35 @@ def handoff_reset_flags(report):
     return None if csr is None else [name for bit, name in RESET_FLAGS if csr & 1 << bit]
 
 
+def haptic_pin(report):
+    """Step 6: `HAPTIC_RST_N` as `report` reads it, (level, an output), or None."""
+    m = re.search(r'HAPTIC_RST_N \(PF2\) (low|high), (output|NOT an output)', report)
+    return (m[1], m[2] == 'output') if m else None
+
+
+def haptic_pin_check(report):
+    """Step 6: PF2 low and an output, as (passed, what), saying what was read."""
+    pin = haptic_pin(report)
+    read = 'no PF2 line' if pin is None else f'{pin[0]}, {"an output" if pin[1] else "NOT an output"}'
+    return pin == ('low', True), f'HAPTIC_RST_N (PF2) low, an output: the haptic driver in reset (read {read})'
+
+
+def haptic_probe(text):
+    """Step 7: the bare `haptic`'s probe line, as (passed, what) for each check."""
+    m = re.search(r'^\[haptic\] probe: (.*)$', text, re.M)
+    line = m[1] if m else ''
+    return [(bool(re.match(r'CHIP_ID 13 \(DRV2625 rev 3\)', line)), 'probe: CHIP_ID 13, a DRV2625'),
+            (bool(m) and '(wrote' not in line and '=--' not in line, 'probe: each register reads back as written'),
+            (line.endswith('; PF2 low') and 'failed at' not in line, 'probe: no failure, PF2 low after')]
+
+
+def haptic_stopped(text):
+    """Step 7: the milliseconds the alarm rang before `haptic stop` ended it, PF2 low after,
+    or None."""
+    m = re.search(r'^\[haptic\] alarm stopped after (\d+) ms.*; PF2 low$', text, re.M)
+    return int(m[1]) if m else None
+
+
 def charge(text):
     """The charge in percent from a `[pwr]` line, or None."""
     m = re.search(r'^\[pwr\] .*\bsoc ([\d.]+)%', text, re.M)
@@ -480,6 +509,7 @@ class Gate:
             self.check(step, bool(re.search(pattern, text)), what)
         for ok, what in park_checks(text):
             self.check(step, ok, what)
+        self.check(step, *haptic_pin_check(text))
 
     def step7(self):
         text = self.cmd('modules', 3)
@@ -502,6 +532,18 @@ class Gate:
         self.save('step7-bus.txt', text)
         self.check(7, 'keeps the data window' in text and bool(re.search(r'\[bus\] frames \d+, failed 0\b', text)),
                    'the bus keeps the data window, failed 0')
+        text = self.cmd('haptic', 4, until='[haptic] probe:', then=0.5)
+        self.save('step7-haptic-probe.txt', text)
+        for ok, what in haptic_probe(text):
+            self.check(7, ok, what)
+        input('\n>>> step 7: wear the watch; Enter starts `haptic alarm`, stopped a few seconds later. ')
+        text = self.cmd('haptic alarm', 4)
+        text += '\n' + self.cmd('haptic stop', 3, until='[haptic] alarm ', then=0.5)
+        self.save('step7-haptic-alarm.txt', text)
+        rang = haptic_stopped(text)
+        self.check(7, rang is not None, f'`haptic stop` ended the alarm after {rang} ms, PF2 low'
+                   if rang is not None else '`haptic stop` ended the alarm, PF2 low')
+        self.ask(7, 'buzzes on the wrist, about two a second, then they stopped?')
 
     def step8(self):
         import serial
