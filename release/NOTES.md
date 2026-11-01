@@ -33,27 +33,6 @@ Fixes on 0.3.0. New since 0.3.0:
   while it hibernates, not every 5.6 s.
 - The loader is unchanged: no loader update is needed.
 
-From earlier releases:
-
-- The face and pages in Atkinson Hyperlegible Next. Digits that do not change stay where
-  they are when the minute turns.
-- Drawing is faster: a page change reaches the glass in about 50 ms, not about 300 ms, and
-  the panel is written by timers and DMA while the processor sleeps.
-- The installer is the **Wrist-rs** app, opened from the launcher, in place of the
-  `Install` glance: its dry run shows the image's CRC on screen, and holding Select 3 s
-  installs ([install guide](INSTALL.md)).
-- The console's `flash survey` reports which flash pages hold anything, without writing.
-- The face, lit by a short press of any button, with pages for the battery and the build:
-  Down steps from the face to the battery, then to about, then back to the face; Up steps
-  the other way, and Back or 10 s without a press returns to the face.
-- Time kept across restarts and updates, set from a computer with
-  [`tools/wrist-time.py`](../tools/wrist-time.py), which also sends the zone's next two
-  daylight-saving changes for the watch to apply.
-- Updates over USB with [`tools/wrist-update.py`](../tools/wrist-update.py), into a second
-  slot, with rollback.
-- Everything the face does not use turned off at start, and deep sleep on battery.
-- The way back to stock through UNA's own recovery, in the [install guide](INSTALL.md).
-
 ## Checked on the watch
 
 With this build's package, updating from 0.3.0: updates over USB, including a pulled cable

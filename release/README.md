@@ -4,6 +4,9 @@ How a release zip is built. [INSTALL.md](INSTALL.md) becomes the zip's `START-HE
 [NOTES.md](NOTES.md) its `RELEASE-NOTES.md` and the release's text, and
 [GATE.md](GATE.md) is what has to pass before anything is published.
 
+The notes say what changed since the previous version, not what earlier releases did:
+each release's own notes already say that.
+
 ## The recipe
 
 `python3 tools/release-build.py` is the one build, test and package entry point, used by
