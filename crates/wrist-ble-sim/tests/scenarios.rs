@@ -160,6 +160,21 @@ fn a_chip_that_keeps_resetting_ends_in_a_fault() {
     assert!(s.line().contains("phone=fault(kept-resetting)"), "{}", s.line());
 }
 
+/// The ready event after a reset was lost: the chip is started again at once, not left silent
+/// until the start's deadline.
+#[test]
+fn ready_lost_after_a_reset() {
+    for seed in 0..20 {
+        let mut s = Sim::started(seed, on(Power::Battery));
+        s.fake.reset(ResetCause::Crash);
+        s.run_for(Millis(0));
+        s.fake.lose_events(1);
+        s.run_for(Millis::secs(2));
+        assert!(s.fake.advertising().is_some(), "seed {seed}: {}", s.line());
+        s.run_for(Millis::mins(1));
+    }
+}
+
 // --- With a strap: the central role ---
 
 #[test]

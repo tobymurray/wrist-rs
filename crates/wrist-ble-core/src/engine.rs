@@ -370,6 +370,8 @@ impl<'a> Core<'a> {
                 }
             }
             RadioEvent::ScanDone => self.state.radio.scanning = None,
+            // A starting chip's first event is its ready one, so it cannot have come up configured.
+            RadioEvent::EventsLost if matches!(self.state.chip.state, Chip::Starting { .. }) => self.chip(now, chip::Event::StartFailed, out),
             RadioEvent::EventsLost => self.snapshot = true,
             RadioEvent::Unknown { .. } => self.counters.unknown_events += 1,
             RadioEvent::Mtu(..) | RadioEvent::DataLength { .. } | RadioEvent::ServerWrite { .. } | RadioEvent::ServerSubscribe { .. } | RadioEvent::Report(_) => {}
