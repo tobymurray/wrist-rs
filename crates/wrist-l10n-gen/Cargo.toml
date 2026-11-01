@@ -10,7 +10,7 @@ publish = false
 fluent-syntax = "0.12"
 icu = "2.4"
 serde = { version = "1", features = ["derive"] }
-toml = "0.9"
+toml = "1.1"
 writeable = "0.6"
 
 [dev-dependencies]
