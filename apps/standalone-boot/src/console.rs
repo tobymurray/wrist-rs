@@ -491,7 +491,7 @@ pub fn command(cmd: &[u8], flash: &'static FlashMutex) {
             uart.write_line("[usb]   flash ecc-test: reads ST's 1-bit and 2-bit ECC test words; the NMI must catch the second");
             #[cfg(feature = "ble")]
             uart.write_line("[usb]   ble [on|off|version|yes|no|bonds|forget|disconnect|profile auto|cable|battery|interval now <min> <max>]: the radio; off until `ble on`, which persists; `ble yes` confirms a pairing");
-            uart.write_line("[usb]   haptic [tap|alarm|stop]: the vibration motor; bare, what the driver reads back (`haptic` feature)");
+            uart.write_line("[usb]   haptic [tap|alarm|stop]: the vibration motor; bare, what the driver reads back");
             #[cfg(feature = "ble")]
             uart.write_line("[usb]   ble scan [s] [interval window]: lists advertisers for s seconds (10 by default), listening for window ms in every interval ms");
         }

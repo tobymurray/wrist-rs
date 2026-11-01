@@ -112,9 +112,9 @@ pub fn park(pins: Pins, sensor_bus: Option<&mut I2c<'static, Blocking, Master>>,
 
 pub fn write_report(uart: Uart) {
     #[cfg(not(feature = "ble"))]
-    uart.write_str("     off: eMMC, GNSS, Bluetooth, heart rate, altimeter, haptics, buzzer; SDMMC1 ");
+    uart.write_str("     off: eMMC, GNSS, Bluetooth, heart rate, altimeter, buzzer; SDMMC1 ");
     #[cfg(feature = "ble")]
-    uart.write_str("     off: eMMC, GNSS, Bluetooth until `ble on`, heart rate, altimeter, haptics, buzzer; SDMMC1 ");
+    uart.write_str("     off: eMMC, GNSS, Bluetooth until `ble on`, heart rate, altimeter, buzzer; SDMMC1 ");
     uart.write_line(if SDMMC_WAS_ON.load(Ordering::Relaxed) { "was on, now off" } else { "off" });
     uart.write_str("     ");
     uart.write_u32(u32::try_from(ANALOG.len()).unwrap_or(0));

@@ -270,7 +270,7 @@ the link1 module `BLUENRG2` rev 1.3, from Linux (BlueZ 5.87) unless a row says o
 ## Haptics (DRV2625)
 
 Sheet 4 ("Vibration Motor Driver and ERM Motor"), the Rev 3.2 BOM and TI's DRV2625 datasheet
-(SLOS879C, revised June 2025). A `haptic` build
+(SLOS879C, revised June 2025). The image
 ([`apps/standalone-boot/src/haptic.rs`](apps/standalone-boot/src/haptic.rs), registers in
 [`crates/wrist-haptic`](crates/wrist-haptic)) relies on these; first run on the watch
 2026-10-31, on USB. An earlier driver, since removed, measured the same part on 2026-10-16.
@@ -313,7 +313,7 @@ What the image does with it, chosen without a measurement:
 | Where is the MS5837? | On `SENSORBODY_SCL/SDA` (I2C2, PB13/PB14), behind a TXS0102 level translator, powered by a 3.0 V LDO gated by `ALTIMETER_EN` (**PG0**, sheet 4) | **MEASURED**: with PG0 high it answers at 0x76 (an MS5837-02BA). The image holds PG0 low |
 | Display interface | `LCD_R1/R2/G1/G2/B1/B2` plus `LCD_QSPI_*` named signals (`VST`, `HST`, `XRST`, `ENB`, `HCK`, `VCK`) and `FRP`/`XFRP`, through a TXB0108 level shifter on the display module. A memory-LCD parallel interface, not plain SPI. | LIKELY |
 | Touch controller | `TOUCH_INT_L` (PC13) and `TOUCH_RST_L` reach the display connector, so a touch-capable module is wired for. | CONFIRMED wiring, UNKNOWN fitted |
-| I2C addresses | PCA9420 0x61, MAX17262 0x36, DRV2625 0x5A, STUSB4500 0x29 | CONFIRMED; DRV2625 MEASURED: it answers only once `HAPTIC_RST_N` (PF2) is high, and the image holds PF2 low except while a `haptic` build plays a pattern ("Haptics") |
+| I2C addresses | PCA9420 0x61, MAX17262 0x36, DRV2625 0x5A, STUSB4500 0x29 | CONFIRMED; DRV2625 MEASURED: it answers only once `HAPTIC_RST_N` (PF2) is high, and the image holds PF2 low except while it plays a pattern or the console's probe runs ("Haptics") |
 | STUSB4500 (I2C1 0x29) | USB-PD sink controller on the USB-C port | MEASURED: `DEVICE_ID` 0x25 (STUSB4500, not the B cut), answering with VBUS present. Its NVM offers **one sink PDO, 5 V 1 A** (`DPM_SNK_PDO_NUMB` 1; PDO2/3 hold 15 V and 20 V but are not offered). The laptop's USB-C port and a USB-C PD charger both read Rp 3.0 A with **no PD contract** (RDO 0). Our images never write to it. **MEASURED**: on battery, STUSB4500 read failed while PCA9420 CHG_STATUS_1=0x00 (VIN below UVLO); after reconnection, STUSB4500 PORT_STATUS_1=0x41 and PCA9420 CHG_STATUS_1=0xC0. Use PMIC input status as well as PD attachment for power-source detection |
 | eMMC power | Behind two NCP335 load switches on `EMMC_EN` (sheet 3: `3V3_EMMC` for VCC, `1V8_EMMC` for VCCQ, 10 kOhm on `EN`); firmware must enable them before the card appears. | CONFIRMED; MEASURED: **the bootloader hands over with the card on** (PD10 output high, SDMMC1 clocked, `POWER` 0x3, `CLKCR` 0x00025000: 4-bit bus, divider bypassed). Card on and idle costs about 3 mA. |
 | MCU part | **`STM32U5A5QJI6Q`**, CONFIRMED three ways: BOM Rev 3.2 item 35 (U1, "4MB Flash, 2.5MB RAM, UFBGA132"), the sheet 2 symbol title, and the watch's own `DBGMCU_IDCODE` `DEV_ID` = `0x481`, which OpenOCD's `stm32l4x.c` names `STM32U59/U5Axx`. The ECN 4 note "U1 changed to STM32U595QII6Q" belongs to Rev 2.0 (10/04/25) and was superseded. The watch measured here has a **Rev 3.1** core module; Rev 3.2 differs only by ECN 9, a BOM-only change (`R39` → NOPOP), so every Rev 3.2 wiring claim applies, and `R39` is fitted on Rev 3.1. | CONFIRMED |
@@ -567,7 +567,7 @@ At boot ([`apps/standalone-boot/src/park.rs`](apps/standalone-boot/src/park.rs))
   `WAKE_HOST_TO_GNSS` (PD1), `SENSORBODY_RST_L` (PF13) and the body slot's CS (PG12),
   `ALTIMETER_EN` (PG0), `HAPTIC_RST_N` (PF2), `BUZZER_EN1/2` (PB9, PD5). Each is a
   core-board enable or a slot's active-low reset, so low is safe whatever module is fitted.
-  A `haptic` build raises PF2 only while a pattern plays ("Haptics").
+  The image raises PF2 only while a pattern plays or the console's probe runs ("Haptics").
   The BMI270 and BMM350 sit on the GNSS module's own supply whatever `GNSS_EN` says; each
   gets a soft reset (`CMD` 0x7E = 0xB6) into suspend, only when the slot's EEPROM names the
   expected module.
