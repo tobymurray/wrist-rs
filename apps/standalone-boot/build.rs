@@ -255,6 +255,9 @@ fn worktree(top: &Path, ls: &[&str]) -> Option<Vec<u8>> {
         .filter(|p| top.join(String::from_utf8_lossy(p).as_ref()).is_file())
         .copied()
         .collect();
+    for path in &present {
+        println!("cargo::rerun-if-changed={}", top.join(String::from_utf8_lossy(path).as_ref()).display());
+    }
     let blobs = git(top, &["hash-object", "--stdin-paths"], &present.join(&b'\n'))?;
     let mut blobs = blobs.split(|&b| b == b'\n');
     let mut out = b"worktree\0".to_vec();

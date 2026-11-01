@@ -135,5 +135,23 @@ class BuildId(unittest.TestCase):
         self.assertEqual(len(ids), 2)
 
 
+    def test_an_untracked_file_the_image_includes_is_hashed(self):
+        console = self.app/'src/console.rs'
+        text = console.read_text()
+        pong = self.app/'src/pong.txt'
+        ids = set()
+        try:
+            console.write_text(text.replace('"[usb] pong"', 'include_str!("pong.txt")', 1))
+            for reply in ['[usb] pong A', '[usb] pong B']:
+                pong.write_text(reply)
+                elf, env = build(self.app, env=self.env)
+                self.assertIn(reply.encode(), elf)
+                self.assertEqual(env['WRIST_SOURCE_ID'], firmware_build.build_id(self.root))
+                ids.add(env['WRIST_BUILD_ID'])
+        finally:
+            console.write_text(text)
+            pong.unlink(missing_ok=True)
+        self.assertEqual(len(ids), 2)
+
 if __name__ == '__main__':
     unittest.main()

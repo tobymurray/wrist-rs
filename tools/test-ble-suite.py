@@ -18,6 +18,7 @@ import textwrap
 import time
 import unittest
 from unittest import mock
+import zlib
 
 spec = importlib.util.spec_from_file_location('ble_suite', Path(__file__).with_name('ble-suite.py'))
 suite = importlib.util.module_from_spec(spec)
@@ -82,9 +83,9 @@ class Console:
         pass
 
 
-def image(build):
+def image(build, before=b'\0[step] build : '):
     f = tempfile.NamedTemporaryFile(suffix='.bin')
-    f.write(b'\0[step] build : ' + build.encode() + b'\0\0unknown command\0')
+    f.write(before + build.encode() + b'\0\0unknown command\0')
     f.flush()
     return f
 
@@ -236,11 +237,24 @@ class Judgements(unittest.TestCase):
             with image('unknown') as f:
                 self.assertIn('unknown', suite.image_problems(f.name, 'unknown', '--restore')[0])
 
+    def test_an_image_the_watch_gives_a_crc_for_is_matched_by_it(self):
+        data = b'\0UNA Watche0fbf1ea9b02\0\0'
+        with tempfile.NamedTemporaryFile() as f, mock.patch.object(suite.wrist_update, 'mismatch', return_value=None):
+            f.write(data)
+            f.flush()
+            crc = f'{zlib.crc32(data):08X}'
+            self.assertTrue(suite.image_problems(f.name, 'e0fbf1ea9b02', '--image'))
+            self.assertFalse(suite.image_problems(f.name, 'e0fbf1ea9b02', '--image', crc))
+            self.assertTrue(suite.image_problems(f.name, 'e0fbf1ea9b02', '--image', f'{zlib.crc32(data) ^ 1:08X}'))
+        self.assertEqual(suite.crc_of('[usb] standalone-boot 0.3.0+ble.local build e0fbf1ea9b02 crc 6D81FE53'), '6D81FE53')
+        self.assertIsNone(suite.crc_of('[usb] standalone-boot 0.3.0+ble.local build e0fbf1ea9b02 crc pending'))
+
     def test_a_variant_s_version_still_gives_its_build(self):
         self.assertEqual(suite.build_of('[usb] standalone-boot 0.3.0+ble.local build 4f1e9a07c3d2 crc 6D81FE53'), '4f1e9a07c3d2')
 
-    def install_run(self, image_build):
-        """run() with --install, a clean installed build and an --image of `image_build`."""
+    def install_run(self, image_build, before=None):
+        """run() with --install, a clean installed build and an --image of `image_build`; `before`
+        puts each build ID after those bytes, and the watch then gives each image's CRC."""
         installs = []
 
         async def install(usb, a, path, out):
@@ -248,12 +262,15 @@ class Judgements(unittest.TestCase):
             return True, usb
 
         builds = iter(['0ld0ld0ld0ld', 'c1ea2c1ea2c1', '0ld0ld0ld0ld', '0ld0ld0ld0ld'])
+        files = {name: image(build, *([before] if before else [])) for name, build in
+                 [('old', '0ld0ld0ld0ld'), ('new', 'c1ea2c1ea2c1'), ('image', image_build)]}
+        crcs = {'0ld0ld0ld0ld': files['old'], 'c1ea2c1ea2c1': files['new']} if before else {}
+        crcs = {b: f'{zlib.crc32(Path(f.name).read_bytes()):08X}' for b, f in crcs.items()}
 
         async def snapshot(usb):
-            return snap(next(builds))
+            build = next(builds)
+            return dict(snap(build), crc=crcs.get(build))
 
-        files = {name: image(build) for name, build in
-                 [('old', '0ld0ld0ld0ld'), ('new', 'c1ea2c1ea2c1'), ('image', image_build)]}
         a = suite_args(install=Path(files['new'].name), restore=Path(files['old'].name), image=Path(files['image'].name))
         result = {'scenarios': []}
         seen = {}
@@ -283,6 +300,32 @@ class Judgements(unittest.TestCase):
         ok, result, installs, seen, a = self.install_run('c1ea2c1ea2c1')
         self.assertTrue(ok, result.get('preflight'))
         self.assertEqual(seen['image'], a.image)
+
+    def test_images_whose_id_follows_a_word_are_matched_by_crc(self):
+        ok, result, installs, seen, a = self.install_run('c1ea2c1ea2c1', before=b'UNA Watch')
+        self.assertTrue(ok, result.get('preflight'))
+        ok, result, installs, seen, a = self.install_run('c1ea2c1ea2c1-dirty', before=b'UNA Watch')
+        self.assertFalse(ok)
+
+    def test_the_update_scenario_s_image_is_matched_by_crc(self):
+        f = image('c1ea2c1ea2c1', b'UNA Watch')
+        crc = f'{zlib.crc32(Path(f.name).read_bytes()):08X}'
+        result = {'scenarios': []}
+
+        async def snapshot(usb):
+            return dict(snap('c1ea2c1ea2c1'), crc=crc)
+
+        async def update(s, usb, phone, build, a):
+            s.check(True, 'ran')
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(suite, 'host', Quiet), \
+                mock.patch.object(suite.wrist_port, 'find', return_value='/dev/watch'), \
+                mock.patch.object(suite, 'Usb', lambda port, path: Console({})), \
+                mock.patch.object(suite, 'snapshot', snapshot), mock.patch.object(suite, 'update', update), \
+                mock.patch.object(suite.wrist_update, 'mismatch', return_value=None), \
+                mock.patch('sys.stdout', io.StringIO()):
+            ok = asyncio.run(suite.run(suite_args(scenarios=['update'], image=Path(f.name)), Path(d), result))
+        f.close()
+        self.assertTrue(ok, result.get('preflight'))
 
     def test_a_failed_capture_is_said_and_fails_the_run(self):
         with tempfile.TemporaryDirectory() as d, fake_sudo(d, 'echo "sudo: a password is required" >&2; exit 1\n'), \
