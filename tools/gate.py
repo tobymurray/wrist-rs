@@ -8,6 +8,7 @@ CANDIDATE_DIR holds wrist-rs-VERSION.zip and SHA256SUMS, as CI's artifact unpack
 from a checkout at the candidate's commit. Every step's output goes under
 target/gate-BUILD_ID-TIME/ (or --out), with summary.md at the end. Section D runs when the
 candidate's round-trip fingerprint is not gate.json's, or with --round-trip.
+The battery stretch, section B (steps 9 to 11), runs last, after sections C and D.
 """
 import argparse
 import hashlib
@@ -110,6 +111,33 @@ def wake_rate(power):
     d, h, m = (int(v or 0) for v in stretch.groups())
     minutes = (d * 24 + h) * 60 + m
     return int(wakes[1]) / minutes if minutes else None
+
+
+SLOTS = ('view', 'link1', 'link2')
+
+
+def module_checks(text):
+    """Step 7: each slot's record, as the image compared it with what it expects."""
+    return [(bool(re.search(rf'^\[mod\] {slot} .*: expected \(', text, re.M)), f'{slot} record expected')
+            for slot in SLOTS]
+
+
+# RM0456 11.8.50, as main.rs's `report_reset_cause` names them.
+RESET_FLAGS = [(31, 'LPWR'), (30, 'WWDG'), (29, 'IWDG'), (28, 'SFT'), (27, 'BOR'), (26, 'PIN'), (25, 'OBL')]
+
+
+def handoff_reset_flags(report):
+    """The reset flags in `RCC_CSR` as the image found it, from `report`'s handoff block, or
+    None. The boot log names them too, but it is gone before USB is up."""
+    handoff = report.partition('-- RCC at handoff')[2].partition('-- RCC now')[0]
+    csr = register(handoff, 'RCC_CSR')
+    return None if csr is None else [name for bit, name in RESET_FLAGS if csr & 1 << bit]
+
+
+def charge(text):
+    """The charge in percent from a `[pwr]` line, or None."""
+    m = re.search(r'^\[pwr\] .*\bsoc ([\d.]+)%', text, re.M)
+    return float(m[1]) if m else None
 
 
 def press(button, then):
@@ -337,7 +365,11 @@ class Gate:
                 sys.exit(f'{a.ota.name} is not stock {self.stock}, which the release notes name')
             self.log(f'  {a.ota.name}: SHA-256 {hashlib.sha256(a.ota.read_bytes()).hexdigest()}')
             self.ask(2, f'is that the SHA-256 INSTALL.md says to check for stock {self.stock}?')
-        self.ask(2, 'is the watch charged above 50 %?')
+        pct = charge(self.cmd('', 12, until='soc ')) if wrist_port.find(a.port) else None
+        if pct is None:
+            self.ask(2, 'is the watch charged above 50 %?')
+        else:
+            self.check(2, pct > 50, f'the watch charged above 50 % ({pct:.0f} %)')
         # Step 3: gate-test from the same inputs as the candidate.
         here = firmware_build.build_id()
         if not self.check(3, here == manifest['build_id'], f'this checkout builds {manifest["build_id"]} (it builds {here})'):
@@ -446,7 +478,14 @@ class Gate:
     def step7(self):
         text = self.cmd('modules', 3)
         self.save('step7-modules.txt', text)
-        self.ask(7, 'both module records as expected (saved in step7-modules.txt)?')
+        records = module_checks(text)
+        if all(ok for ok, _ in records):
+            for ok, what in records:
+                self.check(7, ok, what)
+        else:
+            for line in re.findall(r'^\[mod\].*$', text, re.M):
+                self.log('    ' + line.strip())
+            self.ask(7, 'the module records above are this watch\'s (saved in step7-modules.txt)?')
         self.cmd('page lag 10', 1)
         time.sleep(11)
         text = self.cmd('page', 3)
@@ -517,9 +556,10 @@ class Gate:
         self.save('step8-buttons.txt', text())
         self.booted()
         report = self.cmd('report', 6)
-        flags = re.search(r'reset flags\s*:\s*(.*)', report)
+        flags = handoff_reset_flags(report)
         self.save('step8-report.txt', report)
-        self.check(8, bool(flags) and 'IWDG' not in flags[1], f'reset flags {flags[1].strip() if flags else "?"}, no IWDG')
+        self.check(8, flags is not None and 'PIN' in flags and not {'IWDG', 'WWDG'} & set(flags),
+                   f'reset flags at handoff {" ".join(flags) if flags is not None else "?"}: PIN, no IWDG or WWDG')
         self.ask(8, 'the face is back with the time still right?')
 
     def step9(self):
@@ -543,7 +583,7 @@ class Gate:
                          ('PWR_INT_L high' in text, 'PWR_INT_L high'),
                          (interrupts(text) is not None and interrupts(self.before) is not None
                           and interrupts(text) - interrupts(self.before) == 2, 'input interrupts up by two'),
-                         (rate is not None and 30 <= rate <= 50, f'Stop 2 wakes a minute {rate and round(rate, 1)}, about 40'),
+                         (rate is not None and 30 <= rate <= 50, f'Stop 2 wakes a minute {rate and round(rate, 1)}, about 36'),
                          ('alarms handled over 5 ms late 0' in text, 'no late alarms'),
                          ('Stop entered with one unacknowledged 0' in text, 'Stop never entered with one unacknowledged'),
                          ('[crash] no retained failure' in text, 'no panic or fault retained (wrist-crash.py names a panic\'s file)')]:
@@ -689,6 +729,12 @@ def steps(spec):
     return chosen
 
 
+def run_order(chosen):
+    """The steps after 1 to 3 in the order they run: section B, the battery stretch, is the
+    gate's one long wait, so it goes last (GATE.md)."""
+    return sorted(chosen - {1, 2, 3}, key=lambda n: (n in (9, 10, 11), n))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('candidate', type=Path, help="the directory holding the candidate's zips and SHA256SUMS")
@@ -703,7 +749,7 @@ def main():
     g.prepare(chosen)
     if not g.round_trip:
         chosen -= set(range(13, 19))
-    for n in sorted(chosen - {1, 2, 3}):
+    for n in run_order(chosen):
         g.log(f'\n== step {n} ==')
         getattr(g, f'step{n}')()
     ok = g.summary()

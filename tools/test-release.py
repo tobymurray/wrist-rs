@@ -487,6 +487,32 @@ class GateScript(unittest.TestCase):
 
     def test_steps(self):
         self.assertEqual(gate.steps('4-6,11'), {4, 5, 6, 11})
+        self.assertEqual(gate.run_order(gate.steps('1-18')), [4, 5, 6, 7, 8, 12, *range(13, 19), 9, 10, 11])
+        self.assertEqual(gate.run_order(gate.steps('9-11')), [9, 10, 11])
+
+    def test_modules(self):
+        # 0.3.1's gate, step 7.
+        text = ('[mod] view I2C1: older label "view_LS012-1_3": LS012 rev 1_3; expects LS012: expected (22155 us); drives the panel (lcd.rs)\n'
+                '[mod] link1 I2C3: MI v1 BLUENRG2 rev 1.3, no serial; expects BLUENRG2: expected (21972 us); drives nothing\n'
+                '[mod] link2 I2C4: MI v1 AG3335M rev 1.2, no serial; expects AG3335M: expected (6195 us); drives the IMU\n')
+        self.assertTrue(all(ok for ok, _ in gate.module_checks(text)))
+        other = text.replace('expects AG3335M: expected', 'expects AG3335M: another module')
+        self.assertEqual([w for ok, w in gate.module_checks(other) if not ok], ['link2 record expected'])
+        self.assertEqual([w for ok, w in gate.module_checks(text.split('\n', 1)[1]) if not ok], ['view record expected'])
+
+    def test_handoff_reset_flags(self):
+        # 0.3.1's gate, step 8, after the Back hold: the handoff's RCC_CSR, then the image's.
+        report = ('-- RCC at handoff, before this image touched it --\nRCC_CR      = 0x00003035\n'
+                  'RCC_CSR     = 0x14004400\n-- RCC now --\nRCC_CSR     = 0x00004400\n')
+        self.assertEqual(gate.handoff_reset_flags(report), ['SFT', 'PIN'])
+        self.assertEqual(gate.handoff_reset_flags(report.replace('0x14004400', '0x34004400')), ['IWDG', 'SFT', 'PIN'])
+        self.assertIsNone(gate.handoff_reset_flags('-- RCC now --\nRCC_CSR     = 0x00004400\n'))
+
+    def test_charge(self):
+        line = '[hb] 12  uptime 13 s\n[pwr] 4407 mV  soc 100.0%  30 C  now -1406 uA  avg 468 uA  rails all good\n'
+        self.assertEqual(gate.charge(line), 100.0)
+        self.assertEqual(gate.charge(line.replace('100.0%', '42.5%')), 42.5)
+        self.assertIsNone(gate.charge('[power] input external (USB)\n'))
 
 
 if __name__ == '__main__':
