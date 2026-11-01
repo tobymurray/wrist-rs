@@ -32,10 +32,11 @@ pub fn write_pin(uart: Uart) {
     uart.write_str("     HAPTIC_RST_N (PF2) ");
     uart.write_str(if high { "high" } else { "low" });
     uart.write_str(if output { ", output" } else { ", NOT an output" });
-    uart.write_line(if high {
-        ": released for a pattern or the probe"
-    } else {
-        ": the haptic driver in reset between patterns"
+    uart.write_line(match (high, running()) {
+        (false, _) => ": the haptic driver in reset between patterns",
+        (true, Some(Request::Play(_))) => ": released for a pattern",
+        (true, Some(Request::Probe)) => ": released for the probe",
+        (true, None) => ": RELEASED, though nothing plays",
     });
 }
 
@@ -50,12 +51,22 @@ const BUSY: &str = "I2C1 busy";
 static STOP: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 /// Set by [`stop`] until the next pattern or probe begins.
 static HALTED: AtomicBool = AtomicBool::new(false);
-static PLAYING: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy)]
 enum Request {
     Play(Pattern),
     Probe,
+}
+
+/// What [`serve`] is running, from before PF2 rises until after it falls.
+static RUNNING: Mutex<CriticalSectionRawMutex, Cell<Option<Request>>> = Mutex::new(Cell::new(None));
+
+fn running() -> Option<Request> {
+    RUNNING.lock(Cell::get)
+}
+
+fn is_playing() -> bool {
+    matches!(running(), Some(Request::Play(_)))
 }
 
 /// A newer request replaces one not yet taken.
@@ -248,20 +259,25 @@ fn ms_since(t: Instant) -> u32 {
 }
 
 /// A stop from before this pattern or probe is not for it.
-fn begin() {
+fn begin(request: Request) {
     STOP.reset();
     HALTED.store(false, Ordering::Relaxed);
+    RUNNING.lock(|r| r.set(Some(request)));
+}
+
+/// The chip back in reset, whatever happened.
+fn end() {
+    hold_reset(true);
+    RUNNING.lock(|r| r.set(None));
 }
 
 /// Plays `pattern` to its end or until [`stop`], puts the chip back in reset, and
 /// reports how it ended.
 async fn play(pattern: Pattern) {
-    begin();
-    PLAYING.store(true, Ordering::Relaxed);
+    begin(Request::Play(pattern));
     let start = Instant::now();
     let outcome = drive(pattern).await;
-    hold_reset(true);
-    PLAYING.store(false, Ordering::Relaxed);
+    end();
     let ms = ms_since(start);
     let mut uart = Uart::best_effort().lines();
     uart.write_str("[haptic] ");
@@ -334,12 +350,12 @@ fn write_status(uart: &mut Lines, s: u8) {
 
 /// Out of reset long enough to read the chip and its configuration back.
 async fn probe() {
-    begin();
+    begin(Request::Probe);
     let outcome = match bring_up().await {
         Ok(()) => read(reg::STATUS, "status").await.map(|s| record(|r| r.status = Some(s))),
         Err(f) => Err(f),
     };
-    hold_reset(true);
+    end();
     let mut uart = Uart::best_effort().lines();
     uart.write_str("[haptic] probe: ");
     let r = RECORD.lock(Cell::get);
@@ -398,16 +414,16 @@ pub fn command(args: &[u8], uart: Uart) {
         "" => {
             write_summary(uart);
             write_pin(uart);
-            if PLAYING.load(Ordering::Relaxed) {
+            if is_playing() {
                 uart.write_line("[haptic] a pattern is playing; the probe follows it");
             }
             REQUEST.signal(Request::Probe);
         }
         "stop" => {
-            uart.write_line(if PLAYING.load(Ordering::Relaxed) {
-                "[haptic] stopping"
-            } else {
-                "[haptic] nothing playing"
+            uart.write_line(match running() {
+                Some(Request::Play(_)) => "[haptic] stopping",
+                Some(Request::Probe) => "[haptic] stopping the probe",
+                None => "[haptic] nothing playing",
             });
             stop();
         }
