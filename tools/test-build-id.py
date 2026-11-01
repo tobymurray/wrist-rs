@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build the image in a clone of this checkout's HEAD, several ways, and check that each build
 that differs has its own ID, and that the image hashes what app.bin holds; needs the image's
-toolchain, an objcopy, pyelftools and a few minutes, and no SDK or watch.
+toolchain, an objcopy and pyelftools, and no SDK or watch.
 """
 import json
 import os

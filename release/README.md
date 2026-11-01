@@ -25,14 +25,13 @@ the tree as it stands, then `-dirty`. [`tools/firmware_build.py`](../tools/firmw
 holds the part of the recipe that shapes the binaries, and computes the ID.
 
 That ID is the recipe's build's: the features `app_features` in
-[`toolchain.json`](toolchain.json) names (none yet), the pinned compiler and target, the
+[`toolchain.json`](toolchain.json) names, the pinned compiler and target, the
 release profile as [`Cargo.toml`](../apps/standalone-boot/Cargo.toml) sets it, and the
 recipe's flags. Any other build of the image hashes how it differs into its own ID, in
 [`build.rs`](../apps/standalone-boot/build.rs), and names the differences after the
 version, as SemVer build metadata: `+` and each feature beyond `app_features`, `no-<feature>`
-for each one of them left out, `opt-<level>` or `dev`, `profile` for a
-`CARGO_PROFILE_RELEASE_*` override, `target`, `rustc` for another compiler, `rustflags`, and
-`local` for a build outside the recipe. So `cargo build --release --features ble` prints
+for each one of them left out, and `local` for a build outside the recipe; `Variant` in
+build.rs names the rest. So `cargo build --release --features ble` prints
 `standalone-boot 0.3.0+ble.local build <its own ID>`, and the report's `[step] build`
 line adds the source hash it came from, `(<firmware hash>+ble.local)`.
 `WRIST_RELEASE_BUILD_ID` is for the recipe's features only: build.rs refuses it on any
@@ -49,9 +48,8 @@ of one commit build two images. Only the recipe's image, which mounts every chec
 `/src`, is the same from anywhere; a native run of the recipe from elsewhere records
 `checkout_at_src: false` in `manifest.json` and is never release-ready.
 
-Profile settings given by `--config` or a parent directory's `.cargo/config.toml`, a
-feature of a dependency given as `--features crate/feature`, and edits to the crates under
-Cargo's home are not seen. The image's CRC covers those too: at boot it hashes its own
+build.rs sees only what Cargo tells a build script, so not everything that changes the
+bytes reaches the ID. The image's CRC covers the rest: at boot it hashes its own
 bytes in flash, from the vector table to the end of `.data`'s load image, which is exactly
 app.bin, and `version`, `report` and the about page show it as `crc XXXXXXXX`, the CRC-32
 that [`tools/wrist-update.py`](../tools/wrist-update.py) prints for that app.bin. It names
@@ -105,9 +103,7 @@ commit built a zip, not that it is safe.
 In the same build image, a clean build of a commit is meant to rebuild byte for byte, from
 any checkout path: the recipe fixes the paths, time and timezone the binaries embed
 (`environment` in [`tools/firmware_build.py`](../tools/firmware_build.py)), and the zips
-their timestamps, modes and order. The image mounts every checkout at `/src`, which matters
-beyond the remapped paths ([above](#the-recipe)): a native run of the recipe from two
-paths gives two images under one ID, and so is marked `checkout_at_src: false`.
+their timestamps, modes and order.
 
 The image is pinned by digest because building [`Dockerfile`](Dockerfile) again gives a new
 image, however closely its pins narrow it.

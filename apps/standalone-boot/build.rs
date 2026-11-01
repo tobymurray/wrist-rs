@@ -3,12 +3,11 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-/// What the release recipe builds with, from `.cargo/config.toml` and `[profile.release]`;
-/// tools/test-release.py checks that they agree.
+/// Copies of `.cargo/config.toml`'s target and `[profile.release]`'s opt-level, which
+/// tools/test-release.py checks.
 const TARGET: &str = "thumbv8m.main-none-eabihf";
 const OPT_LEVEL: &str = "z";
-/// The profile settings Cargo takes from the environment that change the code; `--config` and
-/// a parent directory's `.cargo/config.toml` can set them too, unseen.
+/// The environment's profile overrides that the variant names.
 const PROFILE_ENV: [&str; 8] = [
     "CARGO_PROFILE_RELEASE_OPT_LEVEL",
     "CARGO_PROFILE_RELEASE_LTO",
@@ -27,8 +26,7 @@ fn main() {
     println!("cargo::rerun-if-changed=memory.x");
     println!("cargo::rerun-if-changed=build.rs");
 
-    // The release recipe passes the ID it computed, for the build it makes; any other build
-    // hashes how it differs from that build into its own.
+    // The recipe passes its ID; any other build hashes how it differs into its own.
     println!("cargo::rerun-if-env-changed=WRIST_RELEASE_BUILD_ID");
     let given = env::var("WRIST_RELEASE_BUILD_ID").ok();
     let variant = Variant::of_this_build(Path::new(&manifest), given.is_some());
@@ -62,8 +60,7 @@ impl Variant {
         let mut v = Variant { shown: Vec::new(), hashed: String::new() };
         let var = |name: &str| env::var(name).unwrap_or_default();
 
-        // Against the features the recipe builds, `app_features` in release/toolchain.json: each
-        // one added by name, and each one left out as `no-<name>`.
+        // Against `app_features` in release/toolchain.json.
         let mut features: Vec<_> = var("CARGO_CFG_FEATURE").split(',').filter(|f| !f.is_empty()).map(String::from).collect();
         features.sort();
         let pinned = pinned_features(&manifest.join("../../release/toolchain.json"));
@@ -102,10 +99,8 @@ impl Variant {
             v.add("rustc", &format!("rustc {}", rustc.lines().take(3).collect::<Vec<_>>().join(" ")));
         }
 
-        // A linker map changes no byte. The recipe's path remapping is its own, in
-        // tools/firmware_build.py, and its image mounts every checkout at /src. Any other build
-        // keeps its flags, and the paths the binary holds in panic messages and Cargo hashes
-        // into symbols: the checkout's, the target directory's and Cargo's home.
+        // A linker map changes no byte, and the recipe's remapping is its own; any other
+        // build's paths reach its binary (release/README.md).
         let flags = rustflags(&var("CARGO_ENCODED_RUSTFLAGS"));
         let flags: Vec<_> = flags
             .iter()
@@ -186,8 +181,7 @@ fn git(dir: &Path, args: &[&str], stdin: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// The firmware hash of release/build-inputs.txt, as `tools/firmware_build.py` computes it,
-/// and this build's ID: that hash with `variant` hashed in too. Each ends in `-dirty` when an
-/// input has an uncommitted change, and then hashes what the tree holds.
+/// and that hash with `variant` hashed in.
 fn firmware_hash(manifest: &Path, variant: &str) -> Option<(String, String)> {
     let text = |bytes: Vec<u8>| String::from_utf8(bytes).ok().map(|s| s.trim().to_string());
     let top = text(git(manifest, &["rev-parse", "--show-toplevel"], &[])?)?;

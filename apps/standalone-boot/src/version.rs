@@ -5,16 +5,12 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 /// The apps' Cargo version, which a release's tag repeats, then [`VARIANT`].
 pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), env!("WRIST_BUILD_VARIANT"));
 
-/// How this build differs from the release recipe's, as semver build metadata: `+`, then each
-/// feature beyond the recipe's (`app_features` in `release/toolchain.json`), `no-<feature>`
-/// for each of those left out, and `local` for a build outside the recipe, whose binary holds
-/// the builder's paths (build.rs names the rest). Empty for the recipe's build.
+/// How this build differs from the release recipe's, as build.rs names it; empty for the
+/// recipe's build.
 pub const VARIANT: &str = env!("WRIST_BUILD_VARIANT");
 
-/// The firmware hash: 12 hex digits naming the inputs this image was built from
-/// (`release/build-inputs.txt`), the `build_id` of a release's `manifest.json`, with
-/// `-dirty` after them when an input had uncommitted changes. A build given
-/// `WRIST_RELEASE_BUILD_ID` carries that instead, and one outside git `unknown`.
+/// The firmware hash of the inputs (`release/build-inputs.txt`), or the name
+/// `WRIST_RELEASE_BUILD_ID` gives.
 pub const SOURCE_ID: &str = env!("WRIST_SOURCE_ID");
 
 /// This build's ID: [`SOURCE_ID`] for the recipe's build, and for any other the hash of its
@@ -36,8 +32,7 @@ pub fn write_build(uart: crate::uart::Uart) {
 static CRC: AtomicU32 = AtomicU32::new(0);
 static CRC_KNOWN: AtomicBool = AtomicBool::new(false);
 
-/// app.bin as it stands in the running slot. objcopy writes app.bin from the vector table to the
-/// end of `.data`'s load image, the last flash section, and an update writes those bytes there.
+/// app.bin as the running slot holds it: the vector table to the end of `.data`'s load image.
 fn image() -> &'static [u8] {
     extern "C" {
         static __sidata: u32;
@@ -54,10 +49,8 @@ fn image() -> &'static [u8] {
     unsafe { core::slice::from_raw_parts(start as *const u8, load + (data_end - data) - start) }
 }
 
-/// Hashes [`image`] once, at boot, 4 KiB between yields, as `tools/wrist-update.py` does app.bin
-/// (zlib's CRC-32). Its loop is 8 instructions a byte, about 13 cycles: some 3 M cycles for a
-/// 230 KB image, about 65 ms of the boot's awake time at 48 MHz, in polls of about 1 ms. It
-/// waits on no timer, so it adds no wake from Stop 2.
+/// Hashes [`image`] with the CRC-32 `tools/wrist-update.py` prints for app.bin, 4 KiB between
+/// yields.
 pub async fn compute_crc() {
     let mut crc = 0xFFFF_FFFF;
     for piece in image().chunks(4096) {

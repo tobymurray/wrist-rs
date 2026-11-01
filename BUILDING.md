@@ -38,7 +38,7 @@ prints that hash, which is the ID of the release recipe's build.
 
 A build that differs from the recipe's hashes how into its ID, and names it after the
 version: each feature beyond the release's (`app_features` in
-[release/toolchain.json](release/toolchain.json), none yet), and `local` for any build
+[release/toolchain.json](release/toolchain.json)), and `local` for any build
 outside the recipe, since the binary holds the checkout's and Cargo's paths
 ([release/README.md](release/README.md#the-recipe) has the rest). So the default, `ble`
 and `usb-log` builds have three IDs. The report's `[step] build` line also gives the
