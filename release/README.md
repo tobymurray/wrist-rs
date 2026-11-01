@@ -4,8 +4,10 @@ How a release zip is built. [INSTALL.md](INSTALL.md) becomes the zip's `START-HE
 [NOTES.md](NOTES.md) its `RELEASE-NOTES.md` and the release's text, and
 [GATE.md](GATE.md) is what has to pass before anything is published.
 
-The notes say what changed since the previous version, not what earlier releases did:
-each release's own notes already say that.
+The notes say what changed since the previous version, not what earlier releases did
+(each release's own notes say that) or how the release was checked (the gate and its
+ledger record that). Each paragraph and list item in them is one line, not wrapped: GitHub
+shows the release's text as it is, and the zip's copy reads the same in any viewer.
 
 ## The recipe
 
