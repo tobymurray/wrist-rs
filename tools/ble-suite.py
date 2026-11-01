@@ -31,6 +31,7 @@ import sys
 import threading
 import time
 import traceback
+import zlib
 
 try:
     from termios import error as TermiosError
@@ -409,7 +410,7 @@ async def console(s, usb, phone, build, a):
         if not s.check(link, f'session {i}: attached over the air'):
             continue
         s.check(await link.command('ping', r'\bpong\b'), f'session {i}: ping answered')
-        s.check(await link.command('version', rf'build {re.escape(build)}\b'), f'session {i}: version is build {build}')
+        s.check(await link.command('version', rf'build {re.escape(build)}(?: |$)'), f'session {i}: version is build {build}')
         s.check(await link.command('ble', r'\[ble\] connected, encrypted'), f'session {i}: ble reports the link encrypted')
         await link.close()
         reason = await hang_up(usb, mark)
@@ -552,7 +553,7 @@ async def update(s, usb, phone, build, a):
     s.data['seconds_to_state_boot'] = took
     s.check(kept, f'the update over the air reached `state boot` ({took} s)')
     s.check(not [l for _, l in usb.since(mark) if 'revert' in l], 'the loader never reverted')
-    s.check(await usb.ask('version', rf'build {re.escape(build)}$', 10), f'the watch runs build {build} after it')
+    s.check(await usb.ask('version', rf'build {re.escape(build)}(?: |$)', 10), f'the watch runs build {build} after it')
     s.check(await usb.ask('ble', r'\[ble\] (advertising as \S+|connected), ', 5), 'the radio is back on after the reset')
 
 
@@ -575,12 +576,17 @@ def build_of(text):
     return m[1] if m else None
 
 
+def crc_of(text):
+    m = re.search(r'standalone-boot \S+ build \S+ crc ([0-9A-F]{8})\b', text or '')
+    return m[1] if m else None
+
+
 async def snapshot(usb):
     version = await usb.ask('version', r'standalone-boot \S+ build', 5)
     boot = await usb.ask('boot', r'\[boot\] state', 5)
     ble = await usb.ask('ble', STATUS + '|unknown command', 5)
     bonds = await usb.ask('ble bonds', r'\[ble\] bonded devices|\[ble\] off|unknown command', 5)
-    return {'version': version, 'build': build_of(version), 'boot': boot, 'ble': ble, 'bonds': bonds}
+    return {'version': version, 'build': build_of(version), 'crc': crc_of(version), 'boot': boot, 'ble': ble, 'bonds': bonds}
 
 
 def preflight_host(h, explicit):
@@ -593,7 +599,7 @@ def preflight_host(h, explicit):
     return port, problems
 
 
-def image_problems(path, build, what):
+def image_problems(path, build, what, crc=None):
     if path is None:
         return []
     data = Path(path).read_bytes()
@@ -602,6 +608,9 @@ def image_problems(path, build, what):
         return [f'{what} {path}: {why}']
     if build == 'unknown':
         return [f'{what} {path}: the running build is `unknown` (built outside git), so no image can be matched to it']
+    if build and crc:
+        got = f'{zlib.crc32(data):08X}'
+        return [] if got == crc else [f'{what} {path} is not build {build}: its CRC is {got}, the watch runs {crc}']
     if build and not re.search(rb'(?<!%s)%s(?!%s)' % (BUILD_CHAR, re.escape(build.encode()), BUILD_CHAR), data):
         return [f'{what} {path} is not build {build}']
     return []
@@ -656,12 +665,12 @@ async def run(a, out, result):
         result['before'] = before
         print(f'-- running {before["version"]}; {before["boot"]}; {before["bonds"]}', flush=True)
         problems = ready(before) if not a.install else ([] if before['build'] else ['`version` did not answer'])
-        problems += image_problems(a.restore, before['build'], '--restore')
+        problems += image_problems(a.restore, before['build'], '--restore', before.get('crc'))
         if a.install:
             problems += image_problems(a.install, None, '--install') + image_problems(a.image, None, '--image')
         elif 'update' in a.scenarios:
             problems += ['the update scenario needs --image (the running app.bin)'] if not a.image else \
-                image_problems(a.image, before['build'], '--image')
+                image_problems(a.image, before['build'], '--image', before.get('crc'))
         if problems:
             result['preflight'] = problems
             for p in problems:
@@ -677,8 +686,8 @@ async def run(a, out, result):
                 return False
             now = await snapshot(usb)
             result['installed'] = now
-            problems = ready(now) + image_problems(a.install, now['build'], '--install') \
-                + image_problems(a.image, now['build'], '--image')
+            problems = ready(now) + image_problems(a.install, now['build'], '--install', now.get('crc')) \
+                + image_problems(a.image, now['build'], '--image', now.get('crc'))
             if problems:
                 result['preflight'] = problems
                 for p in problems:

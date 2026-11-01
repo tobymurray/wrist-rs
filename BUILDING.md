@@ -24,12 +24,33 @@ which the console's `usblog` prints. `--features ble` adds the console and updat
 Bluetooth ([below](#bluetooth)). `--features haptic` drives the vibration motor, through the
 console's `haptic`.
 
-The console's `version` prints the image's build ID: 12 hex digits hashing the tracked
-files that go into the binaries, listed in [release/build-inputs.txt](release/build-inputs.txt),
-with `-dirty` when one of them has an uncommitted change. A commit that touches none of
-them, such as a docs change, keeps the ID and the image's bytes. `python3
-tools/firmware_build.py` prints the ID of the checkout, and `WRIST_RELEASE_BUILD_ID=<name>
-cargo build --release` names a build instead.
+The console's `version` prints the image's version, build ID and CRC:
+
+```text
+[usb] standalone-boot 0.3.0+ble.local build 4f1e9a07c3d2 crc 6D81FE53
+```
+
+The ID is 12 hex digits hashing the tracked files that go into the binaries, listed in
+[release/build-inputs.txt](release/build-inputs.txt), with `-dirty` when one of them has
+an uncommitted change, and then hashing the edits too. A commit that touches none of them,
+such as a docs change, keeps the ID and the image's bytes. `python3 tools/firmware_build.py`
+prints that hash, which is the ID of the release recipe's build.
+
+A build that differs from the recipe's hashes how into its ID, and names it after the
+version: each feature beyond the release's (`app_features` in
+[release/toolchain.json](release/toolchain.json)), and `local` for any build
+outside the recipe, since the binary holds the checkout's and Cargo's paths
+([release/README.md](release/README.md#the-recipe) has the rest). So the default, `ble`
+and `usb-log` builds have three IDs. The report's `[step] build` line also gives the
+source hash, as `<ID> (<hash>+ble.local)`. `WRIST_RELEASE_BUILD_ID=<name> cargo build
+--release` names a build with the release's features instead, and is refused with others.
+
+The CRC is the CRC-32 of the image's own bytes in flash, computed once at boot (`crc
+pending` for its first moments), and the same that `tools/wrist-update.py` prints when it
+sends that app.bin, so it names exactly what the watch runs; `report` and the about page
+show it too.
+`python3 tools/test-build-id.py` checks all this, building the image several ways in a
+clone of HEAD.
 
 ## The loader
 

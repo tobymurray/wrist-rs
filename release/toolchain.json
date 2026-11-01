@@ -2,6 +2,7 @@
   "stable": "1.99.1",
   "nightly": "nightly-2026-10-19",
   "target": "thumbv8m.main-none-eabihf",
+  "app_features": [],
   "build_image": "ghcr.io/tobymurray/wrist-rs-build@sha256:323d347edb24b29e8cd6545166e5d14a2899b7646489111468d3e94017d759f5",
   "sdk_url": "https://github.com/UNAWatch/una-sdk",
   "sdk_tag": "sdk-v1.6.1",

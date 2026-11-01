@@ -5,6 +5,8 @@ Everything here shapes app.bin, loader.bin, image.bin or the installer, so this 
 of the build ID's inputs (release/build-inputs.txt); tools/release-build.py checks and
 packages around it.
 """
+import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -24,13 +26,38 @@ def inputs(root=ROOT):
     return [line.strip() for line in lines if line.strip() and not line.startswith('#')]
 
 
+def app_features(root=ROOT):
+    """The image's features in the recipe's build, `app_features` in release/toolchain.json,
+    which apps/standalone-boot/build.rs also reads."""
+    return sorted(json.loads((root/'release/toolchain.json').read_text())['app_features'])
+
+
+def feature_args(app, root=ROOT):
+    """Cargo's arguments for the recipe's features of `app`, one of APPS."""
+    features = app_features(root) if app == 'standalone-boot' else []
+    return ['--features', ','.join(features)] if features else []
+
+
 def build_id(root=ROOT):
-    """The firmware hash; apps/standalone-boot/build.rs computes the same for builds outside the recipe."""
+    """The firmware hash, the ID of the recipe's build. apps/standalone-boot/build.rs computes the
+    same, and for any other build hashes how it differs from the recipe's into its own ID."""
     specs = inputs(root)
     listing = git('ls-files', '-s', '-z', '--', *specs, root=root)
-    digest = git('hash-object', '--stdin', root=root, stdin=listing).decode().strip()
     dirty = git('status', '--porcelain', '--untracked-files=normal', '--', *specs, root=root)
+    if dirty:
+        listing += worktree(root, specs)
+    digest = git('hash-object', '--stdin', root=root, stdin=listing).decode().strip()
     return digest[:12] + ('-dirty' if dirty else '')
+
+
+def worktree(root, specs):
+    """After `worktree\\0`, each input that differs from the index as `<blob> <path>\\0`, with `-`
+    for a deleted one's blob, so that two uncommitted trees that differ have different IDs."""
+    listed = git('ls-files', '-z', '--modified', '--deleted', '--others', '--exclude-standard', '--', *specs, root=root)
+    paths = sorted({p for p in listed.split(b'\0') if p})
+    present = [p for p in paths if (root/os.fsdecode(p)).is_file()]
+    blobs = iter(git('hash-object', '--stdin-paths', root=root, stdin=b'\n'.join(present)).split(b'\n'))
+    return b'worktree\0' + b''.join((next(blobs) if p in present else b'-') + b' ' + p + b'\0' for p in paths)
 
 
 def environment(base, sdk, build_id, root=ROOT):
@@ -60,7 +87,7 @@ def with_map(env, map_path):
 def build_app(execute, env, app, binary, root=ROOT, target='thumbv8m.main-none-eabihf'):
     """Compile one of APPS and copy out its raw binary; returns its ELF."""
     cwd = root/'apps'/app
-    execute('cargo', 'build', '--locked', '--release', cwd=cwd, env=env)
+    execute('cargo', 'build', '--locked', '--release', *feature_args(app, root), cwd=cwd, env=env)
     elf = cwd/'target'/target/'release'/app
     execute('arm-none-eabi-objcopy', '-O', 'binary', elf, binary, env=env)
     return elf

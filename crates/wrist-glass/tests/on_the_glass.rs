@@ -72,11 +72,12 @@ fn pages(faces: &Faces) -> Vec<(String, (Glass, Short))> {
         all.push((format!("battery-{name}"), compose_battery(&b, &EN_GB, faces)));
     }
     let abouts = [
-        ("release", About { version: "0.1.0", build: "5784ec72019b" }),
-        ("dirty", About { version: "0.1.0", build: "5784ec72019b-dirty" }),
-        ("widest", About { version: "100.100.100", build: "a-name-longer-than-1" }),
-        ("long-version", About { version: LONG_VERSION, build: "5784ec72019b" }),
-        ("long-build", About { version: "0.1.0", build: "a-name-longer-than-two-lines-of-the-page" }),
+        ("release", About { version: "0.1.0", build: "5784ec72019b", crc: Some(0xFDEE_7BC0) }),
+        ("dirty", About { version: "0.1.0", build: "5784ec72019b-dirty", crc: Some(0xFDEE_7BC0) }),
+        ("variant", About { version: "0.1.0+ble.local", build: "5784ec72019b", crc: Some(0xFDEE_7BC0) }),
+        ("widest", About { version: "100.100.100", build: "a-name-longer-than-1", crc: None }),
+        ("long-version", About { version: LONG_VERSION, build: "5784ec72019b", crc: None }),
+        ("long-build", About { version: "0.1.0", build: "a-name-longer-than-two-lines-of-the-page", crc: None }),
     ];
     for (name, a) in abouts {
         all.push((format!("about-{name}"), compose_about(&a, &EN_GB, faces)));
@@ -222,20 +223,29 @@ fn the_pages_read_right() {
         assert_eq!(glass.lines().nth(1).unwrap().font.face.px, faces.charge.face.px);
         let (glass, _) = compose_battery(&Battery::default(), &EN_GB, faces);
         assert_eq!(texts(&glass), ["BATTERY", "‒‒ %", "‒‒‒‒ mV", "input ?"]);
-        let (glass, _) = compose_about(&About { version: "0.1.0", build: "5784ec72019b" }, &EN_GB, faces);
+        let (glass, _) = compose_about(&About { version: "0.1.0", build: "5784ec72019b", crc: None }, &EN_GB, faces);
         assert_eq!(texts(&glass), ["ABOUT", "wrist-rs", "0.1.0", "5784EC72019B"]);
         assert_eq!(glass.lines().nth(3).unwrap().font.face.px, faces.id.face.px);
-        let (glass, _) = compose_about(&About { version: "0.1.0", build: "5784ec72019b-dirty" }, &EN_GB, faces);
+        let (glass, _) = compose_about(&About { version: "0.1.0", build: "5784ec72019b-dirty", crc: None }, &EN_GB, faces);
         assert_eq!(texts(&glass), ["ABOUT", "wrist-rs", "0.1.0", "5784EC72019B", "DIRTY"]);
-        let (glass, _) = compose_about(&About { version: "0.1.0", build: "gate-test" }, &EN_GB, faces);
+        let (glass, _) = compose_about(&About { version: "0.1.0", build: "gate-test", crc: None }, &EN_GB, faces);
         assert_eq!(texts(&glass), ["ABOUT", "wrist-rs", "0.1.0", "GATE-TEST"]);
+        let (glass, _) = compose_about(&About { version: "0.1.0+ble.local", build: "5784ec72019b", crc: None }, &EN_GB, faces);
+        assert_eq!(texts(&glass), ["ABOUT", "wrist-rs", "0.1.0+ble.local", "5784EC72019B"]);
+        // The CRC takes the next free line.
+        let (glass, _) = compose_about(&About { version: "0.1.0", build: "5784ec72019b", crc: Some(0xFDEE_7BC0) }, &EN_GB, faces);
+        assert_eq!(texts(&glass), ["ABOUT", "wrist-rs", "0.1.0", "5784EC72019B", "CRC FDEE7BC0"]);
+        let (glass, _) =
+            compose_about(&About { version: "0.1.0", build: "5784ec72019b-dirty", crc: Some(0x0000_00A1) }, &EN_GB, faces);
+        assert_eq!(texts(&glass), ["ABOUT", "wrist-rs", "0.1.0", "5784EC72019B", "DIRTY", "CRC 000000A1"]);
+        assert!(glass.lines().nth(5).unwrap().ink_rows().start >= glass.lines().nth(4).unwrap().ink_rows().end);
     }
 }
 
 #[test]
 fn a_version_too_long_is_cut_and_says_so() {
     for faces in FAMILIES {
-        let (glass, short) = compose_about(&About { version: LONG_VERSION, build: "5784ec72019b" }, &EN_GB, faces);
+        let (glass, short) = compose_about(&About { version: LONG_VERSION, build: "5784ec72019b", crc: None }, &EN_GB, faces);
         let shown = texts(&glass)[2];
         assert!(shown.len() > 5 && shown.len() < LONG_VERSION.len() && LONG_VERSION.starts_with(shown), "{shown}");
         assert_eq!(short, 1 << 2);
@@ -246,7 +256,7 @@ fn a_version_too_long_is_cut_and_says_so() {
 fn a_build_name_too_long_is_cut_and_says_so() {
     for faces in FAMILIES {
         let (glass, short) =
-            compose_about(&About { version: "0.1.0", build: "a-name-longer-than-two-lines-of-the-page" }, &EN_GB, faces);
+            compose_about(&About { version: "0.1.0", build: "a-name-longer-than-two-lines-of-the-page", crc: None }, &EN_GB, faces);
         let (id, suffix) = (texts(&glass)[3], texts(&glass)[4]);
         assert_eq!(id, "A-NAME-LONGE");
         assert!(suffix.len() > 5 && suffix.len() < 28 && "R-THAN-TWO-LINES-OF-THE-PAGE".starts_with(suffix), "{suffix}");

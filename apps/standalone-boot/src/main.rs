@@ -397,7 +397,8 @@ fn main() -> ! {
     uart.write_str("[12] flash shared; loader state ");
     uart.write_str(update::state_name(flash));
     uart.write_str("; build ");
-    uart.write_line(version::BUILD_ID);
+    version::write_build(uart);
+    uart.write_line("");
     uart.flush();
 
     let parked = park::Pins {
@@ -958,6 +959,7 @@ fn compose_page(page: Page, soc_pct: Option<u8>, cell_mv: Option<u32>) -> (Glass
             &pages::About {
                 version: version::VERSION,
                 build: version::BUILD_ID,
+                crc: version::crc(),
             },
             locale,
             pages::FACES,
@@ -1144,6 +1146,8 @@ async fn heartbeat(flash: &'static update::FlashMutex) -> ! {
 #[embassy_executor::task]
 async fn report(handoff: RccSnapshot, measured_hz: u32, watchdog: watchdog::Started) -> ! {
     let uart = Uart::best_effort();
+    // Once, before the boot report that prints it.
+    version::compute_crc().await;
     full_report(uart, &handoff, measured_hz, watchdog, "boot").await;
     loop {
         match REPORT.wait().await {
@@ -1215,7 +1219,9 @@ async fn full_report(
     uart.write_str("[step] wdog  : ");
     uart.write_line(watchdog.as_str());
     uart.write_str("[step] build : ");
-    uart.write_line(version::BUILD_ID);
+    version::write_build(uart);
+    version::write_crc(uart);
+    uart.write_line("");
     make_room().await;
 
     uart.write_line("[step] rtc   :");

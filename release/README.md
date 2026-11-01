@@ -20,8 +20,43 @@ The image carries a build ID, which the console's `version` prints and `manifest
 records as `build_id` beside `source_commit`: a hash of the files that go into the
 binaries, listed in [`build-inputs.txt`](build-inputs.txt), so that a commit of only the
 gate's record, docs, the site or host tools rebuilds the same bytes
-([GATE.md](GATE.md#publishing)). [`tools/firmware_build.py`](../tools/firmware_build.py)
+([GATE.md](GATE.md#publishing)). With uncommitted changes to those files it is a hash of
+the tree as it stands, then `-dirty`. [`tools/firmware_build.py`](../tools/firmware_build.py)
 holds the part of the recipe that shapes the binaries, and computes the ID.
+
+That ID is the recipe's build's: the features `app_features` in
+[`toolchain.json`](toolchain.json) names, the pinned compiler and target, the
+release profile as [`Cargo.toml`](../apps/standalone-boot/Cargo.toml) sets it, and the
+recipe's flags. Any other build of the image hashes how it differs into its own ID, in
+[`build.rs`](../apps/standalone-boot/build.rs), and names the differences after the
+version, as SemVer build metadata: `+` and each feature beyond `app_features`, `no-<feature>`
+for each one of them left out, and `local` for a build outside the recipe; `Variant` in
+build.rs names the rest. So `cargo build --release --features ble` prints
+`standalone-boot 0.3.0+ble.local build <its own ID>`, and the report's `[step] build`
+line adds the source hash it came from, `(<firmware hash>+ble.local)`.
+`WRIST_RELEASE_BUILD_ID` is for the recipe's features only: build.rs refuses it on any
+other build, and the recipe and the gate pass `app_features` as `--features`.
+build.rs's target and opt-level are copies, which
+[`tools/test-release.py`](../tools/test-release.py) checks against `.cargo/config.toml` and
+`[profile.release]`.
+
+`local` stays in the hash because a build's paths change its bytes. Panic messages hold the
+source paths, and Cargo hashes each path crate outside the image's workspace, everything
+under `crates/` and `vendor/`, into its symbols by its absolute path, which moves code.
+`--remap-path-prefix` rewrites the messages but cannot undo the hashing, so two checkouts
+of one commit build two images. Only the recipe's image, which mounts every checkout at
+`/src`, is the same from anywhere; a native run of the recipe from elsewhere records
+`checkout_at_src: false` in `manifest.json` and is never release-ready.
+
+build.rs sees only what Cargo tells a build script, so not everything that changes the
+bytes reaches the ID. The image's CRC covers the rest: at boot it hashes its own
+bytes in flash, from the vector table to the end of `.data`'s load image, which is exactly
+app.bin, and `version`, `report` and the about page show it as `crc XXXXXXXX`, the CRC-32
+that [`tools/wrist-update.py`](../tools/wrist-update.py) prints for that app.bin. It names
+those bytes only: whatever the slot holds after them is not covered.
+`manifest.json`'s `image_crc32` is over image.bin, the loader padded with `FF` to 32 KiB
+and then app.bin, so it is app.bin's CRC continued from the padded loader's:
+`zlib.crc32(app, zlib.crc32(loader_padded))`, not the image's own CRC.
 
 ## Build locally
 

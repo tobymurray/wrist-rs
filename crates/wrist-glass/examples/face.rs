@@ -33,7 +33,7 @@ fn main() {
             &EN_GB,
             FACES,
         ),
-        [page, version, build, _] if page == "about" => compose_about(&About { version, build }, &EN_GB, FACES),
+        [page, version, build, _] if page == "about" => compose_about(&About { version, build, crc: None }, &EN_GB, FACES),
         [time, date, soc, _] => {
             let nums = |s: &str, sep| -> Vec<u16> { s.split(sep).map(|n| n.parse().expect("a number")).collect() };
             let byte = |n: u16| u8::try_from(n).expect("a field under 256");
