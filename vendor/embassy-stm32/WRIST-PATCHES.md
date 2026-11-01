@@ -11,7 +11,9 @@ revision. Remove this copy once upstream has all of these, or equivalents:
   driver uses `pac::LPTIM4` directly. It selects the LSE for LPTIM3/4 itself
   (`CCIPR3.LPTIM34SEL`), which the app's RCC configuration must name too, or the LSI when the
   LSE is not ready, counting its 32 kHz as 32768 Hz (2.3 % slow), and enables LPTIM4 in
-  Stop (`SRDAMR`, `APB3SMENR`). `rcc::init_rcc` leaves its clock alone.
+  Stop (`SRDAMR`, `APB3SMENR`). `rcc::init_rcc` leaves its clock alone. The late-alarm
+  threshold (5 ms) and `time_until_next_alarm`'s lead (upstream's 32 ticks, 1 ms) are in
+  time, not ticks, so they hold at the image's 8,192 Hz tick.
 - **LPTIM compare (U5).** As upstream, `CMPOK` is cleared before `CCR` is written; here the
   wait for the write's own `CMPOK` is also bounded, and a `CCR` that already holds the value
   is not written again, since no write is left unacknowledged.
@@ -19,9 +21,9 @@ revision. Remove this copy once upstream has all of these, or equivalents:
   ([#7417](https://github.com/embassy-rs/embassy/pull/7417)), each change waits for
   `DIEROK` and an unchanged value is not written; here the wait is bounded in time rather
   than in polls, and counted. Entering Stop 2 with a `CCIE` enable unacknowledged loses the
-  compare wakeup, and the alarm runs one 2 s period late, so `set_alarm` writes `CCIE` once,
+  compare wakeup, and the alarm runs one counter period late, so `set_alarm` writes `CCIE` once,
   to its final value, where upstream clears it and sets it again on a retry. A `DIEROK` or
-  `CMPOK` not seen within 2 ms, against at most 215 us measured, does not stop the driver:
+  `CMPOK` not seen within 2 ms, against at most 215 us measured undivided, does not stop the driver:
   the write is made once more and, if still unacknowledged, left to the overflow, whose
   `next_period` (upstream) handles an alarm already due, including one whose flag enabling
   `CCIE` cleared (ES0553 2.12.3).
