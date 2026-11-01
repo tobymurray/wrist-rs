@@ -483,6 +483,24 @@ pub fn set_steps_words(w: &[u32; wrist_steps::WORDS]) {
     }
 }
 
+/// `BKP23R`: tag `RW` and 1 while a raise should light the face.
+const TAMP_BKP23R: u32 = 0x4600_7C00 + 0x15C;
+const RAISE_ON: u32 = 0x5257_0001;
+
+#[must_use]
+pub fn raise_wanted() -> bool {
+    clock_bus();
+    unsafe { read32(TAMP_BKP23R) == RAISE_ON }
+}
+
+pub fn set_raise_wanted(on: bool) {
+    clock_bus();
+    unsafe {
+        write32(PWR_DBPR, DBPR_DBP);
+        write32(TAMP_BKP23R, if on { RAISE_ON } else { 0 });
+    }
+}
+
 pub fn clear_zone() {
     clock_bus();
     unsafe {
