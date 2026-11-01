@@ -58,6 +58,15 @@ enum Request {
     Probe,
 }
 
+impl Request {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Play(pattern) => pattern.name(),
+            Self::Probe => "probe",
+        }
+    }
+}
+
 /// What [`serve`] is running, from before PF2 rises until after it falls.
 static RUNNING: Mutex<CriticalSectionRawMutex, Cell<Option<Request>>> = Mutex::new(Cell::new(None));
 
@@ -71,6 +80,18 @@ fn is_playing() -> bool {
 
 /// A newer request replaces one not yet taken.
 static REQUEST: Signal<CriticalSectionRawMutex, Request> = Signal::new();
+
+/// Hands `request` to [`serve`], naming any request not yet taken that it replaces.
+fn queue(request: Request) {
+    if let Some(replaced) = REQUEST.try_take() {
+        let mut lines = Uart::best_effort().lines();
+        lines.write_str("[haptic] ");
+        lines.write_str(request.name());
+        lines.write_str(" replaces the queued ");
+        lines.write_line(replaced.name());
+    }
+    REQUEST.signal(request);
+}
 
 #[derive(Clone, Copy)]
 struct Fault {
@@ -332,7 +353,7 @@ async fn play(pattern: Pattern) {
 /// Plays `pattern` on the [`serve`] task and returns at once; a newer request replaces
 /// one not yet taken.
 pub fn start(pattern: Pattern) {
-    REQUEST.signal(Request::Play(pattern));
+    queue(Request::Play(pattern));
 }
 
 /// Stops the motor at once from any task, by PF2 rather than the bus, and drops a
@@ -422,14 +443,25 @@ pub fn command(args: &[u8], uart: Uart) {
             if is_playing() {
                 uart.write_line("[haptic] a pattern is playing; the probe follows it");
             }
-            REQUEST.signal(Request::Probe);
+            queue(Request::Probe);
         }
         "stop" => {
-            uart.write_line(match running() {
-                Some(Request::Play(_)) => "[haptic] stopping",
-                Some(Request::Probe) => "[haptic] stopping the probe",
-                None => "[haptic] nothing playing",
+            // `stop` drops a request the serve task has not taken yet; take it here to name it.
+            let queued = REQUEST.try_take();
+            let mut lines = uart.lines();
+            lines.write_str(match (running(), queued) {
+                (Some(Request::Play(_)), _) => "[haptic] stopping",
+                (Some(Request::Probe), _) => "[haptic] stopping the probe",
+                (None, None) => "[haptic] nothing playing",
+                (None, Some(_)) => "[haptic] nothing playing yet",
             });
+            match queued {
+                Some(request) => {
+                    lines.write_str("; dropped the queued ");
+                    lines.write_line(request.name());
+                }
+                None => lines.write_line(""),
+            }
             stop();
         }
         word => match Pattern::parse(word) {
