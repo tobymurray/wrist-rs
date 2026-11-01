@@ -142,8 +142,7 @@ are byte for byte the ones it ran, and the recipe holds the image to the install
     `round_trip_validated` true only if steps 4 to 12 passed, and 13 to 18 when they ran.
     After a round trip: `stock_version` as the version it used, `round_trip_release` as this
     version and `round_trip_fingerprint` as step 1 noted it.
-22. In [NOTES.md](NOTES.md): what this release was checked to do, and on which stock
-    version.
+22. In [NOTES.md](NOTES.md): which stock version this release needs.
 
 ## Owner decisions
 
