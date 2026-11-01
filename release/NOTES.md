@@ -28,8 +28,9 @@ Fixes on 0.3.0. New since 0.3.0:
   runs flat: the watch writes stock's battery configuration back, where 0.3.0 left the
   gauge's defaults and a percentage that never relearned. What the gauge learned about the
   cell is still lost with it.
-- Fewer wakes on battery: the fuel gauge samples every 45 s while it hibernates, not every
-  5.6 s, and the watchdog is fed every 16 s, not 8 s.
+- A little less drain on battery: the watchdog is fed every 16 s, not 8 s, so the watch
+  wakes about 36 times a minute rather than 40, and the fuel gauge samples every 45 s
+  while it hibernates, not every 5.6 s.
 - The loader is unchanged: no loader update is needed.
 
 From earlier releases:
