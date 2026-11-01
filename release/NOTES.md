@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Stock firmware** | **1.6.2** only. The installer runs on no other version. |
-| **Watch** | UNA Watch with its original modules and LS012 display |
+| **Watch** | UNA Watch |
 | **Install guide** | [INSTALL.md](INSTALL.md) |
 
 A watch face for the UNA Watch that shows the time, the day and date, and the battery's charge, with pages for the battery and the build, in place of the stock firmware. `manifest.json`, in the release zip, names this build's version and source commit.
@@ -21,7 +21,6 @@ Fixes on 0.3.0. New since 0.3.0:
 
 ## Limits
 
-- The original modules and LS012 display only.
 - The watch follows daylight saving for the two changes [`tools/wrist-time.py`](../tools/wrist-time.py) last sent, about a year. After that, after a change of zone, or after a 16-second hold of Select, which resets the power and clears the zone with the clock, run the tool again. It knows no zone names.
 - A short press lights the face for 3 s, or turns off a light switched on from the console. Back and Select only light it; Up and Down also move between pages.
 - After a cable is pulled during an update, the next update can get no answer from the watch. Run it again.
