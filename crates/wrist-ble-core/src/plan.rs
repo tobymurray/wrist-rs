@@ -5,6 +5,9 @@ use core::hash::{Hash, Hasher};
 
 use wrist_ble::{Activities, AdvParams, Capabilities, Change, ConnParams, Instant, Op, OpId, Schedule};
 
+use crate::chip::Chip;
+use crate::phone::Phone;
+
 use crate::goals::{Goals, Power, MAX_PERIPHERALS};
 use crate::State;
 
@@ -92,6 +95,46 @@ pub struct PlanInput<'a> {
 /// A pure function from goals and what is running to the target.
 pub trait Planner {
     fn plan(&self, input: &PlanInput<'_>) -> Target;
+}
+
+/// Plans from the driver's menu: advertising for the phone, the first option the schedule admits
+/// and the chip has not refused, beside what the radio runs.
+///
+/// Central activity is not planned yet: a wanted peripheral is told it fits, and its machine
+/// looks for it with nothing connecting it.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MenuPlanner;
+
+impl Planner for MenuPlanner {
+    fn plan(&self, i: &PlanInput<'_>) -> Target {
+        let (g, s) = (i.goals, i.state);
+        let mut t = Target { activities: s.radio, phone: Verdict::NotWanted, peripherals: [Verdict::NotWanted; MAX_PERIPHERALS] };
+        for (v, w) in t.peripherals.iter_mut().zip(&g.peripherals) {
+            if w.is_some() {
+                *v = Verdict::Fits;
+            }
+        }
+        if !g.radio_on || !matches!(s.chip.state, Chip::Ready(_)) {
+            return t;
+        }
+        if let Phone::Up(_) = s.phone {
+            t.activities.advertising = None;
+            t.phone = Verdict::Fits;
+            return t;
+        }
+        if !g.phone.discoverable {
+            t.activities.advertising = None;
+            return t;
+        }
+        let beside_central = s.radio.centrals() > 0;
+        let choice = i.menu.advertising.iter().filter(|c| c.when.matches(g.power, beside_central, false)).map(|c| c.params).find(|&p| {
+            let change = Change::Advertise(Some(p));
+            s.radio.advertising == Some(p) || (i.schedule.admit(&s.radio, &change).is_ok() && !i.refused.contains(fingerprint(&s.radio, &change)))
+        });
+        t.activities.advertising = choice;
+        t.phone = if choice.is_some() { Verdict::Fits } else { Verdict::Busy(Conflict::Refused) };
+        t
+    }
 }
 
 /// An operation in flight, until its terminal event or its deadline.

@@ -80,6 +80,8 @@ pub enum PeerState {
     NoContact,
     Quiet { value: Option<u16>, age: Millis },
     Reconnecting { since: Millis, attempts: u16 },
+    /// Let go for lacking the service, and looked at again once `left` is up.
+    Rechecking { left: Option<Millis> },
     Stopped(StopReason),
     Incompatible,
 }
@@ -120,7 +122,7 @@ fn phone_status(state: &State, now: Instant) -> PhoneStatus {
                 Security::Unsecured if now.since(l.since) > ASK_TO_PAIR_AFTER => PhoneStatus::Unsecured { since: now.since(l.since) },
                 Security::Unsecured => PhoneStatus::Securing,
             },
-            Phone::Off | Phone::Discoverable => match state.advertising {
+            Phone::Off | Phone::Discoverable => match state.radio.advertising {
                 Some(a) if a.connectable => PhoneStatus::Discoverable { interval_ms: Some(a.interval_min.as_millis()) },
                 _ if now.since(state.silent_since) <= REACHABLE_GAP => PhoneStatus::Discoverable { interval_ms: None },
                 _ => PhoneStatus::Unreachable {
@@ -151,7 +153,9 @@ pub fn peer_state(p: &Peripheral, profile: &Profile, now: Instant) -> PeerState 
         Stage::Dropping { then: Then::Reconnect, .. } | Stage::Seeking { .. } | Stage::Backoff { .. } | Stage::SlowWait { .. } => {
             searching()
         }
-        Stage::Linked { .. } | Stage::Waiting { .. } | Stage::Dropping { then: Then::Rediscover, .. } => PeerState::Connecting,
+        Stage::Linked { .. } => PeerState::Connecting,
+        Stage::Waiting { until } => PeerState::Rechecking { left: Some(until.since(now)) },
+        Stage::Dropping { then: Then::Rediscover, .. } => PeerState::Rechecking { left: None },
         Stage::Live { since, .. } => live_state(p, profile, since, now),
     }
 }
@@ -270,6 +274,8 @@ fn write_peer<W: Write>(w: &mut W, p: &PeerStatus) -> fmt::Result {
         PeerState::Quiet { value: Some(value), age } => write!(w, "quiet({value}{unit},{}s)", age.0 / 1_000),
         PeerState::Quiet { value: None, age } => write!(w, "quiet(-,{}s)", age.0 / 1_000),
         PeerState::Reconnecting { since, .. } => write!(w, "reconnecting({}s)", since.0 / 1_000),
+        PeerState::Rechecking { left: Some(left) } => write!(w, "rechecking({}s)", left.0.div_ceil(1_000)),
+        PeerState::Rechecking { left: None } => w.write_str("rechecking"),
         PeerState::Stopped(reason) => {
             let reason = match reason {
                 StopReason::NotFound => "not-found",
@@ -288,6 +294,7 @@ fn cause(c: FaultCause) -> &'static str {
     match c {
         FaultCause::StartFailed => "start-failed",
         FaultCause::BaselineRefused => "baseline-refused",
+        FaultCause::KeptResetting => "kept-resetting",
     }
 }
 
