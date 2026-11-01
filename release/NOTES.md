@@ -56,7 +56,15 @@ From earlier releases:
 
 ## Checked on the watch
 
-To be written from this release's gate run ([GATE.md](GATE.md), step 22).
+With this build's package, updating from 0.3.0: updates over USB, including a pulled cable
+and a killed tool, which leave the watch on its current version, each accepted at the
+first try; the rollback of an image no computer keeps; the clock across restarts and
+daylight-saving changes; every button and every page; and deep sleep on battery, 40 min
+with no timer write left unacknowledged and nothing retained by a panic or fault.
+
+The installer and loader are byte for byte 0.3.0's, so 0.3.0's round trip on stock
+firmware 1.6.2 stands: the Wrist-rs app's dry run and its refusals, the install, the way
+back to stock, and the install again over that release's own record.
 
 ## Limits
 
