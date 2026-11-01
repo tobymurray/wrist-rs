@@ -90,6 +90,10 @@ pub struct Sensor {
     pub asks: Option<(Millis, ParamRange)>,
     /// Connections that fail as they are set up (0x3E), per thousand.
     pub not_established_permille: u16,
+    /// Refuses the central's updates, which then complete with an error.
+    pub refuses_updates: bool,
+    /// Hangs up (0x13) this long after each link forms.
+    pub hangs_up_after: Option<Millis>,
     pub value: u8,
 }
 
@@ -106,6 +110,8 @@ impl Sensor {
             delivers_percent: 100,
             asks: None,
             not_established_permille: 0,
+            refuses_updates: false,
+            hangs_up_after: None,
             value: 72,
         }
     }

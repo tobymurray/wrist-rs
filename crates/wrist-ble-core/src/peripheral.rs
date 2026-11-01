@@ -68,7 +68,7 @@ pub struct Ctx<'a> {
     pub workout: bool,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Stage {
     #[default]
     Off,
@@ -113,7 +113,7 @@ pub enum StopReason {
     RadioBusy(Conflict),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Event {
     Want,
     Unwant,
@@ -134,7 +134,7 @@ pub enum Event {
     Tick,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Peripheral {
     pub stage: Stage,
     pub chosen_at: Instant,
@@ -414,7 +414,7 @@ fn jitter(peer: PeerAddr, step: u8, base: Millis) -> Millis {
 }
 
 /// Readings in whole blocks over the unstable window.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 struct Coverage {
     start: Option<Instant>,
     counts: [u8; BLOCKS],

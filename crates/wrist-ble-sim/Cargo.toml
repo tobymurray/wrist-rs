@@ -13,6 +13,7 @@ wrist-bluenrg2 = { path = "../wrist-bluenrg2" }
 
 [dev-dependencies]
 proptest = { version = "1.11.0", default-features = false, features = ["std"] }
+stateright = "0.31.0"
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
