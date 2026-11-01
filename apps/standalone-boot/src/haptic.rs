@@ -135,10 +135,15 @@ async fn bus(step: &'static str) -> Result<Shared, Fault> {
     if HALTED.load(Ordering::Relaxed) {
         return Err(Fault { step, why: "stopped" });
     }
-    with_timeout(BUS_WAIT, crate::pmic::BUS.lock()).await.map_err(|_| {
+    let shared = with_timeout(BUS_WAIT, crate::pmic::BUS.lock()).await.map_err(|_| {
         hold_reset(true);
         Fault { step, why: BUSY }
-    })
+    })?;
+    // A stop while this waited, so `GO` is never written after it.
+    if HALTED.load(Ordering::Relaxed) {
+        return Err(Fault { step, why: "stopped" });
+    }
+    Ok(shared)
 }
 
 async fn write(reg: u8, value: u8, step: &'static str) -> Result<(), Fault> {
