@@ -572,6 +572,34 @@ class GateScript(unittest.TestCase):
         self.assertEqual(gate.handoff_reset_flags(report.replace('0x14004400', '0x34004400')), ['IWDG', 'SFT', 'PIN'])
         self.assertIsNone(gate.handoff_reset_flags('-- RCC now --\nRCC_CSR     = 0x00004400\n'))
 
+    def test_haptic(self):
+        pin = '     HAPTIC_RST_N (PF2) low, output: the haptic driver in reset between patterns\n'
+        self.assertEqual(gate.haptic_pin(pin), ('low', True))
+        self.assertEqual(gate.haptic_pin(pin.replace('low, output', 'high, NOT an output')), ('high', False))
+        self.assertIsNone(gate.haptic_pin('[step] park\n'))
+        self.assertEqual(gate.haptic_pin_check(pin)[0], True)
+        self.assertEqual(gate.haptic_pin_check(pin.replace('low, output', 'low, NOT an output')),
+                         (False, 'HAPTIC_RST_N (PF2) low, an output: the haptic driver in reset (read low, NOT an output)'))
+        self.assertIn('(read no PF2 line)', gate.haptic_pin_check('[step] park\n')[1])
+        probe = ('[haptic] played 2, stopped 1, failed 0; full scale 2698 mV, ERM open loop; last bring-up at 139 s\n'
+                 '[haptic] last error: none\n'
+                 + pin +
+                 '[haptic] probe: CHIP_ID 13 (DRV2625 rev 3), 07=40, 08=40, 1F=7B, 20=7D, STATUS 00; PF2 low\n')
+        self.assertTrue(all(ok for ok, _ in gate.haptic_probe(probe)))
+        self.assertEqual([w for ok, w in gate.haptic_probe(probe.replace('1F=7B', '1F=89(wrote 7B)')) if not ok],
+                         ['probe: each register reads back as written'])
+        failed = '[haptic] probe: CHIP_ID --, 07=--, 08=--, 1F=--, 20=--; failed at chip ID: no ACK; PF2 low\n'
+        self.assertEqual([w for ok, w in gate.haptic_probe(failed) if not ok],
+                         ['probe: CHIP_ID 13, a DRV2625', 'probe: each register reads back as written',
+                          'probe: no failure, PF2 low after'])
+        self.assertFalse(any(ok for ok, _ in gate.haptic_probe('[haptic] a pattern is playing; the probe follows it\n')))
+        stopped = '[haptic] stopping\n[haptic] alarm stopped after 4018 ms, VDD 4853 mV; PF2 low\n'
+        self.assertEqual(gate.haptic_stopped(stopped), 4018)
+        # Rung out before the stop, or a tap: not what the step asks.
+        self.assertIsNone(gate.haptic_stopped('[haptic] nothing playing\n'
+                                              '[haptic] alarm played in 59549 ms, VDD 4853 mV, STATUS 08; PF2 low\n'))
+        self.assertIsNone(gate.haptic_stopped('[haptic] tap played in 48 ms, VDD 4941 mV, STATUS 08; PF2 low\n'))
+
     def test_charge(self):
         line = '[hb] 12  uptime 13 s\n[pwr] 4407 mV  soc 100.0%  30 C  now -1406 uA  avg 468 uA  rails all good\n'
         self.assertEqual(gate.charge(line), 100.0)
