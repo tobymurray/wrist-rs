@@ -465,14 +465,16 @@ of another build. **MEASURED**: it found the DMA interrupt's bounds-check panic.
 
 ## Stop modes
 
-LPTIM4 is the time driver, counting the 32768 Hz LSE in bypass, with the backup domain kept
-as the bootloader configured it; it runs and wakes the core in Stop2 (MEASURED). A U5
+LPTIM4 is the time driver, counting the 32768 Hz LSE in bypass through /4, 8,192 ticks a
+second, with the backup domain kept as the bootloader configured it; it runs and wakes the core in Stop2 (MEASURED). A U5
 compare write needs a fresh `CMPOK` acknowledgement, not a stale flag, and the counter
 snapshot has to account for an overflow not yet serviced; without both, a timer can stall
-for a whole 2 s period ([`vendor/embassy-stm32/WRIST-PATCHES.md`](vendor/embassy-stm32/WRIST-PATCHES.md)). The acknowledgement takes
+for a whole counter period ([`vendor/embassy-stm32/WRIST-PATCHES.md`](vendor/embassy-stm32/WRIST-PATCHES.md)). The acknowledgement takes
 a few counter clocks, which the driver waits out with interrupts masked: through the /32
 prescaler (1,024 Hz) each wait takes about 3 ms and stalls the executor for up to 22 ms
-(MEASURED), so the counter runs undivided and its overflow wakes the core every 2 s.
+(MEASURED). Undivided, its overflow woke the core every 2 s, 30 of about 36 Stop 2 wakes a
+minute on battery; through /4 it wakes it every 8 s, and a wait of 7 counter clocks would
+take 0.85 ms. Not yet measured on a watch.
 
 The buttons are EXTI lines: PD4/EXTI4 Up, PA5/EXTI5 Down, PD8/EXTI8 Back and PD15/EXTI15
 Select. On battery the image uses Stop2. With USB or an unknown input its own guard holds

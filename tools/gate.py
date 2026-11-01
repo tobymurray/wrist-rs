@@ -583,7 +583,7 @@ class Gate:
                          ('PWR_INT_L high' in text, 'PWR_INT_L high'),
                          (interrupts(text) is not None and interrupts(self.before) is not None
                           and interrupts(text) - interrupts(self.before) == 2, 'input interrupts up by two'),
-                         (rate is not None and 30 <= rate <= 50, f'Stop 2 wakes a minute {rate and round(rate, 1)}, about 36'),
+                         (rate is not None and 8 <= rate <= 25, f'Stop 2 wakes a minute {rate and round(rate, 1)}, about 13'),
                          ('alarms handled over 5 ms late 0' in text, 'no late alarms'),
                          ('Stop entered with one unacknowledged 0' in text, 'Stop never entered with one unacknowledged'),
                          ('[crash] no retained failure' in text, 'no panic or fault retained (wrist-crash.py names a panic\'s file)')]:
