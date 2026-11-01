@@ -423,12 +423,11 @@ def main():
         copy(elf, debug / (bin_name + '.elf'))
         copy(map_path, debug / (bin_name + '.map'))
     if not a.skip_checks:
-        # Each feature set the image is not released with stays clean too; the release ID is not theirs.
-        for features in [[], ['ble']]:
-            if features != firmware_build.app_features():
-                execute('cargo', 'clippy', '--locked', '--release', *(['--features', ','.join(features)] if features else []),
-                        '--', '-D', 'warnings', cwd=ROOT/'apps'/'standalone-boot',
-                        env={k: v for k, v in env.items() if k != 'WRIST_RELEASE_BUILD_ID'})
+        # The image with no features and with all of them stays clean too, whatever the release
+        # pins; the release ID is not theirs.
+        for features in [[], ['--all-features']]:
+            execute('cargo', 'clippy', '--locked', '--release', *features, '--', '-D', 'warnings',
+                    cwd=ROOT/'apps'/'standalone-boot', env={k: v for k, v in env.items() if k != 'WRIST_RELEASE_BUILD_ID'})
     if a.test_build_id:
         execute(sys.executable, ROOT/'tools/test-build-id.py')
     first = user / 'first-install/Apps/ImageInstaller'

@@ -54,7 +54,8 @@ feature of a dependency given as `--features crate/feature`, and edits to the cr
 Cargo's home are not seen. The image's CRC covers those too: at boot it hashes its own
 bytes in flash, from the vector table to the end of `.data`'s load image, which is exactly
 app.bin, and `version`, `report` and the about page show it as `crc XXXXXXXX`, the CRC-32
-that [`tools/wrist-update.py`](../tools/wrist-update.py) prints for that app.bin.
+that [`tools/wrist-update.py`](../tools/wrist-update.py) prints for that app.bin. It names
+those bytes only: whatever the slot holds after them is not covered.
 `manifest.json`'s `image_crc32` is over image.bin, the loader padded with `FF` to 32 KiB
 and then app.bin, so it is app.bin's CRC continued from the padded loader's:
 `zlib.crc32(app, zlib.crc32(loader_padded))`, not the image's own CRC.
