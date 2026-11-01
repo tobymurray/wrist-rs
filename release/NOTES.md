@@ -24,6 +24,12 @@ Fixes on 0.3.0. New since 0.3.0:
 - [`tools/wrist-update.py`](../tools/wrist-update.py) and the other tools quiet the console
   before their first command: the computer can echo the watch's greeting back, and the
   watch then read `update` glued to it and refused the install.
+- The battery percentage stays right after the fuel gauge resets, as it can when the cell
+  runs flat: the watch writes stock's battery configuration back, where 0.3.0 left the
+  gauge's defaults and a percentage that never relearned. What the gauge learned about the
+  cell is still lost with it.
+- Fewer wakes on battery: the fuel gauge samples every 45 s while it hibernates, not every
+  5.6 s, and the watchdog is fed every 16 s, not 8 s.
 - The loader is unchanged: no loader update is needed.
 
 From earlier releases:
