@@ -18,7 +18,7 @@ incised-text = { version = "0.2.0", default-features = false, features = ["abgr2
 # Square roots and the arcs' ends, to well under a pixel.
 libm = "0.2.16"
 # Indexed PNGs, which keep the screenshots a few kilobytes.
-png = { version = "0.17", optional = true }
+png = { version = "0.18", optional = true }
 
 [dev-dependencies]
 inscribed-disc = { version = "0.2.1", default-features = false, features = ["embedded-graphics", "abgr2222", "std"] }
