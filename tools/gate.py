@@ -400,6 +400,12 @@ class Gate:
             self.ask(2, 'is the watch charged above 50 %?')
         else:
             self.check(2, pct > 50, f'the watch charged above 50 % ({pct:.0f} %)')
+        # Before the updates, so step 5 can tell the clock survived them.
+        if wrist_port.find(a.port):
+            rc, out = self.tool('wrist-time.py')
+            self.check(2, rc == 0 and '[rtc] set' in out, 'the clock set with wrist-time.py')
+        else:
+            self.do(2, 'connect the watch and run tools/wrist-time.py, so step 5 can tell the clock survived the updates')
         # Step 3: gate-test from the same inputs as the candidate.
         here = firmware_build.build_id()
         if not self.check(3, here == manifest['build_id'], f'this checkout builds {manifest["build_id"]} (it builds {here})'):

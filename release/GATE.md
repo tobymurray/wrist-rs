@@ -26,7 +26,8 @@ sections in the order below: A, C, D when it runs, then B.
 1. Beside the zips, `sha256sum -c SHA256SUMS` (macOS: `shasum -a 256 -c SHA256SUMS`).
    Note `build_id`, `image_crc32` and `round_trip_fingerprint` from `manifest.json`.
 2. Download the stock `.ota` of the version the release notes name and check it as
-   INSTALL.md says. Charge the watch above 50 %.
+   INSTALL.md says. Charge the watch above 50 %, and set its clock with
+   `.venv/bin/python tools/wrist-time.py`, so step 5 can tell it survived the updates.
 3. Build a second copy of the image that names itself `gate-test` in place of the build
    ID, for step 12, with the release's features, `app_features` in
    [`toolchain.json`](toolchain.json) (`--features ble,...`):
