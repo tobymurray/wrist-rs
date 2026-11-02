@@ -26,6 +26,9 @@ stock version is not supported until they name it.
 
 - Shows the time, the day and date, and the battery's charge.
 - Lights the face when you press a button; Up and Down step to the battery and about pages.
+- One daily alarm, set from the console or with `tools/wrist-time.py --alarm HH:MM`. It
+  lights the face and shows `ALARM` until any button or a minute stops it, follows daylight
+  saving, and survives restarts and updates.
 - Keeps time through restarts and updates; [`tools/wrist-time.py`](tools/wrist-time.py) sets it from your computer,
   with the next daylight-saving changes.
 - Installs updates over USB into a second slot, and goes back to the previous version if

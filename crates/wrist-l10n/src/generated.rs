@@ -3,7 +3,7 @@
 use crate::{DatePiece, Locale, Piece, Plural, TimePiece};
 
 /// How many messages there are.
-pub const MESSAGES: usize = 13;
+pub const MESSAGES: usize = 15;
 
 /// Every message, in `l10n/en.ftl`'s order, with its arguments.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,6 +23,12 @@ pub enum Msg {
     // The charge before the gauge has a reading, its digits as figure dashes.
     /// `‒‒ %`
     ChargeUnset,
+    // In place of the date while the alarm rings, in capitals like the pages' titles.
+    /// `ALARM`
+    FaceAlarmRinging,
+    // In place of the date after the alarm was found too late to ring, until a press.
+    /// `MISSED`
+    FaceAlarmMissed,
     // The page's title, in capitals like the English.
     /// `BATTERY`
     BatteryTitle,
@@ -55,14 +61,16 @@ impl Msg {
             Self::FaceDateInvalid => (2, [0]),
             Self::ChargePercent { pct: a0 } => (3, [a0]),
             Self::ChargeUnset => (4, [0]),
-            Self::BatteryTitle => (5, [0]),
-            Self::BatteryCellMv { mv: a0 } => (6, [a0]),
-            Self::BatteryCellUnset => (7, [0]),
-            Self::BatteryInputUsb => (8, [0]),
-            Self::BatteryInputCell => (9, [0]),
-            Self::BatteryInputUnknown => (10, [0]),
-            Self::AboutTitle => (11, [0]),
-            Self::AboutProduct => (12, [0]),
+            Self::FaceAlarmRinging => (5, [0]),
+            Self::FaceAlarmMissed => (6, [0]),
+            Self::BatteryTitle => (7, [0]),
+            Self::BatteryCellMv { mv: a0 } => (8, [a0]),
+            Self::BatteryCellUnset => (9, [0]),
+            Self::BatteryInputUsb => (10, [0]),
+            Self::BatteryInputCell => (11, [0]),
+            Self::BatteryInputUnknown => (12, [0]),
+            Self::AboutTitle => (13, [0]),
+            Self::AboutProduct => (14, [0]),
         }
     }
 }
@@ -89,6 +97,10 @@ pub static EN_GB: Locale = Locale {
         &[Piece::Arg(0), Piece::Text(" %")],
         // charge-unset
         &[Piece::Text("‒‒ %")],
+        // face-alarm-ringing
+        &[Piece::Text("ALARM")],
+        // face-alarm-missed
+        &[Piece::Text("MISSED")],
         // battery-title
         &[Piece::Text("BATTERY")],
         // battery-cell-mv

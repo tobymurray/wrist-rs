@@ -24,6 +24,9 @@ fn cases() -> Vec<(&'static str, Status)> {
                 clock: Some(Clock { h: 23, m: 59, s: 59 }),
                 date: Some(Date { year: u16::MAX, month: 9, day: 30 }),
                 soc_pct: Some(u8::MAX),
+                alarm: Some(Clock { h: 23, m: 59, s: 0 }),
+                ringing: false,
+                missed: false,
             },
         ),
         (
@@ -32,6 +35,9 @@ fn cases() -> Vec<(&'static str, Status)> {
                 clock: Some(Clock { h: 0, m: 0, s: 0 }),
                 date: Some(Date { year: 0, month: 13, day: 0 }),
                 soc_pct: Some(0),
+                alarm: Some(Clock { h: 0, m: 0, s: 0 }),
+                ringing: false,
+                missed: false,
             },
         ),
         ("none", Status::default()),
@@ -42,8 +48,12 @@ fn cases() -> Vec<(&'static str, Status)> {
                 clock: Some(Clock { h: 23, m: 59, s: 0 }),
                 date: Some(Date { year: 2026, month: 9, day: 30 }),
                 soc_pct: Some(100),
+                ..Status::default()
             },
         ),
+        ("alarm", Status { alarm: Some(Clock { h: 7, m: 0, s: 0 }), ..typical() }),
+        ("ringing", Status { alarm: Some(Clock { h: 7, m: 0, s: 0 }), ringing: true, ..typical() }),
+        ("missed", Status { alarm: Some(Clock { h: 7, m: 0, s: 0 }), missed: true, ..typical() }),
     ]
 }
 
@@ -52,6 +62,7 @@ fn typical() -> Status {
         clock: Some(Clock { h: 16, m: 27, s: 33 }),
         date: Some(Date { year: 2026, month: 10, day: 17 }),
         soc_pct: Some(100),
+        ..Status::default()
     }
 }
 
@@ -211,6 +222,19 @@ fn the_face_reads_right() {
         assert_eq!(texts(&glass), ["set time", "‒‒:‒‒", "‒‒ %"]);
         let a_second_later = Status { clock: Some(Clock { h: 16, m: 27, s: 34 }), ..typical() };
         assert_eq!(compose(&typical(), &EN_GB, faces).0, compose(&a_second_later, &EN_GB, faces).0);
+        let on = Status { alarm: Some(Clock { h: 7, m: 5, s: 0 }), ..typical() };
+        let (glass, _) = compose(&on, &EN_GB, faces);
+        assert_eq!(texts(&glass), ["Sat 17 Oct", "16:27", "100 %", "07:05"]);
+        assert_eq!(glass.lines().nth(3).unwrap().font.face.px, faces.id.face.px);
+        let (glass, _) = compose(&Status { ringing: true, ..on }, &EN_GB, faces);
+        assert_eq!(texts(&glass), ["ALARM", "16:27", "100 %", "07:05"]);
+        let (glass, _) = compose(&Status { ringing: true, ..Status::default() }, &EN_GB, faces);
+        assert_eq!(texts(&glass), ["ALARM", "‒‒:‒‒", "‒‒ %"]);
+        let (glass, _) = compose(&Status { missed: true, ..on }, &EN_GB, faces);
+        assert_eq!(texts(&glass), ["MISSED", "16:27", "100 %", "07:05"]);
+        // A ring after a miss says so, not the miss.
+        let (glass, _) = compose(&Status { ringing: true, missed: true, ..on }, &EN_GB, faces);
+        assert_eq!(texts(&glass)[0], "ALARM");
     }
 }
 
