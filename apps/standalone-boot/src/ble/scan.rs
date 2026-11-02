@@ -21,7 +21,7 @@ const COMMAND_DISALLOWED: u8 = 0x0C;
 /// An advertising report's kind for a scan response.
 const SCAN_RESPONSE: u8 = 0x04;
 
-pub(super) const USAGE: &str = "[ble] usage: ble scan [seconds, 1 to 10] [interval ms] [window ms]";
+pub(super) const USAGE: &str = "[ble] usage: ble scan [seconds, 1 to 10 [interval ms window ms]]";
 
 /// The words after `ble scan`; `None` if mistyped.
 pub(super) fn parse(args: &[u8]) -> Option<Request> {
