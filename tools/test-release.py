@@ -12,6 +12,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from unittest import mock
 import zlib
 import zipfile
 import warnings
@@ -626,6 +627,81 @@ class GateScript(unittest.TestCase):
         self.assertEqual(gate.charge(line), 100.0)
         self.assertEqual(gate.charge(line.replace('100.0%', '42.5%')), 42.5)
         self.assertIsNone(gate.charge('[power] input external (USB)\n'))
+
+    def test_retry_waits_for_a_mount_to_take_a_write(self):
+        clock = [0.0]
+        tries = []
+
+        def copy(fails):
+            tries.append(clock[0])
+            if len(tries) <= fails:
+                raise PermissionError(13, 'Permission denied')
+            return 'copied'
+        sleep = lambda s: clock.__setitem__(0, clock[0] + s)
+        now = lambda: clock[0]
+        self.assertEqual(gate.retry(lambda: copy(3), 10, now=now, sleep=sleep), ('copied', None))
+        self.assertEqual(len(tries), 4)
+        tries.clear()
+        value, error = gate.retry(lambda: copy(99), 10, now=now, sleep=sleep)
+        self.assertIsNone(value)
+        self.assertIsInstance(error, PermissionError)
+        self.assertLessEqual(tries[-1] - tries[0], 10.5)
+
+    def test_writable(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertTrue(gate.writable(Path(d)))
+            self.assertEqual(list(Path(d).iterdir()), [])
+            self.assertFalse(gate.writable(Path(d)/'gone'))
+
+    def test_ota_problem(self):
+        with tempfile.TemporaryDirectory() as d:
+            ota = Path(d)/'UnaWatch-Kernel_1.6.2.ota'
+            ota.write_bytes(b'ota')
+            self.assertIsNone(gate.ota_problem(ota, '1.6.2'))
+            self.assertIn('pass --ota', gate.ota_problem(None, '1.6.2'))
+            gone = Path(d)/'deleted'/ota.name
+            self.assertEqual(gate.ota_problem(gone, '1.6.2'), f'--ota {gone} not found')
+            self.assertIn('is not stock 1.6.1', gate.ota_problem(ota, '1.6.1'))
+
+    def test_steps_13_and_17_ask_only_for_their_holds(self):
+        with tempfile.TemporaryDirectory() as d:
+            boot = Path(d)/'UNA BOOT'
+            boot.mkdir()
+            ota = Path(d)/'UnaWatch-Kernel_1.6.2.ota'
+            ota.write_bytes(b'ota')
+            g = gate.Gate(argparse.Namespace(ota=ota))
+            g.stock = '1.6.2'
+            asked = []
+            g.log = lambda text: None
+            g.do = lambda step, what: asked.append((step, what))
+            g.ask = lambda step, what: asked.append((step, what)) or True
+            g.check = lambda step, ok, what: ok
+            g.drive = lambda step, want, what: boot
+            g.eject = lambda step, path: None
+            g.step13()
+            self.assertTrue(g.power_reset)
+            self.assertEqual(asked[0][1], gate.POWER_RESET)
+            self.assertIn(gate.INTO_BOOTLOADER, [w for _, w in asked])
+            self.assertEqual((boot/ota.name).read_bytes(), b'ota')
+            asked.clear()
+            g.to_stock(17)
+            self.assertNotIn(gate.POWER_RESET, [w for _, w in asked])
+            self.assertIn(gate.INTO_BOOTLOADER, [w for _, w in asked])
+
+    def test_step_16_sets_the_clock_before_the_face(self):
+        g = gate.Gate(argparse.Namespace())
+        order = []
+        g.log = g.save = lambda *a: None
+        g.ask = lambda step, what: order.append('face' if what.startswith('the face') else 'ask')
+        g.check = lambda step, ok, what: ok
+        g.tool = lambda *a, **k: order.append(a[0]) or (0, '[rtc] set')
+        g.cmd = lambda *a, **k: ''
+        g.booted = lambda: ''
+        with mock.patch.object(gate.time, 'sleep'):
+            for kwargs, first in [({}, ['face', 'wrist-time.py']), ({'set_first': True}, ['wrist-time.py', 'face'])]:
+                order.clear()
+                g.step5(16, **kwargs)
+                self.assertEqual(order[:2], first)
 
 
 if __name__ == '__main__':

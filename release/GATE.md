@@ -86,7 +86,7 @@ The watch runs an earlier wrist-rs.
    let go: it comes back to the face with the time still right, and `report`'s `RCC_CSR`
    at handoff names `PIN`, with no `IWDG` or `WWDG` (`SFT` reads set too, as at 0.3.0's and
    0.3.1's gates). Select held on through a restart would
-   continue into the bootloader's USB mode.
+   stop in the bootloader instead.
 
 ### C. The update safety net
 
@@ -104,10 +104,14 @@ the stock version changes, or when INSTALL.md's "Stock to wrist-rs" or "Back to 
 changes. Otherwise the round trip of `round_trip_release` stands: the installer and loader
 are byte for byte the ones it ran, and the recipe holds the image to the installer's plan.
 
-13. Back to that stock version, as in INSTALL.md ("Back to stock"), but holding Select
-    through the power reset: past the USB screen at about 3 s, until the screen blanks at
-    about 16 s and the USB screen comes back. Stock starts and reports it. A run that
-    starts at step 14 skips step 16's zone check.
+13. Back to that stock version, in two holds of Select that do different things. First the
+    power reset, which clears the clock and the zone for step 16 to check: unplug, hold
+    Select about 16 s, until the screen blanks and the watch restarts by itself, then let
+    go; wrist-rs starts, its face reading `set time`. Then into the bootloader, as in
+    INSTALL.md ("Back to stock"): with the cable in, hold Select about 4 s, until the screen
+    titled Bootloader appears, and let go there; held on to 16 s, it resets the power again.
+    Copy the `.ota` to `UNA BOOT`, eject it, unplug and choose Continue. Stock starts and
+    reports it. A run that starts at step 14 skips step 16's zone check.
 14. The dry run: INSTALL.md steps 1 to 4, with every check there passing. The launcher
     lists **Wrist-rs**, and the screen shows `INSTALL-CRC.txt`'s digits.
 15. The confirm's refusals, each from a passing dry run: a click of Select; Select held for
@@ -118,10 +122,11 @@ are byte for byte the ones it ran, and the recipe holds the image to the install
     the watch stays on stock. Note anything else a 3 s hold of Select brings up.
 16. Install: INSTALL.md steps 5 to 7. Note how long `Installing` stays on screen. The
     watch comes up in wrist-rs: `cmd "boot;version"` says `state boot` and the build.
-    Set the time, and repeat steps 5 and 6.
-17. Back to stock again (step 13), then a dry run: `install.log` shows the last install's
-    outcome record for this CRC in the witness page, the right first page and count, and
-    the staging area as the recovery left it.
+    Set the time first, since step 13's power reset cleared it, then repeat steps 5 and 6.
+17. Back to stock again through the bootloader, as in step 13's second hold, with no power
+    reset: nothing after it checks the clock. Then a dry run: `install.log` shows the last
+    install's outcome record for this CRC in the witness page, the right first page and
+    count, and the staging area as the recovery left it.
 18. Install the same candidate again, as in step 16: wrist-rs, `state boot`, the build.
 
 ### B. On battery, last

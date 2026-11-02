@@ -197,6 +197,50 @@ def press(button, then):
     return rf'\[button\] short press {label}[\s\S]*?{re.escape(then)}'
 
 
+def retry(action, timeout, interval=0.5, now=time.monotonic, sleep=time.sleep):
+    """(action's value, None), or (None, the last OSError) once `timeout` s have passed with
+    each try failing. A drive's mount point can appear before its filesystem takes a write."""
+    end = now() + timeout
+    while True:
+        try:
+            return action(), None
+        except OSError as e:
+            if now() >= end:
+                return None, e
+            sleep(interval)
+
+
+def writable(path):
+    """Whether a file can be made and removed at the root of `path`."""
+    probe = path / '.gate-probe'
+    try:
+        probe.write_bytes(b'')
+        probe.unlink()
+        return True
+    except OSError:
+        return False
+
+
+def ota_problem(ota, stock):
+    """Why `--ota` cannot serve section D, or None."""
+    if ota is None:
+        return 'section D runs: pass --ota with the stock .ota the release notes name'
+    if not ota.is_file():
+        return f'--ota {ota} not found'
+    if f'_{stock}.ota' not in ota.name:
+        return f'{ota.name} is not stock {stock}, which the release notes name'
+    return None
+
+
+# Step 13 and 17's two holds of Select: they do different things, and each says what it is for.
+POWER_RESET = ('the power reset, which clears the clock and the zone (step 16 checks it): unplug the cable, '
+               'hold Select about 16 s, until the screen blanks and the watch restarts by itself, then let go; '
+               'wrist-rs starts, its face reading `set time`')
+INTO_BOOTLOADER = ('into the bootloader, to put stock back: plug the cable in, then from wrist-rs\'s face hold '
+                   'Select about 4 s, until the screen titled Bootloader appears, and let go there '
+                   '(held on to 16 s it resets the power instead)')
+
+
 def volumes():
     user = os.environ.get('USER', '')
     for base in [Path('/Volumes'), Path('/run/media') / user, Path('/media') / user, Path('/media')]:
@@ -338,13 +382,14 @@ class Gate:
 
     # -- drives --
     def drive(self, step, want, what, timeout=180):
-        """The mounted drive `want` picks, waited for; None asks to mount it by hand."""
+        """The mounted drive `want` picks, waited for until it takes a write; None asks to mount
+        it by hand."""
         print(f'  waiting up to {timeout} s for {what} to be mounted', flush=True)
         start = time.time()
         hinted = set()
         while time.time() < start + timeout:
             for v in volumes():
-                if want(v):
+                if want(v) and writable(v):
                     self.log(f'  drive: {v}')
                     return v
             waited = int(time.time() - start)
@@ -409,10 +454,8 @@ class Gate:
                  + ('runs' if self.round_trip else 'carries over'))
         # Step 2.
         if self.round_trip and chosen & set(range(13, 19)):
-            if not (a.ota and a.ota.is_file()):
-                sys.exit('section D runs: pass --ota with the stock .ota the release notes name')
-            if f'_{self.stock}.ota' not in a.ota.name:
-                sys.exit(f'{a.ota.name} is not stock {self.stock}, which the release notes name')
+            if problem := ota_problem(a.ota, self.stock):
+                sys.exit(problem)
             self.log(f'  {a.ota.name}: SHA-256 {hashlib.sha256(a.ota.read_bytes()).hexdigest()}')
             self.ask(2, f'is that the SHA-256 INSTALL.md says to check for stock {self.stock}?')
         pct = charge(self.cmd('', 12, until='soc ')) if wrist_port.find(a.port) else None
@@ -495,12 +538,18 @@ class Gate:
         self.check(4, self.update(4, app), 'the next update is accepted')
         self.installed(4, 'the candidate again, after a killed tool')
 
-    def step5(self, step=5):
-        self.ask(step, 'the face: day and date, the time and the charge inside the ring, and the minute rolls over on time?')
+    def step5(self, step=5, set_first=False):
+        """Step 5 asks about the face before setting the clock, to see the time survived step 4's
+        updates; `set_first` sets it first, for a clock a power reset cleared on purpose."""
+        face = 'the face: day and date, the time and the charge inside the ring, and the minute rolls over on time?'
+        if not set_first:
+            self.ask(step, face)
         rc, out = self.tool('wrist-time.py')
         self.save(f'step{step}-time.txt', out)
         self.check(step, '[rtc] set' in out, '[rtc] set')
         self.check(step, bool(re.search(r'\[rtc\] zone .*change\(s\) kept', out)), '[rtc] zone, change(s) kept')
+        if set_first:
+            self.ask(step, face)
         before = self.cmd('time', 3)
         self.cmd('reset', 1)
         time.sleep(3)
@@ -698,15 +747,14 @@ class Gate:
         self.version_is(12, self.m['build_id'])
 
     def to_stock(self, step):
-        self.do(step, 'hold Select past the USB screen at about 3 s, until the screen blanks at about 16 s '
-                      'and the USB screen comes back; then let go and connect the cable')
-        reset = self.ask(step, 'did the screen blank and come back (the power reset)?')
-        if step == 13:
-            self.power_reset = reset
+        """Into the bootloader, and the stock .ota through UNA BOOT."""
+        self.do(step, INTO_BOOTLOADER)
         boot = self.drive(step, lambda v: v.name == 'UNA BOOT', 'UNA BOOT')
         if not boot:
             sys.exit('no UNA BOOT drive')
-        shutil.copy2(self.a.ota, boot / self.a.ota.name)
+        _, error = retry(lambda: shutil.copy2(self.a.ota, boot / self.a.ota.name), 10)
+        if error:
+            sys.exit(f'step {step}: could not copy {self.a.ota.name} to {boot}: {error}')
         self.check(step, hashlib.sha256((boot / self.a.ota.name).read_bytes()).digest()
                    == hashlib.sha256(self.a.ota.read_bytes()).digest(), f'{self.a.ota.name} copied to UNA BOOT')
         self.eject(step, boot)
@@ -755,6 +803,8 @@ class Gate:
         self.version_is(step, self.m['build_id'])
 
     def step13(self):
+        self.do(13, POWER_RESET)
+        self.power_reset = self.ask(13, 'did the screen blank and the watch restart by itself (the power reset)?')
         self.to_stock(13)
 
     def step14(self):
@@ -788,7 +838,8 @@ class Gate:
             self.check(16, bool(re.search(r'^\s*zone\s*: no record', text, re.M)), 'after the 16 s hold, no zone record')
         else:
             self.log('  step 16: zone check skipped: no power reset in this run\'s step 13')
-        self.step5(16)
+        # Step 13's power reset cleared the clock: set it before asking about the face.
+        self.step5(16, set_first=True)
         self.step6(16)
 
     def step17(self):
