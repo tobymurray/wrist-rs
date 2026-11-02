@@ -197,6 +197,41 @@ def press(button, then):
     return rf'\[button\] short press {label}[\s\S]*?{re.escape(then)}'
 
 
+def retry(action, timeout, interval=0.5, now=time.monotonic, sleep=time.sleep):
+    """(action's value, None), or (None, the last OSError) once `timeout` s have passed with
+    each try failing. A drive's mount point can appear before its filesystem takes a write."""
+    end = now() + timeout
+    while True:
+        try:
+            return action(), None
+        except OSError as e:
+            if now() >= end:
+                return None, e
+            sleep(interval)
+
+
+def writable(path):
+    """Whether a file can be made and removed at the root of `path`."""
+    probe = path / '.gate-probe'
+    try:
+        probe.write_bytes(b'')
+        probe.unlink()
+        return True
+    except OSError:
+        return False
+
+
+def ota_problem(ota, stock):
+    """Why `--ota` cannot serve section D, or None."""
+    if ota is None:
+        return 'section D runs: pass --ota with the stock .ota the release notes name'
+    if not ota.is_file():
+        return f'--ota {ota} not found'
+    if f'_{stock}.ota' not in ota.name:
+        return f'{ota.name} is not stock {stock}, which the release notes name'
+    return None
+
+
 # Step 13 and 17's two holds of Select: they do different things, and each says what it is for.
 POWER_RESET = ('the power reset, which clears the clock and the zone (step 16 checks it): unplug the cable, '
                'hold Select about 16 s, until the screen blanks and the watch restarts by itself, then let go; '
@@ -347,13 +382,14 @@ class Gate:
 
     # -- drives --
     def drive(self, step, want, what, timeout=180):
-        """The mounted drive `want` picks, waited for; None asks to mount it by hand."""
+        """The mounted drive `want` picks, waited for until it takes a write; None asks to mount
+        it by hand."""
         print(f'  waiting up to {timeout} s for {what} to be mounted', flush=True)
         start = time.time()
         hinted = set()
         while time.time() < start + timeout:
             for v in volumes():
-                if want(v):
+                if want(v) and writable(v):
                     self.log(f'  drive: {v}')
                     return v
             waited = int(time.time() - start)
@@ -418,10 +454,8 @@ class Gate:
                  + ('runs' if self.round_trip else 'carries over'))
         # Step 2.
         if self.round_trip and chosen & set(range(13, 19)):
-            if not (a.ota and a.ota.is_file()):
-                sys.exit('section D runs: pass --ota with the stock .ota the release notes name')
-            if f'_{self.stock}.ota' not in a.ota.name:
-                sys.exit(f'{a.ota.name} is not stock {self.stock}, which the release notes name')
+            if problem := ota_problem(a.ota, self.stock):
+                sys.exit(problem)
             self.log(f'  {a.ota.name}: SHA-256 {hashlib.sha256(a.ota.read_bytes()).hexdigest()}')
             self.ask(2, f'is that the SHA-256 INSTALL.md says to check for stock {self.stock}?')
         pct = charge(self.cmd('', 12, until='soc ')) if wrist_port.find(a.port) else None
@@ -718,7 +752,9 @@ class Gate:
         boot = self.drive(step, lambda v: v.name == 'UNA BOOT', 'UNA BOOT')
         if not boot:
             sys.exit('no UNA BOOT drive')
-        shutil.copy2(self.a.ota, boot / self.a.ota.name)
+        _, error = retry(lambda: shutil.copy2(self.a.ota, boot / self.a.ota.name), 10)
+        if error:
+            sys.exit(f'step {step}: could not copy {self.a.ota.name} to {boot}: {error}')
         self.check(step, hashlib.sha256((boot / self.a.ota.name).read_bytes()).digest()
                    == hashlib.sha256(self.a.ota.read_bytes()).digest(), f'{self.a.ota.name} copied to UNA BOOT')
         self.eject(step, boot)

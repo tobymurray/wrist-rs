@@ -628,6 +628,41 @@ class GateScript(unittest.TestCase):
         self.assertEqual(gate.charge(line.replace('100.0%', '42.5%')), 42.5)
         self.assertIsNone(gate.charge('[power] input external (USB)\n'))
 
+    def test_retry_waits_for_a_mount_to_take_a_write(self):
+        clock = [0.0]
+        tries = []
+
+        def copy(fails):
+            tries.append(clock[0])
+            if len(tries) <= fails:
+                raise PermissionError(13, 'Permission denied')
+            return 'copied'
+        sleep = lambda s: clock.__setitem__(0, clock[0] + s)
+        now = lambda: clock[0]
+        self.assertEqual(gate.retry(lambda: copy(3), 10, now=now, sleep=sleep), ('copied', None))
+        self.assertEqual(len(tries), 4)
+        tries.clear()
+        value, error = gate.retry(lambda: copy(99), 10, now=now, sleep=sleep)
+        self.assertIsNone(value)
+        self.assertIsInstance(error, PermissionError)
+        self.assertLessEqual(tries[-1] - tries[0], 10.5)
+
+    def test_writable(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertTrue(gate.writable(Path(d)))
+            self.assertEqual(list(Path(d).iterdir()), [])
+            self.assertFalse(gate.writable(Path(d)/'gone'))
+
+    def test_ota_problem(self):
+        with tempfile.TemporaryDirectory() as d:
+            ota = Path(d)/'UnaWatch-Kernel_1.6.2.ota'
+            ota.write_bytes(b'ota')
+            self.assertIsNone(gate.ota_problem(ota, '1.6.2'))
+            self.assertIn('pass --ota', gate.ota_problem(None, '1.6.2'))
+            gone = Path(d)/'deleted'/ota.name
+            self.assertEqual(gate.ota_problem(gone, '1.6.2'), f'--ota {gone} not found')
+            self.assertIn('is not stock 1.6.1', gate.ota_problem(ota, '1.6.1'))
+
     def test_steps_13_and_17_ask_only_for_their_holds(self):
         with tempfile.TemporaryDirectory() as d:
             boot = Path(d)/'UNA BOOT'
