@@ -168,10 +168,14 @@ ECS-160-8-37-CWY-TR3, `C69`/`C70` 8 pF); and `CLK_32K` into `PC14-OSC32_IN` (bal
 were checked against ST's package database for the STM32U5A5QJI6Q: 65 pairs, 65 agree.
 
 **The backup domain at handoff (MEASURED):** the vendor bootloader
-configures it on every boot and leaves `RCC_BDCR` = `0x0C00A987`: LSE on, ready and in
+configures it and leaves `RCC_BDCR` = `0x0C00A987`: LSE on, ready and in
 bypass (the SiT1532), `LSESYSEN` and `LSESYSRDY` set, `RTCSEL` = LSE with `RTCEN`, and the
-LSI on. It does not reset the domain: a word in `TAMP_BKP0R` and a running calendar
-survive a reset through it. Only a PMIC hard reset (Select held 16 s), which cycles
+LSI on. After a PMIC hard reset it hands over the LSE running but the RTC not started:
+`0x0C002887` at `wrist-loader`'s entry, then `0x00002000`, the domain reset, at the image's
+(MEASURED 2026-11-02 on battery, with a diagnostic build). The loader mirrors the domain
+only with the RTC running, so it gives embassy the LSE off, and embassy resets the domain
+(LIKELY: nothing else runs between the two readings). It does not reset the domain: a word in
+`TAMP_BKP0R` and a running calendar survive a reset through it. Only a PMIC hard reset (Select held 16 s), which cycles
 `1V8_RTC`, clears it (MEASURED 2026-10-28: the PCA9420's reset monitor `0x71` went from
 `0x88` to `0x89`, `LONG_ON_DONE`; `TAMP_BKP0R` read 0, the zone record was gone and the
 calendar uninitialised; `RCC_CSR` at handoff stayed `0x14004400`, so it does not show the
@@ -569,9 +573,17 @@ embassy `fb82051b5` does. Enabling it only for alarms under `0xC000` counts (1.5
 leaves one in the last quarter of the next period to run an overflow late, up to 500 ms
 (MEASURED: 381 ms).
 
-If the backup domain does not show the LSE running at boot, the image starts it in bypass
-and the RTC itself before the HAL copies the domain (`rtc::prepare`); with no ready LSE the
-LPTIM4 time driver and LPTIM1 run from the LSI. Not seen on a watch.
+If the backup domain does not show the LSE running at boot, the image starts it in bypass,
+the RTC, and `LSESYSEN`, then waits for `LSESYSRDY`, before the HAL copies the domain
+(`rtc::prepare`); with no ready LSE the LPTIM4 time driver and LPTIM1 run from the LSI.
+LPTIM4 counts the LSE only with `LSESYSEN` set (RM0456 11.4.7). **MEASURED** after a PMIC
+hard reset, with an image that started the LSE and RTC but not `LSESYSEN` (0.3.1 and the
+0.4 candidate): `RCC_BDCR` `0x0800A107` after `embassy_stm32::init`, LPTIM4's counter
+still at 0, no timer ever fired, the screen stayed black, and the watchdog reset the watch
+about 32 s later. 0.3.0 panicked on LPTIM4's unacknowledged `DIER` write instead. With the
+image that sets `LSESYSEN` (MEASURED 2026-11-02, the same hold): `0x00002000` at entry,
+`0x0800A987` after `prepare` and after init, LPTIM4 counting, the timers firing, and no
+watchdog reset.
 
 ## What the image turns off
 

@@ -494,7 +494,7 @@ pub fn command(cmd: &[u8], flash: &'static FlashMutex) {
             uart.write_line("[usb]   ble [on|off|version|yes|no|bonds|forget|disconnect|profile auto|cable|battery|interval now <min> <max>]: the radio; off until `ble on`, which persists; `ble yes` confirms a pairing");
             uart.write_line("[usb]   haptic [tap|alarm|stop]: the vibration motor; bare, what the driver reads back");
             #[cfg(feature = "ble")]
-            uart.write_line("[usb]   ble scan [s] [interval window]: lists advertisers for s seconds (10 by default), listening for window ms in every interval ms");
+            uart.write_line("[usb]   ble scan [s [interval window]]: lists advertisers for s seconds (10 by default), listening for window ms in every interval ms");
         }
         #[cfg(feature = "ble")]
         b"ble" => crate::ble::command(b"", uart),

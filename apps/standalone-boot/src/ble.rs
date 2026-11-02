@@ -271,7 +271,7 @@ fn power() -> Power {
     }
 }
 
-/// `ble`, `ble on|off|version|yes|no|bonds|forget|disconnect|profile auto|cable|battery|interval now <min> <max>|scan [s] [interval window]`.
+/// `ble`, `ble on|off|version|yes|no|bonds|forget|disconnect|profile auto|cable|battery|interval now <min> <max>|scan [s [interval window]]`.
 pub fn command(args: &[u8], uart: Uart) {
     let request = match args {
         b"" => return write_status(uart),
@@ -311,7 +311,7 @@ pub fn command(args: &[u8], uart: Uart) {
         },
         _ => {
             return uart.write_line(
-                "[ble] usage: ble [on|off|version|yes|no|bonds|forget|disconnect|profile auto|cable|battery|interval now <min> <max>|scan [s] [interval window]]",
+                "[ble] usage: ble [on|off|version|yes|no|bonds|forget|disconnect|profile auto|cable|battery|interval now <min> <max>|scan [s [interval window]]]",
             )
         }
     };
