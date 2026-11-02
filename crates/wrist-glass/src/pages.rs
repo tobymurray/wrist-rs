@@ -25,6 +25,12 @@ pub struct Status {
     pub date: Option<Date>,
     /// Whole percent; any value.
     pub soc_pct: Option<u8>,
+    /// The alarm's time while it is on, drawn small below the charge.
+    pub alarm: Option<Clock>,
+    /// The alarm ringing: its word in place of the date.
+    pub ringing: bool,
+    /// The alarm missed and not yet seen: its word in place of the date.
+    pub missed: bool,
 }
 
 /// One typeface's font for each kind of line.
@@ -82,11 +88,14 @@ impl Builder {
 const FACE_DATE: i32 = 84;
 const FACE_TIME: i32 = 143;
 const FACE_BATT: i32 = 175;
+const FACE_ALARM: i32 = 205;
 
 #[must_use]
 pub fn compose(status: &Status, locale: &Locale, faces: &Faces) -> (Glass, Short) {
     let mut b = Builder::new();
     b.at(faces.words, FACE_DATE, |l| match status.date {
+        _ if status.ringing => locale.message(l, Msg::FaceAlarmRinging),
+        _ if status.missed => locale.message(l, Msg::FaceAlarmMissed),
         Some(d) if d.named() => locale.date(l, d),
         Some(_) => locale.message(l, Msg::FaceDateInvalid),
         None => locale.message(l, Msg::FaceSetTime),
@@ -96,6 +105,9 @@ pub fn compose(status: &Status, locale: &Locale, faces: &Faces) -> (Glass, Short
         None => locale.message(l, Msg::FaceTimeUnset),
     });
     b.at(faces.words, FACE_BATT, |l| push_percent(l, locale, status.soc_pct));
+    if let Some(alarm) = status.alarm {
+        b.at(faces.id, FACE_ALARM, |l| locale.time(l, alarm));
+    }
     (b.glass, b.short)
 }
 

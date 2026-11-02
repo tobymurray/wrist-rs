@@ -12,6 +12,7 @@ fn glass(faces: &Faces, h: u8, m: u8, day: u8, soc_pct: Option<u8>) -> Glass {
         clock: Some(Clock { h, m, s: 0 }),
         date: Some(Date { year: 2026, month: 9, day }),
         soc_pct,
+        ..Status::default()
     };
     compose(&status, &EN_GB, faces).0
 }

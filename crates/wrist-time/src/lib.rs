@@ -2,6 +2,7 @@
 
 #![no_std]
 
+pub mod alarm;
 pub mod counter;
 pub mod zone;
 

@@ -22,6 +22,8 @@ const WPR_LOCK: u32 = 0xFF;
 const TAMP_BKP0R: u32 = 0x4600_7C00 + 0x100;
 const TAMP_BKP1R: u32 = 0x4600_7C00 + 0x104;
 const TAMP_BKP2R: u32 = 0x4600_7C00 + 0x108;
+/// The alarm (`wrist_time::alarm`).
+const TAMP_BKP4R: u32 = 0x4600_7C00 + 0x110;
 /// Not `BKP3R` or `BKP5R` (`HARDWARE.md`, "Debug and boot").
 const TAMP_BKP31R: u32 = 0x4600_7C00 + 0x17C;
 const SOURCE_TAG: u32 = 0x5352_0000;
@@ -45,9 +47,19 @@ const ICSR_RSF: u32 = 1 << 5;
 const ICSR_INITF: u32 = 1 << 6;
 const ICSR_INIT: u32 = 1 << 7;
 const TR_PM: u32 = 1 << 22;
+/// Alarm A's registers (RM0456 63.6).
+const RTC_ALRMAR: u32 = RTC_BASE + 0x40;
+const RTC_ALRMASSR: u32 = RTC_BASE + 0x44;
+const RTC_SR: u32 = RTC_BASE + 0x50;
 const CR_ALRAE: u32 = 1 << 8;
 const CR_ALRAIE: u32 = 1 << 12;
 const SR_ALRAF: u32 = 1 << 0;
+/// `MSK4`: the date and weekday don't count, so it matches every day.
+const ALRMAR_MSK4: u32 = 1 << 31;
+/// The RTC's bus clock in Stop, which its wake needs (RM0456 11.8).
+const RCC_APB3SMENR: u32 = crate::mmio::RCC_BASE + 0xD0;
+const RCC_SRDAMR: u32 = crate::mmio::RCC_BASE + 0xD8;
+const RTCAPB_IN_STOP: u32 = 1 << 21;
 
 /// `RTC_PRER` for a calendar that divides its clock by `a * s`.
 const fn prer(a: u32, s: u32) -> u32 {
@@ -61,6 +73,7 @@ const SRC_NONE: u8 = 0;
 const SRC_LSE: u8 = 1;
 const SRC_LSI: u8 = 2;
 
+pub use wrist_time::alarm::Alarm;
 pub use wrist_time::zone::Zone;
 pub use wrist_time::{civil_of_seconds, parse_civil, seconds_of, Civil};
 
@@ -365,6 +378,9 @@ fn write_sources(uart: Uart) {
         }
         None => uart.write_line("no record (the backup domain was reset)"),
     }
+    uart.write_str("  alarm     : ");
+    crate::alarm::write_record(uart);
+    uart.write_line("");
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -437,6 +453,27 @@ pub fn set_zone(z: &Zone) {
     }
 }
 
+/// `BKP4R` as it stands.
+#[must_use]
+pub fn alarm_word() -> u32 {
+    clock_bus();
+    unsafe { read32(TAMP_BKP4R) }
+}
+
+/// The alarm, if `alarm` set one since the backup domain was last reset.
+#[must_use]
+pub fn alarm() -> Option<Alarm> {
+    Alarm::decode(alarm_word())
+}
+
+pub fn set_alarm(a: Alarm) {
+    clock_bus();
+    unsafe {
+        write32(PWR_DBPR, DBPR_DBP);
+        write32(TAMP_BKP4R, a.encode());
+    }
+}
+
 /// `BKP16R`: tag `BL` and 1 while the radio should be on, so it comes back after a reset.
 #[cfg(feature = "ble")]
 const TAMP_BKP16R: u32 = 0x4600_7C00 + 0x140;
@@ -500,6 +537,47 @@ pub fn write_zone(uart: Uart, minutes: i32) {
         }
         uart.write_u32(v);
     }
+}
+
+/// Arms alarm A for `hh:mm:ss` daily with its interrupt; [`set`] clears it.
+pub fn arm_alarm_a(hour: u8, minute: u8, second: u8) {
+    clock_bus();
+    unsafe {
+        modify32(RCC_APB3SMENR, 0, RTCAPB_IN_STOP);
+        modify32(RCC_SRDAMR, 0, RTCAPB_IN_STOP);
+        write32(PWR_DBPR, DBPR_DBP);
+        write32(RTC_WPR, WPR_KEY1);
+        write32(RTC_WPR, WPR_KEY2);
+        // ALRMAR is written only with ALRAE clear (RM0456, RTC alarm).
+        modify32(RTC_CR, CR_ALRAE | CR_ALRAIE, 0);
+        write32(
+            RTC_ALRMAR,
+            ALRMAR_MSK4 | to_bcd(hour.min(23)) << 16 | to_bcd(minute.min(59)) << 8 | to_bcd(second.min(59)),
+        );
+        write32(RTC_ALRMASSR, 0);
+        write32(RTC_SCR, SR_ALRAF);
+        modify32(RTC_CR, 0, CR_ALRAE | CR_ALRAIE);
+        write32(RTC_WPR, WPR_LOCK);
+    }
+}
+
+/// The `hh:mm:ss` alarm A is armed for, or `None` while it is off.
+#[must_use]
+pub fn alarm_a() -> Option<(u8, u8, u8)> {
+    clock_bus();
+    let (cr, alrmar) = unsafe { (read32(RTC_CR), read32(RTC_ALRMAR)) };
+    (cr & (CR_ALRAE | CR_ALRAIE) == CR_ALRAE | CR_ALRAIE)
+        .then(|| (from_bcd((alrmar >> 16) & 0x3F), from_bcd((alrmar >> 8) & 0x7F), from_bcd(alrmar & 0x7F)))
+}
+
+/// Whether alarm A's flag is up, clearing it.
+pub fn take_alarm_a() -> bool {
+    clock_bus();
+    let up = unsafe { read32(RTC_SR) } & SR_ALRAF != 0;
+    if up {
+        unsafe { write32(RTC_SCR, SR_ALRAF) };
+    }
+    up
 }
 
 pub fn disarm_alarm_a() {

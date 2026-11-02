@@ -118,7 +118,7 @@ pub fn write_report(uart: Uart) {
     uart.write_line(if SDMMC_WAS_ON.load(Ordering::Relaxed) { "was on, now off" } else { "off" });
     uart.write_str("     ");
     uart.write_u32(u32::try_from(ANALOG.len()).unwrap_or(0));
-    uart.write_line(" unused lines analog; RTC alarm A off");
+    uart.write_line(" unused lines analog; RTC alarm A off until the alarm's task arms it");
     crate::haptic::write_pin(uart);
     uart.write_line(if on_smps() {
         "     off in Stop: SRAM1 above .bss, SRAM2, SRAM3 outside an update, SRAM4, SRAM5 below its top 64 KB, DCACHE1/DMA2D/PKA RAM"

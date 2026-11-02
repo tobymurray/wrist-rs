@@ -3,7 +3,7 @@ name = "wrist-time"
 version = "0.0.0"
 edition = "2021"
 license = "AGPL-3.0-or-later"
-description = "Calendar arithmetic and the low-power timer's counter extension"
+description = "Calendar arithmetic, the daily alarm and the low-power timer's counter extension"
 publish = false
 
 [dependencies]
