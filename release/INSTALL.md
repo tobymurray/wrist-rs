@@ -1,8 +1,7 @@
 # Start here
 
 This guide puts wrist-rs on a watch running stock firmware, updates it, and takes the watch
-back to stock. The [release notes](NOTES.md) say which stock version it needs and what this
-build has been checked to do.
+back to stock. The [release notes](NOTES.md) say which stock version it needs and what is new.
 
 ## Before you start
 

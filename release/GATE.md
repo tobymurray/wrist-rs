@@ -79,7 +79,10 @@ The watch runs an earlier wrist-rs.
    for 3 s. Pages: from the face, Down shows the battery (the charge, the voltage, `input
    USB`), Down again about (the version and `build_id` in upper case), and Down again the
    face; Up goes the other way, and Back returns to the face from either page. Left on the
-   battery page, the face comes back within 10 s. Hold Back until the watch restarts, then
+   battery page, the face comes back within 10 s. The alarm, worn: `cmd "alarm test"` rings
+   it, `[alarm] ringing`, the face lit and showing `ALARM`, the motor buzzing; a short press
+   of Down stops both, `[alarm] dismissed by short press SW3/Down after … s; face lit for 3
+   s, page unchanged` and `[haptic] alarm stopped after … ms`. Hold Back until the watch restarts, then
    let go: it comes back to the face with the time still right, and `report`'s `RCC_CSR`
    at handoff names `PIN`, with no `IWDG` or `WWDG` (`SFT` reads set too, as at 0.3.0's and
    0.3.1's gates). Select held on through a restart would
@@ -144,6 +147,12 @@ rest is unplugging, waiting and plugging back in.
     record resolves with [`tools/wrist-crash.py`](../tools/wrist-crash.py) and this release's zip). Record the mean
     current, the time to empty and the wake rate; a meter in series with the cell gives the
     real floor, if you have one.
+    Then the alarm on battery, after those figures, since its ring adds wakes: `cmd "alarm
+    HH:MM"` two or three minutes ahead, by the watch's clock, answers `rings in 2 min` (or
+    3). Unplug and wear the watch: at that minute it buzzes and the face shows `ALARM`, and a
+    short press stops it. Plug back in: `cmd alarm` reads `HH:MM on, spent by its last
+    ring` and more `RTC interrupts this boot` than before, `cmd power` `[crash] no retained
+    failure`. `cmd "alarm off"` leaves it off.
 
 ### Record
 
@@ -153,8 +162,7 @@ rest is unplugging, waiting and plugging back in.
     `round_trip_validated` true only if steps 4 to 12 passed, and 13 to 18 when they ran.
     After a round trip: `stock_version` as the version it used, `round_trip_release` as this
     version and `round_trip_fingerprint` as step 1 noted it.
-22. In [NOTES.md](NOTES.md): what this release was checked to do, and on which stock
-    version.
+22. In [NOTES.md](NOTES.md): which stock version this release needs.
 
 ## Owner decisions
 
