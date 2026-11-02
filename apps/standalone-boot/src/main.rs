@@ -331,10 +331,11 @@ fn main() -> ! {
     // `panel_dma.rs` drives these through registers.
     let _ = (p.TIM1, p.TIM3, p.TIM4, p.GPDMA1_CH12, p.GPDMA1_CH13, p.GPDMA1_CH14, p.GPDMA1_CH15, p.PA6, p.PA7, p.PB0);
     uart = unsafe { Uart::init_at(48_000_000) };
-    uart.write_line(if unsafe { read32(RCC_BDCR) } & BDCR_LSERDY != 0 {
-        "[9] embassy-stm32 initialised: MSIS 48 MHz, time driver on LPTIM4/LSE, UART re-divided"
-    } else {
-        "[9] embassy-stm32 initialised: MSIS 48 MHz, time driver on LPTIM4/LSI (NO LSE: timers 2.3 % slow), UART re-divided"
+    let bdcr = unsafe { read32(RCC_BDCR) };
+    uart.write_line(match (bdcr & BDCR_LSERDY != 0, bdcr & BDCR_LSESYSRDY != 0) {
+        (true, true) => "[9] embassy-stm32 initialised: MSIS 48 MHz, time driver on LPTIM4/LSE, UART re-divided",
+        (true, false) => "[9] embassy-stm32 initialised: MSIS 48 MHz, time driver on LPTIM4/LSE WITHOUT LSESYS: NO TIMERS, UART re-divided",
+        (false, _) => "[9] embassy-stm32 initialised: MSIS 48 MHz, time driver on LPTIM4/LSI (NO LSE: timers 2.3 % slow), UART re-divided",
     });
     uart.flush();
 
@@ -528,15 +529,18 @@ const BDCR_LSEON: u32 = 1 << 0;
 const BDCR_LSERDY: u32 = 1 << 1;
 const BDCR_LSEBYP: u32 = 1 << 2;
 const BDCR_LSESYSEN: u32 = 1 << 7;
+const BDCR_LSESYSRDY: u32 = 1 << 11;
 const BDCR_RTCSEL_MASK: u32 = 0b11 << 8;
 const BDCR_RTCSEL_LSE: u32 = 0b01 << 8;
 const BDCR_RTCSEL_LSI: u32 = 0b10 << 8;
 const BDCR_RTCEN: u32 = 1 << 15;
 
-/// The LSE on, ready and in bypass, clocking the RTC (`HARDWARE.md`, "Stop modes").
+/// The LSE on, ready and in bypass, clocking the RTC and LPTIM4 (`HARDWARE.md`, "Stop modes").
+/// A power-on reset clears `LSESYSEN` and leaves the rest (RM0456 11.8.49).
 fn backup_domain_as_measured(bdcr: u32) -> bool {
-    let running = BDCR_LSEON | BDCR_LSERDY | BDCR_LSEBYP | BDCR_RTCSEL_LSE | BDCR_RTCEN;
-    bdcr & (BDCR_LSEON | BDCR_LSERDY | BDCR_LSEBYP | BDCR_RTCSEL_MASK | BDCR_RTCEN) == running
+    let running =
+        BDCR_LSEON | BDCR_LSERDY | BDCR_LSEBYP | BDCR_LSESYSEN | BDCR_LSESYSRDY | BDCR_RTCSEL_LSE | BDCR_RTCEN;
+    bdcr & (running | BDCR_RTCSEL_MASK) == running
 }
 
 /// The low-speed clocks as the backup domain holds them, so neither `init` nor a

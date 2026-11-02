@@ -36,6 +36,7 @@ const BDCR_LSEON: u32 = 1 << 0;
 const BDCR_LSERDY: u32 = 1 << 1;
 const BDCR_LSEBYP: u32 = 1 << 2;
 const BDCR_LSESYSEN: u32 = 1 << 7;
+const BDCR_LSESYSRDY: u32 = 1 << 11;
 const BDCR_RTCSEL_MASK: u32 = 0b11 << 8;
 const BDCR_RTCSEL_LSE: u32 = 0b01 << 8;
 const BDCR_RTCSEL_LSI: u32 = 0b10 << 8;
@@ -140,8 +141,9 @@ fn wait_for_at(reg: u32, mask: u32, ms: u32, cycles_per_ms: u32) -> bool {
 }
 
 /// At boot, before the HAL's clock configuration copies the backup domain: the LSE in bypass if
-/// it is off, and the RTC started as [`start`] would, so nothing later changes what was copied.
-/// `LSESYSEN` is cleared if the LSE is not running, since the HAL would wait on it forever.
+/// it is off, the RTC started as [`start`] would, and the LSE given to LPTIM4, the time driver's
+/// clock (RM0456 11.4.7), so nothing later changes what was copied. `LSESYSEN` is cleared if the
+/// LSE or its system clock is not running, since the HAL would wait on it forever.
 pub fn prepare(cycles_per_ms: u32) -> Result<&'static str, &'static str> {
     // `PWR_DBPR` takes writes only with the PWR clock on, which the HAL turns on later.
     unsafe { enable_clock(RCC_AHB3ENR, RCC_AHB3ENR_PWREN) };
@@ -154,7 +156,11 @@ pub fn prepare(cycles_per_ms: u32) -> Result<&'static str, &'static str> {
         wait_for_at(RCC_BDCR, BDCR_LSERDY, LSE_START_MS, cycles_per_ms);
     }
     let started = start_at(cycles_per_ms);
-    if unsafe { read32(RCC_BDCR) } & BDCR_LSERDY == 0 {
+    let lse_ready = unsafe { read32(RCC_BDCR) } & BDCR_LSERDY != 0;
+    if lse_ready {
+        unsafe { modify32(RCC_BDCR, 0, BDCR_LSESYSEN) };
+    }
+    if !lse_ready || !wait_for_at(RCC_BDCR, BDCR_LSESYSRDY, 10, cycles_per_ms) {
         unsafe { modify32(RCC_BDCR, BDCR_LSESYSEN, 0) };
     }
     started
