@@ -647,8 +647,9 @@ impl RtcDriver {
                 stats::acknowledged(ier);
             }
 
-            // Clear all interrupt flags. Bits in ICR are "write 1 to clear"
-            icr_write_raw(r, ier);
+            // Clear the flags read, and only those. Bits in ICR are "write 1 to clear". A flag set
+            // since the read stays set and enters this handler again: clearing it here would lose
+            // it, and a lost UE loses a counter period.
             icr_write_raw(r, sr.0);
 
             // Overflow

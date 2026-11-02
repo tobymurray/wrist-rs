@@ -42,6 +42,11 @@ revision. Remove this copy once upstream has all of these, or equivalents:
   [`fb82051b5`](https://github.com/embassy-rs/embassy/commit/fb82051b5), #7241): `CCIE` is
   set for any alarm before the next overflow; setting it only under `0xC000` ticks away
   leaves an alarm in a cycle's last quarter up to 500 ms late.
+- **Interrupt flags cleared as read** (upstream
+  [#7409](https://github.com/embassy-rs/embassy/pull/7409)): the handler clears only the
+  flags it read. It also cleared the enable mask, and `UEIE` and `UECF` are the same bit,
+  so an overflow arriving during the handler was cleared unseen: a counter period lost for
+  good, and time 2 s behind.
 - **Time driver counters.** `low_power::time_driver_stats::snapshot()` returns the `DIER`
   and compare waits, the compare writes skipped, Stop entries with a write unacknowledged,
   the waits that timed out, with the registers at the last, and the last late alarms.
