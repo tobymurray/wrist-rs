@@ -600,6 +600,27 @@ class GateScript(unittest.TestCase):
                                               '[haptic] alarm played in 59549 ms, VDD 4853 mV, STATUS 08; PF2 low\n'))
         self.assertIsNone(gate.haptic_stopped('[haptic] tap played in 48 ms, VDD 4941 mV, STATUS 08; PF2 low\n'))
 
+    def test_alarm(self):
+        answer = '[alarm] 19:41 on (BKP4R 0x414C0C9D); rings in 2 min on the clock\n'
+        self.assertTrue(gate.alarm_set(answer, '19:41'))
+        self.assertTrue(gate.alarm_set(answer.replace('2 min', '3 min'), '19:41'))
+        self.assertFalse(gate.alarm_set(answer, '19:42'))
+        self.assertFalse(gate.alarm_set(answer.replace('2 min', '23 h 59 min'), '19:41'))
+        self.assertFalse(gate.alarm_set('[alarm] usage: alarm [HH:MM|on|off|test|wake-test <s>] (24-hour, local)\n', '19:41'))
+        before = ('[alarm] 09:08 on (BKP4R 0x414C0A24); rings in 2 min on the clock\n'
+                  '[alarm] alarm A armed for 09:08, RTC interrupt on; 0 RTC interrupts this boot\n')
+        after = ('[alarm] 09:08 on, spent by its last ring (BKP4R 0x414C1A24); rings in 23 h 59 min on the clock\n'
+                 '[alarm] alarm A armed for 22:08, RTC interrupt on; 1 RTC interrupts this boot\n'
+                 '[crash] no retained failure\n')
+        self.assertEqual(gate.rtc_interrupts(before), 0)
+        self.assertEqual(gate.rtc_interrupts(after), 1)
+        self.assertTrue(all(ok for ok, _ in gate.alarm_rang(before, after, '09:08')))
+        unrung = after.replace(', spent by its last ring', '').replace('; 1 RTC', '; 0 RTC')
+        self.assertEqual([w for ok, w in gate.alarm_rang(before, unrung, '09:08') if not ok],
+                         ['alarm 09:08 spent by its ring', 'RTC interrupts this boot 0 before, 0 after'])
+        self.assertFalse(gate.alarm_rang(before, after.replace('no retained failure', 'panic line=126'), '09:08')[2][0])
+        self.assertFalse(all(ok for ok, _ in gate.alarm_rang('', after, '09:08')))
+
     def test_charge(self):
         line = '[hb] 12  uptime 13 s\n[pwr] 4407 mV  soc 100.0%  30 C  now -1406 uA  avg 468 uA  rails all good\n'
         self.assertEqual(gate.charge(line), 100.0)

@@ -11,6 +11,7 @@ candidate's round-trip fingerprint is not gate.json's, or with --round-trip.
 The battery stretch, section B (steps 9 to 11), runs last, after sections C and D.
 """
 import argparse
+from datetime import datetime, timedelta
 import hashlib
 import json
 import os
@@ -162,6 +163,25 @@ def haptic_stopped(text):
     or None."""
     m = re.search(r'^\[haptic\] alarm stopped after (\d+) ms.*; PF2 low$', text, re.M)
     return int(m[1]) if m else None
+
+
+def alarm_set(text, at):
+    """Step 11: `alarm HH:MM`'s answer rings at `at` in two or three minutes."""
+    return bool(re.search(rf'^\[alarm\] {at} on \(BKP4R 0x[0-9A-F]{{8}}\); rings in [23] min on the clock$', text, re.M))
+
+
+def rtc_interrupts(text):
+    """The bare `alarm`'s count of RTC interrupts this boot, or None."""
+    m = re.search(r'^\[alarm\] alarm A .*; (\d+) RTC interrupts this boot$', text, re.M)
+    return int(m[1]) if m else None
+
+
+def alarm_rang(before, after, at):
+    """Step 11: the alarm at `at` rang on battery, as (passed, what) for each check."""
+    count = rtc_interrupts(before), rtc_interrupts(after)
+    return [(bool(re.search(rf'^\[alarm\] {at} on, spent by its last ring ', after, re.M)), f'alarm {at} spent by its ring'),
+            (None not in count and count[1] > count[0], f'RTC interrupts this boot {count[0]} before, {count[1]} after'),
+            ('[crash] no retained failure' in after, 'no panic or fault retained after the ring')]
 
 
 def charge(text):
@@ -598,6 +618,14 @@ class Gate:
             short(button, f'[page] {page}')
             self.ask(8, f'the {page} page: {seen}?')
             expect(r'\[page\] face, timed out', f'leave the {page} page alone: the face comes back within 10 s', mark=mark)
+        mark = len(text())
+        input('\n>>> step 8: wear the watch; Enter rings the alarm (`alarm test`). ')
+        wrist_port.write_command(s, 'alarm test')
+        time.sleep(1)
+        self.check(8, '[alarm] ringing' in text()[mark:], '`alarm test` rings')
+        self.ask(8, 'the face lit and showing ALARM, and the motor buzzing?')
+        expect(r'\[alarm\] dismissed by short press SW3/Down after \d+ s; face lit for 3 s, page unchanged'
+               r'[\s\S]*?\[haptic\] alarm stopped after \d+ ms', 'a short press of Down: the ring and the motor stop')
         self.do(8, 'hold Back until the watch restarts, then let go')
         stop.set()
         s.close()
@@ -638,6 +666,19 @@ class Gate:
             self.check(11, ok, what)
         for line in re.findall(r'^.*last on battery.*$', text, re.M):
             self.log('    ' + line.strip())
+        # After the figures above, since the ring adds wakes.
+        now = datetime.now()
+        at = (now + timedelta(minutes=3 if now.second > 40 else 2)).strftime('%H:%M')
+        before = self.cmd('alarm', 3)
+        answer = self.cmd(f'alarm {at}', 3)
+        self.check(11, alarm_set(answer, at), f'alarm {at} set, ringing in 2 or 3 minutes')
+        self.do(11, f'unplug and wear the watch; at {at} it buzzes and shows ALARM: press Down once, then plug back in')
+        self.ask(11, f'at {at} the watch buzzed and showed ALARM, and the press stopped it?')
+        after = self.cmd('alarm;power', 4)
+        self.save('step11-alarm.txt', before + '\n' + answer + '\n--- after the ring ---\n' + after)
+        for ok, what in alarm_rang(before, after, at):
+            self.check(11, ok, what)
+        self.cmd('alarm off', 3)
 
     def step12(self):
         self.check(12, self.update(12, self.gate_test, '--no-reset'), 'gate-test written, not swapped in')
