@@ -197,6 +197,15 @@ def press(button, then):
     return rf'\[button\] short press {label}[\s\S]*?{re.escape(then)}'
 
 
+# Step 13 and 17's two holds of Select: they do different things, and each says what it is for.
+POWER_RESET = ('the power reset, which clears the clock and the zone (step 16 checks it): unplug the cable, '
+               'hold Select about 16 s, until the screen blanks and the watch restarts by itself, then let go; '
+               'wrist-rs starts, its face reading `set time`')
+INTO_BOOTLOADER = ('into the bootloader, to put stock back: plug the cable in, then from wrist-rs\'s face hold '
+                   'Select about 4 s, until the screen titled Bootloader appears, and let go there '
+                   '(held on to 16 s it resets the power instead)')
+
+
 def volumes():
     user = os.environ.get('USER', '')
     for base in [Path('/Volumes'), Path('/run/media') / user, Path('/media') / user, Path('/media')]:
@@ -495,12 +504,18 @@ class Gate:
         self.check(4, self.update(4, app), 'the next update is accepted')
         self.installed(4, 'the candidate again, after a killed tool')
 
-    def step5(self, step=5):
-        self.ask(step, 'the face: day and date, the time and the charge inside the ring, and the minute rolls over on time?')
+    def step5(self, step=5, set_first=False):
+        """Step 5 asks about the face before setting the clock, to see the time survived step 4's
+        updates; `set_first` sets it first, for a clock a power reset cleared on purpose."""
+        face = 'the face: day and date, the time and the charge inside the ring, and the minute rolls over on time?'
+        if not set_first:
+            self.ask(step, face)
         rc, out = self.tool('wrist-time.py')
         self.save(f'step{step}-time.txt', out)
         self.check(step, '[rtc] set' in out, '[rtc] set')
         self.check(step, bool(re.search(r'\[rtc\] zone .*change\(s\) kept', out)), '[rtc] zone, change(s) kept')
+        if set_first:
+            self.ask(step, face)
         before = self.cmd('time', 3)
         self.cmd('reset', 1)
         time.sleep(3)
@@ -698,11 +713,8 @@ class Gate:
         self.version_is(12, self.m['build_id'])
 
     def to_stock(self, step):
-        self.do(step, 'hold Select past the USB screen at about 3 s, until the screen blanks at about 16 s '
-                      'and the USB screen comes back; then let go and connect the cable')
-        reset = self.ask(step, 'did the screen blank and come back (the power reset)?')
-        if step == 13:
-            self.power_reset = reset
+        """Into the bootloader, and the stock .ota through UNA BOOT."""
+        self.do(step, INTO_BOOTLOADER)
         boot = self.drive(step, lambda v: v.name == 'UNA BOOT', 'UNA BOOT')
         if not boot:
             sys.exit('no UNA BOOT drive')
@@ -755,6 +767,8 @@ class Gate:
         self.version_is(step, self.m['build_id'])
 
     def step13(self):
+        self.do(13, POWER_RESET)
+        self.power_reset = self.ask(13, 'did the screen blank and the watch restart by itself (the power reset)?')
         self.to_stock(13)
 
     def step14(self):
@@ -788,7 +802,8 @@ class Gate:
             self.check(16, bool(re.search(r'^\s*zone\s*: no record', text, re.M)), 'after the 16 s hold, no zone record')
         else:
             self.log('  step 16: zone check skipped: no power reset in this run\'s step 13')
-        self.step5(16)
+        # Step 13's power reset cleared the clock: set it before asking about the face.
+        self.step5(16, set_first=True)
         self.step6(16)
 
     def step17(self):
