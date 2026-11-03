@@ -243,6 +243,16 @@ class Packaging(unittest.TestCase):
         self.assertEqual(tool_constant('combine-image.py', 'LOADER_SIZE'), LOADER_SIZE)
         self.assertEqual(tool_constant('combine-image.py', 'INSTALLER_MAX'), LOADER_SIZE + APP_SIZE)
 
+    def test_the_tools_find_the_console_by_its_usb_id(self):
+        import wrist_port
+        console = (r.ROOT/'apps/standalone-boot/src/console.rs').read_text()
+        vid, pid = (int(re.search(rf'const USB_{n}: u16 = (0x[0-9A-Fa-f]+);', console)[1], 16) for n in ('VID', 'PID'))
+        self.assertEqual((wrist_port.VID, wrist_port.PID), (vid, pid))
+        rules = (r.ROOT/'tools/60-wrist-rs.rules').read_text()
+        self.assertIn(f'ATTRS{{idVendor}}=="{vid:04x}", ATTRS{{idProduct}}=="{pid:04x}"', rules)
+        self.assertIn(f'{vid:04x}:{pid:04x}', (r.ROOT/'release/INSTALL.md').read_text())
+        self.assertIn(f'{vid:04X}:{pid:04X}', (r.ROOT/'HARDWARE.md').read_text())
+
     def test_wrist_update_checks_the_watch_sp_window(self):
         self.assertEqual(tool_constant('wrist-update.py', 'SP_MIN'), VECTORS['SP_MIN'])
         self.assertEqual(tool_constant('wrist-update.py', 'SP_MAX'), VECTORS['SP_MAX'])
