@@ -410,9 +410,8 @@ firmware image.
 
 GPDMA1 channels 0 and 1 carry I2C1's transmit and receive: embassy-stm32 0.6's async I2C
 needs a channel each way, and the driver sets the request lines. Nothing else in the image
-uses DMA. The vendored HAL indexes GPDMA channels through its controller-aware accessor:
-casting GPDMA to the four-channel LPDMA type panics for channels 4 and 5
-([`vendor/embassy-stm32/WRIST-PATCHES.md`](vendor/embassy-stm32/WRIST-PATCHES.md)).
+uses DMA. The HAL indexes GPDMA channels through its controller-aware accessor:
+casting GPDMA to the four-channel LPDMA type panics for channels 4 and 5.
 
 The firmware also takes channels 12 to 15, through registers and with
 no interrupt, with TIM1 to TIM4, to write the panel's bus
