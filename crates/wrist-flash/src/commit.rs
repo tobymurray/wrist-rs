@@ -607,6 +607,11 @@ mod tests {
             .collect();
         assert_eq!(decoded, SELF_TEST_STEPS, "the log names the steps by their bits, in order");
         assert!(source.contains(&format!("(st_erase >> {SELF_TEST_NSSR_SHIFT}) & 0xFFFFu")));
+        for (i, _) in source.match_indices(">>") {
+            if source[..i].trim_end().trim_end_matches(')').ends_with("st_erase") {
+                assert!(source[i + 2..].trim_start().starts_with(&format!("{SELF_TEST_NSSR_SHIFT})")), "{}", &source[i..i + 12]);
+            }
+        }
         let page_size = header.lines().find_map(|l| l.trim().strip_prefix("static constexpr size_t kPageSize = ")).unwrap();
         assert_eq!(page_size, format!("{PAGE_SIZE};"));
         assert!(source.contains("uint8_t gChunk[Service::kPageSize];"));

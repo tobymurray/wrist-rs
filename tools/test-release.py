@@ -253,9 +253,33 @@ class Packaging(unittest.TestCase):
         self.assertIn(f'{vid:04x}:{pid:04x}', (r.ROOT/'release/INSTALL.md').read_text())
         self.assertIn(f'{vid:04X}:{pid:04X}', (r.ROOT/'HARDWARE.md').read_text())
 
-    def test_wrist_update_checks_the_watch_sp_window(self):
-        self.assertEqual(tool_constant('wrist-update.py', 'SP_MIN'), VECTORS['SP_MIN'])
-        self.assertEqual(tool_constant('wrist-update.py', 'SP_MAX'), VECTORS['SP_MAX'])
+    def test_wrist_update_checks_vectors_as_the_watch_does(self):
+        tool = ast.parse((r.ROOT/'tools/wrist-update.py').read_text())
+        scope = {'struct': struct, **{n: tool_constant('wrist-update.py', n) for n in ('SP_MIN', 'SP_MAX')}}
+        exec(compile(ast.Module([n for n in tool.body if getattr(n, 'name', '') == 'vectors_ok'], []), 'wrist-update.py', 'exec'), scope)
+        sp, end = VECTORS['STACK_START'], APP + APP_SIZE
+        for vectors, ok in [((VECTORS['SP_MIN'], APP + 1), True), ((VECTORS['SP_MAX'], APP + 1), True),
+                            ((VECTORS['SP_MIN'] - 1, APP + 1), False), ((VECTORS['SP_MAX'] + 1, APP + 1), False),
+                            ((sp, end - 1), True), ((sp, end + 1), False), ((sp, APP - 1), False), ((sp, APP), False)]:
+            self.assertEqual(scope['vectors_ok'](struct.pack('<II', *vectors), APP, APP_SIZE), ok, [hex(v) for v in vectors])
+
+    def test_wrist_ble_carries_the_images_console_service(self):
+        rust = lambda path, name: re.search(rf'const {name}: [^=]+= ([^;]+);', (r.ROOT/path).read_text())[1]
+        ble = 'apps/standalone-boot/src/ble.rs'
+        base = [int(b, 16) for b in re.findall(r'0x([0-9A-F]{2})', rust(ble, 'NUS_BASE'))]
+        for name in ('RX', 'TX'):
+            b = base.copy()
+            b[12] = int(rust(ble, f'NUS_{name}'), 16)
+            h = bytes(reversed(b)).hex()
+            self.assertEqual(tool_constant('wrist-ble.py', name), f'{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:]}', name)
+        default, header = (int(rust('crates/wrist-aci/src/lib.rs', n)) for n in ('ATT_DEFAULT_MTU', 'ATT_HEADER_LEN'))
+        largest = int(rust(ble, 'MAX_MTU'))
+        self.assertEqual((tool_constant('wrist-ble.py', 'DEFAULT_MTU'), tool_constant('wrist-ble.py', 'ATT_HEADER')), (default, header))
+        self.assertEqual(tool_constant('wrist-ble.py', 'VALUE_LEN'), largest - header)
+        self.assertEqual(rust(ble, 'NUS_VALUE_LEN'), 'MAX_MTU - ATT_HEADER_LEN')
+        self.assertEqual(rust(ble, 'DEFAULT_MTU'), 'wrist_aci::ATT_DEFAULT_MTU')
+        self.assertEqual(rust('crates/wrist-ble/src/lib.rs', 'ATT_MAX_MTU'), str(largest))
+        self.assertIn(f'pub type Payload = Bytes<{{ ATT_MAX_MTU - {header} }}>;', (r.ROOT/'crates/wrist-ble/src/lib.rs').read_text())
 
 
 def git(d, *args, when=None):

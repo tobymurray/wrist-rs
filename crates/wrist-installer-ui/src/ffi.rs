@@ -121,11 +121,8 @@ mod tests {
         let header = include_str!("../../../apps/image-installer/GUI/installer_ui.h");
         let defines: Vec<(&str, u32)> = header
             .lines()
-            .filter_map(|l| l.strip_prefix("#define WRIST_INSTALLER_UI_"))
-            .filter_map(|l| {
-                let (name, value) = l.split_once(' ')?;
-                Some((name, value.trim().strip_suffix('u')?.parse().ok()?))
-            })
+            .filter_map(|l| l.strip_prefix("#define WRIST_INSTALLER_UI_")?.split_once(' '))
+            .map(|(name, value)| (name, value.trim().strip_suffix('u').and_then(|v| v.parse().ok()).expect(name)))
             .collect();
         let ours = [
             ("ABI", ABI),

@@ -344,7 +344,7 @@ mod tests {
         let header = include_str!("../../../apps/image-installer/Libs/Header/Commands.hpp");
         let body = header.split("enum class State : uint8_t").nth(1).unwrap().split("};").next().unwrap();
         let mut seen = Vec::new();
-        for line in body.lines().map(str::trim).filter(|l| l.contains(" = ")) {
+        for line in body.lines().map(str::trim).filter(|l| l.starts_with(char::is_alphabetic)) {
             let (name, value) = line.trim_end_matches(',').split_once(" = ").unwrap();
             let value: u8 = value.parse().unwrap();
             assert_eq!(format!("{:?}", State::from_wire(value)), name, "{line}");
