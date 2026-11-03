@@ -305,7 +305,7 @@ pub async fn finish_loader(flash: &'static FlashMutex, s: Session) -> Result<(),
 }
 
 async fn stage_usb<'d>(s: &mut Session, rx: &mut Receiver<'d, Usb<'d>>) -> Result<(), &'static str> {
-    let mut packet = [0u8; 64];
+    let mut packet = [0u8; crate::console::BULK_PACKET as usize];
     while !s.complete() {
         let read = rx.read_packet(&mut packet);
         let n = match embassy_time::with_timeout(embassy_time::Duration::from_secs(5), read).await {
