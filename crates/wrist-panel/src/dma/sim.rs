@@ -23,7 +23,7 @@ use super::{
     E_WORDS, CEN, GCK, GPIOA_BRR, GPIOA_BSRR, GPIOB_BRR, GPIOB_BSRR, GPIOE_ODR, GSP, LATENCY, OPM, TABLE_HALFWORDS, TIM1_CR1,
     TIM3_CR1, TIMER_HZ,
 };
-use crate::{word, BCK_LABELS, DATA_MASK, GCK_EDGES, LAST_LINE_EDGE, LINES, PAIRS};
+use crate::{word, BCK_LABELS, DATA_MASK, GCK_EDGES, LAST_LINE_EDGE, LINES, PAIRS, PIXELS};
 
 const D_AT: u32 = 0x201A_0000;
 const E_AT: u32 = 0x201B_0000;
@@ -514,7 +514,7 @@ pub fn reference(fb: Option<&[u8]>, dirty: &[bool; LINES]) -> Latched {
         let x = LINES - 1 - line;
         for plane in [1, 0] {
             let mut words = [0u16; LATCHED];
-            if let Some(fb) = fb.filter(|fb| fb.len() == LINES * LINES) {
+            if let Some(fb) = fb.filter(|fb| fb.len() == LINES * PIXELS) {
                 for (pair, w) in words.iter_mut().take(PAIRS).enumerate() {
                     let (odd, even) = (fb[2 * pair * LINES + x], fb[(2 * pair + 1) * LINES + x]);
                     *w = (word(odd, even, plane) & DATA_MASK) as u16;

@@ -288,6 +288,13 @@ class Packaging(unittest.TestCase):
         self.assertEqual(tool_constant('wrist-crash.py', 'BUILD_HASH_DIGITS'), digits)
         self.assertIn(f'hash.get(..{digits})?', (r.ROOT/'apps/standalone-boot/build.rs').read_text())
 
+    def test_wrist_frame_reads_the_face_s_dump(self):
+        glass = (r.ROOT/'crates/wrist-glass/src/lib.rs').read_text()
+        for name, tool in [('WIDTH', 'W'), ('HEIGHT', 'H')]:
+            self.assertEqual(tool_constant('wrist-frame.py', tool), int(re.search(rf'pub const {name}: u32 = (\d+);', glass)[1]), name)
+        dump = (r.ROOT/'apps/standalone-boot/src/glass.rs').read_text()
+        self.assertIn(f'" {tool_constant("wrist-frame.py", "FORMAT")} frame "', dump)
+
     def test_wrist_crash_py_hashes_as_wrist_crash(self):
         crash = (r.ROOT/'crates/wrist-crash/src/lib.rs').read_text()
         for name in ['FNV_OFFSET', 'FNV_PRIME']:

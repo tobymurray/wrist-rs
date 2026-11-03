@@ -2,7 +2,7 @@
 //! register a tick of TIM3's compares (`BCK`, `GEN`), `GCK`, `GSP`, TIM1's one pulse (`BSP`),
 //! and TIM3's stop.
 
-use crate::{timing, BCK_LABELS, GCK_EDGES, LAST_LINE_EDGE, LINES, PAIRS};
+use crate::{timing, BCK_LABELS, GCK_EDGES, LAST_LINE_EDGE, LINES, PAIRS, PIXELS};
 
 /// TIM1's and TIM3's clock.
 pub const TIMER_HZ: u32 = 48_000_000;
@@ -225,7 +225,7 @@ pub const GROUPS: usize = LINES / 4;
 /// a clean line in a group gets a run too, which no list reads.
 pub fn fill(data: &mut [u16; DATA_HALFWORDS], fb: Option<&[u8]>, dirty: &[bool; LINES], groups: core::ops::Range<usize>) {
     let w = LINES;
-    let fb = fb.filter(|fb| fb.len() == w * w);
+    let fb = fb.filter(|fb| fb.len() == w * PIXELS);
     for group in groups.map(|g| 4 * g) {
         // Columns `group` to `group + 3` are gate lines `top` down to `top - 3`, whose eight
         // runs lie together from the lowest line's.

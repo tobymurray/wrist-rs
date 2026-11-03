@@ -483,7 +483,7 @@ fn spawn<S>(spawner: embassy_executor::Spawner, name: &'static str, token: embas
     spawner.spawn(token);
 }
 
-const _: () = assert!(lcd::WIDTH == wrist_glass::WIDTH && lcd::HEIGHT == wrist_glass::HEIGHT);
+const _: () = assert!(lcd::WIDTH as usize == wrist_panel::LINES && lcd::HEIGHT as usize == wrist_panel::PIXELS);
 static FRAMEBUFFER: ConstStaticCell<[u8; (lcd::WIDTH * lcd::HEIGHT) as usize]> =
     ConstStaticCell::new([0u8; (lcd::WIDTH * lcd::HEIGHT) as usize]);
 /// The scene on the glass and the one being drawn, by turns.

@@ -354,6 +354,17 @@ mod tests {
     }
 
     #[test]
+    fn the_shell_s_frame_is_this_size() {
+        let gui = include_str!("../../../apps/image-installer/GUI/Gui.hpp");
+        let side = gui.lines().find_map(|l| {
+            let (name, value) = l.split_once('=')?;
+            name.trim_end().ends_with(" kSide").then(|| value.trim().strip_suffix(';')?.parse::<u32>().ok())?
+        });
+        assert_eq!(side, Some(WIDTH));
+        assert_eq!(WIDTH, HEIGHT);
+    }
+
+    #[test]
     fn arcs_are_within_a_level_of_sampling_every_pixel() {
         let mut arcs = vec![RING, R1_ARC, R2_ARC, Arc { start: 0.0, end: 360.0, ..RING }];
         for held in [1, 7, 500, 1499, 1500, 1501, 2999, 3000] {

@@ -6,8 +6,10 @@
 pub mod dma;
 
 pub const LINES: usize = 240;
+/// Pixels a line holds.
+pub const PIXELS: usize = 240;
 /// Pixel pairs a line shifts in, top pair first.
-pub const PAIRS: usize = 120;
+pub const PAIRS: usize = PIXELS / 2;
 /// `GCK` half-periods a frame: two a line on 2 to 481, one before and two after.
 #[allow(clippy::cast_possible_truncation)]
 pub const GCK_EDGES: u32 = 2 * LINES as u32 + 3;

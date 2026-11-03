@@ -17,7 +17,7 @@ public:
 
 private:
     static constexpr int16_t  kSide             = 240;
-    static constexpr uint32_t kPixels           = 240u * 240u;
+    static constexpr uint32_t kPixels           = static_cast<uint32_t>(kSide) * static_cast<uint32_t>(kSide);
     static constexpr uint32_t kResponseTimeoutMs = 1000;
     /// A deeper panel would read past the one-byte-a-pixel frame, so none is pushed to it.
     static constexpr uint8_t kMaxBitsPerPixel = 8;

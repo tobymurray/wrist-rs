@@ -33,8 +33,8 @@ const VA: (u32, u32) = (GPIOD_BASE, 14); // XFRP
 const AF_LPTIM1_CH1: u32 = 1;
 const AF_LPTIM3_CH1: u32 = 14;
 
-pub const WIDTH: u32 = 240;
-pub const HEIGHT: u32 = 240;
+pub const WIDTH: u32 = wrist_glass::WIDTH;
+pub const HEIGHT: u32 = wrist_glass::HEIGHT;
 const LINES: usize = wrist_panel::LINES;
 const PAIRS: usize = wrist_panel::PAIRS;
 /// Kept lines fast-forwarded between yields.
