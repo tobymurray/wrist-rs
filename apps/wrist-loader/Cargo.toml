@@ -12,9 +12,11 @@ description = "The stage-two loader at the UNA kernel base: embassy-boot over ba
 [dependencies]
 cortex-m-rt = "0.7.7"
 cortex-m = { version = "0.7.9", features = ["critical-section-single-core"] }
-embassy-stm32 = { version = "0.6.0", features = ["stm32u5a5qj"] }
+embassy-stm32 = { version = "0.6.0", features = ["stm32u5a5qj", "unstable-pac"] }
 embassy-boot-stm32 = "0.8.0"
 embassy-sync = "0.8.0"
+wrist-board = { path = "../../crates/wrist-board" }
+wrist-flash = { path = "../../crates/wrist-flash" }
 
 [[bin]]
 name = "wrist-loader"

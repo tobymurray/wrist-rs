@@ -25,6 +25,14 @@ const fn pin(port: Port, number: u8) -> Pin {
     Pin { port, number }
 }
 
+/// The front light's drive (`HARDWARE.md`, "Power and reset domain").
+pub mod light {
+    pub const PIN: super::Pin = super::pins::BACKLIGHT_ON;
+    pub const ACTIVE_LOW: bool = true;
+    /// Released when off, never driven high.
+    pub const OPEN_DRAIN: bool = true;
+}
+
 /// 7-bit I2C addresses.
 pub mod i2c {
     pub const DRV2625_HAPTIC: u8 = 0x5A;
