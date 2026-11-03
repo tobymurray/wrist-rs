@@ -1,12 +1,15 @@
 //! The kernel write, over any [`Flash`].
 
-use crate::plan::{bank1_page_address, Plan, PAGE_SIZE, PAGE_SIZE_U32, QUADWORD};
+use crate::layout::bank1::RECORD_PAGE;
+use crate::plan::{bank1_page_address, Plan, BANK1_BASE, PAGE_SIZE, PAGE_SIZE_U32, QUADWORD};
 
 /// The witness page (`HARDWARE.md`, "Boot handoff").
-pub const STATUS_PAGE: u8 = 45;
+#[allow(clippy::cast_possible_truncation)]
+pub const STATUS_PAGE: u8 = RECORD_PAGE as u8;
+const _: () = assert!(STATUS_PAGE as u16 == RECORD_PAGE);
 pub const STATUS_ADDRESS: u32 = 0x0805_A000;
 pub const STATUS_MAGIC: u32 = u32::from_le_bytes(*b"UNAF");
-const _: () = assert!(STATUS_ADDRESS == 0x0800_0000 + STATUS_PAGE as u32 * PAGE_SIZE_U32);
+const _: () = assert!(STATUS_ADDRESS == BANK1_BASE + STATUS_PAGE as u32 * PAGE_SIZE_U32);
 
 /// Slot 0 of the status record, written before bank 1 is touched; the outcome goes in slot 1.
 pub const OUTCOME_BEGAN: u32 = 9;
@@ -582,6 +585,7 @@ mod tests {
             assert!(verdict.contains(&format!("OUTCOME {code}:")) && verdict.contains(word), "case {code}: {verdict}");
         }
         assert!(source.contains(&format!("(install will refuse, {ERR_WITNESS_FOREIGN})")));
+        assert!(source.contains(&format!("\"witness page (bank 1, {STATUS_PAGE}): %s\\n\"")));
         assert!(source.contains("| E << 20 | NSCR[31:28] << 16 | NSCR[15:0])"));
         assert!(source.contains("const uint32_t nscr = ((st[6] >> 16) & 0xFu) << 28 | (st[6] & 0xFFFFu);"));
     }

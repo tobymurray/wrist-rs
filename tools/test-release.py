@@ -496,6 +496,7 @@ class GateScript(unittest.TestCase):
 
     def test_a_good_dry_run(self):
         self.assertEqual(gate.plan_pages(), (48, 115))
+        self.assertEqual(gate.record_page(), 45)
         self.assertEqual(self.failed(DRY_RUN), [])
         self.assertTrue(all(ok for ok, _ in gate.witness_checks(DRY_RUN, '28E7EE86')))
 

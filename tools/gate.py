@@ -45,6 +45,12 @@ def plan_pages(root=ROOT):
     return first, first + pages - 1
 
 
+def record_page(root=ROOT):
+    """The bank 1 page the installer keeps its outcome record in, from wrist-flash's layout."""
+    layout = (root / 'crates/wrist-flash/src/layout.rs').read_text()
+    return int(re.search(r'pub const RECORD_PAGE: \w+ = (\d+)', layout)[1])
+
+
 def notes_stock(root=ROOT):
     """The stock version the release notes name, from their `Stock firmware` row."""
     m = re.search(r'^\| \*\*Stock firmware\*\* \| \*\*([0-9.]+)\*\*', (root / 'release/NOTES.md').read_text(), re.M)
@@ -97,11 +103,12 @@ def check_install_log(text, crc, size, pages=None):
     return checks
 
 
-def witness_checks(text, crc):
+def witness_checks(text, crc, page=None):
     """Step 17: the last install's outcome record, for this CRC."""
+    page = record_page() if page is None else page
     return [(bool(re.search(r'OUTCOME 1: erase\+program\+verify all SUCCEEDED', text)), 'outcome 1 recorded'),
             (bool(re.search(rf'image crc\s*: {crc}\b', text)), f'outcome record for {crc}'),
-            (bool(re.search(r'witness page \(bank 1, 45\): ours', text)), 'witness page ours')]
+            (bool(re.search(rf'witness page \(bank 1, {page}\): ours', text)), 'witness page ours')]
 
 
 def wake_rate(power):
