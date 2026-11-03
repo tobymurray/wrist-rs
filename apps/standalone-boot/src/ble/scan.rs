@@ -4,7 +4,7 @@ use core::sync::atomic::Ordering;
 
 use embassy_time::{Duration, Instant};
 use wrist_aci::opcode::{ACI_GAP_SET_NON_DISCOVERABLE, ACI_GAP_START_GENERAL_DISCOVERY_PROC, ACI_GAP_TERMINATE_GAP_PROC};
-use wrist_aci::{address, gap_proc, Address, Uuid};
+use wrist_aci::{address, gap_proc, Address, Uuid, FILTER_DUPLICATES, SCAN_RSP};
 use wrist_wake::ble::{scan, Scan};
 
 use super::{power, Link, Request, STATE, STATE_ADVERTISING, STATE_IDLE};
@@ -17,9 +17,6 @@ const SCAN_MAX_S: u8 = 10;
 const SCAN_LINES: u32 = 48;
 /// Advertisers one scan tells apart; past this, repeats may print again.
 const SCAN_SEEN: usize = 32;
-const COMMAND_DISALLOWED: u8 = 0x0C;
-/// An advertising report's kind for a scan response.
-const SCAN_RESPONSE: u8 = 0x04;
 
 pub(super) const USAGE: &str = "[ble] usage: ble scan [seconds, 1 to 10 [interval ms window ms]]";
 
@@ -55,7 +52,7 @@ fn write_address(uart: Uart, a: Address) {
             uart.write_str(":");
         }
     }
-    if a.kind == 1 {
+    if a.kind == address::RANDOM {
         uart.write_str(" (random)");
     }
 }
@@ -139,7 +136,7 @@ impl Scanner {
         for r in wrist_aci::reports(data) {
             *heard += 1;
             // One line per advertiser and kind.
-            let key = (r.address, r.kind == SCAN_RESPONSE);
+            let key = (r.address, r.kind == SCAN_RSP);
             if *printed >= SCAN_LINES || self.seen.contains(&Some(key)) {
                 continue;
             }
@@ -154,7 +151,7 @@ impl Scanner {
             }
             uart.write_u32(u32::from(r.rssi.unsigned_abs()));
             uart.write_str(" dBm");
-            if r.kind == SCAN_RESPONSE {
+            if r.kind == SCAN_RSP {
                 uart.write_str(" (scan response)");
             }
             if let Some(name) = wrist_aci::ad_name(r.data) {
@@ -201,7 +198,7 @@ impl Link<'_> {
     /// resumes when the scan is over.
     async fn while_advertising(&mut self, opcode: u16, params: &[u8]) -> Result<u8, &'static str> {
         let status = self.command(opcode, params).await?.status;
-        if status != COMMAND_DISALLOWED || STATE.load(Ordering::Relaxed) != STATE_ADVERTISING {
+        if status != wrist_aci::status::COMMAND_DISALLOWED || STATE.load(Ordering::Relaxed) != STATE_ADVERTISING {
             return Ok(status);
         }
         if self.command(ACI_GAP_SET_NON_DISCOVERABLE, &[]).await.is_ok() {
@@ -227,8 +224,7 @@ impl Link<'_> {
         p[0..2].copy_from_slice(&s.interval.to_le_bytes());
         p[2..4].copy_from_slice(&s.window.to_le_bytes());
         p[4] = address::STATIC_RANDOM;
-        // The chip filters duplicates.
-        p[5] = 0x01;
+        p[5] = FILTER_DUPLICATES;
         match self.while_advertising(ACI_GAP_START_GENERAL_DISCOVERY_PROC, &p).await {
             Ok(0) => {
                 self.scanner.scan = Some((Instant::now() + Duration::from_secs(u64::from(seconds)), 0, 0));
