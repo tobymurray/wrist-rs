@@ -508,7 +508,8 @@ unplug and the plug, and `samples` by one a minute.
 
 Six SRAM words keep the last panic or fault across a software reset
 ([`crates/wrist-crash`](crates/wrist-crash)). `0x2026FFF8` and `0x2026FFFC` hold a tagged panic line and file
-hash, or a fault's `CFSR` and `PC`, above the loader's RCC mailbox (`0x2026FFF0`/`0x2026FFF4`).
+hash, or a fault's `CFSR` and `PC`, above the loader's RCC mailbox (`MAILBOX_MAGIC`/`MAILBOX_BDCR` in
+[`wrist_flash::vectors`](crates/wrist-flash/src/vectors.rs)).
 `0x2026FFE0` to `0x2026FFEC` hold the build ID, the uptime in seconds, the count of records
 since the last clear, and a check word: the 16 bytes above the stack's start that the
 vendor bootloader's handoff reads and nothing writes. A record whose check fails is an
