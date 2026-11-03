@@ -104,7 +104,7 @@ pub mod minimum {
 /// Nanoseconds, against [`minimum`].
 pub mod timing {
     use super::minimum::{
-        GCK_KEPT, THH_GCK, THS_BSP, THS_GSP, THW_BCK, THW_GCK, THW_GEN, THW_INTB, TH_RGB, TLS_BSP, TLS_GSP, TLW_INTB, TS_RGB,
+        GCK_KEPT, THH_GCK, THS_BSP, THS_GSP, THS_INTB, THW_BCK, THW_GCK, THW_GEN, THW_INTB, TH_RGB, TLS_BSP, TLS_GSP, TLW_INTB, TS_RGB,
     };
 
     /// Data held after a `BCK` edge, then set up before the next: a half-period is both.
@@ -131,12 +131,12 @@ pub mod timing {
     const _: () = {
         assert!(DATA_HOLD >= TH_RGB && DATA_SETUP >= TS_RGB, "thRGB, tsRGB");
         assert!(DATA_HOLD + DATA_SETUP >= THW_BCK, "thwBCK, tlwBCK");
-        assert!(BSP_SETUP >= THS_BSP && DATA_HOLD >= TLS_BSP, "thsBSP, tlsBSP");
+        assert!(BSP_SETUP >= THS_BSP && DATA_SETUP >= TLS_BSP, "thsBSP, tlsBSP");
         assert!(GEN_HIGH >= THW_GEN, "thwGEN");
         assert!(GEN_HOLD >= THH_GCK, "thhGCK");
         assert!(GCK_HALF >= THW_GCK && WRITTEN_HALF >= THW_GCK, "thwGCK, tlwGCK, thhINTB");
         assert!(GCK_FAST >= GCK_KEPT, "Note 6-3-1");
-        assert!(GSP_SETUP >= THS_GSP && GSP_SETUP >= TLS_GSP, "thsGSP, tlsGSP");
+        assert!(GSP_SETUP >= THS_INTB && GSP_SETUP >= THS_GSP && GSP_SETUP >= TLS_GSP, "thsINTB, thsGSP, tlsGSP");
         assert!(INTB_HIGH_MS * 1_000_000 >= THW_INTB, "thwINTB");
         assert!(INTB_LOW >= TLW_INTB, "tlwINTB");
     };

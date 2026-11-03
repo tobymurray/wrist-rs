@@ -49,6 +49,8 @@ const BDTR: u32 = 0x44;
 const CEN: u32 = 1 << 0;
 const OPM: u32 = 1 << 3;
 const UG: u32 = 1 << 0;
+const CC3G: u16 = 1 << 3;
+const CC4G: u16 = 1 << 4;
 const UDE: u32 = 1 << 8;
 const CC2DE: u32 = 1 << 10;
 const CC3DE: u32 = 1 << 11;
@@ -641,7 +643,7 @@ pub fn probe(half: u32, uart: Uart) {
     let ctrl = 1;
     let mem = unsafe { memory() };
     let (list, values, stamps) = (mem.d, mem.table, mem.data);
-    for (i, v) in [dma::GCK, 0, dma::OPM, dma::OFF].into_iter().enumerate() {
+    for (i, v) in [CC4G, 0, CC3G, dma::OFF].into_iter().enumerate() {
         values[4 * i..4 * i + 4].fill(v);
     }
     stamps[..4 * PROBE_SAMPLES as usize].fill(0);
