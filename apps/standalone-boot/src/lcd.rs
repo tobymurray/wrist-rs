@@ -6,7 +6,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 
 use embassy_time::{Duration, Instant, Timer};
 use wrist_panel::dma::cycles;
-use wrist_panel::{timing, Clock, Pace};
+use wrist_panel::{timing, Clock, Pace, GCK_EDGES, LAST_LINE_EDGE};
 use wrist_vcom::{Mode, Rate};
 
 use crate::uart::Uart;
@@ -37,7 +37,6 @@ pub const WIDTH: u32 = 240;
 pub const HEIGHT: u32 = 240;
 const LINES: usize = wrist_panel::LINES;
 const PAIRS: usize = wrist_panel::PAIRS;
-const GCK_EDGES: u32 = 483;
 /// Kept lines fast-forwarded between yields.
 const FAST_RUN: u32 = 32;
 const INTB_HIGH: Duration = Duration::from_millis(timing::INTB_HIGH_MS as u64);
@@ -342,7 +341,7 @@ impl Lcd {
                 pace.after(cycles(timing::GSP_SETUP), || set(GSP, false));
             }
             let line = (edge as usize).wrapping_sub(2) / 2;
-            if (2..=481).contains(&edge) && dirty[line] {
+            if (2..=LAST_LINE_EDGE).contains(&edge) && dirty[line] {
                 // The MSB plane, on the even edge, comes first.
                 let plane = usize::from(edge % 2 == 0);
                 if plane == 1 {

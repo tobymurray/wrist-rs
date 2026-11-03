@@ -23,7 +23,7 @@ use super::{
     E_WORDS, CEN, GCK, GPIOA_BRR, GPIOA_BSRR, GPIOB_BRR, GPIOB_BSRR, GPIOE_ODR, GSP, LATENCY, OPM, TABLE_HALFWORDS, TIM1_CR1,
     TIM3_CR1, TIMER_HZ,
 };
-use crate::{word, DATA_MASK, LINES, PAIRS};
+use crate::{word, BCK_LABELS, DATA_MASK, GCK_EDGES, LAST_LINE_EDGE, LINES, PAIRS};
 
 const D_AT: u32 = 0x201A_0000;
 const E_AT: u32 = 0x201B_0000;
@@ -31,7 +31,7 @@ const TABLE_AT: u32 = 0x201B_8000;
 const DATA_AT: u32 = 0x201C_0000;
 const TIM3: u32 = 0x4000_0400;
 /// Bus words latched for `BCK` edges 2 to 124.
-pub const LATCHED: usize = 123;
+pub const LATCHED: usize = BCK_LABELS as usize;
 pub type Latched = BTreeMap<(usize, u32), [u16; LATCHED]>;
 
 /// Byte-addressed memory the channels read.
@@ -445,8 +445,8 @@ fn check(changes: &[Change], end: u64, broken: &mut Vec<String>) -> Latched {
             flag("thhGCK", fall.early);
         }
     }
-    if gck.len() != 483 || gck.iter().enumerate().any(|(i, g)| g.level != u16::from(i % 2 == 0)) {
-        flag(&format!("{} GCK writes, not 483 alternating from high", gck.len()), 0);
+    if gck.len() != GCK_EDGES as usize || gck.iter().enumerate().any(|(i, g)| g.level != u16::from(i % 2 == 0)) {
+        flag(&format!("{} GCK writes, not {GCK_EDGES} alternating from high", gck.len()), 0);
     }
     if gsp.len() != 2 || gsp[0].level != 1 || gck.len() < 3 {
         flag("GSP is not one pulse", 0);
@@ -476,7 +476,7 @@ fn latch([gck, bck, gen, bsp, data]: [&[Change]; 5], end: u64, flag: &mut impl F
         let (edges, pulses, rises) =
             (&bck[from(bck, lo)..from(bck, hi)], &gen[from(gen, lo)..from(gen, hi)], &bsp[from(bsp, lo)..from(bsp, hi)]);
         let edge = i + 1;
-        let normal = matches!(edge, 1 | 2 | 483) || !pulses.is_empty();
+        let normal = matches!(edge, 1 | 2) || edge == GCK_EDGES as usize || !pulses.is_empty();
         let half = if normal { at_least(62_670) } else { at_least(1_000) };
         if until < g.late + half {
             flag(&format!("GCK {edge} half-period"), g.early);
@@ -487,7 +487,7 @@ fn latch([gck, bck, gen, bsp, data]: [&[Change]; 5], end: u64, flag: &mut impl F
             }
             continue;
         }
-        if !(2..=481).contains(&edge) || edges.len() != 124 || pulses.len() != 2 || rises.len() != 2 {
+        if !(2..=LAST_LINE_EDGE as usize).contains(&edge) || edges.len() != LATCHED + 1 || pulses.len() != 2 || rises.len() != 2 {
             flag(&format!("GCK {edge}: {} BCK edges, {} GEN and {} BSP changes", edges.len(), pulses.len(), rises.len()), g.early);
             continue;
         }
@@ -549,7 +549,7 @@ pub fn program(bus: Bus, fb: Option<&[u8]>, dirty: &[bool; LINES]) -> Program {
     crate::dma::fill(mem.data, fb, dirty, 0..crate::dma::GROUPS);
     let mut b = crate::dma::Builder::new(bus, mem);
     b.head(dirty);
-    for edge in 3..=483 {
+    for edge in 3..=GCK_EDGES {
         b.edge(edge, dirty);
     }
     let frame = b.finish().expect("the lists hold the frame");

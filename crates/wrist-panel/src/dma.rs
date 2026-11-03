@@ -2,7 +2,7 @@
 //! register a tick of TIM3's compares (`BCK`, `GEN`), `GCK`, `GSP`, TIM1's one pulse (`BSP`),
 //! and TIM3's stop.
 
-use crate::{timing, LINES, PAIRS};
+use crate::{timing, BCK_LABELS, GCK_EDGES, LAST_LINE_EDGE, LINES, PAIRS};
 
 /// TIM1's and TIM3's clock.
 pub const TIMER_HZ: u32 = 48_000_000;
@@ -137,10 +137,11 @@ pub const D_TR2: u32 = (0b11 << 30) | (1 << 10) | 0x40;
 /// A written plane's data: `BCK` 1, two quiet ticks before it and one after, the pairs, then
 /// black for 122.
 pub const RUN: usize = 4 + PAIRS + 1;
-const RUN_TICKS: u32 = 125;
+#[allow(clippy::cast_possible_truncation)]
+const RUN_TICKS: u32 = RUN as u32;
 /// `D`'s `CCR1` item: a spare tick, then `BCK`'s first 123 edges with a tick out after the first;
 /// the 124th follows on the compare held.
-const SHIFT: u32 = 125;
+const SHIFT: u32 = BCK_LABELS + 2;
 /// Zeros a single quiet item reads; longer waits take more items.
 const QUIET: u32 = 512;
 /// The tables `D` reads, in half-words: `GCK` then zeros, `GSP` then zeros, zeros, the compare
@@ -157,14 +158,13 @@ const GEN_MAX: u32 = 64;
 const HOLD_MAX: u32 = 64;
 pub const TABLE_HALFWORDS: usize = T_GEN + (GEN_MAX + HOLD_MAX) as usize;
 pub const DATA_HALFWORDS: usize = 2 * LINES * RUN;
-const GCK_EDGES: u32 = 483;
 const D_ITEMS: u32 = 5 * GCK_EDGES + 64;
 const PLANES: u32 = 480;
 const E_ITEMS: u32 = 2 * PLANES + 256;
 pub const D_WORDS: usize = 5 * D_ITEMS as usize;
 pub const E_WORDS: usize = 3 * E_ITEMS as usize;
 
-const _: () = assert!(RUN_TICKS as usize == RUN && RUN == 125 && QUIET.is_multiple_of(2) && PLANES as usize == 2 * LINES);
+const _: () = assert!(QUIET.is_multiple_of(2) && PLANES as usize == 2 * LINES);
 const _: () = assert!(D_WORDS * 4 <= 1 << 16 && E_WORDS * 4 <= 1 << 16, "each list fits one LBAR window");
 
 /// Where the program goes; `d_at` and `e_at` are 64 KiB-aligned, each channel's `LBAR`.
@@ -333,7 +333,7 @@ impl<'a> Builder<'a> {
         let to = if edge % 2 == 1 { GPIOA_BSRR } else { GPIOA_BRR };
         let line = (edge as usize).wrapping_sub(2) / 2;
         match edge {
-            3..=481 if dirty[line] => self.plane(to, T_GCK, line, edge.is_multiple_of(2)),
+            3..=LAST_LINE_EDGE if dirty[line] => self.plane(to, T_GCK, line, edge.is_multiple_of(2)),
             GCK_EDGES => self.edge_write(to, T_GCK, self.waits[3]),
             _ => self.edge_write(to, T_GCK, self.waits[2]),
         }
@@ -373,7 +373,7 @@ impl<'a> Builder<'a> {
         if msb {
             self.frame.lines += 1;
         }
-        self.frame.rises += 62;
+        self.frame.rises += BCK_LABELS.div_ceil(2);
         self.frame.pulses += 1;
         self.d_item(to, table, 2, false);
         self.d_item(TIM1_CR1, T_ON, 2, false);

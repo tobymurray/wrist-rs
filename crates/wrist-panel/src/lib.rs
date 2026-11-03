@@ -8,6 +8,14 @@ pub mod dma;
 pub const LINES: usize = 240;
 /// Pixel pairs a line shifts in, top pair first.
 pub const PAIRS: usize = 120;
+/// `GCK` half-periods a frame: two a line on 2 to 481, one before and two after.
+#[allow(clippy::cast_possible_truncation)]
+pub const GCK_EDGES: u32 = 2 * LINES as u32 + 3;
+/// The last `GCK` edge that writes a line.
+pub const LAST_LINE_EDGE: u32 = GCK_EDGES - 2;
+/// `BCK` half-periods a line: the pairs on 2 to 121, one before and two after.
+#[allow(clippy::cast_possible_truncation)]
+pub const BCK_LABELS: u32 = PAIRS as u32 + 3;
 
 /// Port E: the odd pixel of a pair on bits 0, 2 and 4 (R, G, B), the even one 8 bits up.
 pub const DATA_MASK: u32 = 0x1515;
@@ -91,7 +99,7 @@ pub mod timing {
     pub const INTB_HIGH_MS: u32 = 31;
     pub const INTB_LOW: u32 = 12_000;
     /// What one plane of a written line holds `GCK` for, at the least.
-    pub const WRITTEN_HALF: u32 = BSP_SETUP + 123 * (DATA_HOLD + DATA_SETUP) + GEN_SETUP + GEN_HIGH + GEN_HOLD;
+    pub const WRITTEN_HALF: u32 = BSP_SETUP + super::BCK_LABELS * (DATA_HOLD + DATA_SETUP) + GEN_SETUP + GEN_HIGH + GEN_HOLD;
 
     const _: () = {
         assert!(DATA_HOLD >= 200 && DATA_SETUP >= 200, "thRGB, tsRGB");

@@ -6,7 +6,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use embassy_stm32::rcc::{StopMode, WakeGuard};
 use embassy_time::{Duration, Instant, Timer};
 use wrist_panel::dma::{self, Builder, Bus, Frame, Memory};
-use wrist_panel::{timing, LINES};
+use wrist_panel::{timing, GCK_EDGES, LINES};
 
 use crate::busy::CORE_MHZ;
 use crate::lcd::Cost;
@@ -309,8 +309,8 @@ pub async fn scan(fb: Option<&[u8]>, dirty: &[bool; LINES]) -> Result<(u32, Cost
     let mut b = Builder::new(bus, mem);
     masked[1] += timed(&mut || b.head(dirty));
     let mut edge = 3;
-    while edge <= 483 {
-        let to = (edge + edges_per_yield).min(484);
+    while edge <= GCK_EDGES {
+        let to = (edge + edges_per_yield).min(GCK_EDGES + 1);
         masked[1] += timed(&mut || (edge..to).for_each(|e| b.edge(e, dirty)));
         edge = to;
         cost.end_step(step);
