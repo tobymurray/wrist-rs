@@ -280,10 +280,7 @@ pub fn set(c: Civil) -> Result<(), &'static str> {
 }
 
 pub fn write_report(uart: Uart) {
-    // The loader's mailbox (`apps/wrist-loader/LAYOUT.md`).
-    const MAILBOX_MAGIC: u32 = 0x2026_FFF0;
-    const MAILBOX_BDCR: u32 = 0x2026_FFF4;
-    const MAILBOX_TAG: u32 = 0x4C44_4352;
+    use wrist_flash::vectors::{MAILBOX_BDCR, MAILBOX_MAGIC, MAILBOX_TAG};
     if unsafe { read32(MAILBOX_MAGIC) } == MAILBOX_TAG {
         uart.write_reg("  RCC_BDCR at the loader's entry = ", unsafe {
             read32(MAILBOX_BDCR)

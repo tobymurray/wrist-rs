@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Package safety checks without firmware compilation or hardware."""
 import argparse
+import ast
 import importlib.util
 import json
 import os
@@ -21,9 +22,20 @@ spec = importlib.util.spec_from_file_location('release_build', Path(__file__).wi
 r = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(r)
 
+(LOADER, LOADER_SIZE), (APP, APP_SIZE) = r.layout()
+VECTORS = r.sram_map()
 
-def raw(addr, size=64):
-    return struct.pack('<II', 0x2026FFE0, addr + 9) + bytes(size - 8)
+
+def raw(addr, size=64, sp=VECTORS['STACK_START']):
+    return struct.pack('<II', sp, addr + 9) + bytes(size - 8)
+
+
+def tool_constant(tool, name):
+    """A tool's module-level `name = <expression>`, evaluated without running the tool."""
+    for node in ast.parse((r.ROOT/'tools'/tool).read_text()).body:
+        if isinstance(node, ast.Assign) and [t.id for t in node.targets if isinstance(t, ast.Name)] == [name]:
+            return eval(compile(ast.Expression(node.value), tool, 'eval'), {})
+    raise KeyError(f'{tool}: {name}')
 
 
 def uapp(version=0x010203, flags=0x01, icons=b'\x41', gui=16):
@@ -50,15 +62,20 @@ class Packaging(unittest.TestCase):
         self.assertEqual(normalized['map'], ' object /src/target/app.o output /out/app.map')
 
     def test_sizes_vectors_and_padding(self):
-        l, a = raw(0x08060000), raw(0x08068000)
-        image = l + b'\xff' * (32768-len(l)) + a
+        l, a = raw(LOADER), raw(APP)
+        image = l + b'\xff' * (LOADER_SIZE-len(l)) + a
         self.assertEqual(r.validate_image(l, a, image), f'{zlib.crc32(image):08X}')
         for loader, app, combined in [(b'', a, image), (l, b'', image),
                 (l, a, image[:-1]), (l, a, image[:64]+bytes(32704)+a),
-                (l, raw(0x08060000), image), (bytes(32769), a, image),
-                (l, raw(0x08068000, 524289), image), (l, bytes(64), image)]:
+                (l, raw(LOADER), image), (bytes(LOADER_SIZE+1), a, image),
+                (l, raw(APP, APP_SIZE+1), image), (l, bytes(64), image)]:
             with self.assertRaises(ValueError):
                 r.validate_image(loader, app, combined)
+        # Outside the window, then inside it but 4-aligned.
+        for sp in [VECTORS['SP_MAX'] + 8, VECTORS['STACK_START'] - 4]:
+            bad = raw(APP, sp=sp)
+            with self.assertRaises(ValueError, msg=hex(sp)):
+                r.validate_image(l, bad, l + b'\xff' * (LOADER_SIZE-len(l)) + bad)
 
     def test_uapp_identity_crc_header_and_abi(self):
         self.assertEqual(r.validate_uapp(uapp(), '1.2.3')['libc_abi'], '0.0.3')
@@ -88,7 +105,7 @@ class Packaging(unittest.TestCase):
     def test_combine_refuses_missing_empty_and_oversize(self):
         with tempfile.TemporaryDirectory() as tmp:
             d = Path(tmp)
-            for lsize, asize in [(0, 8), (8, 0), (32769, 8), (8, 524289)]:
+            for lsize, asize in [(0, 8), (8, 0), (LOADER_SIZE+1, 8), (8, APP_SIZE+1)]:
                 (d/'l').write_bytes(bytes(lsize)); (d/'a').write_bytes(bytes(asize))
                 result = subprocess.run([sys.executable, str(r.ROOT/'tools/combine-image.py'),
                                          str(d/'l'), str(d/'a'), str(d/'out')], capture_output=True)
@@ -217,8 +234,52 @@ class Packaging(unittest.TestCase):
                     self.assertIn(link, packaged, f'{src}: {link}')
 
     def test_maximum_layout(self):
-        l, a = raw(0x08060000, 32768), raw(0x08068000, 524288)
+        l, a = raw(LOADER, LOADER_SIZE), raw(APP, APP_SIZE)
         r.validate_image(l, a, l+a)
+
+    def test_the_tools_use_the_linker_layout(self):
+        self.assertEqual(tool_constant('wrist-update.py', 'LOADER'), (LOADER, LOADER_SIZE))
+        self.assertEqual(tool_constant('wrist-update.py', 'APPLICATION'), (APP, APP_SIZE))
+        self.assertEqual(tool_constant('combine-image.py', 'LOADER_SIZE'), LOADER_SIZE)
+        self.assertEqual(tool_constant('combine-image.py', 'INSTALLER_MAX'), LOADER_SIZE + APP_SIZE)
+
+    def test_the_tools_find_the_console_by_its_usb_id(self):
+        import wrist_port
+        console = (r.ROOT/'apps/standalone-boot/src/console.rs').read_text()
+        vid, pid = (int(re.search(rf'const USB_{n}: u16 = (0x[0-9A-Fa-f]+);', console)[1], 16) for n in ('VID', 'PID'))
+        self.assertEqual((wrist_port.VID, wrist_port.PID), (vid, pid))
+        rules = (r.ROOT/'tools/60-wrist-rs.rules').read_text()
+        self.assertIn(f'ATTRS{{idVendor}}=="{vid:04x}", ATTRS{{idProduct}}=="{pid:04x}"', rules)
+        self.assertIn(f'{vid:04x}:{pid:04x}', (r.ROOT/'release/INSTALL.md').read_text())
+        self.assertIn(f'{vid:04X}:{pid:04X}', (r.ROOT/'HARDWARE.md').read_text())
+
+    def test_wrist_update_checks_vectors_as_the_watch_does(self):
+        tool = ast.parse((r.ROOT/'tools/wrist-update.py').read_text())
+        scope = {'struct': struct, **{n: tool_constant('wrist-update.py', n) for n in ('SP_MIN', 'SP_MAX')}}
+        exec(compile(ast.Module([n for n in tool.body if getattr(n, 'name', '') == 'vectors_ok'], []), 'wrist-update.py', 'exec'), scope)
+        sp, end = VECTORS['STACK_START'], APP + APP_SIZE
+        for vectors, ok in [((VECTORS['SP_MIN'], APP + 1), True), ((VECTORS['SP_MAX'], APP + 1), True),
+                            ((VECTORS['SP_MIN'] - 1, APP + 1), False), ((VECTORS['SP_MAX'] + 1, APP + 1), False),
+                            ((sp, end - 1), True), ((sp, end + 1), False), ((sp, APP - 1), False), ((sp, APP), False)]:
+            self.assertEqual(scope['vectors_ok'](struct.pack('<II', *vectors), APP, APP_SIZE), ok, [hex(v) for v in vectors])
+
+    def test_wrist_ble_carries_the_images_console_service(self):
+        rust = lambda path, name: re.search(rf'const {name}: [^=]+= ([^;]+);', (r.ROOT/path).read_text())[1]
+        ble = 'apps/standalone-boot/src/ble.rs'
+        base = [int(b, 16) for b in re.findall(r'0x([0-9A-F]{2})', rust(ble, 'NUS_BASE'))]
+        for name in ('RX', 'TX'):
+            b = base.copy()
+            b[12] = int(rust(ble, f'NUS_{name}'), 16)
+            h = bytes(reversed(b)).hex()
+            self.assertEqual(tool_constant('wrist-ble.py', name), f'{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:]}', name)
+        default, header = (int(rust('crates/wrist-aci/src/lib.rs', n)) for n in ('ATT_DEFAULT_MTU', 'ATT_HEADER_LEN'))
+        largest = int(rust(ble, 'MAX_MTU'))
+        self.assertEqual((tool_constant('wrist-ble.py', 'DEFAULT_MTU'), tool_constant('wrist-ble.py', 'ATT_HEADER')), (default, header))
+        self.assertEqual(tool_constant('wrist-ble.py', 'VALUE_LEN'), largest - header)
+        self.assertEqual(rust(ble, 'NUS_VALUE_LEN'), 'MAX_MTU - ATT_HEADER_LEN')
+        self.assertEqual(rust(ble, 'DEFAULT_MTU'), 'wrist_aci::ATT_DEFAULT_MTU')
+        self.assertEqual(rust('crates/wrist-ble/src/lib.rs', 'ATT_MAX_MTU'), str(largest))
+        self.assertIn(f'pub type Payload = Bytes<{{ ATT_MAX_MTU - {header} }}>;', (r.ROOT/'crates/wrist-ble/src/lib.rs').read_text())
 
 
 def git(d, *args, when=None):
@@ -430,7 +491,7 @@ class GatedImage(unittest.TestCase):
         self.assertEqual(len(gate['round_trip_fingerprint']), 64)
 
     def test_round_trip_fingerprint_ignores_only_the_version(self):
-        loader = raw(0x08060000)
+        loader = raw(LOADER)
         fp = r.round_trip_fingerprint(uapp(0x010203), loader)
         self.assertEqual(r.round_trip_fingerprint(uapp(0x000200), loader), fp)
         self.assertNotEqual(r.round_trip_fingerprint(uapp(0x010203), loader + b'\0'), fp)
@@ -496,6 +557,8 @@ class GateScript(unittest.TestCase):
 
     def test_a_good_dry_run(self):
         self.assertEqual(gate.plan_pages(), (48, 115))
+        self.assertEqual(gate.record_page(), 45)
+        self.assertEqual(gate.unlock_passed(), 3)
         self.assertEqual(self.failed(DRY_RUN), [])
         self.assertTrue(all(ok for ok, _ in gate.witness_checks(DRY_RUN, '28E7EE86')))
 

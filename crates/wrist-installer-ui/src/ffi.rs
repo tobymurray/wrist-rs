@@ -111,3 +111,30 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     // SAFETY: the shell defines it; `file` is valid for its length.
     unsafe { wrist_installer_ui_panicked(file.as_ptr(), u32::try_from(file.len()).unwrap_or(0), line) }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_header_declares_these_values() {
+        let header = include_str!("../../../apps/image-installer/GUI/installer_ui.h");
+        let defines: Vec<(&str, u32)> = header
+            .lines()
+            .filter_map(|l| l.strip_prefix("#define WRIST_INSTALLER_UI_")?.split_once(' '))
+            .map(|(name, value)| (name, value.trim().strip_suffix('u').and_then(|v| v.parse().ok()).expect(name)))
+            .collect();
+        let ours = [
+            ("ABI", ABI),
+            ("R1_PRESS", u32::from(INPUT_R1_PRESS)),
+            ("R1_RELEASE", u32::from(INPUT_R1_RELEASE)),
+            ("R2_CLICK", u32::from(INPUT_R2_CLICK)),
+            ("TICK", u32::from(INPUT_TICK)),
+            ("SUSPEND", u32::from(INPUT_SUSPEND)),
+            ("REDRAW", REPLY_REDRAW),
+            ("CONFIRM", REPLY_CONFIRM),
+            ("EXIT", REPLY_EXIT),
+        ];
+        assert_eq!(defines, ours);
+    }
+}

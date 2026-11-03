@@ -7,5 +7,5 @@ pub mod flow;
 pub mod installer;
 pub mod label;
 
-#[cfg(feature = "device")]
+#[cfg(any(feature = "device", test))]
 pub mod ffi;

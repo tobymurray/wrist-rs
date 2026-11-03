@@ -14,13 +14,15 @@ import wrist_port
 
 LOADER = (0x08060000, 32 * 1024)
 APPLICATION = (0x08068000, 512 * 1024)
+SP_MIN = 0x20000000
+SP_MAX = 0x2026FFF0
 
 def vectors_ok(data, base, size):
     """The watch's own check, crates/wrist-flash/src/vectors.rs."""
     if len(data) < 8:
         return False
     sp, reset = struct.unpack_from('<II', data)
-    return 0x20000000 <= sp <= 0x2026FFF0 and reset & 1 == 1 and base <= reset & ~1 < base + size
+    return SP_MIN <= sp <= SP_MAX and reset & 1 == 1 and base <= reset & ~1 < base + size
 
 def mismatch(data, loader):
     """Why the file is not an image for the slot it is going to, or None."""

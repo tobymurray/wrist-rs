@@ -341,18 +341,15 @@ mod tests {
 
     #[test]
     fn the_wire_values_are_commands_hpp() {
-        let states = [
-            State::Checking,
-            State::Isolated,
-            State::NoImage,
-            State::Refused,
-            State::UnlockFailed,
-            State::FlashTestFailed,
-            State::Ready,
-            State::Installing,
-        ];
-        for (value, state) in (0u8..).zip(states) {
-            assert_eq!(State::from_wire(value), state);
+        let header = include_str!("../../../apps/image-installer/Libs/Header/Commands.hpp");
+        let body = header.split("enum class State : uint8_t").nth(1).unwrap().split("};").next().unwrap();
+        let mut seen = Vec::new();
+        for line in body.lines().map(str::trim).filter(|l| l.starts_with(char::is_alphabetic)) {
+            let (name, value) = line.trim_end_matches(',').split_once(" = ").unwrap();
+            let value: u8 = value.parse().unwrap();
+            assert_eq!(format!("{:?}", State::from_wire(value)), name, "{line}");
+            seen.push(value);
         }
+        assert_eq!(seen, (0..8).collect::<Vec<u8>>(), "every state, each with its value");
     }
 }

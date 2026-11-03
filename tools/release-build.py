@@ -90,18 +90,33 @@ def layout():
     loader, app = regions['FLASH'], regions['ACTIVE']
     plan = (ROOT / 'crates/wrist-flash/src/plan.rs').read_text()
     pages = int(re.search(r'pub const MAX_PAGES: \w+ = (\d+)', plan)[1])
+    page_size = int(re.search(r'pub const PAGE_SIZE: usize = (\d+)', plan)[1])
     require(loader[0] + loader[1] == app[0], 'noncontiguous linker layout')
-    require(loader[1] + app[1] == pages * 8192, 'installer/linker size mismatch')
+    require(loader[1] + app[1] == pages * page_size, 'installer/linker size mismatch')
     app_text = (ROOT / 'apps/standalone-boot/memory.x').read_text()
     require(f'0x{app[0]:08X}' in app_text and f'LENGTH = {app[1] // 1024}K' in app_text,
             'application linker mismatch')
     return loader, app
 
 
+def sram_map(root=ROOT):
+    """The `pub const`s of wrist-flash's vectors.rs that read as Python: the SRAM map and SP window."""
+    found = {}
+    text = (root / 'crates/wrist-flash/src/vectors.rs').read_text()
+    for name, value in re.findall(r'^pub const (\w+): [^=]+=\s*([^;]+);', text, re.M):
+        try:
+            found[name] = eval(value, {'__builtins__': {}}, dict(found))
+        except (NameError, SyntaxError, TypeError):
+            pass
+    return found
+
+
 def validate_raw(data, address, limit):
     require(8 <= len(data) <= limit, f'invalid firmware size {len(data)} (limit {limit})')
     sp, reset = struct.unpack_from('<II', data)
-    require(0x20000000 <= sp <= 0x20270000 - 16 and sp % 8 == 0, 'invalid stack vector')
+    v = sram_map()
+    require(v['SP_MIN'] <= sp <= v['SP_MAX'], 'invalid stack vector')
+    require(sp % 8 == 0, 'stack vector not 8-byte aligned, as cortex-m-rt links it')
     require(reset & 1 and address <= reset - 1 < address + len(data), 'invalid reset/load address')
 
 
@@ -155,6 +170,7 @@ def validate_elf(path, address, limit):
 
 def audit_commit(elf):
     dis = output('arm-none-eabi-objdump', '-d', str(elf))
+    v = sram_map()
     functions = re.split(r'(?m)^[0-9a-f]+ <([^>]+)>:\n', dis)
     bodies = dict(zip(functions[1::2], functions[2::2]))
     require('wrist_flash_install' in bodies, 'missing RAM commit symbol')
@@ -173,7 +189,7 @@ def audit_commit(elf):
                 require(m[1] == 'bx' and m[2] == 'lr', 'indirect commit branch: ' + line)
             target = re.search(r'\s(?:b(?:[a-z]{2})?|bl|blx)(?:\.[nw])?\s+([0-9a-f]+) <([^>]+)>', line)
             if target:
-                require(0x20000000 <= int(target[1], 16) < 0x20270000, 'commit branch outside RAM: ' + line)
+                require(v['SRAM_START'] <= int(target[1], 16) < v['SRAM_END'], 'commit branch outside RAM: ' + line)
                 child = target[2].split('+')[0]
                 if child != name:
                     pending.append(child)

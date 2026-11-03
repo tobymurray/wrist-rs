@@ -1,12 +1,15 @@
 //! The kernel write, over any [`Flash`].
 
-use crate::plan::{bank1_page_address, Plan, PAGE_SIZE, PAGE_SIZE_U32, QUADWORD};
+use crate::layout::bank1::RECORD_PAGE;
+use crate::plan::{bank1_page_address, Plan, BANK1_BASE, PAGE_SIZE, PAGE_SIZE_U32, QUADWORD};
 
 /// The witness page (`HARDWARE.md`, "Boot handoff").
-pub const STATUS_PAGE: u8 = 45;
+#[allow(clippy::cast_possible_truncation)]
+pub const STATUS_PAGE: u8 = RECORD_PAGE as u8;
+const _: () = assert!(STATUS_PAGE as u16 == RECORD_PAGE);
 pub const STATUS_ADDRESS: u32 = 0x0805_A000;
 pub const STATUS_MAGIC: u32 = u32::from_le_bytes(*b"UNAF");
-const _: () = assert!(STATUS_ADDRESS == 0x0800_0000 + STATUS_PAGE as u32 * PAGE_SIZE_U32);
+const _: () = assert!(STATUS_ADDRESS == BANK1_BASE + STATUS_PAGE as u32 * PAGE_SIZE_U32);
 
 /// Slot 0 of the status record, written before bank 1 is touched; the outcome goes in slot 1.
 pub const OUTCOME_BEGAN: u32 = 9;
@@ -40,8 +43,36 @@ pub const fn not_armed(nscr: u32) -> u32 {
     NOT_ARMED | (nscr >> 28) << 16 | (nscr & 0xFFFF)
 }
 
+/// `wrist_flash_unlock_selftest`: the first unlock worked, then a second returned.
+pub const UNLOCK_FIRST: i32 = 1 << 0;
+pub const UNLOCK_SECOND: i32 = 1 << 1;
+pub const UNLOCK_PASSED: i32 = UNLOCK_FIRST | UNLOCK_SECOND;
+
+/// The scratch-page self-test's steps, in the order it runs them.
+pub const SELF_TEST_ERASED: i32 = 1 << 0;
+pub const SELF_TEST_BLANK: i32 = 1 << 1;
+pub const SELF_TEST_PROGRAMMED: i32 = 1 << 2;
+pub const SELF_TEST_READ_BACK: i32 = 1 << 3;
+pub const SELF_TEST_ERASED_AGAIN: i32 = 1 << 4;
+pub const SELF_TEST_BLANK_AGAIN: i32 = 1 << 5;
+pub const SELF_TEST_STEPS: [i32; 6] = [
+    SELF_TEST_ERASED,
+    SELF_TEST_BLANK,
+    SELF_TEST_PROGRAMMED,
+    SELF_TEST_READ_BACK,
+    SELF_TEST_ERASED_AGAIN,
+    SELF_TEST_BLANK_AGAIN,
+];
+pub const SELF_TEST_PASSED: i32 = SELF_TEST_ERASED
+    | SELF_TEST_BLANK
+    | SELF_TEST_PROGRAMMED
+    | SELF_TEST_READ_BACK
+    | SELF_TEST_ERASED_AGAIN
+    | SELF_TEST_BLANK_AGAIN;
 /// The scratch-page self-test's bit for a poll of any of its steps that timed out.
 pub const SELF_TEST_TIMED_OUT: i32 = 1 << 6;
+/// Where the self-test puts `NSSR[15:0]` after its first erase.
+pub const SELF_TEST_NSSR_SHIFT: u32 = 8;
 
 /// A self-test step's `bit` if it passed, or [`SELF_TEST_TIMED_OUT`].
 #[must_use]
@@ -519,8 +550,8 @@ mod tests {
         assert_eq!(self_test_bit(Err(PGSERR), 4), 0);
         assert_eq!(self_test_bit(Err(not_armed(NSCR_LOCK)), 4), 0);
         assert_eq!(self_test_bit(Err(POLL_TIMED_OUT), 4), SELF_TEST_TIMED_OUT);
-        assert_eq!(SELF_TEST_TIMED_OUT & 0x3F, 0, "outside the six steps' bits");
-        assert_eq!(SELF_TEST_TIMED_OUT & (0xFFFF << 8), 0, "outside NSSR's");
+        assert_eq!(SELF_TEST_TIMED_OUT & SELF_TEST_PASSED, 0, "outside the six steps' bits");
+        assert_eq!((SELF_TEST_TIMED_OUT | SELF_TEST_PASSED) & (0xFFFF << SELF_TEST_NSSR_SHIFT), 0, "outside NSSR's");
     }
 
     #[test]
@@ -562,7 +593,28 @@ mod tests {
         assert_eq!(constant("kStatusAddress"), STATUS_ADDRESS);
         assert_eq!(constant("kStatusMagic"), STATUS_MAGIC);
         assert_eq!(constant("kKernelBase"), KERNEL_BASE);
+        let decimal = |name: &str| {
+            let line = header.lines().find(|l| l.contains(&format!("{name} "))).unwrap();
+            line.split("= ").nth(1).unwrap().trim_end_matches(';').parse::<i32>().unwrap()
+        };
+        assert_eq!(decimal("kUnlockPassed"), UNLOCK_PASSED);
+        assert_eq!(constant("kFlashTestPassed"), SELF_TEST_PASSED as u32);
         assert_eq!(constant("kFlashTestTimedOut"), SELF_TEST_TIMED_OUT as u32);
+        let decoded: Vec<i32> = source
+            .split("(st_erase & ")
+            .skip(1)
+            .filter_map(|rest| rest.split(')').next()?.parse().ok())
+            .collect();
+        assert_eq!(decoded, SELF_TEST_STEPS, "the log names the steps by their bits, in order");
+        assert!(source.contains(&format!("(st_erase >> {SELF_TEST_NSSR_SHIFT}) & 0xFFFFu")));
+        for (i, _) in source.match_indices(">>") {
+            if source[..i].trim_end().trim_end_matches(')').ends_with("st_erase") {
+                assert!(source[i + 2..].trim_start().starts_with(&format!("{SELF_TEST_NSSR_SHIFT})")), "{}", &source[i..i + 12]);
+            }
+        }
+        let page_size = header.lines().find_map(|l| l.trim().strip_prefix("static constexpr size_t kPageSize = ")).unwrap();
+        assert_eq!(page_size, format!("{PAGE_SIZE};"));
+        assert!(source.contains("uint8_t gChunk[Service::kPageSize];"));
         assert!(source.contains("(st_erase & kFlashTestTimedOut) ? \" [poll timeout]\""));
         assert!(!source.contains("0xFFFFu) ? \"(poll timeout)\""), "outcomes 2 and 3 never carry a timeout");
         assert!(source.contains(&format!("((st[1] >> 16) & 0xFFFFu) == {OUTCOME_BEGAN}u")));
@@ -582,6 +634,7 @@ mod tests {
             assert!(verdict.contains(&format!("OUTCOME {code}:")) && verdict.contains(word), "case {code}: {verdict}");
         }
         assert!(source.contains(&format!("(install will refuse, {ERR_WITNESS_FOREIGN})")));
+        assert!(source.contains(&format!("\"witness page (bank 1, {STATUS_PAGE}): %s\\n\"")));
         assert!(source.contains("| E << 20 | NSCR[31:28] << 16 | NSCR[15:0])"));
         assert!(source.contains("const uint32_t nscr = ((st[6] >> 16) & 0xFu) << 28 | (st[6] & 0xFFFFu);"));
     }

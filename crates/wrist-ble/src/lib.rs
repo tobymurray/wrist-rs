@@ -73,8 +73,11 @@ impl<const N: usize> core::fmt::Debug for Bytes<N> {
     }
 }
 
-/// An attribute value: the largest an ATT MTU of 247 carries (Core Vol 3 Part F §3.2.9).
-pub type Payload = Bytes<244>;
+/// The ATT MTU a [`Payload`] is sized for.
+pub const ATT_MAX_MTU: usize = 247;
+/// An attribute value: the largest [`ATT_MAX_MTU`] carries after the opcode and handle (Core
+/// Vol 3 Part F §3.2.9).
+pub type Payload = Bytes<{ ATT_MAX_MTU - 3 }>;
 
 /// Legacy advertising or scan response data (Core Vol 6 Part B §2.3).
 pub type AdvData = Bytes<31>;
