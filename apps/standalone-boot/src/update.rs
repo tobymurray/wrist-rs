@@ -91,9 +91,9 @@ fn staging() -> &'static [u8] {
     unsafe { core::slice::from_raw_parts(STAGING as *const u8, STAGING_SIZE) }
 }
 
-/// The loader's region in bank 1 (`apps/wrist-loader/LAYOUT.md`).
-const LOADER_OFFSET: u32 = 0x6_0000;
-const LOADER_SIZE: usize = 32 * 1024;
+/// The loader's region, from bank 1's base.
+const LOADER_OFFSET: u32 = Target::Loader.base() - wrist_flash::plan::BANK1_BASE;
+const LOADER_SIZE: usize = Target::Loader.size() as usize;
 
 pub struct Session {
     tag: &'static str,
@@ -132,8 +132,6 @@ pub fn begin(
     crc: u32,
 ) -> Result<Session, &'static str> {
     const _: () = assert!(Target::Application.size() as usize <= STAGING_SIZE);
-    const _: () = assert!(Target::Loader.size() as usize == LOADER_SIZE);
-    const _: () = assert!(Target::Loader.base() == wrist_flash::plan::BANK1_BASE + LOADER_OFFSET);
     if len == 0 || len > target.size() as usize {
         return Err("length out of range for this target");
     }

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Package safety checks without firmware compilation or hardware."""
 import argparse
+import ast
 import importlib.util
 import json
 import os
@@ -21,9 +22,19 @@ spec = importlib.util.spec_from_file_location('release_build', Path(__file__).wi
 r = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(r)
 
+(LOADER, LOADER_SIZE), (APP, APP_SIZE) = r.layout()
+
 
 def raw(addr, size=64):
     return struct.pack('<II', 0x2026FFE0, addr + 9) + bytes(size - 8)
+
+
+def tool_constant(tool, name):
+    """A tool's module-level `name = <expression>`, evaluated without running the tool."""
+    for node in ast.parse((r.ROOT/'tools'/tool).read_text()).body:
+        if isinstance(node, ast.Assign) and [t.id for t in node.targets if isinstance(t, ast.Name)] == [name]:
+            return eval(compile(ast.Expression(node.value), tool, 'eval'), {})
+    raise KeyError(f'{tool}: {name}')
 
 
 def uapp(version=0x010203, flags=0x01, icons=b'\x41', gui=16):
@@ -50,13 +61,13 @@ class Packaging(unittest.TestCase):
         self.assertEqual(normalized['map'], ' object /src/target/app.o output /out/app.map')
 
     def test_sizes_vectors_and_padding(self):
-        l, a = raw(0x08060000), raw(0x08068000)
-        image = l + b'\xff' * (32768-len(l)) + a
+        l, a = raw(LOADER), raw(APP)
+        image = l + b'\xff' * (LOADER_SIZE-len(l)) + a
         self.assertEqual(r.validate_image(l, a, image), f'{zlib.crc32(image):08X}')
         for loader, app, combined in [(b'', a, image), (l, b'', image),
                 (l, a, image[:-1]), (l, a, image[:64]+bytes(32704)+a),
-                (l, raw(0x08060000), image), (bytes(32769), a, image),
-                (l, raw(0x08068000, 524289), image), (l, bytes(64), image)]:
+                (l, raw(LOADER), image), (bytes(LOADER_SIZE+1), a, image),
+                (l, raw(APP, APP_SIZE+1), image), (l, bytes(64), image)]:
             with self.assertRaises(ValueError):
                 r.validate_image(loader, app, combined)
 
@@ -88,7 +99,7 @@ class Packaging(unittest.TestCase):
     def test_combine_refuses_missing_empty_and_oversize(self):
         with tempfile.TemporaryDirectory() as tmp:
             d = Path(tmp)
-            for lsize, asize in [(0, 8), (8, 0), (32769, 8), (8, 524289)]:
+            for lsize, asize in [(0, 8), (8, 0), (LOADER_SIZE+1, 8), (8, APP_SIZE+1)]:
                 (d/'l').write_bytes(bytes(lsize)); (d/'a').write_bytes(bytes(asize))
                 result = subprocess.run([sys.executable, str(r.ROOT/'tools/combine-image.py'),
                                          str(d/'l'), str(d/'a'), str(d/'out')], capture_output=True)
@@ -217,8 +228,14 @@ class Packaging(unittest.TestCase):
                     self.assertIn(link, packaged, f'{src}: {link}')
 
     def test_maximum_layout(self):
-        l, a = raw(0x08060000, 32768), raw(0x08068000, 524288)
+        l, a = raw(LOADER, LOADER_SIZE), raw(APP, APP_SIZE)
         r.validate_image(l, a, l+a)
+
+    def test_the_tools_use_the_linker_layout(self):
+        self.assertEqual(tool_constant('wrist-update.py', 'LOADER'), (LOADER, LOADER_SIZE))
+        self.assertEqual(tool_constant('wrist-update.py', 'APPLICATION'), (APP, APP_SIZE))
+        self.assertEqual(tool_constant('combine-image.py', 'LOADER_SIZE'), LOADER_SIZE)
+        self.assertEqual(tool_constant('combine-image.py', 'INSTALLER_MAX'), LOADER_SIZE + APP_SIZE)
 
 
 def git(d, *args, when=None):
@@ -430,7 +447,7 @@ class GatedImage(unittest.TestCase):
         self.assertEqual(len(gate['round_trip_fingerprint']), 64)
 
     def test_round_trip_fingerprint_ignores_only_the_version(self):
-        loader = raw(0x08060000)
+        loader = raw(LOADER)
         fp = r.round_trip_fingerprint(uapp(0x010203), loader)
         self.assertEqual(r.round_trip_fingerprint(uapp(0x000200), loader), fp)
         self.assertNotEqual(r.round_trip_fingerprint(uapp(0x010203), loader + b'\0'), fp)

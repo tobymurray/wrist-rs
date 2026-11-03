@@ -90,8 +90,9 @@ def layout():
     loader, app = regions['FLASH'], regions['ACTIVE']
     plan = (ROOT / 'crates/wrist-flash/src/plan.rs').read_text()
     pages = int(re.search(r'pub const MAX_PAGES: \w+ = (\d+)', plan)[1])
+    page_size = int(re.search(r'pub const PAGE_SIZE: usize = (\d+)', plan)[1])
     require(loader[0] + loader[1] == app[0], 'noncontiguous linker layout')
-    require(loader[1] + app[1] == pages * 8192, 'installer/linker size mismatch')
+    require(loader[1] + app[1] == pages * page_size, 'installer/linker size mismatch')
     app_text = (ROOT / 'apps/standalone-boot/memory.x').read_text()
     require(f'0x{app[0]:08X}' in app_text and f'LENGTH = {app[1] // 1024}K' in app_text,
             'application linker mismatch')

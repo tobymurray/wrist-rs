@@ -1,6 +1,9 @@
 //! Whether a file sent over the console is an image for the slot it is going to.
 
-use crate::plan::KERNEL_BASE;
+use core::ops::Range;
+
+use crate::layout::bank1;
+use crate::plan::{BANK1_BASE, KERNEL_BASE, PAGE_SIZE_U32};
 
 pub const SP_MIN: u32 = 0x2000_0000;
 /// The vendor bootloader accepts up to `0x2027_0000` but pops 16 bytes above the SP word
@@ -15,20 +18,22 @@ pub enum Target {
 }
 
 impl Target {
-    #[must_use]
-    pub const fn base(self) -> u32 {
+    const fn pages(self) -> Range<u16> {
         match self {
-            Target::Loader => KERNEL_BASE,
-            Target::Application => KERNEL_BASE + 32 * 1024,
+            Target::Loader => bank1::LOADER,
+            Target::Application => bank1::ACTIVE,
         }
     }
 
     #[must_use]
+    pub const fn base(self) -> u32 {
+        BANK1_BASE + self.pages().start as u32 * PAGE_SIZE_U32
+    }
+
+    #[must_use]
     pub const fn size(self) -> u32 {
-        match self {
-            Target::Loader => 32 * 1024,
-            Target::Application => 512 * 1024,
-        }
+        let pages = self.pages();
+        (pages.end - pages.start) as u32 * PAGE_SIZE_U32
     }
 
     #[must_use]
@@ -36,6 +41,8 @@ impl Target {
         vectors_ok(image, self.base(), self.size())
     }
 }
+
+const _: () = assert!(Target::Loader.base() == KERNEL_BASE);
 
 /// The initial SP is one the bootloader can hand over, and the reset vector is Thumb and inside
 /// `base..base + size`.
