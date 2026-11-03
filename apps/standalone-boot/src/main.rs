@@ -52,7 +52,7 @@ use wrist_glass::pages;
 use wrist_glass::scene::Scene;
 use wrist_glass::text::Glass;
 use wrist_flash::vectors::{HANDOFF_POP, SRAM_END, SRAM_START};
-use wrist_board::pins;
+use wrist_board::{light, pins};
 use wrist_pages::{Button, Nav, Page, Press};
 
 use crate::mmio::{
@@ -110,10 +110,9 @@ unsafe fn assert_alive_pins() {
         RCC_AHB2ENR1_GPIOBEN | RCC_AHB2ENR1_GPIOCEN | RCC_AHB2ENR1_GPIOFEN,
     );
 
-    // Open-drain, released (`HARDWARE.md`, "Power and reset domain").
-    let (base, pin) = BACKLIGHT;
-    write32(base + GPIO_BSRR, 1 << pin);
-    modify32(base + GPIO_OTYPER, 0, 1 << pin);
+    let (base, pin) = LIGHT;
+    write32(base + GPIO_BSRR, light_bsrr(false));
+    modify32(base + GPIO_OTYPER, 1 << pin, u32::from(light::OPEN_DRAIN) << pin);
     modify32(base + GPIO_PUPDR, 0b11 << (pin * 2), 0);
     modify32(base + GPIO_MODER, 0b11 << (pin * 2), 0b01 << (pin * 2));
 
@@ -1518,10 +1517,7 @@ pub(crate) fn backlight(on: bool) {
 /// The light alone, for the boot beacon and the fault flasher, which leave `VCOM` be.
 fn light_pin(on: bool) {
     unsafe {
-        write32(
-            BACKLIGHT.0 + GPIO_BSRR,
-            if on { 1 << (BACKLIGHT.1 + 16) } else { 1 << BACKLIGHT.1 },
-        );
+        write32(LIGHT.0 + GPIO_BSRR, light_bsrr(on));
     }
 }
 
@@ -1534,7 +1530,12 @@ const BUTTONS: [(u32, u32, u32); 4] = {
     }
     [button(pins::SW1, 0b01), button(pins::SW3, 0b01), button(pins::SW4, 0b01), button(pins::PWR_ON_1V8_L, 0b00)]
 };
-const BACKLIGHT: (u32, u32) = gpio(pins::BACKLIGHT_ON);
+const LIGHT: (u32, u32) = gpio(light::PIN);
+const _: () = assert!(matches!(light::PIN.port, wrist_board::Port::F));
+
+const fn light_bsrr(on: bool) -> u32 {
+    if on == light::ACTIVE_LOW { 1 << (LIGHT.1 + 16) } else { 1 << LIGHT.1 }
+}
 
 unsafe fn init_buttons() {
     enable_clock(RCC_AHB2ENR1, RCC_AHB2ENR1_GPIOAEN | RCC_AHB2ENR1_GPIODEN);

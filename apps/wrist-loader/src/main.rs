@@ -17,7 +17,7 @@ use embassy_stm32::pac::{GPIOF, ICACHE, RCC};
 use embassy_stm32::rcc::{LsConfig, LseConfig, LseMode, RtcClockSource};
 use embassy_stm32::time::Hertz;
 use embassy_sync::blocking_mutex::Mutex;
-use wrist_board::{pins, Pin, Port};
+use wrist_board::{light, Port};
 use wrist_flash::vectors::{MAILBOX_BDCR, MAILBOX_MAGIC, MAILBOX_TAG};
 
 extern "C" {
@@ -108,20 +108,18 @@ fn ls_config_as_found() -> LsConfig {
     }
 }
 
-const BACKLIGHT: Pin = pins::BACKLIGHT_ON;
-const _: () = assert!(matches!(BACKLIGHT.port, Port::F));
+const _: () = assert!(matches!(light::PIN.port, Port::F));
 
 /// A visible fault: ten backlight flashes, then a reset.
 fn signal_and_reset() -> ! {
-    let n = usize::from(BACKLIGHT.number);
+    let n = usize::from(light::PIN.number);
     RCC.ahb2enr1().modify(|w| w.set_gpiofen(true));
-    GPIOF.otyper().modify(|w| w.set_ot(n, Ot::OPEN_DRAIN));
+    GPIOF.otyper().modify(|w| w.set_ot(n, if light::OPEN_DRAIN { Ot::OPEN_DRAIN } else { Ot::PUSH_PULL }));
     GPIOF.moder().modify(|w| w.set_moder(n, Moder::OUTPUT));
-    // Active low.
     for _ in 0..10 {
-        GPIOF.bsrr().write(|w| w.set_br(n, true));
+        GPIOF.bsrr().write(|w| if light::ACTIVE_LOW { w.set_br(n, true) } else { w.set_bs(n, true) });
         cortex_m::asm::delay(200_000);
-        GPIOF.bsrr().write(|w| w.set_bs(n, true));
+        GPIOF.bsrr().write(|w| if light::ACTIVE_LOW { w.set_bs(n, true) } else { w.set_br(n, true) });
         cortex_m::asm::delay(200_000);
     }
     cortex_m::asm::delay(4_000_000);
