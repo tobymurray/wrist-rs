@@ -10,12 +10,12 @@ pub const LINES: usize = 240;
 pub const PIXELS: usize = 240;
 /// Pixel pairs a line shifts in, top pair first.
 pub const PAIRS: usize = PIXELS / 2;
-/// `GCK` half-periods a frame: two a line on 2 to 481, one before and two after.
+/// `GCK` half-periods a frame: two a line, one before and two after.
 #[allow(clippy::cast_possible_truncation)]
 pub const GCK_EDGES: u32 = 2 * LINES as u32 + 3;
 /// The last `GCK` edge that writes a line.
 pub const LAST_LINE_EDGE: u32 = GCK_EDGES - 2;
-/// `BCK` half-periods a line: the pairs on 2 to 121, one before and two after.
+/// `BCK` half-periods a line: one a pair, one before and two after.
 #[allow(clippy::cast_possible_truncation)]
 pub const BCK_LABELS: u32 = PAIRS as u32 + 3;
 

@@ -9,7 +9,7 @@ use embassy_sync::blocking_mutex::Mutex;
 
 use crate::uart::Lines;
 
-/// `rcc_config`'s MSIS range, with no AHB or APB prescaler.
+/// The clock `rcc_config` runs the core at.
 pub const CORE_HZ: u32 = 48_000_000;
 pub const CORE_MHZ: u32 = CORE_HZ / 1_000_000;
 const _: () = assert!(wrist_panel::dma::TIMER_HZ == CORE_HZ);
