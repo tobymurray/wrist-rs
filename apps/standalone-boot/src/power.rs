@@ -14,7 +14,6 @@ use crate::{pmic, uart::Uart};
 
 const PD_PORT_STATUS_1: u8 = 0x0E;
 const PD_ATTACH: u8 = 1 << 0;
-const PMIC_CHG_STATUS_1: u8 = 0x19;
 /// PCA9420 datasheet Rev 4.2, Tables 11 to 15: write 1 to clear.
 const PMIC_SUB_INT: [u8; 3] = [0x02, 0x04, 0x06];
 const PMIC_SUB_INT0_MASK: u8 = 0x03;
@@ -130,7 +129,7 @@ impl Sampler {
             .map(|()| port[0] & PD_ATTACH != 0);
         let mut status = [0];
         let charger = bus
-            .write_read(wrist_board::i2c::PCA9420_PMIC, &[PMIC_CHG_STATUS_1], &mut status)
+            .write_read(wrist_board::i2c::PCA9420_PMIC, &[wrist_power::pca9420::CHG_STATUS_1], &mut status)
             .await
             .ok()
             .map(|()| status[0]);
