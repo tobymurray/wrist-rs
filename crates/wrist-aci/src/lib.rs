@@ -493,6 +493,11 @@ pub fn pairing_complete(params: &[u8]) -> Option<(u8, u8)> {
     Some((*params.get(2)?, *params.get(3)?))
 }
 
+/// The LE `ATT_MTU` before an exchange (Core Vol 3 Part G 5.2.1).
+pub const ATT_DEFAULT_MTU: usize = 23;
+/// A write's or a notification's opcode and handle, ahead of its value.
+pub const ATT_HEADER_LEN: usize = 3;
+
 /// `ATT_EXCHANGE_MTU_RESP`: the server's receive MTU.
 #[must_use]
 pub fn att_mtu(params: &[u8]) -> Option<u16> {

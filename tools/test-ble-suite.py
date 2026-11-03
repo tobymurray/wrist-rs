@@ -601,5 +601,34 @@ class Consume(unittest.TestCase):
         self.assertEqual(calls[-1], 'disconnect')
 
 
+class Constants(unittest.TestCase):
+    """wrist-ble.py's copies of the image's console service."""
+
+    @staticmethod
+    def source(path):
+        return (Path(__file__).resolve().parents[1] / path).read_text()
+
+    def rust(self, path, name):
+        return re.search(rf'const {name}: [^=]+= ([^;]+);', self.source(path))[1]
+
+    def test_the_uuids_are_the_images(self):
+        ble = 'apps/standalone-boot/src/ble.rs'
+        base = [int(b, 16) for b in re.findall(r'0x([0-9A-F]{2})', self.rust(ble, 'NUS_BASE'))]
+        for name, uuid in [('NUS_RX', suite.wrist_ble.RX), ('NUS_TX', suite.wrist_ble.TX)]:
+            b = base.copy()
+            b[12] = int(self.rust(ble, name), 16)
+            h = bytes(reversed(b)).hex()
+            self.assertEqual(uuid, f'{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:]}', name)
+
+    def test_the_att_sizes_are_the_images(self):
+        default = int(self.rust('crates/wrist-aci/src/lib.rs', 'ATT_DEFAULT_MTU'))
+        header = int(self.rust('crates/wrist-aci/src/lib.rs', 'ATT_HEADER_LEN'))
+        largest = int(self.rust('apps/standalone-boot/src/ble.rs', 'MAX_MTU'))
+        self.assertEqual((suite.wrist_ble.DEFAULT_MTU, suite.wrist_ble.ATT_HEADER), (default, header))
+        self.assertEqual(suite.wrist_ble.VALUE_LEN, largest - header)
+        self.assertEqual(self.rust('crates/wrist-ble/src/lib.rs', 'ATT_MAX_MTU'), str(largest))
+        self.assertIn(f'pub type Payload = Bytes<{{ ATT_MAX_MTU - {header} }}>;', self.source('crates/wrist-ble/src/lib.rs'))
+
+
 if __name__ == '__main__':
     unittest.main()

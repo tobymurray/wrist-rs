@@ -65,7 +65,7 @@ use wrist_aci::opcode::{
     ACI_GATT_UPDATE_CHAR_VALUE, ACI_HAL_GET_FW_BUILD_NUMBER, ACI_HAL_SET_TX_POWER_LEVEL, ACI_HAL_WRITE_CONFIG_DATA,
     ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_REQ, HCI_LE_RAND, HCI_READ_LOCAL_VERSION, HCI_SET_EVENT_MASK,
 };
-use wrist_aci::{address, config, permission, role, vendor, AttributeModified, Event, L2capUpdateResponse};
+use wrist_aci::{address, config, permission, role, vendor, AttributeModified, Event, L2capUpdateResponse, ATT_HEADER_LEN};
 use wrist_wake::ble::{timing, IntervalAsk, Lines, Outbox, PairAsk, Power, Radio, Scan, Sink, Timing};
 
 use crate::console::Target;
@@ -119,10 +119,14 @@ const NUS_SERVICE: u8 = 0x01;
 const NUS_RX: u8 = 0x02;
 /// The watch notifies console output here.
 const NUS_TX: u8 = 0x03;
-/// The characteristics' value size: the most an ATT MTU of 247 carries.
-const NUS_VALUE_LEN: usize = 244;
-/// The default ATT MTU, until an exchange raises it.
-const DEFAULT_MTU: usize = 23;
+/// The largest ATT MTU the console takes.
+const MAX_MTU: usize = 247;
+/// The characteristics' value size: the most [`MAX_MTU`] carries.
+const NUS_VALUE_LEN: usize = MAX_MTU - ATT_HEADER_LEN;
+/// Until an exchange raises it.
+const DEFAULT_MTU: usize = wrist_aci::ATT_DEFAULT_MTU;
+/// The value a default-MTU write or notification carries.
+const DEFAULT_VALUE_LEN: usize = DEFAULT_MTU - ATT_HEADER_LEN;
 /// `IO_CAP_DISPLAY_YES_NO`: the console shows the number, `ble yes` answers.
 const IO_CAP_DISPLAY_YES_NO: u8 = 0x01;
 /// The STM32U5's 96-bit unique id, for the address (RM0456 "Unique device ID").
@@ -1024,7 +1028,7 @@ impl Link<'_> {
         {
             return;
         }
-        let most = (self.mtu.saturating_sub(3)).clamp(20, NUS_VALUE_LEN);
+        let most = (self.mtu.saturating_sub(ATT_HEADER_LEN)).clamp(DEFAULT_VALUE_LEN, NUS_VALUE_LEN);
         let (chunk, n) = self.outbox.next(most, |buf| OUT.try_read(buf).unwrap_or(0));
         if n == 0 {
             return;
@@ -1446,7 +1450,7 @@ impl Link<'_> {
                 FRAGMENTS.fetch_add(1, Ordering::Relaxed);
             }
             let crc = wrist_flash::plan::crc32(data);
-            if data.len() > 20 && crc == self.last_rx {
+            if data.len() > DEFAULT_VALUE_LEN && crc == self.last_rx {
                 REPEATS.fetch_add(1, Ordering::Relaxed);
                 self.uart.write_str("[ble] console write repeated, events ");
                 self.uart.write_u32(EVENTS.load(Ordering::Relaxed));
@@ -1503,7 +1507,7 @@ impl Link<'_> {
             vendor::GAP_SLAVE_SECURITY_INITIATED => self.uart.write_line("[ble] security request sent"),
             vendor::GAP_BOND_LOST => self.rebond_for = Some(CONN_HANDLE.load(Ordering::Relaxed)),
             vendor::ATT_EXCHANGE_MTU_RESP if rest.len() >= 4 => {
-                self.mtu = usize::from(wrist_aci::att_mtu(rest).unwrap_or(0)).clamp(DEFAULT_MTU, 247);
+                self.mtu = usize::from(wrist_aci::att_mtu(rest).unwrap_or(0)).clamp(DEFAULT_MTU, MAX_MTU);
                 self.uart.write_str("[ble] ATT MTU ");
                 self.uart.write_u32(u32::try_from(self.mtu).unwrap_or(0));
                 self.uart.write_line("");

@@ -36,6 +36,10 @@ from bleak import BleakClient, BleakScanner
 
 RX = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
 TX = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
+DEFAULT_MTU = 23
+ATT_HEADER = 3
+# The characteristics' value size, NUS_VALUE_LEN in the image's ble.rs.
+VALUE_LEN = 244
 
 
 class Console:
@@ -88,11 +92,11 @@ async def acquire_mtu(client):
         except Exception as e:
             err = e
             await asyncio.sleep(1)
-    print(f"-- could not read the MTU ({err}); using 23", flush=True)
+    print(f"-- could not read the MTU ({err}); using {DEFAULT_MTU}", flush=True)
 
 
 def mtu_of(client):
-    return client.mtu_size or 23
+    return client.mtu_size or DEFAULT_MTU
 
 
 async def send(client, text):
@@ -115,11 +119,11 @@ async def fast_interval(client, con):
     print(f"-- {found.group(0) if found else 'interval unknown'}", flush=True)
 
 
-async def transfer(client, con, path, chunk_pace, chunk_max=244):
+async def transfer(client, con, path, chunk_pace, chunk_max=VALUE_LEN):
     image = open(path, "rb").read()
     crc = zlib.crc32(image) & 0xFFFFFFFF
     mtu = mtu_of(client)
-    chunk = max(20, min(chunk_max, mtu - 3))
+    chunk = max(DEFAULT_MTU - ATT_HEADER, min(chunk_max, mtu - ATT_HEADER))
     print(f"-- update {len(image)} bytes, crc {crc:08X}, mtu {mtu}, chunks of {chunk}", flush=True)
     await send(client, f"update {len(image)} {crc:08X}")
     if not await con.wait_for(["send "], 5):
@@ -325,7 +329,7 @@ async def main():
     ap.add_argument("--listen", type=float, default=2.0, help="seconds to keep listening at the end")
     ap.add_argument("--no-reset", action="store_true", help="after an update, do not send reset")
     ap.add_argument("--keep-interval", action="store_true", help="do not ask for 15 ms before a transfer")
-    ap.add_argument("--chunk", type=int, default=244, help="largest write of a transfer, in bytes")
+    ap.add_argument("--chunk", type=int, default=VALUE_LEN, help="largest write of a transfer, in bytes")
     ap.add_argument("--pace", type=float, default=0.0, help="extra seconds between chunks of a transfer")
     args = ap.parse_args()
 
@@ -335,7 +339,7 @@ async def main():
                      args.keep_interval, args.chunk, args.pace)
 
 
-async def run(name, commands="", update=None, listen=2.0, reset=True, keep_interval=False, chunk=244, pace=0.0):
+async def run(name, commands="", update=None, listen=2.0, reset=True, keep_interval=False, chunk=VALUE_LEN, pace=0.0):
     """Commands, then an update if one is given; 0 once it is done (with `reset`, once kept)."""
     device = await find(name)
     if device is None:
