@@ -38,9 +38,8 @@ revision. Remove this copy once upstream has all of these, or equivalents:
   retains peripheral registers in Stop 2
   ([AN5371](https://www.st.com/resource/en/application_note/an5371-migration-from-stm32l5-series-to-stm32u5-series-microcontrollers-stmicroelectronics.pdf),
   [AN5652](https://www.st.com/resource/en/application_note/an5652-how-to-optimize-power-consumption-on-stm32u5-mcus-stmicroelectronics.pdf)).
-  Upstream no longer resets the Stop refcounts after `init`, so without this the time
-  driver's own enable would keep the core out of Stop 2. Operation and DMA guards are unchanged, so a driver
-  whose operation spans an await must hold its guard.
+  Operation and DMA guards are unchanged, so a driver whose operation spans an await
+  must hold its guard.
 - **Stop observer.** `low_power::set_stop_observer(fn(StopEvent))` reports each Stop entry
   and each exit `PWR.SR.STOPF` confirms, with `PWR.CR1.LPMS`; the clocks' restore after it;
   and each wait in Sleep when no Stop mode is allowed, with the Stop refcounts, and its end.
