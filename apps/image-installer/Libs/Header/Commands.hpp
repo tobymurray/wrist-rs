@@ -19,21 +19,21 @@ constexpr SDK::MessageType::Type CONFIRM = 0x00000010;
 /// What the service has found or is doing. Only `Ready` accepts a confirm.
 enum class State : uint8_t
 {
-    Checking,
+    Checking = 0,
     /// The firmware isolates apps; nothing was attempted.
-    Isolated,
+    Isolated = 1,
     /// `image.bin` is missing, empty or unreadable.
-    NoImage,
+    NoImage = 2,
     /// A check refused the image; `code` says which.
-    Refused,
+    Refused = 3,
     /// The flash unlock self-test failed; `code` is its result.
-    UnlockFailed,
+    UnlockFailed = 4,
     /// The scratch-page erase and program self-test failed; `code` is its result.
-    FlashTestFailed,
+    FlashTestFailed = 5,
     /// The dry run passed for the image with CRC `crc`.
-    Ready,
+    Ready = 6,
     /// Confirmed: staging, then the commit, which restarts the watch.
-    Installing,
+    Installing = 7,
 };
 
 /// Plain data, so the GUI can keep the last one: a message is pool-allocated and not copyable.
