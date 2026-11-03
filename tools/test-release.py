@@ -288,6 +288,17 @@ class Packaging(unittest.TestCase):
         self.assertEqual(tool_constant('wrist-crash.py', 'BUILD_HASH_DIGITS'), digits)
         self.assertIn(f'hash.get(..{digits})?', (r.ROOT/'apps/standalone-boot/build.rs').read_text())
 
+    def test_wrist_crash_py_hashes_as_wrist_crash(self):
+        crash = (r.ROOT/'crates/wrist-crash/src/lib.rs').read_text()
+        for name in ['FNV_OFFSET', 'FNV_PRIME']:
+            value = int(re.search(rf'pub const {name}: u32 = 0x([0-9A-F_]+);', crash)[1].replace('_', ''), 16)
+            self.assertEqual(tool_constant('wrist-crash.py', name), value, name)
+        spec = importlib.util.spec_from_file_location('wrist_crash', r.ROOT/'tools/wrist-crash.py')
+        tool = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(tool)
+        pinned = re.search(r'fnv1a\(b"src/main.rs"\), 0x([0-9A-F_]+)\)', (r.ROOT/'crates/wrist-crash/tests/record.rs').read_text())[1]
+        self.assertEqual(tool.fnv1a(b'src/main.rs'), int(pinned.replace('_', ''), 16))
+
 
 def git(d, *args, when=None):
     env = dict(os.environ, GIT_AUTHOR_DATE=f'@{when} +0000', GIT_COMMITTER_DATE=f'@{when} +0000') if when else None

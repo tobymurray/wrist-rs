@@ -49,16 +49,20 @@ pub enum Decoded {
     Record(Record),
 }
 
+/// 32-bit FNV-1a's offset basis and prime.
+pub const FNV_OFFSET: u32 = 0x811C_9DC5;
+pub const FNV_PRIME: u32 = 0x0100_0193;
+
 #[must_use]
 pub fn fnv1a(bytes: &[u8]) -> u32 {
-    bytes.iter().fold(0x811C_9DC5, |h, &b| (h ^ u32::from(b)).wrapping_mul(0x0100_0193))
+    bytes.iter().fold(FNV_OFFSET, |h, &b| (h ^ u32::from(b)).wrapping_mul(FNV_PRIME))
 }
 
 fn check(w: &Words) -> u32 {
     let mut h = fnv1a(&CHECK_SEED.to_le_bytes());
     for word in [w[0], w[1], w[2], w[4], w[5]] {
         for b in word.to_le_bytes() {
-            h = (h ^ u32::from(b)).wrapping_mul(0x0100_0193);
+            h = (h ^ u32::from(b)).wrapping_mul(FNV_PRIME);
         }
     }
     h

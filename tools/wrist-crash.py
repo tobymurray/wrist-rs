@@ -14,12 +14,14 @@ import zipfile
 from pathlib import Path
 
 BUILD_HASH_DIGITS = 12
+FNV_OFFSET = 0x811C9DC5
+FNV_PRIME = 0x01000193
 
 
 def fnv1a(data):
-    value = 0x811C9DC5
+    value = FNV_OFFSET
     for byte in data:
-        value = ((value ^ byte) * 0x01000193) & 0xFFFFFFFF
+        value = ((value ^ byte) * FNV_PRIME) & 0xFFFFFFFF
     return value
 
 

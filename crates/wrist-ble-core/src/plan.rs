@@ -111,13 +111,19 @@ pub struct Fingerprint(pub u64);
 
 #[must_use]
 pub fn fingerprint(current: &Activities, change: &Change) -> Fingerprint {
-    let mut h = Fnv(0xcbf2_9ce4_8422_2325);
+    let mut h = Fnv(Fnv::OFFSET);
     current.hash(&mut h);
     change.hash(&mut h);
     Fingerprint(h.finish())
 }
 
+/// 64-bit FNV-1a.
 struct Fnv(u64);
+
+impl Fnv {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0100_0000_01b3;
+}
 
 impl Hasher for Fnv {
     fn finish(&self) -> u64 {
@@ -126,7 +132,7 @@ impl Hasher for Fnv {
 
     fn write(&mut self, bytes: &[u8]) {
         for &b in bytes {
-            self.0 = (self.0 ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+            self.0 = (self.0 ^ u64::from(b)).wrapping_mul(Fnv::PRIME);
         }
     }
 }

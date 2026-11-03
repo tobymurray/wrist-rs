@@ -7,6 +7,11 @@ fn panic(build: Build) -> Record {
 }
 
 #[test]
+fn fnv1a_is_wrist_crash_py_s() {
+    assert_eq!(fnv1a(b"src/main.rs"), 0x1660_407C);
+}
+
+#[test]
 fn records_round_trip() {
     let fault = Record {
         kind: Kind::Fault { cfsr_low20: 0x8200, pc: 0x0806_8251 },
