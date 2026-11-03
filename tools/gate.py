@@ -51,6 +51,12 @@ def record_page(root=ROOT):
     return int(re.search(r'pub const RECORD_PAGE: \w+ = (\d+)', layout)[1])
 
 
+def unlock_passed(root=ROOT):
+    """What the installer's unlock self-test returns when both unlocks pass, from wrist-flash's commit."""
+    commit = (root / 'crates/wrist-flash/src/commit.rs').read_text()
+    return sum(1 << int(n) for n in re.findall(r'pub const UNLOCK_\w+: i32 = 1 << (\d+);', commit))
+
+
 def notes_stock(root=ROOT):
     """The stock version the release notes name, from their `Stock firmware` row."""
     m = re.search(r'^\| \*\*Stock firmware\*\* \| \*\*([0-9.]+)\*\*', (root / 'release/NOTES.md').read_text(), re.M)
@@ -96,7 +102,7 @@ def check_install_log(text, crc, size, pages=None):
         (bool(plan) and int(plan[1]) == first and int(plan[1]) + int(plan[2]) - 1 <= last,
          f'a plan within bank 1 pages {first} to {last}'),
         (bool(found(r'^staging\s*: bank 2 pages 128-195')), 'staging in bank 2 pages 128 to 195'),
-        (bool(found(r'^unlock test: 3\b')), 'unlock and re-unlock'),
+        (bool(found(rf'^unlock test: {unlock_passed()}\b')), 'unlock and re-unlock'),
         (not found(r'refus|MISMATCH|FOREIGN DATA'), 'no refusal'),
         (bool(found(r'^dry run passed')), 'dry run passed'),
     ]

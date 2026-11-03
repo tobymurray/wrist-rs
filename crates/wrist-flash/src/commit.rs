@@ -43,8 +43,36 @@ pub const fn not_armed(nscr: u32) -> u32 {
     NOT_ARMED | (nscr >> 28) << 16 | (nscr & 0xFFFF)
 }
 
+/// `wrist_flash_unlock_selftest`: the first unlock worked, then a second returned.
+pub const UNLOCK_FIRST: i32 = 1 << 0;
+pub const UNLOCK_SECOND: i32 = 1 << 1;
+pub const UNLOCK_PASSED: i32 = UNLOCK_FIRST | UNLOCK_SECOND;
+
+/// The scratch-page self-test's steps, in the order it runs them.
+pub const SELF_TEST_ERASED: i32 = 1 << 0;
+pub const SELF_TEST_BLANK: i32 = 1 << 1;
+pub const SELF_TEST_PROGRAMMED: i32 = 1 << 2;
+pub const SELF_TEST_READ_BACK: i32 = 1 << 3;
+pub const SELF_TEST_ERASED_AGAIN: i32 = 1 << 4;
+pub const SELF_TEST_BLANK_AGAIN: i32 = 1 << 5;
+pub const SELF_TEST_STEPS: [i32; 6] = [
+    SELF_TEST_ERASED,
+    SELF_TEST_BLANK,
+    SELF_TEST_PROGRAMMED,
+    SELF_TEST_READ_BACK,
+    SELF_TEST_ERASED_AGAIN,
+    SELF_TEST_BLANK_AGAIN,
+];
+pub const SELF_TEST_PASSED: i32 = SELF_TEST_ERASED
+    | SELF_TEST_BLANK
+    | SELF_TEST_PROGRAMMED
+    | SELF_TEST_READ_BACK
+    | SELF_TEST_ERASED_AGAIN
+    | SELF_TEST_BLANK_AGAIN;
 /// The scratch-page self-test's bit for a poll of any of its steps that timed out.
 pub const SELF_TEST_TIMED_OUT: i32 = 1 << 6;
+/// Where the self-test puts `NSSR[15:0]` after its first erase.
+pub const SELF_TEST_NSSR_SHIFT: u32 = 8;
 
 /// A self-test step's `bit` if it passed, or [`SELF_TEST_TIMED_OUT`].
 #[must_use]
@@ -522,8 +550,8 @@ mod tests {
         assert_eq!(self_test_bit(Err(PGSERR), 4), 0);
         assert_eq!(self_test_bit(Err(not_armed(NSCR_LOCK)), 4), 0);
         assert_eq!(self_test_bit(Err(POLL_TIMED_OUT), 4), SELF_TEST_TIMED_OUT);
-        assert_eq!(SELF_TEST_TIMED_OUT & 0x3F, 0, "outside the six steps' bits");
-        assert_eq!(SELF_TEST_TIMED_OUT & (0xFFFF << 8), 0, "outside NSSR's");
+        assert_eq!(SELF_TEST_TIMED_OUT & SELF_TEST_PASSED, 0, "outside the six steps' bits");
+        assert_eq!((SELF_TEST_TIMED_OUT | SELF_TEST_PASSED) & (0xFFFF << SELF_TEST_NSSR_SHIFT), 0, "outside NSSR's");
     }
 
     #[test]
@@ -565,7 +593,20 @@ mod tests {
         assert_eq!(constant("kStatusAddress"), STATUS_ADDRESS);
         assert_eq!(constant("kStatusMagic"), STATUS_MAGIC);
         assert_eq!(constant("kKernelBase"), KERNEL_BASE);
+        let decimal = |name: &str| {
+            let line = header.lines().find(|l| l.contains(&format!("{name} "))).unwrap();
+            line.split("= ").nth(1).unwrap().trim_end_matches(';').parse::<i32>().unwrap()
+        };
+        assert_eq!(decimal("kUnlockPassed"), UNLOCK_PASSED);
+        assert_eq!(constant("kFlashTestPassed"), SELF_TEST_PASSED as u32);
         assert_eq!(constant("kFlashTestTimedOut"), SELF_TEST_TIMED_OUT as u32);
+        let decoded: Vec<i32> = source
+            .split("(st_erase & ")
+            .skip(1)
+            .filter_map(|rest| rest.split(')').next()?.parse().ok())
+            .collect();
+        assert_eq!(decoded, SELF_TEST_STEPS, "the log names the steps by their bits, in order");
+        assert!(source.contains(&format!("(st_erase >> {SELF_TEST_NSSR_SHIFT}) & 0xFFFFu")));
         let page_size = header.lines().find_map(|l| l.trim().strip_prefix("static constexpr size_t kPageSize = ")).unwrap();
         assert_eq!(page_size, format!("{PAGE_SIZE};"));
         assert!(source.contains("uint8_t gChunk[Service::kPageSize];"));
