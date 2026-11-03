@@ -71,7 +71,7 @@ class Packaging(unittest.TestCase):
                 (l, raw(APP, APP_SIZE+1), image), (l, bytes(64), image)]:
             with self.assertRaises(ValueError):
                 r.validate_image(loader, app, combined)
-        # The watch's window, then the 8-byte alignment that only packaging asks for.
+        # Outside the window, then inside it but 4-aligned.
         for sp in [VECTORS['SP_MAX'] + 8, VECTORS['STACK_START'] - 4]:
             bad = raw(APP, sp=sp)
             with self.assertRaises(ValueError, msg=hex(sp)):

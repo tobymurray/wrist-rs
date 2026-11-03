@@ -10,8 +10,7 @@ use crate::plan::{BANK1_BASE, KERNEL_BASE, PAGE_SIZE_U32};
 pub const SRAM_START: u32 = 0x2000_0000;
 pub const SRAM_END: u32 = 0x2027_0000;
 
-/// The vendor bootloader accepts an SP word up to [`SRAM_END`], then pops this much at and
-/// above it.
+/// Popped at and above the SP word at handoff (HARDWARE.md, "Boot handoff").
 pub const HANDOFF_POP: u32 = 16;
 pub const SP_MIN: u32 = SRAM_START;
 pub const SP_MAX: u32 = SRAM_END - HANDOFF_POP;
