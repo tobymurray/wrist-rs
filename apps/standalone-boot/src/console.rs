@@ -135,7 +135,8 @@ bind_interrupts!(struct Irqs {
 pub type Usb<'d> = Driver<'d, peripherals::USB_OTG_HS>;
 
 const CONTROL_PACKET: u16 = 64;
-const BULK_PACKET: u16 = 64;
+/// High speed fixes a bulk packet at 512 bytes (USB 2.0, 5.8.3); Windows refuses 64.
+pub const BULK_PACKET: u16 = 512;
 
 /// How long a host's bus reset may sit unserviced before the link counts as
 /// wedged.
@@ -213,7 +214,9 @@ pub async fn write_whole(line: &[u8]) -> bool {
     false
 }
 
-static EP_OUT: ConstStaticCell<[u8; 256]> = ConstStaticCell::new([0; 256]);
+/// One packet for each OUT endpoint: control's and the bulk endpoint's.
+const EP_OUT_LEN: usize = (CONTROL_PACKET + BULK_PACKET) as usize;
+static EP_OUT: ConstStaticCell<[u8; EP_OUT_LEN]> = ConstStaticCell::new([0; EP_OUT_LEN]);
 static CONFIG_DESC: ConstStaticCell<[u8; 256]> = ConstStaticCell::new([0; 256]);
 static BOS_DESC: ConstStaticCell<[u8; 256]> = ConstStaticCell::new([0; 256]);
 static CONTROL_BUF: ConstStaticCell<[u8; 64]> = ConstStaticCell::new([0; 64]);
