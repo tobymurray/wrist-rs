@@ -135,8 +135,6 @@ const DEFAULT_MTU: usize = wrist_aci::ATT_DEFAULT_MTU;
 const DEFAULT_VALUE_LEN: usize = DEFAULT_MTU - ATT_HEADER_LEN;
 /// `IO_CAP_DISPLAY_YES_NO`: the console shows the number, `ble yes` answers.
 const IO_CAP_DISPLAY_YES_NO: u8 = 0x01;
-/// The STM32U5's 96-bit unique id, for the address (RM0456 "Unique device ID").
-const UID_BASE: u32 = 0x0BFA_0700;
 /// Console notifications at most this often.
 const CONSOLE_PACE: Duration = Duration::from_millis(10);
 
@@ -1593,7 +1591,8 @@ fn write_interval(uart: Uart, units: u16) {
 }
 
 fn address_from_uid() -> [u8; 6] {
-    let w = |i: u32| unsafe { core::ptr::read_volatile((UID_BASE + 4 * i) as *const u32) };
+    let uid = embassy_stm32::uid::uid();
+    let w = |i: usize| u32::from_le_bytes([uid[4 * i], uid[4 * i + 1], uid[4 * i + 2], uid[4 * i + 3]]);
     wrist_aci::static_random_address([w(0), w(1), w(2)])
 }
 

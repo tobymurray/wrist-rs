@@ -252,8 +252,8 @@ fn device_config() -> embassy_usb::Config<'static> {
     let mut config = embassy_usb::Config::new(USB_VID, USB_PID);
     config.manufacturer = Some("wrist-rs");
     config.product = Some("standalone-boot console");
-    // The 96-bit unique device ID at 0x0BFA_0700 (RM0456, device electronic
-    // signature), so two watches on one host differ.
+    // The 96-bit unique device ID (RM0456, device electronic signature), so two
+    // watches on one host differ.
     config.serial_number = Some(embassy_stm32::uid::uid_hex());
     config.max_packet_size_0 = u8::try_from(CONTROL_PACKET).unwrap_or(64);
     // A miscellaneous device with IADs, so CDC-ACM binds on every host.
