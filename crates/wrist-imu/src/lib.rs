@@ -11,10 +11,14 @@ pub const CHIP_ID: u8 = 0x24;
 
 pub mod reg {
     pub const CHIP_ID: u8 = 0x00;
+    pub const INT_STATUS_0: u8 = 0x1C;
     pub const INTERNAL_STATUS: u8 = 0x21;
     pub const FEAT_PAGE: u8 = 0x2F;
     pub const FEATURES: u8 = 0x30;
     pub const ACC_CONF: u8 = 0x40;
+    pub const INT2_IO_CTRL: u8 = 0x54;
+    pub const INT_LATCH: u8 = 0x55;
+    pub const INT2_MAP_FEAT: u8 = 0x57;
     pub const INIT_CTRL: u8 = 0x59;
     pub const INIT_ADDR_0: u8 = 0x5B;
     pub const INIT_DATA: u8 = 0x5E;
@@ -83,6 +87,41 @@ pub fn enable_steps(page: &mut [u8; PAGE_LEN]) {
 #[must_use]
 pub const fn steps_enabled(page: &[u8; PAGE_LEN]) -> bool {
     page[SC_26_HIGH] & STEPS_ON == STEPS_ON
+}
+
+/// Feature page 7 holds the wrist-wear wake-up, its enable in bit 4 of its first byte.
+pub const RAISE_PAGE: u8 = 7;
+const RAISE_ON: u8 = 0x10;
+
+pub fn enable_raise(page: &mut [u8; PAGE_LEN], on: bool) {
+    if on {
+        page[0] |= RAISE_ON;
+    } else {
+        page[0] &= !RAISE_ON;
+    }
+}
+
+/// The wrist-wear wake-up's bit in `INT2_MAP_FEAT` and `INT_STATUS_0`.
+pub const RAISE_INT: u8 = 0x08;
+
+/// `INT2_IO_CTRL`: output on, push-pull, active high. `IMU_INT` is the chip's `INT2`.
+pub const INT2_OUT: u8 = 0x0A;
+/// `INT_LATCH`: held until `INT_STATUS_0` is read.
+pub const LATCHED: u8 = 0x01;
+
+/// `INT2_IO_CTRL`, `INT_LATCH` and `INT2_MAP_FEAT` with the raise on or off.
+#[must_use]
+pub const fn raise_routing(on: bool) -> [(u8, u8); 3] {
+    [
+        (reg::INT2_IO_CTRL, if on { INT2_OUT } else { 0 }),
+        (reg::INT_LATCH, LATCHED),
+        (reg::INT2_MAP_FEAT, if on { RAISE_INT } else { 0 }),
+    ]
+}
+
+#[must_use]
+pub const fn raised(int_status_0: u8) -> bool {
+    int_status_0 & RAISE_INT != 0
 }
 
 /// What the chip holds when the image starts.
