@@ -40,6 +40,19 @@ pub const fn not_armed(nscr: u32) -> u32 {
     NOT_ARMED | (nscr >> 28) << 16 | (nscr & 0xFFFF)
 }
 
+/// The scratch-page self-test's bit for a poll of any of its steps that timed out.
+pub const SELF_TEST_TIMED_OUT: i32 = 1 << 6;
+
+/// A self-test step's `bit` if it passed, or [`SELF_TEST_TIMED_OUT`].
+#[must_use]
+pub const fn self_test_bit(result: Result<(), u32>, bit: i32) -> i32 {
+    match result {
+        Ok(()) => bit,
+        Err(POLL_TIMED_OUT) => SELF_TEST_TIMED_OUT,
+        Err(_) => 0,
+    }
+}
+
 pub const WRITE_ATTEMPTS: u32 = 3;
 
 #[allow(clippy::cast_possible_truncation)]
@@ -501,6 +514,16 @@ mod tests {
     }
 
     #[test]
+    fn a_self_test_step_that_timed_out_says_so() {
+        assert_eq!(self_test_bit(Ok(()), 4), 4);
+        assert_eq!(self_test_bit(Err(PGSERR), 4), 0);
+        assert_eq!(self_test_bit(Err(not_armed(NSCR_LOCK)), 4), 0);
+        assert_eq!(self_test_bit(Err(POLL_TIMED_OUT), 4), SELF_TEST_TIMED_OUT);
+        assert_eq!(SELF_TEST_TIMED_OUT & 0x3F, 0, "outside the six steps' bits");
+        assert_eq!(SELF_TEST_TIMED_OUT & (0xFFFF << 8), 0, "outside NSSR's");
+    }
+
+    #[test]
     fn an_erase_that_did_not_take_is_caught_before_programming() {
         let mut m = Model { drops_erase: true, ..Model::new() };
         assert_eq!(run(&mut m), Ok(()));
@@ -533,12 +556,15 @@ mod tests {
         let source = include_str!("../../../apps/image-installer/Libs/Sources/Service.cpp");
         let constant = |name: &str| {
             let line = header.lines().find(|l| l.contains(&format!("{name} "))).unwrap();
-            let hex = line.split("0x").nth(1).unwrap().split('u').next().unwrap().replace('\'', "");
+            let hex: String = line.split("0x").nth(1).unwrap().chars().take_while(|c| c.is_ascii_hexdigit() || *c == '\'').filter(|c| *c != '\'').collect();
             u32::from_str_radix(&hex, 16).unwrap()
         };
         assert_eq!(constant("kStatusAddress"), STATUS_ADDRESS);
         assert_eq!(constant("kStatusMagic"), STATUS_MAGIC);
         assert_eq!(constant("kKernelBase"), KERNEL_BASE);
+        assert_eq!(constant("kFlashTestTimedOut"), SELF_TEST_TIMED_OUT as u32);
+        assert!(source.contains("(st_erase & kFlashTestTimedOut) ? \" [poll timeout]\""));
+        assert!(!source.contains("0xFFFFu) ? \"(poll timeout)\""), "outcomes 2 and 3 never carry a timeout");
         assert!(source.contains(&format!("((st[1] >> 16) & 0xFFFFu) == {OUTCOME_BEGAN}u")));
         assert!(source.contains("const bool finished = (st[4] == kStatusMagic);"));
         assert!(source.contains("const uint32_t outcome = (st[5] >> 16) & 0xFFFFu;"));

@@ -3,7 +3,7 @@
 // Target only, where `usize` is `u32`.
 #![allow(clippy::cast_possible_truncation)]
 
-use crate::commit::{self, not_armed, Flash, POLL_TIMED_OUT};
+use crate::commit::{self, not_armed, self_test_bit, Flash, POLL_TIMED_OUT};
 pub use crate::commit::{ERR_STATUS_PAGE, ERR_UNLOCK, ERR_WITNESS_FOREIGN};
 use crate::plan::{
     self, bank2_page_address, crc32, quadword, Plan, MAX_PAGES, QUADWORD, SELF_TEST_PAGE,
@@ -292,7 +292,8 @@ const SELF_TEST_ADDRESS: u32 = 0x0824_4000;
 const SELF_TEST_PATTERN: u32 = u32::from_le_bytes(*b"TEST");
 
 /// Bits: 0 erased, 1 blank, 2 programmed, 3 read back, 4 erased again, 5 blank
-/// again, 8 to 23 `NSSR` after the first erase; -1 if flash would not unlock.
+/// again, 6 [`commit::SELF_TEST_TIMED_OUT`], 8 to 23 `NSSR` after the first erase; -1 if
+/// flash would not unlock.
 ///
 /// # Safety
 /// Erases and programs bank 2's [`SELF_TEST_PAGE`] only.
@@ -306,30 +307,22 @@ pub unsafe extern "C" fn wrist_flash_erase_selftest() -> i32 {
         return -1;
     }
 
-    if erase_page(SELF_TEST_PAGE, true).is_ok() {
-        r |= 1;
-    }
+    r |= self_test_bit(erase_page(SELF_TEST_PAGE, true), 1);
     clear_op_bits(NSCR_PER | NSCR_STRT);
     r |= i32::try_from(read32(FLASH_NSSR) & 0xFFFF).unwrap_or(0) << 8;
     if read_flash(SELF_TEST_ADDRESS) == 0xFFFF_FFFF {
         r |= 2;
     }
 
-    if program(
-        SELF_TEST_ADDRESS,
-        &[SELF_TEST_PATTERN, SELF_TEST_PATTERN, SELF_TEST_PATTERN, SELF_TEST_PATTERN],
-    )
-    .is_ok()
-    {
-        r |= 4;
-    }
+    r |= self_test_bit(
+        program(SELF_TEST_ADDRESS, &[SELF_TEST_PATTERN, SELF_TEST_PATTERN, SELF_TEST_PATTERN, SELF_TEST_PATTERN]),
+        4,
+    );
     if read_flash(SELF_TEST_ADDRESS) == SELF_TEST_PATTERN {
         r |= 8;
     }
 
-    if erase_page(SELF_TEST_PAGE, true).is_ok() {
-        r |= 16;
-    }
+    r |= self_test_bit(erase_page(SELF_TEST_PAGE, true), 16);
     if read_flash(SELF_TEST_ADDRESS) == 0xFFFF_FFFF {
         r |= 32;
     }
