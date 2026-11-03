@@ -281,6 +281,13 @@ class Packaging(unittest.TestCase):
         self.assertEqual(rust('crates/wrist-ble/src/lib.rs', 'ATT_MAX_MTU'), str(largest))
         self.assertIn(f'pub type Payload = Bytes<{{ ATT_MAX_MTU - {header} }}>;', (r.ROOT/'crates/wrist-ble/src/lib.rs').read_text())
 
+    def test_a_build_id_has_the_digits_wrist_crash_packs(self):
+        crash = (r.ROOT/'crates/wrist-crash/src/lib.rs').read_text()
+        digits = int(re.search(r'pub const BUILD_HASH_DIGITS: usize = (\d+);', crash)[1])
+        self.assertEqual(r.firmware_build.BUILD_HASH_DIGITS, digits)
+        self.assertEqual(tool_constant('wrist-crash.py', 'BUILD_HASH_DIGITS'), digits)
+        self.assertIn(f'hash.get(..{digits})?', (r.ROOT/'apps/standalone-boot/build.rs').read_text())
+
 
 def git(d, *args, when=None):
     env = dict(os.environ, GIT_AUTHOR_DATE=f'@{when} +0000', GIT_COMMITTER_DATE=f'@{when} +0000') if when else None

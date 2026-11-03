@@ -8,6 +8,13 @@ const TAG: u32 = 0xFFF0_0000;
 const LOW20: u32 = 0x000F_FFFF;
 const CHECK_SEED: u32 = 0x5752_4331;
 
+/// A firmware hash's hex digits, the 48 bits [`Record::encode`] packs.
+pub const BUILD_HASH_DIGITS: usize = 12;
+const DIRTY: &str = "-dirty";
+/// The longest [`Build::text`].
+pub const TEXT_LEN: usize = BUILD_HASH_DIGITS + DIRTY.len();
+const _: () = assert!(BUILD_HASH_DIGITS * 4 == 48);
+
 /// Six words in address order, the tag and its word last.
 pub type Words = [u32; 6];
 
@@ -60,10 +67,10 @@ fn check(w: &Words) -> u32 {
 impl Build {
     #[must_use]
     pub fn from_id(id: &str) -> Build {
-        let (hex, rest) = id.split_at(id.len().min(12));
-        let digits = hex.len() == 12 && hex.bytes().all(|b| b.is_ascii_hexdigit());
+        let (hex, rest) = id.split_at(id.len().min(BUILD_HASH_DIGITS));
+        let digits = hex.len() == BUILD_HASH_DIGITS && hex.bytes().all(|b| b.is_ascii_hexdigit());
         match (digits, rest) {
-            (true, "" | "-dirty") => Build::Hash {
+            (true, "" | DIRTY) => Build::Hash {
                 id: u64::from_str_radix(hex, 16).unwrap_or(0),
                 dirty: !rest.is_empty(),
             },
@@ -72,10 +79,10 @@ impl Build {
     }
 
     /// The hash as `version` prints it, or `#` and a name's FNV-1a.
-    pub fn text(self, out: &mut [u8; 18]) -> &str {
+    pub fn text(self, out: &mut [u8; TEXT_LEN]) -> &str {
         const DIGITS: &[u8; 16] = b"0123456789abcdef";
         let (value, digits, start) = match self {
-            Build::Hash { id, .. } => (id, 12, 0),
+            Build::Hash { id, .. } => (id, BUILD_HASH_DIGITS, 0),
             Build::Named(hash) => (u64::from(hash), 8, 1),
         };
         out[0] = b'#';
@@ -84,8 +91,8 @@ impl Build {
         }
         let mut n = start + digits;
         if let Build::Hash { dirty: true, .. } = self {
-            out[n..n + 6].copy_from_slice(b"-dirty");
-            n += 6;
+            out[n..n + DIRTY.len()].copy_from_slice(DIRTY.as_bytes());
+            n += DIRTY.len();
         }
         core::str::from_utf8(&out[..n]).unwrap_or("")
     }

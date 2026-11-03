@@ -13,6 +13,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 APPS = [('wrist-loader', 'loader'), ('standalone-boot', 'app')]
+BUILD_HASH_DIGITS = 12
 
 
 def git(*args, root=ROOT, stdin=None):
@@ -47,7 +48,7 @@ def build_id(root=ROOT):
     if dirty:
         listing += worktree(root, specs)
     digest = git('hash-object', '--stdin', root=root, stdin=listing).decode().strip()
-    return digest[:12] + ('-dirty' if dirty else '')
+    return digest[:BUILD_HASH_DIGITS] + ('-dirty' if dirty else '')
 
 
 def worktree(root, specs):
