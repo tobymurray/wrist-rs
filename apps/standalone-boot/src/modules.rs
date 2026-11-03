@@ -53,8 +53,8 @@ const SPECS: [Spec; 3] = [
         name: "link2",
         bus: "I2C4",
         expects: "AG3335M",
-        drives: "the IMU and compass reset to suspend at boot (park.rs)",
-        without: "they keep whatever mode the last image left them in",
+        drives: "the step counter (imu.rs); the compass reset to suspend at boot (park.rs)",
+        without: "no steps; the IMU and compass keep whatever mode the last image left them in",
     },
 ];
 

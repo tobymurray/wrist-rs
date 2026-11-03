@@ -12,6 +12,7 @@ mod crash;
 mod flash;
 mod glass;
 mod haptic;
+mod imu;
 mod lcd;
 mod mmio;
 mod modules;
@@ -420,9 +421,8 @@ fn main() -> ! {
         buzzer_en1: p.PB9,
         buzzer_en2: p.PD5,
     };
-    let sensors = modules::allowed(modules::Slot::Link2).then_some(&mut sensor_bus);
-    park::park(parked, sensors, uart);
-    drop(sensor_bus);
+    let mut sensor_bus = modules::allowed(modules::Slot::Link2).then_some(sensor_bus);
+    park::park(parked, sensor_bus.as_mut(), uart);
     uart.flush();
     pmic::share(bus);
 
@@ -447,6 +447,9 @@ fn main() -> ! {
         spawn(spawner, "display", display(pwr_int).unwrap());
         spawn(spawner, "haptic", haptic::serve().unwrap());
         spawn(spawner, "alarm", alarm::run().unwrap());
+        if let Some(bus) = sensor_bus {
+            spawn(spawner, "imu", imu::run(bus).unwrap());
+        }
         if let Some(pins) = usb {
             spawn(spawner, "console", console::service(pins, flash).unwrap());
         }

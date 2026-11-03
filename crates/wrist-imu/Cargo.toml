@@ -1,0 +1,13 @@
+[package]
+name = "wrist-imu"
+version = "0.0.0"
+edition = "2021"
+license = "AGPL-3.0-or-later AND BSD-3-Clause"
+publish = false
+description = "The BMI270's registers, its configuration upload, and its step counter"
+
+[dev-dependencies]
+wrist-flash = { path = "../wrist-flash" }
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
