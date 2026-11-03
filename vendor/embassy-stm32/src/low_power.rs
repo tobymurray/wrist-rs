@@ -53,7 +53,51 @@ compile_error!(
 );
 
 use core::mem;
-use core::sync::atomic::{Ordering, compiler_fence};
+use core::sync::atomic::{AtomicUsize, Ordering, compiler_fence};
+
+/// wrist-rs: a Stop entry or exit, for [`set_stop_observer`].
+#[derive(Clone, Copy)]
+pub enum StopEvent {
+    /// Stop is about to be entered.
+    Enter,
+    /// A Stop exit that `PWR.SR.STOPF` confirmed.
+    Exit {
+        /// `PWR.CR1.LPMS` at the exit.
+        lpms: u8,
+    },
+    /// The clocks are back after an `Exit`.
+    Restored,
+    /// No Stop mode is allowed, so the core waits for an interrupt in Sleep.
+    Sleep {
+        /// Peripherals holding the core out of every Stop mode.
+        stop1_holds: u32,
+        /// Peripherals holding it out of Stop 2.
+        stop2_holds: u32,
+    },
+    /// The end of a `Sleep`.
+    Woke,
+}
+
+static STOP_OBSERVER: AtomicUsize = AtomicUsize::new(0);
+
+/// wrist-rs: what the LPTIM time driver saw, for diagnosing late wakes (`WRIST-PATCHES.md`).
+#[cfg(all(feature = "_lp-time-driver", any(stm32wba, stm32u5, stm32u3)))]
+pub use crate::time_driver::stats as time_driver_stats;
+
+/// wrist-rs: `f` runs at each Stop entry and confirmed exit, inside the critical section
+/// around Stop, so it must be short and never block.
+pub fn set_stop_observer(f: fn(StopEvent)) {
+    STOP_OBSERVER.store(f as usize, Ordering::Relaxed);
+}
+
+pub(crate) fn notify_stop(event: StopEvent) {
+    let p = STOP_OBSERVER.load(Ordering::Relaxed);
+    if p != 0 {
+        // SAFETY: only `set_stop_observer` stores here, always a `fn(StopEvent)`.
+        let f: fn(StopEvent) = unsafe { mem::transmute::<usize, fn(StopEvent)>(p) };
+        f(event);
+    }
+}
 
 use cortex_m::peripheral::SCB;
 use critical_section::CriticalSection;
@@ -262,10 +306,12 @@ mod platform {
             if sr.stopf() {
                 let lpms = crate::pac::PWR.cr1().read().lpms();
                 debug!("low power: U5/U3 woke from STOP (LPMS={:?})", lpms);
+                crate::low_power::notify_stop(crate::low_power::StopEvent::Exit { lpms: lpms.to_bits() });
 
                 // HSE and all PLLs stop in any STOP mode on U5/U3.
                 // Full RCC restore from saved config on every STOP exit.
                 crate::rcc::reinit_saved(_cs);
+                crate::low_power::notify_stop(crate::low_power::StopEvent::Restored);
 
                 // GPTIM timer state is lost in Stop2/Stop3, needs re-init.
                 // LPTIM (_lp-time-driver) survives all STOP modes autonomously.
@@ -421,6 +467,7 @@ fn configure_pwr(cs: CriticalSection) -> bool {
         trace!("low power: enter stop");
         #[cfg(not(any(stm32l0, stm32f4)))]
         trace!("low power: enter stop: {:?}", stop_mode);
+        notify_stop(StopEvent::Enter);
 
         #[cfg(not(feature = "low-power-debug-with-sleep"))]
         scb.set_sleepdeep();
@@ -443,6 +490,11 @@ fn configure_pwr(cs: CriticalSection) -> bool {
 /// with the PAC directly.
 pub unsafe fn sleep(cs: CriticalSection) {
     let stop = configure_pwr(cs);
+    if !stop {
+        // SAFETY: read inside the critical section the refcounts change under.
+        let (stop1_holds, stop2_holds) = unsafe { (crate::rcc::REFCOUNT_STOP1, crate::rcc::REFCOUNT_STOP2) };
+        notify_stop(StopEvent::Sleep { stop1_holds, stop2_holds });
+    }
 
     // Only flush defmt if we are actually going into Stop. Avoids flush on every tiny WFE
     #[cfg(feature = "low-power-defmt-flush")]
@@ -459,5 +511,7 @@ pub unsafe fn sleep(cs: CriticalSection) {
 
     if stop {
         on_wakeup(cs);
+    } else {
+        notify_stop(StopEvent::Woke);
     }
 }

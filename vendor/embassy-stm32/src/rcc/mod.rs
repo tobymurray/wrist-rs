@@ -407,7 +407,8 @@ impl RccInfo {
 
     #[allow(dead_code)]
     fn increment_minimum_stop_refcount_with_cs(&self, _cs: CriticalSection) {
-        #[cfg(feature = "low-power")]
+        // wrist-rs: U5 retains peripheral registers in Stop2 (AN5371, AN5652); see WRIST-PATCHES.md.
+        #[cfg(all(feature = "low-power", not(stm32u5)))]
         match self.stop_mode {
             StopMode::Stop1 | StopMode::Stop2 => increment_stop_refcount(_cs, StopMode::Stop2),
             _ => {}
@@ -416,7 +417,7 @@ impl RccInfo {
 
     #[allow(dead_code)]
     fn decrement_minimum_stop_refcount_with_cs(&self, _cs: CriticalSection) {
-        #[cfg(feature = "low-power")]
+        #[cfg(all(feature = "low-power", not(stm32u5)))]
         match self.stop_mode {
             StopMode::Stop1 | StopMode::Stop2 => decrement_stop_refcount(_cs, StopMode::Stop2),
             _ => {}
@@ -657,6 +658,20 @@ pub fn reinit(config: Config, _rcc: &'_ mut crate::Peri<'_, crate::peripherals::
     })
 }
 
+/// wrist-rs: make `config` what every Stop exit restores, applied now if `now`; unlike
+/// [`reinit`] it leaves the time driver running, so `config` must not change the system
+/// clock or the time driver's clock.
+#[cfg(all(feature = "low-power", not(feature = "_dual-core")))]
+pub fn reconfigure(config: Config, now: bool, _rcc: &'_ mut crate::Peri<'_, crate::peripherals::RCC>) {
+    critical_section::with(|cs| {
+        if now {
+            init_rcc(cs, config);
+        } else {
+            unsafe { set_rcc_config(Some(config)) };
+        }
+    })
+}
+
 #[cfg(feature = "low-power")]
 #[allow(dead_code)]
 /// Re-initialize the `embassy-stm32` clock configuration with the saved configuration.
@@ -668,7 +683,8 @@ pub(crate) fn init_rcc(_cs: CriticalSection, config: Config) {
     unsafe {
         // if we are using a lp timer as the time driver, we need to make sure that the clock selection is sane
         // TODO: how to share this config from the secondary core thats using a lp timer? (right now its not detected as missing!)
-        #[cfg(feature = "_lp-time-driver")]
+        // wrist-rs: the LPTIM4 time driver selects its own clock.
+        #[cfg(all(feature = "_lp-time-driver", not(time_driver_lptim4)))]
         let config = {
             let mut config = config;
 
