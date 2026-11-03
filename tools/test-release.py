@@ -23,10 +23,11 @@ r = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(r)
 
 (LOADER, LOADER_SIZE), (APP, APP_SIZE) = r.layout()
+VECTORS = r.sram_map()
 
 
-def raw(addr, size=64):
-    return struct.pack('<II', 0x2026FFE0, addr + 9) + bytes(size - 8)
+def raw(addr, size=64, sp=VECTORS['STACK_START']):
+    return struct.pack('<II', sp, addr + 9) + bytes(size - 8)
 
 
 def tool_constant(tool, name):
@@ -70,6 +71,11 @@ class Packaging(unittest.TestCase):
                 (l, raw(APP, APP_SIZE+1), image), (l, bytes(64), image)]:
             with self.assertRaises(ValueError):
                 r.validate_image(loader, app, combined)
+        # The watch's window, then the 8-byte alignment that only packaging asks for.
+        for sp in [VECTORS['SP_MAX'] + 8, VECTORS['STACK_START'] - 4]:
+            bad = raw(APP, sp=sp)
+            with self.assertRaises(ValueError, msg=hex(sp)):
+                r.validate_image(l, bad, l + b'\xff' * (LOADER_SIZE-len(l)) + bad)
 
     def test_uapp_identity_crc_header_and_abi(self):
         self.assertEqual(r.validate_uapp(uapp(), '1.2.3')['libc_abi'], '0.0.3')
@@ -236,6 +242,10 @@ class Packaging(unittest.TestCase):
         self.assertEqual(tool_constant('wrist-update.py', 'APPLICATION'), (APP, APP_SIZE))
         self.assertEqual(tool_constant('combine-image.py', 'LOADER_SIZE'), LOADER_SIZE)
         self.assertEqual(tool_constant('combine-image.py', 'INSTALLER_MAX'), LOADER_SIZE + APP_SIZE)
+
+    def test_wrist_update_checks_the_watch_sp_window(self):
+        self.assertEqual(tool_constant('wrist-update.py', 'SP_MIN'), VECTORS['SP_MIN'])
+        self.assertEqual(tool_constant('wrist-update.py', 'SP_MAX'), VECTORS['SP_MAX'])
 
 
 def git(d, *args, when=None):

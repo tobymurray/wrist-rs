@@ -1,8 +1,7 @@
 //! The retained failure record (`HARDWARE.md`, "Retained failure record").
 use crate::{mmio::{read32, write32}, uart::Uart};
 use wrist_crash::{Build, Decoded, Kind, Record};
-/// The gap is the loader's mailbox (`MAILBOX_*` in `apps/wrist-loader/src/main.rs`).
-const ADDRS: [u32; 6] = [0x2026_FFE0, 0x2026_FFE4, 0x2026_FFE8, 0x2026_FFEC, 0x2026_FFF8, 0x2026_FFFC];
+const ADDRS: [u32; 6] = wrist_flash::vectors::FAILURE_RECORD;
 fn read() -> Decoded { wrist_crash::decode(ADDRS.map(|a| unsafe { read32(a) })) }
 fn write(words: wrist_crash::Words) {
     // The tag last.

@@ -51,6 +51,7 @@ use embassy_sync::signal::Signal;
 use wrist_glass::pages;
 use wrist_glass::scene::Scene;
 use wrist_glass::text::Glass;
+use wrist_flash::vectors::{HANDOFF_POP, SRAM_END, SRAM_START};
 use wrist_pages::{Button, Nav, Page, Press};
 
 use crate::mmio::{
@@ -73,7 +74,7 @@ extern "C" {
 }
 
 /// The initial SP words the bootloader accepts (`HARDWARE.md`, "Boot handoff").
-const SRAM_WINDOW: core::ops::RangeInclusive<u32> = 0x2000_0000..=0x2027_0000;
+const SRAM_WINDOW: core::ops::RangeInclusive<u32> = SRAM_START..=SRAM_END;
 
 /// RM0456 11.8.7.
 const RCC_CFGR2_RESET: u32 = 0x0000_6000;
@@ -1490,7 +1491,7 @@ fn report_vector_table(uart: Uart) {
     });
 
     uart.write_str("SP word + 16 still in SRAM: ");
-    uart.write_line(if SRAM_WINDOW.contains(&sp.saturating_add(16)) {
+    uart.write_line(if SRAM_WINDOW.contains(&sp.saturating_add(HANDOFF_POP)) {
         "yes"
     } else {
         "NO -- the bootloader's own pop reads past the end of SRAM"

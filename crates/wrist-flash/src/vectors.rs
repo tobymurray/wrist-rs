@@ -1,14 +1,33 @@
-//! Whether a file sent over the console is an image for the slot it is going to.
+//! Whether a file sent over the console is an image for the slot it is going to, and the top of
+//! SRAM that the vendor bootloader, the loader and the image share (HARDWARE.md, "Boot handoff").
 
 use core::ops::Range;
 
 use crate::layout::bank1;
 use crate::plan::{BANK1_BASE, KERNEL_BASE, PAGE_SIZE_U32};
 
-pub const SP_MIN: u32 = 0x2000_0000;
-/// The vendor bootloader accepts up to `0x2027_0000` but pops 16 bytes above the SP word
-/// (HARDWARE.md, "Boot handoff").
-pub const SP_MAX: u32 = 0x2026_FFF0;
+/// SRAM1 to SRAM5, contiguous.
+pub const SRAM_START: u32 = 0x2000_0000;
+pub const SRAM_END: u32 = 0x2027_0000;
+
+/// The vendor bootloader accepts an SP word up to [`SRAM_END`], then pops this much at and
+/// above it.
+pub const HANDOFF_POP: u32 = 16;
+pub const SP_MIN: u32 = SRAM_START;
+pub const SP_MAX: u32 = SRAM_END - HANDOFF_POP;
+
+/// The loader's mailbox: [`MAILBOX_TAG`], then `RCC_BDCR` as the loader found it.
+pub const MAILBOX_MAGIC: u32 = SRAM_END - 16;
+pub const MAILBOX_BDCR: u32 = SRAM_END - 12;
+pub const MAILBOX_TAG: u32 = u32::from_be_bytes(*b"LDCR");
+
+/// The retained failure record's words, either side of the mailbox (HARDWARE.md, "Retained
+/// failure record").
+pub const FAILURE_RECORD: [u32; 6] =
+    [SRAM_END - 32, SRAM_END - 28, SRAM_END - 24, SRAM_END - 20, SRAM_END - 8, SRAM_END - 4];
+/// Below the record and the mailbox.
+pub const STACK_START: u32 = FAILURE_RECORD[0];
+const _: () = assert!(STACK_START <= SP_MAX);
 
 /// The two slots of `apps/wrist-loader/LAYOUT.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,21 +129,53 @@ mod tests {
 
     #[test]
     fn refuses_an_even_reset_vector() {
-        assert!(!Target::Application.accepts(&table(0x2026_FFE0, 0x0806_8250)));
+        assert!(!Target::Application.accepts(&table(STACK_START, 0x0806_8250)));
     }
 
     #[test]
     fn the_sp_stops_16_bytes_below_the_bootloader_limit() {
         let reset = 0x0806_8251;
         assert!(Target::Application.accepts(&table(SP_MAX, reset)));
-        assert!(!Target::Application.accepts(&table(0x2027_0000, reset)));
+        assert!(!Target::Application.accepts(&table(SRAM_END, reset)));
         assert!(Target::Application.accepts(&table(SP_MIN, reset)));
         assert!(!Target::Application.accepts(&table(SP_MIN - 4, reset)));
     }
 
+    fn hex_after(line: &str, prefix: &str) -> u32 {
+        let hex: String = line.split(prefix).nth(1).unwrap().chars().take_while(|c| c.is_ascii_hexdigit() || *c == '_').collect();
+        u32::from_str_radix(&hex.replace('_', ""), 16).unwrap()
+    }
+
+    fn line<'a>(text: &'a str, start: &str) -> &'a str {
+        text.lines().find(|l| l.trim_start().starts_with(start)).unwrap_or_else(|| panic!("no {start}"))
+    }
+
+    #[test]
+    fn the_loader_and_both_linker_scripts_share_this_map() {
+        let app = include_str!("../../../apps/standalone-boot/memory.x");
+        assert_eq!(hex_after(line(app, "_stack_start"), "= 0x"), STACK_START);
+
+        let loader_x = include_str!("../../../apps/wrist-loader/memory.x");
+        let ram = line(loader_x, "RAM ");
+        let (origin, length) = (hex_after(ram, "ORIGIN = 0x"), hex_after(ram, "LENGTH = 0x"));
+        assert_eq!((origin, origin + length), (SRAM_START, SRAM_END));
+        let below: u32 = line(loader_x, "_stack_start")
+            .strip_prefix("_stack_start = ORIGIN(RAM) + LENGTH(RAM) - ")
+            .and_then(|rest| rest.strip_suffix(';'))
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(SRAM_END - below, STACK_START);
+
+        let loader = include_str!("../../../apps/wrist-loader/src/main.rs");
+        assert_eq!(hex_after(line(loader, "const MAILBOX_MAGIC:"), "= 0x"), MAILBOX_MAGIC);
+        assert_eq!(hex_after(line(loader, "const MAILBOX_BDCR:"), "= 0x"), MAILBOX_BDCR);
+        assert_eq!(hex_after(line(loader, "const MAILBOX_TAG:"), "= 0x"), MAILBOX_TAG);
+    }
+
     #[test]
     fn the_reset_vector_stays_inside_the_slot() {
-        let sp = 0x2026_FFE0;
+        let sp = STACK_START;
         let end = Target::Application.base() + Target::Application.size();
         assert!(Target::Application.accepts(&table(sp, (end - 2) | 1)));
         assert!(!Target::Application.accepts(&table(sp, end | 1)));
