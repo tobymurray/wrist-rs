@@ -40,7 +40,7 @@ extern "C" int32_t wrist_flash_unlock_selftest();
 
 extern "C" int32_t wrist_flash_erase_selftest();
 
-alignas(4) uint8_t gChunk[8192];
+alignas(4) uint8_t gChunk[Service::kPageSize];
 char               gLog[3072];
 
 }

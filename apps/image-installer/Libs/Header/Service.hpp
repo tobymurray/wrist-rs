@@ -17,13 +17,13 @@ public:
 
     void run();
 
+    static constexpr size_t kPageSize = 8192;
+
 private:
     static constexpr const char* kImageFile = "image.bin";
     static constexpr const char* kLogFile   = "install.log";
     /// Separate from `install.log`, which is never reopened.
     static constexpr const char* kStageLogFile = "stage.log";
-
-    static constexpr size_t kPageSize = 8192;
 
     /// A service started with no GUI, by anything but the launcher, leaves after this
     /// without having touched flash.

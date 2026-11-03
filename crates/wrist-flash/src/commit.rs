@@ -566,6 +566,9 @@ mod tests {
         assert_eq!(constant("kStatusMagic"), STATUS_MAGIC);
         assert_eq!(constant("kKernelBase"), KERNEL_BASE);
         assert_eq!(constant("kFlashTestTimedOut"), SELF_TEST_TIMED_OUT as u32);
+        let page_size = header.lines().find_map(|l| l.trim().strip_prefix("static constexpr size_t kPageSize = ")).unwrap();
+        assert_eq!(page_size, format!("{PAGE_SIZE};"));
+        assert!(source.contains("uint8_t gChunk[Service::kPageSize];"));
         assert!(source.contains("(st_erase & kFlashTestTimedOut) ? \" [poll timeout]\""));
         assert!(!source.contains("0xFFFFu) ? \"(poll timeout)\""), "outcomes 2 and 3 never carry a timeout");
         assert!(source.contains(&format!("((st[1] >> 16) & 0xFFFFu) == {OUTCOME_BEGAN}u")));
