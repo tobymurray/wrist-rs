@@ -891,6 +891,9 @@ async fn display(mut pwr_int: ExtiInput<'static, Async>) -> ! {
         if new_minute && minute.is_multiple_of(60) {
             drawn = None;
         }
+        if new_minute && imu::counting() {
+            imu::read_now().await;
+        }
         if power.due(pwr_int.is_low(), new_minute) {
             if let Some(bus) = pmic::BUS.lock().await.as_mut() {
                 power.service(bus).await;

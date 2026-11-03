@@ -25,6 +25,8 @@ stock version is not supported until they name it.
 ## What it does
 
 - Shows the time, the day and date, and the battery's charge.
+- Counts steps with the IMU on the GNSS module and shows today's under the charge. The count
+  carries on through restarts and updates and starts again at midnight.
 - Lights the face when you press a button; Up and Down step to the battery and about pages.
 - One daily alarm, set from the console or with `tools/wrist-time.py --alarm HH:MM`. It
   buzzes, lights the face and shows `ALARM` until any button or a minute stops it, follows

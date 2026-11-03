@@ -20,6 +20,11 @@ charge-unset = ‒‒ %
 face-alarm-ringing = ALARM
 # In place of the date after the alarm was found too late to ring, until a press.
 face-alarm-missed = MISSED
+# Steps counted since midnight, under the charge; a whole number, at most six digits.
+steps-today = { $steps ->
+    [one] { $steps } step
+   *[other] { $steps } steps
+}
 
 ## Battery
 

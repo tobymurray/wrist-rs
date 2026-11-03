@@ -82,6 +82,7 @@ pub fn status(soc_pct: Option<u8>) -> Status {
         alarm: crate::alarm::shown().map(|a| Clock { h: a.hour(), m: a.minute(), s: 0 }),
         ringing: crate::alarm::ringing(),
         missed: crate::alarm::missed(),
+        steps: crate::imu::today(),
     }
 }
 
