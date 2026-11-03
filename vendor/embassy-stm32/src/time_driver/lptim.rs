@@ -5,25 +5,42 @@ use core::cell::Cell;
 use core::cell::RefCell;
 #[cfg(feature = "low-power")]
 use core::sync::atomic::AtomicBool;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, Ordering, compiler_fence};
 
 use critical_section::CriticalSection;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time_driver::{Driver, TICK_HZ};
 use embassy_time_queue_utils::Queue;
+#[cfg(not(time_driver_lptim4))]
 use stm32_metapac::lptim::Lptim;
 
 use super::AlarmState;
 use crate::interrupt::typelevel::Interrupt;
-use crate::lptim::{SealedInstance, vals};
+use crate::lptim::vals;
+#[cfg(not(time_driver_lptim4))]
+use crate::lptim::SealedInstance;
 use crate::rcc;
+#[cfg(not(time_driver_lptim4))]
 use crate::rcc::SealedRccPeripheral;
 
 type T = crate::_generated::TimeDriverPeripheral;
 
-fn regs_lptim() -> Lptim {
-    T::regs()
+#[cfg(not(time_driver_lptim4))]
+type Regs = Lptim;
+// wrist-rs: LPTIM4 has the basic register block, which `SealedInstance::regs` does not cover.
+#[cfg(time_driver_lptim4)]
+type Regs = stm32_metapac::lptim::LptimBasic;
+
+fn regs_lptim() -> Regs {
+    #[cfg(not(time_driver_lptim4))]
+    {
+        T::regs()
+    }
+    #[cfg(time_driver_lptim4)]
+    {
+        crate::pac::LPTIM4
+    }
 }
 
 // LPTIM v2a/v2b (STM32WBA, STM32U5, STM32U3, etc.) renames the interrupt
@@ -32,7 +49,7 @@ fn regs_lptim() -> Lptim {
 // to an indexed `ccr(n)`.
 
 /// Read the interrupt enable register value as a raw u32.
-fn ier_read(r: Lptim) -> u32 {
+fn ier_read(r: Regs) -> u32 {
     #[cfg(not(any(stm32wba, stm32u5, stm32u3)))]
     {
         r.ier().read().0
@@ -44,7 +61,7 @@ fn ier_read(r: Lptim) -> u32 {
 }
 
 /// Check if the compare-capture interrupt is enabled for channel `n`.
-fn ier_ccie(r: Lptim, n: usize) -> bool {
+fn ier_ccie(r: Regs, n: usize) -> bool {
     #[cfg(not(any(stm32wba, stm32u5, stm32u3)))]
     {
         r.ier().read().ccie(n)
@@ -56,30 +73,380 @@ fn ier_ccie(r: Lptim, n: usize) -> bool {
 }
 
 /// Modify the interrupt enable register.
-fn ier_set_ueie(r: Lptim, val: bool) {
+fn ier_set_ueie(r: Regs, val: bool) {
     #[cfg(not(any(stm32wba, stm32u5, stm32u3)))]
     r.ier().modify(|w| w.set_ueie(val));
     #[cfg(any(stm32wba, stm32u5, stm32u3))]
-    r.dier().modify(|w| w.set_ueie(val));
+    {
+        let mut w = r.dier().read();
+        w.set_ueie(val);
+        dier_write(r, w.0);
+    }
 }
 
-fn ier_set_ccie(r: Lptim, n: usize, val: bool) {
+fn ier_set_ccie(r: Regs, n: usize, val: bool) {
     #[cfg(not(any(stm32wba, stm32u5, stm32u3)))]
     r.ier().modify(|w| w.set_ccie(n, val));
     #[cfg(any(stm32wba, stm32u5, stm32u3))]
-    r.dier().modify(|w| w.set_ccie(n, val));
+    {
+        let mut w = r.dier().read();
+        w.set_ccie(n, val);
+        dier_write(r, w.0);
+    }
+}
+
+/// wrist-rs: the one way DIER changes. A write is waited out to its `DIEROK`, as RM0456
+/// 58.7.7 asks before the next; one still unacknowledged at Stop 2 entry loses its compare wakeup.
+/// A write that changes nothing is skipped: changing an enable clears its flag (ES0553 2.12.3).
+#[cfg(any(stm32wba, stm32u5, stm32u3))]
+fn dier_write(r: Regs, val: u32) {
+    let old = ier_read(r);
+    if old == val {
+        stats::skipped();
+        return;
+    }
+    stats::written(old, val);
+    let write = || {
+        r.icr().write(|w| w.set_dierokcf(true));
+        r.dier().write(|w| w.0 = val);
+    };
+    if let Some((from, _)) = write_acknowledged(r, true, val, write, || r.isr().read().dierok()) {
+        stats::dierok_wait(from);
+        stats::acknowledged(ier_read(r));
+    }
+}
+
+/// wrist-rs: an acknowledgement has taken at most 7 LSE cycles (215 us); this is 65.
+#[cfg(any(stm32wba, stm32u5, stm32u3))]
+const ACK_TIMEOUT_US: u32 = 2_000;
+
+/// wrist-rs: `write`s, which clears `ok` first, and waits for `ok`. Unacknowledged, the write is
+/// made once more, then given up: a compare wakeup it loses is an alarm the next overflow finds
+/// overdue. When acknowledged, the cycle count it was first written at and whether `ok` was
+/// already set at the first poll.
+#[cfg(any(stm32wba, stm32u5, stm32u3))]
+fn write_acknowledged(r: Regs, dier: bool, val: u32, write: impl Fn(), ok: impl Fn() -> bool) -> Option<(u32, bool)> {
+    write();
+    let from = stats::cycles();
+    if ok() {
+        return Some((from, true));
+    }
+    if poll(from, &ok) {
+        return Some((from, false));
+    }
+    let read_back = if dier { ier_read(r) } else { u32::from(r.ccr(0).read().ccr()) };
+    let (cr, isr, bdcr) = (r.cr().read().0, r.isr().read().0, crate::pac::RCC.bdcr().read().0);
+    let counter = r.cnt().read().cnt();
+    write();
+    let acknowledged = poll(stats::cycles(), &ok);
+    let counter_ticks = r.cnt().read().cnt().wrapping_sub(counter);
+    let timeout = stats::Timeout { dier, cr, isr, bdcr, written: val, read_back, counter_ticks };
+    stats::timed_out(timeout, acknowledged);
+    acknowledged.then_some((from, false))
+}
+
+/// wrist-rs: whether `ok` sets within `ACK_TIMEOUT_US` of `from`.
+#[cfg(any(stm32wba, stm32u5, stm32u3))]
+fn poll(from: u32, ok: impl Fn() -> bool) -> bool {
+    // SAFETY: the clocks are set before the time driver starts, and only in critical sections.
+    let hz = unsafe { crate::rcc::get_freqs() }.sys.to_hertz().map_or(160_000_000, |f| f.0);
+    let limit = hz / 1_000_000 * ACK_TIMEOUT_US;
+    while stats::cycles().wrapping_sub(from) < limit {
+        if ok() {
+            return true;
+        }
+    }
+    ok()
+}
+
+/// wrist-rs: what the driver saw, for diagnosing late wakes; see WRIST-PATCHES.md.
+/// The console's `power` report names each field.
+#[cfg(any(stm32wba, stm32u5, stm32u3))]
+#[allow(missing_docs)]
+pub mod stats {
+    use core::cell::RefCell;
+    use core::sync::atomic::Ordering::Relaxed;
+    use core::sync::atomic::{AtomicBool, AtomicU32};
+
+    use embassy_sync::blocking_mutex::Mutex;
+    use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+
+    /// Armed with `CCIE` clear, for `next_period` to enable.
+    pub const FAR: u16 = 1 << 0;
+    /// Its `CCIE` write came before the previous `DIER` write's `DIEROK`.
+    pub const EARLY: u16 = 1 << 1;
+    /// Stop was entered before its `CCIE` write's `DIEROK`.
+    pub const STOP_PENDING: u16 = 1 << 2;
+    /// Its `CMPOK` was already set at the first poll.
+    pub const CMPOK_FIRST_POLL: u16 = 1 << 3;
+    /// Found in an overflow interrupt.
+    pub const AT_OVERFLOW: u16 = 1 << 4;
+    /// That interrupt read `CCIE` clear before `next_period`.
+    pub const CCIE_CLEAR: u16 = 1 << 5;
+    /// `CCR` did not hold the alarm's low 16 bits.
+    pub const CCR_WRONG: u16 = 1 << 6;
+    /// Found overdue by another timer's `schedule_wake`.
+    pub const BY_SCHEDULE: u16 = 1 << 7;
+    /// Its arming turned `CCIE` on from off, which clears `CC1IF` (ES0553 2.12.3).
+    pub const CCIE_ON: u16 = 1 << 8;
+
+    /// An alarm handled more than 5 ms after its time.
+    #[derive(Clone, Copy, Default)]
+    pub struct Late {
+        pub at_ticks: u32,
+        pub late_ticks: u32,
+        pub alarm_lo: u16,
+        pub flags: u16,
+    }
+
+    /// A write not acknowledged in time, with the registers as its wait ended.
+    #[derive(Clone, Copy, Default)]
+    pub struct Timeout {
+        /// `DIER`, else `CCR`.
+        pub dier: bool,
+        pub cr: u32,
+        pub isr: u32,
+        /// `RCC_BDCR`.
+        pub bdcr: u32,
+        pub written: u32,
+        pub read_back: u32,
+        /// How far the counter moved while the write made again was waited on.
+        pub counter_ticks: u16,
+    }
+
+    /// Cycles are the core's, at the clock in force.
+    #[derive(Clone, Copy, Default)]
+    pub struct Stats {
+        pub dier_writes: u32,
+        pub dier_skipped: u32,
+        pub dier_early: u32,
+        pub dier_mismatch: u32,
+        pub stop_dier_pending: u32,
+        pub overdue_at_overflow: u32,
+        pub overdue_ccie_clear: u32,
+        pub cmpok_waits: u32,
+        pub compare_skipped: u32,
+        pub cmpok_first_poll: u32,
+        pub cmpok_cycles: u32,
+        pub cmpok_max_cycles: u32,
+        pub dierok_waits: u32,
+        pub dierok_cycles: u32,
+        pub dierok_max_cycles: u32,
+        /// Waits that timed out, and of those, the ones the write made again did not end.
+        pub dierok_timeouts: u32,
+        pub dierok_given_up: u32,
+        pub cmpok_timeouts: u32,
+        pub cmpok_given_up: u32,
+        pub last_timeout: Timeout,
+        pub late_alarms: u32,
+        pub late_max_ticks: u32,
+        /// Oldest first.
+        pub late: [Late; 8],
+    }
+
+    const LATE_TICKS: u64 = 164;
+    const NO_LATE: Late = Late { at_ticks: 0, late_ticks: 0, alarm_lo: 0, flags: 0 };
+    const NO_TIMEOUT: Timeout =
+        Timeout { dier: false, cr: 0, isr: 0, bdcr: 0, written: 0, read_back: 0, counter_ticks: 0 };
+
+    static DIER_WRITES: AtomicU32 = AtomicU32::new(0);
+    static DIER_SKIPPED: AtomicU32 = AtomicU32::new(0);
+    static DIER_EARLY: AtomicU32 = AtomicU32::new(0);
+    static DIER_MISMATCH: AtomicU32 = AtomicU32::new(0);
+    static STOP_DIER_PENDING: AtomicU32 = AtomicU32::new(0);
+    static OVERDUE_AT_OVERFLOW: AtomicU32 = AtomicU32::new(0);
+    static OVERDUE_CCIE_CLEAR: AtomicU32 = AtomicU32::new(0);
+    static CMPOK_WAITS: AtomicU32 = AtomicU32::new(0);
+    static COMPARE_SKIPPED: AtomicU32 = AtomicU32::new(0);
+    static CMPOK_FIRST: AtomicU32 = AtomicU32::new(0);
+    static CMPOK_CYCLES: AtomicU32 = AtomicU32::new(0);
+    static CMPOK_MAX: AtomicU32 = AtomicU32::new(0);
+    static DIEROK_WAITS: AtomicU32 = AtomicU32::new(0);
+    static DIEROK_CYCLES: AtomicU32 = AtomicU32::new(0);
+    static DIEROK_MAX: AtomicU32 = AtomicU32::new(0);
+    static DIEROK_TIMEOUTS: AtomicU32 = AtomicU32::new(0);
+    static DIEROK_GIVEN_UP: AtomicU32 = AtomicU32::new(0);
+    static CMPOK_TIMEOUTS: AtomicU32 = AtomicU32::new(0);
+    static CMPOK_GIVEN_UP: AtomicU32 = AtomicU32::new(0);
+    static LAST_TIMEOUT: Mutex<CriticalSectionRawMutex, RefCell<Timeout>> = Mutex::new(RefCell::new(NO_TIMEOUT));
+    static LATE_ALARMS: AtomicU32 = AtomicU32::new(0);
+    static LATE_MAX: AtomicU32 = AtomicU32::new(0);
+    static LATE: Mutex<CriticalSectionRawMutex, RefCell<[Late; 8]>> = Mutex::new(RefCell::new([NO_LATE; 8]));
+
+    /// A `DIER` write not yet acknowledged, and the value it wrote.
+    static PENDING: AtomicBool = AtomicBool::new(false);
+    static WRITTEN: AtomicU32 = AtomicU32::new(0);
+    static LAST_EARLY: AtomicBool = AtomicBool::new(false);
+    static LAST_CCIE_ON: AtomicBool = AtomicBool::new(false);
+    static LAST_CMPOK_FIRST: AtomicBool = AtomicBool::new(false);
+    /// The armed alarm's flags.
+    static ALARM_FLAGS: AtomicU32 = AtomicU32::new(0);
+
+    pub fn snapshot() -> Stats {
+        Stats {
+            dier_writes: DIER_WRITES.load(Relaxed),
+            dier_skipped: DIER_SKIPPED.load(Relaxed),
+            dier_early: DIER_EARLY.load(Relaxed),
+            dier_mismatch: DIER_MISMATCH.load(Relaxed),
+            stop_dier_pending: STOP_DIER_PENDING.load(Relaxed),
+            overdue_at_overflow: OVERDUE_AT_OVERFLOW.load(Relaxed),
+            overdue_ccie_clear: OVERDUE_CCIE_CLEAR.load(Relaxed),
+            cmpok_waits: CMPOK_WAITS.load(Relaxed),
+            compare_skipped: COMPARE_SKIPPED.load(Relaxed),
+            cmpok_first_poll: CMPOK_FIRST.load(Relaxed),
+            cmpok_cycles: CMPOK_CYCLES.load(Relaxed),
+            cmpok_max_cycles: CMPOK_MAX.load(Relaxed),
+            dierok_waits: DIEROK_WAITS.load(Relaxed),
+            dierok_cycles: DIEROK_CYCLES.load(Relaxed),
+            dierok_max_cycles: DIEROK_MAX.load(Relaxed),
+            dierok_timeouts: DIEROK_TIMEOUTS.load(Relaxed),
+            dierok_given_up: DIEROK_GIVEN_UP.load(Relaxed),
+            cmpok_timeouts: CMPOK_TIMEOUTS.load(Relaxed),
+            cmpok_given_up: CMPOK_GIVEN_UP.load(Relaxed),
+            last_timeout: LAST_TIMEOUT.lock(|t| *t.borrow()),
+            late_alarms: LATE_ALARMS.load(Relaxed),
+            late_max_ticks: LATE_MAX.load(Relaxed),
+            late: LATE.lock(|l| *l.borrow()),
+        }
+    }
+
+    /// The core's cycle counter, enabled again if Stop cleared it.
+    pub(super) fn cycles() -> u32 {
+        use cortex_m::peripheral::{DCB, DWT};
+        if !DWT::cycle_counter_enabled() {
+            // SAFETY: sets only the trace enable and the counter enable.
+            unsafe {
+                (*DCB::PTR).demcr.modify(|w| w | 1 << 24);
+                (*DWT::PTR).ctrl.modify(|w| w | 1);
+            }
+        }
+        DWT::cycle_count()
+    }
+
+    fn add_cycles(sum: &AtomicU32, max: &AtomicU32, from: u32) {
+        let took = cycles().wrapping_sub(from);
+        sum.fetch_add(took, Relaxed);
+        max.fetch_max(took, Relaxed);
+    }
+
+    pub(super) fn cmpok_wait(from: u32, first_poll: bool) {
+        add_cycles(&CMPOK_CYCLES, &CMPOK_MAX, from);
+        CMPOK_WAITS.fetch_add(1, Relaxed);
+        if first_poll {
+            CMPOK_FIRST.fetch_add(1, Relaxed);
+        }
+        LAST_CMPOK_FIRST.store(first_poll, Relaxed);
+    }
+
+    pub(super) fn compare_skipped() {
+        COMPARE_SKIPPED.fetch_add(1, Relaxed);
+        LAST_CMPOK_FIRST.store(false, Relaxed);
+    }
+
+    pub(super) fn dierok_wait(from: u32) {
+        add_cycles(&DIEROK_CYCLES, &DIEROK_MAX, from);
+        DIEROK_WAITS.fetch_add(1, Relaxed);
+    }
+
+    pub(super) fn timed_out(timeout: Timeout, acknowledged: bool) {
+        let (timeouts, given_up) =
+            if timeout.dier { (&DIEROK_TIMEOUTS, &DIEROK_GIVEN_UP) } else { (&CMPOK_TIMEOUTS, &CMPOK_GIVEN_UP) };
+        timeouts.fetch_add(1, Relaxed);
+        if !acknowledged {
+            given_up.fetch_add(1, Relaxed);
+        }
+        LAST_TIMEOUT.lock(|t| *t.borrow_mut() = timeout);
+    }
+
+    pub(super) fn skipped() {
+        DIER_SKIPPED.fetch_add(1, Relaxed);
+    }
+
+    pub(super) fn written(old: u32, val: u32) {
+        DIER_WRITES.fetch_add(1, Relaxed);
+        let on = old & 1 == 0 && val & 1 != 0;
+        LAST_CCIE_ON.store(on, Relaxed);
+        if on {
+            ALARM_FLAGS.fetch_or(u32::from(CCIE_ON), Relaxed);
+        }
+        WRITTEN.store(val, Relaxed);
+        let early = PENDING.swap(true, Relaxed);
+        if early {
+            DIER_EARLY.fetch_add(1, Relaxed);
+        }
+        LAST_EARLY.store(early, Relaxed);
+    }
+
+    /// `DIEROK` seen: whether `DIER` reads back what was written.
+    pub(super) fn acknowledged(read_back: u32) {
+        if PENDING.swap(false, Relaxed) && read_back != WRITTEN.load(Relaxed) {
+            DIER_MISMATCH.fetch_add(1, Relaxed);
+        }
+    }
+
+    pub(super) fn pending() -> bool {
+        PENDING.load(Relaxed)
+    }
+
+    pub(super) fn stop_with_pending() {
+        STOP_DIER_PENDING.fetch_add(1, Relaxed);
+        ALARM_FLAGS.fetch_or(u32::from(STOP_PENDING), Relaxed);
+    }
+
+    pub(super) fn armed(far: bool) {
+        let mut f = if far { FAR } else { 0 };
+        if LAST_EARLY.load(Relaxed) {
+            f |= EARLY;
+        }
+        if LAST_CMPOK_FIRST.load(Relaxed) {
+            f |= CMPOK_FIRST_POLL;
+        }
+        if LAST_CCIE_ON.load(Relaxed) {
+            f |= CCIE_ON;
+        }
+        ALARM_FLAGS.store(u32::from(f), Relaxed);
+    }
+
+    pub(super) fn overdue_at_overflow(ccie_clear: bool) {
+        OVERDUE_AT_OVERFLOW.fetch_add(1, Relaxed);
+        if ccie_clear {
+            OVERDUE_CCIE_CLEAR.fetch_add(1, Relaxed);
+        }
+    }
+
+    /// The alarm due at `alarm` is being handled at `now`.
+    #[allow(clippy::cast_possible_truncation)]
+    pub(super) fn handled(alarm: u64, now: u64, ccr: u16, context: u16) {
+        if alarm == u64::MAX || now < alarm + LATE_TICKS {
+            return;
+        }
+        let late_ticks = (now - alarm).min(u64::from(u32::MAX)) as u32;
+        let mut flags = ALARM_FLAGS.load(Relaxed) as u16 | context;
+        if ccr != alarm as u16 {
+            flags |= CCR_WRONG;
+        }
+        LATE_ALARMS.fetch_add(1, Relaxed);
+        LATE_MAX.fetch_max(late_ticks, Relaxed);
+        LATE.lock(|l| {
+            let mut l = l.borrow_mut();
+            l.copy_within(1.., 0);
+            l[7] = Late { at_ticks: now as u32, late_ticks, alarm_lo: alarm as u16, flags };
+        });
+    }
 }
 
 /// Write a raw value to the ICR (interrupt clear register).
-fn icr_write_raw(r: Lptim, val: u32) {
+fn icr_write_raw(r: Regs, val: u32) {
     #[cfg(not(any(stm32wba, stm32u5, stm32u3)))]
     r.icr().write_value(stm32_metapac::lptim::regs::Icr(val));
-    #[cfg(any(stm32wba, stm32u5, stm32u3))]
+    #[cfg(all(any(stm32wba, stm32u5, stm32u3), not(time_driver_lptim4)))]
     r.icr().write_value(stm32_metapac::lptim::regs::IcrAdv(val));
+    #[cfg(time_driver_lptim4)]
+    r.icr().write_value(stm32_metapac::lptim::regs::IcrBasic(val));
 }
 
 /// Write the compare value and wait for the write to be acknowledged.
-fn write_compare(r: Lptim, val: u16) {
+fn write_compare(r: Regs, val: u16) {
     #[cfg(not(any(stm32wba, stm32u5, stm32u3)))]
     {
         // On STM32WL, CMPOK remains set after a compare update. Clear the stale
@@ -92,10 +459,19 @@ fn write_compare(r: Lptim, val: u16) {
     }
     #[cfg(any(stm32wba, stm32u5, stm32u3))]
     {
-        // As on STM32WL, clear the stale CMPOK.
-        r.icr().write(|w| w.set_cmpokcf(0, true));
-        r.ccr(0).write(|w| w.set_ccr(val));
-        while !r.isr().read().cmpok(0) {}
+        // wrist-rs: every write is waited out below, so a `CCR` already holding `val` needs none.
+        if r.ccr(0).read().ccr() == val {
+            stats::compare_skipped();
+            return;
+        }
+        // As on STM32WL, clear the stale CMPOK. wrist-rs: the wait is bounded; see WRIST-PATCHES.md.
+        let write = || {
+            r.icr().write(|w| w.set_cmpokcf(0, true));
+            r.ccr(0).write(|w| w.set_ccr(val));
+        };
+        if let Some((from, first)) = write_acknowledged(r, false, u32::from(val), write, || r.isr().read().cmpok(0)) {
+            stats::cmpok_wait(from, first);
+        }
     }
 }
 
@@ -130,7 +506,19 @@ impl RtcDriver {
         // we want this to increment the stop mode counter (some lp timer can't do STOP2)
         rcc::enable_and_reset_with_cs::<T>(cs);
 
+        #[cfg(not(time_driver_lptim4))]
         let timer_freq = T::frequency();
+        // wrist-rs: the chip data does not model LPTIM34SEL, so LPTIM4 is put on the LSE here,
+        // or on the LSI when the LSE is not running, its 32 kHz counted as 32768 Hz.
+        #[cfg(time_driver_lptim4)]
+        let timer_freq = {
+            use crate::pac::rcc::vals::Lptimsel;
+            let bdcr = crate::pac::RCC.bdcr().read();
+            assert!(bdcr.lserdy() || bdcr.lsirdy(), "LPTIM4 time driver: neither the LSE nor the LSI is running");
+            let sel = if bdcr.lserdy() { Lptimsel::Lse } else { Lptimsel::Lsi };
+            crate::pac::RCC.ccipr3().modify(|w| w.set_lptim34sel(sel));
+            crate::time::Hertz(32_768)
+        };
 
         r.cnt().write(|w| w.set_cnt(0));
 
@@ -162,7 +550,7 @@ impl RtcDriver {
         r.arr().write(|w| w.set_arr(u16::MAX));
 
         // Enable overflow interrupts
-        ier_set_ueie(T::regs(), true);
+        ier_set_ueie(regs_lptim(), true);
 
         <T as crate::lptim::SealedBasicInstance>::GlobalInterrupt::unpend();
         unsafe {
@@ -227,6 +615,11 @@ impl RtcDriver {
                     crate::pac::RCC.srdamr().modify(|w| w.set_lptim3amen(true));
                     crate::pac::RCC.apb3smenr().modify(|w| w.set_lptim3smen(true));
                 }
+                #[cfg(time_driver_lptim4)]
+                {
+                    crate::pac::RCC.srdamr().modify(|w| w.set_lptim4amen(true));
+                    crate::pac::RCC.apb3smenr().modify(|w| w.set_lptim4smen(true));
+                }
             }
         }
     }
@@ -242,6 +635,10 @@ impl RtcDriver {
         critical_section::with(|cs| {
             let sr = r.isr().read();
             let ier = ier_read(r);
+            #[cfg(any(stm32wba, stm32u5, stm32u3))]
+            if sr.dierok() {
+                stats::acknowledged(ier);
+            }
 
             // Clear the flags read, and only those. Bits in ICR are "write 1 to clear". A flag set
             // since the read stays set and enters this handler again: clearing it here would lose
@@ -254,6 +651,12 @@ impl RtcDriver {
             }
 
             if sr.ccif(0) && ier_ccie(r, 0) {
+                #[cfg(any(stm32wba, stm32u5, stm32u3))]
+                {
+                    let at = self.alarm.borrow(cs).timestamp.get();
+                    let context = if sr.ue() { stats::AT_OVERFLOW } else { 0 };
+                    stats::handled(at, self.now(), r.ccr(0).read().ccr(), context);
+                }
                 self.trigger_alarm(cs);
             }
         })
@@ -273,12 +676,21 @@ impl RtcDriver {
 
             // Arm now if it falls in this counter cycle
             if at < t + 0x1_0000 {
+                #[cfg(any(stm32wba, stm32u5, stm32u3))]
+                let ccie_clear = !ier_ccie(r, 0);
                 // just enable it. `set_alarm` has already set the correct CCR val.
                 ier_set_ccie(r, 0, true);
 
                 // The overflow interrupt may run after an alarm a few ticks into the new cycle
                 // has already passed; the compare match was then missed. Fire it now.
+                // wrist-rs: so is one whose flag enabling `CCIE` cleared (ES0553 2.12.3).
                 if at <= self.now() {
+                    #[cfg(any(stm32wba, stm32u5, stm32u3))]
+                    {
+                        stats::overdue_at_overflow(ccie_clear);
+                        let context = stats::AT_OVERFLOW | if ccie_clear { stats::CCIE_CLEAR } else { 0 };
+                        stats::handled(at, self.now(), r.ccr(0).read().ccr(), context);
+                    }
                     self.trigger_alarm(cs);
                 }
             }
@@ -303,9 +715,8 @@ impl RtcDriver {
         if timestamp <= t {
             trace!("set_alarm: timestamp <= t");
             // If alarm timestamp has passed the alarm will not fire.
-            // Disarm the alarm and return `false` to indicate that.
-            ier_set_ccie(r, 0, false);
-
+            // Return `false` to indicate that. wrist-rs: `CCIE` is left for the caller's retry,
+            // which always follows, to set once.
             self.alarm.borrow(cs).timestamp.set(u64::MAX);
 
             return false;
@@ -318,6 +729,8 @@ impl RtcDriver {
         // Enable it if it'll happen this counter cycle. Otherwise, `next_period` will enable it.
         let next_overflow = ((t >> 16) + 1) << 16;
         ier_set_ccie(r, 0, timestamp < next_overflow);
+        #[cfg(any(stm32wba, stm32u5, stm32u3))]
+        stats::armed(timestamp >= next_overflow);
 
         // Reevaluate if the alarm timestamp is still in the future
         let t = self.now();
@@ -325,10 +738,9 @@ impl RtcDriver {
             trace!("set_alarm: timestamp <= t (after set)");
             // If alarm timestamp has passed since we set it, we have a race condition and
             // the alarm may or may not have fired.
-            // Disarm the alarm and return `false` to indicate that.
+            // Return `false` to indicate that.
             // It is the caller's responsibility to handle this ambiguity.
-            ier_set_ccie(r, 0, false);
-
+            // wrist-rs: as above, `CCIE` is left for the retry.
             self.alarm.borrow(cs).timestamp.set(u64::MAX);
 
             return false;
@@ -360,6 +772,10 @@ impl super::LPTimeDriver for RtcDriver {
             );
             Err(())
         } else {
+            #[cfg(any(stm32wba, stm32u5, stm32u3))]
+            if stats::pending() && !regs_lptim().isr().read().dierok() {
+                stats::stop_with_pending();
+            }
             self.is_stopped.store(true, Ordering::Relaxed);
             Ok(())
         }
@@ -381,34 +797,20 @@ impl Driver for RtcDriver {
     fn now(&self) -> u64 {
         let r = regs_lptim();
 
-        // This CS is needed to prevent race conditions that cause time to go backwards when now()
-        // is called at the exact instant the LPTIM_CNT register overflows. When an overflow
-        // happens, `period` is advanced by the update-event interrupt, so period and LPTIM_CNT
-        // must be sampled atomically, i.e. with that interrupt masked. Otherwise, the counter can
-        // wrap while `period` still has the previous value, and composing them yields a timestamp
-        // a whole period in the past, causing time to go backwards, and any
-        // `Instant::duration_since` spanning that window panics.
-        critical_section::with(|_| {
-            // RM0456 says: "When the LPTIM is running, reading the LPTIM_CNT register may return
-            // unreliable values. In this case it is necessary to perform consecutive reads until
-            // two returned values are identical."
-            let mut counter = r.cnt().read().cnt();
-            loop {
-                let again = r.cnt().read().cnt();
-                if again == counter {
-                    break;
-                }
-                counter = again;
+        // wrist-rs: the counter is read between two reads of the pending overflow and of
+        // `period`, and the sample is used only if neither changed; see WRIST-PATCHES.md.
+        loop {
+            let period = self.period.load(Ordering::Relaxed);
+            compiler_fence(Ordering::Acquire);
+            let pending = r.isr().read().ue();
+            let counter = r.cnt().read().cnt();
+            let counter2 = r.cnt().read().cnt();
+            let pending2 = r.isr().read().ue();
+            let period2 = self.period.load(Ordering::Relaxed);
+            if let Some(now) = wrist_time::counter::extend((period, period2), (pending, pending2), (counter, counter2)) {
+                break now;
             }
-
-            // With the period-incrementing, a pending update event unambiguously means
-            // the counter has wrapped and `next_period` has not yet accounted for it. NB: we DO
-            // NOT clear the ue bit, that (and consequently incrementing self.period) is for the
-            // ISR to do once we release this CS.
-            let period = self.period.load(Ordering::Relaxed) + r.isr().read().ue() as u32;
-
-            ((period as u64) << 16) + counter as u64
-        })
+        }
     }
 
     fn schedule_wake(&self, at: u64, waker: &core::task::Waker) {
@@ -416,6 +818,12 @@ impl Driver for RtcDriver {
             let mut queue = self.queue.borrow(cs).borrow_mut();
 
             if queue.schedule_wake(at, waker) {
+                #[cfg(any(stm32wba, stm32u5, stm32u3))]
+                {
+                    let alarm = self.alarm.borrow(cs).timestamp.get();
+                    let ccr = regs_lptim().ccr(0).read().ccr();
+                    stats::handled(alarm, self.now(), ccr, stats::BY_SCHEDULE);
+                }
                 let mut next = queue.next_expiration(self.now());
                 while !self.set_alarm(cs, next) {
                     next = queue.next_expiration(self.now());
