@@ -342,8 +342,8 @@ impl<T: LinkedListItem, const N: usize> Table<T, N> {
 
         let items = match direction {
             Dir::MemoryToPeripheral => [
-                T::new_write(request, &mut buffer[..half_len], peri_addr, config),
-                T::new_write(request, &mut buffer[half_len..], peri_addr, config),
+                T::new_write(request, &buffer[..half_len], peri_addr, config),
+                T::new_write(request, &buffer[half_len..], peri_addr, config),
             ],
             Dir::PeripheralToMemory => [
                 T::new_read(request, peri_addr, &mut buffer[..half_len], config),
@@ -375,7 +375,7 @@ impl<T: LinkedListItem, const N: usize> Table<T, N> {
     pub fn transfer_count(&self) -> usize {
         let mut count = 0;
         for item in self.items {
-            count += item.transfer_count() as usize
+            count += item.transfer_count()
         }
 
         count
@@ -419,14 +419,26 @@ impl<T: LinkedListItem, const N: usize> Table<T, N> {
     }
 
     /// Linked list offset address (lower 16 address bits) at the selected index.
+    ///
+    /// The channel takes the upper 16 bits of every item's address from `LBAR`, which holds
+    /// [`Self::base_address`]: all items must lie in the same 64 KiB as the first. Panics for an
+    /// item outside it, which the channel would otherwise fetch from 64 KiB away. Aligning the
+    /// table to a power of two no smaller than itself rules this out.
     pub fn offset_address(&self, index: usize) -> u16 {
         assert!(self.items.len() > index);
 
-        let address = &raw const self.items[index] as _;
+        let address = &raw const self.items[index] as u32;
 
         // Ensure 32 bit address alignment.
         assert_eq!(address & 0b11, 0);
 
-        address
+        let last = address + core::mem::size_of::<T>() as u32 - 1;
+        assert!(
+            address >> 16 == self.base_address() as u32 && last >> 16 == self.base_address() as u32,
+            "linked-list item {} is not in the table's first 64 KiB",
+            index
+        );
+
+        address as u16
     }
 }

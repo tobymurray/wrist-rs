@@ -3,7 +3,7 @@ pub(crate) use regs::{Macmdioar as AddressRegister, Macmdiodr as DataRegister};
 use stm32_metapac::eth::regs;
 
 use super::{Instance, StationManagement};
-use crate::eth::{MDCPin, MDIOPin};
+use crate::eth::{Error, MDCPin, MDIOPin, wait_for};
 use crate::gpio::{AfType, Flex, OutputType, Speed};
 
 /// Station Management Agent.
@@ -21,9 +21,13 @@ impl<'d, T: Instance> Sma<'d, T> {
     pub fn new(peri: Peri<'d, T>, mdio: Peri<'d, impl MDIOPin<T>>, mdc: Peri<'d, impl MDCPin<T>>) -> Self {
         // Enable necessary clocks.
         critical_section::with(|_| {
-            #[cfg(not(eth_v2a))]
+            #[cfg(eth_v2)]
             crate::pac::RCC.ahb1enr().modify(|w| {
                 w.set_ethen(true);
+            });
+            #[cfg(eth_v2b)]
+            crate::pac::RCC.ahb1enr().modify(|w| {
+                w.set_eth1en(true);
             });
             #[cfg(eth_v2a)]
             crate::pac::RCC.ahb5enr().modify(|w| {
@@ -74,8 +78,22 @@ impl<'d, T: Instance> Sma<'d, T> {
     }
 }
 
+fn wait_for_idle<T: Instance>() -> Result<(), Error> {
+    let (address, _) = T::regs();
+    #[cfg(not(eth_v2a))]
+    let idle = || !address.read().mb();
+    #[cfg(eth_v2a)]
+    let idle = || !address.read().gb();
+    if wait_for(idle, 1_000) {
+        Ok(())
+    } else {
+        Err(Error::MdioTimeout)
+    }
+}
+
 impl<T: Instance> StationManagement for Sma<'_, T> {
-    fn smi_read(&mut self, phy_addr: u8, reg: u8) -> u16 {
+    fn smi_read(&mut self, phy_addr: u8, reg: u8) -> Result<u16, Error> {
+        wait_for_idle::<T>()?;
         let (macmdioar, macmdiodr) = T::regs();
 
         macmdioar.modify(|w| {
@@ -90,19 +108,16 @@ impl<T: Instance> StationManagement for Sma<'_, T> {
             w.set_gb(true);
         });
 
-        #[cfg(not(eth_v2a))]
-        while macmdioar.read().mb() {}
-        #[cfg(eth_v2a)]
-        while macmdioar.read().gb() {}
-
+        wait_for_idle::<T>()?;
         #[cfg(not(eth_v2a))]
         let data = macmdiodr.read().md();
         #[cfg(eth_v2a)]
         let data = macmdiodr.read().gd();
-        data
+        Ok(data)
     }
 
-    fn smi_write(&mut self, phy_addr: u8, reg: u8, val: u16) {
+    fn smi_write(&mut self, phy_addr: u8, reg: u8, val: u16) -> Result<(), Error> {
+        wait_for_idle::<T>()?;
         let (macmdioar, macmdiodr) = T::regs();
 
         #[cfg(not(eth_v2a))]
@@ -120,9 +135,6 @@ impl<T: Instance> StationManagement for Sma<'_, T> {
             w.set_gb(true);
         });
 
-        #[cfg(not(eth_v2a))]
-        while macmdioar.read().mb() {}
-        #[cfg(eth_v2a)]
-        while macmdioar.read().gb() {}
+        wait_for_idle::<T>()
     }
 }

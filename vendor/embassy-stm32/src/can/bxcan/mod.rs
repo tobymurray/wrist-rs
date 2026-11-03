@@ -21,7 +21,7 @@ use super::util;
 use crate::can::enums::{BusError, RefCountOp, TryReadError};
 use crate::gpio::{AfType, OutputType, Pull, Speed};
 use crate::interrupt::typelevel::Interrupt;
-use crate::rcc::{self, RccPeripheral};
+use crate::rcc::{self, RccPeripheral, WakeGuard};
 use crate::{Peri, interrupt, peripherals};
 
 /// Interrupt handler.
@@ -167,6 +167,7 @@ impl Drop for CanConfig<'_> {
 pub struct Can<'d> {
     phantom: PhantomData<&'d ()>,
     info: InfoRef,
+    _wake_guard: WakeGuard,
     periph_clock: crate::time::Hertz,
 }
 
@@ -237,6 +238,7 @@ impl<'d> Can<'d> {
         Self {
             phantom: PhantomData,
             info: InfoRef::new(T::info()),
+            _wake_guard: T::RCC_INFO.wake_guard(),
             periph_clock: T::frequency(),
         }
     }
@@ -305,7 +307,7 @@ impl<'d> Can<'d> {
 
     /// Put the peripheral in sleep mode
     ///
-    /// When the peripherial is in sleep mode, messages can still be queued for transmission
+    /// When the peripheral is in sleep mode, messages can still be queued for transmission
     /// and any previously received messages can be read from the receive FIFOs, however
     /// no messages will be transmitted and no additional messages will be received.
     ///
@@ -1284,17 +1286,18 @@ foreach_peripheral!(
     // CAN1 owns the filter bank and needs to be enabled in order
     // for CAN2 to receive messages.
     (can, CAN1) => {
-        cfg_if::cfg_if! {
-            if #[cfg(all(
+        cfg_select! {
+            all(
                 any(stm32l4, stm32f72x, stm32f73x),
                 not(any(stm32l49x, stm32l4ax))
-            ))] {
+            ) => {
                 // Most L4 devices and some F7 devices use the name "CAN1"
                 // even if there is no "CAN2" peripheral.
                 unsafe impl FilterOwner for peripherals::CAN1 {
                     const NUM_FILTER_BANKS: u8 = 14;
                 }
-            } else {
+            }
+            _ => {
                 unsafe impl FilterOwner for peripherals::CAN1 {
                     const NUM_FILTER_BANKS: u8 = 28;
                 }

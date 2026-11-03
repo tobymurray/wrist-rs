@@ -80,7 +80,7 @@ pub struct Pll {
     /// PLL multiplication factor.
     pub mul: PllMul,
 
-    #[cfg(any(stm32h743, stm32h730))]
+    #[cfg(any(stm32h743, stm32h730, stm32h753))]
     /// PLL Fractional multiplier.
     pub fracn: Option<u16>,
 
@@ -494,10 +494,7 @@ pub(crate) unsafe fn init(config: Config) {
     while RCC.cfgr().read().sws() != Sysclk::Hsi {}
 
     // Configure HSI
-    let hsi = match config.hsi {
-        None => None,
-        Some(hsidiv) => Some(HSI_FREQ / hsidiv),
-    };
+    let hsi = config.hsi.map(|hsidiv| HSI_FREQ / hsidiv);
 
     // Configure HSE
     let hse = match config.hse {
@@ -544,28 +541,20 @@ pub(crate) unsafe fn init(config: Config) {
 
     // Configure PLLs.
     let pll_input = PllInput { csi, hse, hsi };
-    let pll1 = config.pll1.map_or_else(
-        || {
-            disable_pll(0);
-            PllOutput::default()
-        },
-        |c| init_pll(0, Some(c), &pll_input),
-    );
-    let pll2 = config.pll2.map_or_else(
-        || {
-            disable_pll(1);
-            PllOutput::default()
-        },
-        |c| init_pll(1, Some(c), &pll_input),
-    );
+    disable_pll(0);
+    let pll1 = config
+        .pll1
+        .map_or_else(PllOutput::default, |c| init_pll(0, c, &pll_input));
+    disable_pll(1);
+    let pll2 = config
+        .pll2
+        .map_or_else(PllOutput::default, |c| init_pll(1, c, &pll_input));
     #[cfg(any(rcc_h5, stm32h7, stm32h7rs))]
-    let pll3 = config.pll3.map_or_else(
-        || {
-            disable_pll(2);
-            PllOutput::default()
-        },
-        |c| init_pll(2, Some(c), &pll_input),
-    );
+    disable_pll(2);
+    #[cfg(any(rcc_h5, stm32h7, stm32h7rs))]
+    let pll3 = config
+        .pll3
+        .map_or_else(PllOutput::default, |c| init_pll(2, c, &pll_input));
 
     // Configure sysclk
     let sys = match config.sys {
@@ -786,7 +775,7 @@ pub(crate) unsafe fn init(config: Config) {
             while FLASH.sr().read().busy() {}
         }
 
-        // Set the HSLV option bits to enable HSLV mode configuratrion for all
+        // Set the HSLV option bits to enable HSLV mode configuration for all
         // three domains. (RM0477, p.272, 5.9.33 "FLASH option byte word 1
         // status register programming")
         FLASH.obw1srp().modify(|w| {
@@ -969,13 +958,7 @@ fn disable_pll(num: usize) {
     RCC.pllcfgr(num).write(|w| w.set_divm(PllPreDiv::from_bits(0)));
 }
 
-fn init_pll(num: usize, config: Option<Pll>, input: &PllInput) -> PllOutput {
-    let Some(config) = config else {
-        disable_pll(num);
-
-        return PllOutput::default();
-    };
-
+fn init_pll(num: usize, config: Pll, input: &PllInput) -> PllOutput {
     let in_clk = match config.source {
         PllSource::Disable => panic!("must not set PllSource::Disable"),
         PllSource::Hsi => unwrap!(input.hsi),
@@ -997,14 +980,14 @@ fn init_pll(num: usize, config: Option<Pll>, input: &PllInput) -> PllOutput {
     // be chosen when the reference clock frequency is lower than 2 MHz.
     let wide_allowed = ref_range != Pllrge::Range1;
 
-    #[cfg(any(stm32h743, stm32h730))]
+    #[cfg(any(stm32h743, stm32h730, stm32h753))]
     let vco_clk = match config.fracn {
         Some(fracn) => {
             Hertz::hz((ref_clk.0 as f32 * ((config.mul.to_bits() + 1) as f32 + (fracn as f32 / 8192.0))) as u32)
         }
         None => ref_clk * config.mul,
     };
-    #[cfg(not(any(stm32h743, stm32h730)))]
+    #[cfg(not(any(stm32h743, stm32h730, stm32h753)))]
     let vco_clk = ref_clk * config.mul;
 
     let vco_range = if VCO_RANGE.contains(&vco_clk) {
@@ -1053,7 +1036,7 @@ fn init_pll(num: usize, config: Option<Pll>, input: &PllInput) -> PllOutput {
             w.set_pllsrc(config.source);
         });
 
-        #[cfg(any(stm32h743, stm32h730))]
+        #[cfg(any(stm32h743, stm32h730, stm32h753))]
         if let Some(fracn) = config.fracn {
             RCC.pllfracr(num).modify(|w| w.set_fracn(fracn))
         }
@@ -1062,14 +1045,14 @@ fn init_pll(num: usize, config: Option<Pll>, input: &PllInput) -> PllOutput {
             w.set_pllvcosel(num, vco_range);
             w.set_pllrge(num, ref_range);
 
-            #[cfg(any(stm32h743, stm32h730))]
+            #[cfg(any(stm32h743, stm32h730, stm32h753))]
             if config.fracn.is_some() {
                 w.set_pllfracen(num, true);
             } else {
                 w.set_pllfracen(num, false);
             }
 
-            #[cfg(not(any(stm32h743, stm32h730)))]
+            #[cfg(not(any(stm32h743, stm32h730, stm32h753)))]
             w.set_pllfracen(num, false);
 
             w.set_divpen(num, p.is_some());
@@ -1149,7 +1132,7 @@ fn flash_setup(clk: Hertz, vos: VoltageScale) {
         _ => unreachable!(),
     };
 
-    #[cfg(all(flash_h7, not(pwr_h7rm0468)))]
+    #[cfg(all(flash_v5_h7, not(pwr_h7rm0468)))]
     let (latency, wrhighfreq) = match (vos, clk.0) {
         // VOS 0 range VCORE 1.26V - 1.40V
         (VoltageScale::Scale0, ..=70_000_000) => (0, 0),
@@ -1180,7 +1163,7 @@ fn flash_setup(clk: Hertz, vos: VoltageScale) {
 
     // See RM0468 Rev 3 Table 16. FLASH recommended number of wait
     // states and programming delay
-    #[cfg(all(flash_h7, pwr_h7rm0468))]
+    #[cfg(all(flash_v5_h7, pwr_h7rm0468))]
     let (latency, wrhighfreq) = match (vos, clk.0) {
         // VOS 0 range VCORE 1.26V - 1.40V
         (VoltageScale::Scale0, ..=70_000_000) => (0, 0),
@@ -1204,7 +1187,7 @@ fn flash_setup(clk: Hertz, vos: VoltageScale) {
 
     // See RM0455 Rev 10 Table 16. FLASH recommended number of wait
     // states and programming delay
-    #[cfg(flash_h7ab)]
+    #[cfg(flash_v5_h7ab)]
     let (latency, wrhighfreq) = match (vos, clk.0) {
         // VOS 0 range VCORE 1.25V - 1.35V
         (VoltageScale::Scale0, ..=42_000_000) => (0, 0),
@@ -1234,7 +1217,7 @@ fn flash_setup(clk: Hertz, vos: VoltageScale) {
         (VoltageScale::Scale3, ..=88) => (3, 1),
         _ => unreachable!(),
     };
-    #[cfg(flash_h7rs)]
+    #[cfg(flash_v5_h7rs)]
     let (latency, wrhighfreq) = match (vos, clk.0) {
         // VOS high range VCORE 1.30V - 1.40V
         (VoltageScale::High, ..=40_000_000) => (0, 0),

@@ -11,6 +11,7 @@ use super::{CaptureCompareInterruptHandler, Channel, GeneralInstance4Channel, Ti
 pub use super::{Ch1, Ch2, Ch3, Ch4};
 use crate::gpio::{AfType, Flex, Pull};
 use crate::interrupt::typelevel::{Binding, Interrupt};
+use crate::rcc::WakeGuard;
 use crate::time::Hertz;
 use crate::timer::{TimerChannel, TimerInputTrigger};
 use crate::{Peri, dma};
@@ -71,6 +72,7 @@ pub struct InputCapture<'d, T: GeneralInstance4Channel> {
     _ch2: Option<InputType<'d>>,
     _ch3: Option<InputType<'d>>,
     _ch4: Option<InputType<'d>>,
+    _wake_guard: WakeGuard,
 }
 
 impl<'d, T: GeneralInstance4Channel> InputCapture<'d, T> {
@@ -112,6 +114,7 @@ impl<'d, T: GeneralInstance4Channel> InputCapture<'d, T> {
             _ch2,
             _ch3,
             _ch4,
+            _wake_guard: T::RCC_INFO.wake_guard(),
         };
 
         this.inner.set_counting_mode(counting_mode);
@@ -128,6 +131,10 @@ impl<'d, T: GeneralInstance4Channel> InputCapture<'d, T> {
                 };
 
                 this.inner.set_input_ti_seletion(*ch, tisel);
+
+                this.inner
+                    .set_input_capture_selection(*ch, InputCaptureSelection::Normal);
+                this.inner.set_input_capture_mode(*ch, InputCaptureMode::Rising);
             }
 
             this.inner.set_input_capture_filter(*ch, FilterValue::NoFilter);
@@ -308,11 +315,6 @@ impl<'d, T: GeneralInstance4Channel> InputCapture<'d, T> {
 
         let original_enable_state = self.is_enabled(M::CHANNEL);
         let original_cc_dma_enable_state = self.inner.get_cc_dma_enable_state(M::CHANNEL);
-
-        self.inner
-            .set_input_capture_selection(M::CHANNEL, InputCaptureSelection::Normal);
-        self.inner
-            .set_input_capture_mode(M::CHANNEL, InputCaptureMode::BothEdges);
 
         if !original_cc_dma_enable_state {
             self.inner.set_cc_dma_enable_state(M::CHANNEL, true);
