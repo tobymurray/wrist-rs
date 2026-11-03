@@ -9,7 +9,7 @@ use embassy_sync::blocking_mutex::Mutex;
 
 use crate::uart::Lines;
 
-const CORE_MHZ: u32 = 48;
+pub const CORE_MHZ: u32 = 48;
 const TASKS: usize = 12;
 
 #[derive(Clone, Copy)]
