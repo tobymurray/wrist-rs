@@ -57,9 +57,9 @@ use wrist_pages::{Button, Nav, Page, Press};
 
 use crate::mmio::{
     enable_clock, gpio, modify32, read32, write32, DBGMCU_IDCODE, FLASH_ACR, FLASH_OPTR, GPIOC_BASE, GPIO_BSRR, GPIO_IDR, GPIO_MODER, GPIO_OSPEEDR,
-    GPIO_OTYPER, GPIO_PUPDR, ICACHE_CR, ICACHE_CR_EN, ICSR_PENDSTCLR, PWR_SVMCR, PWR_SVMCR_USV, PWR_SVMCR_UVMEN, PWR_SVMSR,
+    GPIO_OTYPER, GPIO_PUPDR, ICACHE_CR, ICACHE_CR_EN, ICSR_PENDSTCLR, PWR_BDCR1, PWR_BDCR1_BREN, PWR_SVMCR, PWR_SVMCR_USV, PWR_SVMCR_UVMEN, PWR_SVMSR,
     PWR_SVMSR_VDDUSBRDY, PWR_VOSR, PWR_VOSR_USBBOOSTEN, PWR_VOSR_USBBOOSTRDY, PWR_VOSR_USBPWREN, ICSR_PENDSVCLR, NVIC_ICER0, NVIC_ICPR0, NVIC_REGS,
-    RCC_AHB1ENR, RCC_AHB2ENR1, RCC_AHB2ENR2, RCC_AHB3ENR, RCC_APB1ENR1, RCC_APB1ENR2, RCC_APB2ENR,
+    RCC_AHB1ENR, RCC_AHB2ENR1, RCC_AHB2ENR2, RCC_AHB3ENR, RCC_AHB3ENR_PWREN, RCC_APB1ENR1, RCC_APB1ENR2, RCC_APB2ENR,
     RCC_APB3ENR, RCC_AHB2ENR1_GPIOAEN, RCC_AHB2ENR1_GPIOBEN, RCC_AHB2ENR1_GPIOCEN,
     RCC_AHB2ENR1_GPIODEN, RCC_AHB2ENR1_GPIOFEN, RCC_BDCR, RCC_BDCR_LSEBYP, RCC_BDCR_LSEON, RCC_BDCR_LSERDY,
     RCC_BDCR_LSESYSEN, RCC_BDCR_LSESYSRDY, RCC_BDCR_RTCEN, RCC_BDCR_RTCSEL_LSE, RCC_BDCR_RTCSEL_LSI,
@@ -548,18 +548,23 @@ fn ls_config_as_found() -> rcc::LsConfig {
         mode: rcc::LseMode::Bypass,
         peripherals_clocked: bdcr & RCC_BDCR_LSESYSEN != 0,
     });
+    // `init` writes it to `PWR_BDCR1.BREN`.
+    let enable_backup_sram = unsafe {
+        enable_clock(RCC_AHB3ENR, RCC_AHB3ENR_PWREN);
+        read32(PWR_BDCR1) & PWR_BDCR1_BREN != 0
+    };
     if backup_domain_as_measured(bdcr) {
-        return rcc::LsConfig { rtc: rcc::RtcClockSource::Lse, lsi: false, lse };
+        return rcc::LsConfig { rtc: rcc::RtcClockSource::Lse, lsi: false, lse, enable_backup_sram };
     }
     let rtc = match (bdcr & RCC_BDCR_RTCEN != 0, bdcr & RCC_BDCR_RTCSEL_MASK) {
         (false, 0) => rcc::RtcClockSource::Disable,
         (true, RCC_BDCR_RTCSEL_LSE) if lse.is_some() => rcc::RtcClockSource::Lse,
         (true, RCC_BDCR_RTCSEL_LSI) => rcc::RtcClockSource::Lsi,
-        // None the HAL can keep, so it resets the domain.
-        _ => return rcc::LsConfig { lsi: true, ..rcc::LsConfig::off() },
+        // None the HAL can keep. It no longer resets the domain on U5, which would erase SRAM2.
+        _ => return rcc::LsConfig { lsi: true, enable_backup_sram, ..rcc::LsConfig::off() },
     };
     let lse_ready = lse.is_some() && bdcr & RCC_BDCR_LSERDY != 0;
-    rcc::LsConfig { rtc, lsi: rtc == rcc::RtcClockSource::Lsi || !lse_ready, lse }
+    rcc::LsConfig { rtc, lsi: rtc == rcc::RtcClockSource::Lsi || !lse_ready, lse, enable_backup_sram }
 }
 
 /// `None`, with the reason on the UART, if the crystal or the USB supplies did

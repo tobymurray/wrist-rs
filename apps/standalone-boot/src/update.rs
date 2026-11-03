@@ -7,7 +7,8 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use embassy_boot_stm32::{
     AlignedBuffer, BlockingFirmwareState, BlockingFirmwareUpdater, FirmwareUpdaterConfig, State,
 };
-use embassy_stm32::flash::{Bank1Region, Blocking, Flash, WRITE_SIZE};
+use embassy_stm32::flash::{Bank1Region, Config, Flash, WRITE_SIZE};
+use embassy_stm32::mode::Blocking;
 use embassy_stm32::peripherals::FLASH;
 use embassy_stm32::Peri;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
@@ -16,7 +17,7 @@ use embassy_time::Timer;
 use static_cell::StaticCell;
 use wrist_flash::vectors::Target;
 
-use embassy_usb::class::cdc_acm::Receiver;
+use embassy_usb::class::cdc_acm::device::Receiver;
 
 use crate::console::Usb;
 use crate::mmio::{
@@ -31,7 +32,7 @@ pub type FlashMutex = Mutex<NoopRawMutex, RefCell<Bank1Region<'static, Blocking>
 static FLASH: StaticCell<FlashMutex> = StaticCell::new();
 
 pub fn init(flash: Peri<'static, FLASH>) -> &'static FlashMutex {
-    let layout = Flash::new_blocking(flash).into_blocking_regions();
+    let layout = Flash::new_blocking(flash, Config::default()).into_blocking_regions();
     FLASH.init(Mutex::new(RefCell::new(layout.bank1_region)))
 }
 
