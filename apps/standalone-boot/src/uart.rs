@@ -8,7 +8,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex;
 
 use crate::mmio::{
-    enable_clock, modify32, read32, write32, GPIOC_BASE, GPIO_AFRL, GPIO_MODER, GPIO_OSPEEDR,
+    enable_clock, gpio, modify32, read32, write32, GPIOC_BASE, GPIO_AFRL, GPIO_MODER, GPIO_OSPEEDR,
     GPIO_OTYPER, GPIO_PUPDR, NVIC_ICER0, NVIC_ICPR0, NVIC_ISER0, RCC_AHB2ENR1,
     RCC_AHB2ENR1_GPIOCEN, RCC_APB1ENR1, RCC_APB1ENR1_USART3EN, RCC_CCIPR1, RCC_CCIPR1_USART3SEL,
     USART3_BASE, USART3_IRQN, USART_BRR, USART_CR1, USART_CR1_TCIE, USART_CR1_TE, USART_CR1_TXFNFIE,
@@ -30,7 +30,8 @@ fn brr_for(clock_hz: u32, baud: u32) -> u32 {
 static BRR_USED: AtomicU32 = AtomicU32::new(0);
 static BAUD_USED: AtomicU32 = AtomicU32::new(0);
 
-const PC4: u32 = 4;
+const PC4: u32 = gpio(wrist_board::pins::DEBUG_TX).1;
+const _: () = assert!(gpio(wrist_board::pins::DEBUG_TX).0 == GPIOC_BASE);
 const PC4_AF_USART3_TX: u32 = 7;
 
 /// Bounded, so a dead or unconfigured USART3 cannot hang a fault handler.

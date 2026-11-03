@@ -5,6 +5,7 @@
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 
 use embassy_time::{Duration, Instant, Timer};
+use wrist_board::pins;
 use wrist_panel::dma::cycles;
 use wrist_panel::{timing, Clock, Pace, GCK_EDGES, LAST_LINE_EDGE};
 use wrist_vcom::{Mode, Rate};
@@ -12,7 +13,7 @@ use wrist_vcom::{Mode, Rate};
 use crate::uart::Uart;
 
 use crate::mmio::{
-    enable_clock, modify32, read32, write32, GPIOA_BASE, GPIOB_BASE, GPIOD_BASE, GPIOE_BASE,
+    enable_clock, gpio, modify32, read32, write32, GPIOE_BASE,
     GPIO_AFRH, GPIO_AFRL, GPIO_BSRR, GPIO_MODER, GPIO_OSPEEDR, GPIO_OTYPER, GPIO_PUPDR,
     LPTIM1_BASE, LPTIM3_BASE, LPTIM_ARR, LPTIM_ARROK, LPTIM_CCMR1, LPTIM_CCMR1_CC1E,
     LPTIM_CCMR1_CC1P_INVERTED, LPTIM_CCR1, LPTIM_CFGR, LPTIM_CMP1OK, LPTIM_CNT, LPTIM_CR,
@@ -22,14 +23,14 @@ use crate::mmio::{
 };
 
 // Control signals, panel name first, board net second.
-const GSP: (u32, u32) = (GPIOB_BASE, 10); // VST
-const GCK: (u32, u32) = (GPIOA_BASE, 4); // VCK
-const GEN: (u32, u32) = (GPIOA_BASE, 7); // ENB
-const INTB: (u32, u32) = (GPIOB_BASE, 1); // XRST
-const BSP: (u32, u32) = (GPIOB_BASE, 0); // HST
-const BCK: (u32, u32) = (GPIOA_BASE, 6); // HCK
-const VCOM_VB: (u32, u32) = (GPIOB_BASE, 2); // FRP
-const VA: (u32, u32) = (GPIOD_BASE, 14); // XFRP
+const GSP: (u32, u32) = gpio(pins::LCD_QSPI_SCK_VST);
+const GCK: (u32, u32) = gpio(pins::LCD_QSPI_CS_VCK);
+pub(crate) const GEN: (u32, u32) = gpio(pins::LCD_QSPI_IO2_ENB);
+pub(crate) const INTB: (u32, u32) = gpio(pins::LCD_QSPI_IO0_XRST);
+pub(crate) const BSP: (u32, u32) = gpio(pins::LCD_QSPI_IO1_HST);
+pub(crate) const BCK: (u32, u32) = gpio(pins::LCD_QSPI_IO3_HCK);
+const VCOM_VB: (u32, u32) = gpio(pins::LCD_FRP);
+const VA: (u32, u32) = gpio(pins::LCD_XFRP);
 const AF_LPTIM1_CH1: u32 = 1;
 const AF_LPTIM3_CH1: u32 = 14;
 

@@ -9,7 +9,7 @@ use wrist_panel::dma::{self, Builder, Bus, Frame, Memory};
 use wrist_panel::{timing, GCK_EDGES, LINES};
 
 use crate::busy::CORE_MHZ;
-use crate::lcd::Cost;
+use crate::lcd::{Cost, BCK, BSP, GEN, INTB};
 use crate::mmio::{
     modify32, read32, write32, GPIOA_BASE, GPIOB_BASE, GPIOE_BASE, GPIO_BRR, GPIO_BSRR, GPIO_IDR, GPIO_MODER, GPIO_ODR,
     RCC_AHB1ENR, RCC_AHB1SMENR, RCC_AHB2ENR2, RCC_AHB2SMENR1, RCC_AHB2SMENR2, RCC_APB1ENR1, RCC_APB1SMENR1, RCC_APB2ENR,
@@ -137,10 +137,6 @@ const _: () = assert!(4 * dma::D_WORDS <= (E_AT - D_AT) as usize && 4 * dma::E_W
 const _: () = assert!(2 * dma::TABLE_HALFWORDS <= (DATA_AT - TABLE_AT) as usize);
 const _: () = assert!(2 * dma::DATA_HALFWORDS <= (SRAM5_TOP_PAGE - DATA_AT) as usize);
 
-const BCK: (u32, u32) = (GPIOA_BASE, 6);
-const GEN: (u32, u32) = (GPIOA_BASE, 7);
-const BSP: (u32, u32) = (GPIOB_BASE, 0);
-const INTB: (u32, u32) = (GPIOB_BASE, 1);
 const AF_TIM3: u32 = 2;
 const AF_TIM1: u32 = 1;
 const GROUPS_PER_YIELD: usize = 8;

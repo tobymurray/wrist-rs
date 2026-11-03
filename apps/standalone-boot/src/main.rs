@@ -52,11 +52,11 @@ use wrist_glass::pages;
 use wrist_glass::scene::Scene;
 use wrist_glass::text::Glass;
 use wrist_flash::vectors::{HANDOFF_POP, SRAM_END, SRAM_START};
+use wrist_board::pins;
 use wrist_pages::{Button, Nav, Page, Press};
 
 use crate::mmio::{
-    enable_clock, modify32, read32, write32, DBGMCU_IDCODE, FLASH_ACR, FLASH_OPTR, GPIOA_BASE,
-    GPIOB_BASE, GPIOC_BASE, GPIOD_BASE, GPIOF_BASE, GPIO_BSRR, GPIO_IDR, GPIO_MODER, GPIO_OSPEEDR,
+    enable_clock, gpio, modify32, read32, write32, DBGMCU_IDCODE, FLASH_ACR, FLASH_OPTR, GPIOC_BASE, GPIO_BSRR, GPIO_IDR, GPIO_MODER, GPIO_OSPEEDR,
     GPIO_OTYPER, GPIO_PUPDR, ICACHE_CR, ICACHE_CR_EN, ICSR_PENDSTCLR, PWR_SVMCR, PWR_SVMCR_USV, PWR_SVMCR_UVMEN, PWR_SVMSR,
     PWR_SVMSR_VDDUSBRDY, PWR_VOSR, PWR_VOSR_USBBOOSTEN, PWR_VOSR_USBBOOSTRDY, PWR_VOSR_USBPWREN, ICSR_PENDSVCLR, NVIC_ICER0, NVIC_ICPR0, NVIC_REGS,
     RCC_AHB1ENR, RCC_AHB2ENR1, RCC_AHB2ENR2, RCC_AHB3ENR, RCC_APB1ENR1, RCC_APB1ENR2, RCC_APB2ENR,
@@ -110,13 +110,14 @@ unsafe fn assert_alive_pins() {
         RCC_AHB2ENR1_GPIOBEN | RCC_AHB2ENR1_GPIOCEN | RCC_AHB2ENR1_GPIOFEN,
     );
 
-    // PF3, `BACKLIGHT_ON`: open-drain, released (`HARDWARE.md`, "Power and reset domain").
-    write32(GPIOF_BASE + GPIO_BSRR, 1 << 3);
-    modify32(GPIOF_BASE + GPIO_OTYPER, 0, 1 << 3);
-    modify32(GPIOF_BASE + GPIO_PUPDR, 0b11 << 6, 0);
-    modify32(GPIOF_BASE + GPIO_MODER, 0b11 << 6, 0b01 << 6);
+    // Open-drain, released (`HARDWARE.md`, "Power and reset domain").
+    let (base, pin) = BACKLIGHT;
+    write32(base + GPIO_BSRR, 1 << pin);
+    modify32(base + GPIO_OTYPER, 0, 1 << pin);
+    modify32(base + GPIO_PUPDR, 0b11 << (pin * 2), 0);
+    modify32(base + GPIO_MODER, 0b11 << (pin * 2), 0b01 << (pin * 2));
 
-    for (base, pin) in [(GPIOB_BASE, 15u32), (GPIOC_BASE, 5u32), (GPIOB_BASE, 3u32)] {
+    for (base, pin) in [gpio(pins::DAM_DETECT), (GPIOC_BASE, 5), gpio(pins::SWO)] {
         modify32(base + GPIO_OTYPER, 1 << pin, 0);
         modify32(base + GPIO_PUPDR, 0b11 << (pin * 2), 0);
         modify32(base + GPIO_OSPEEDR, 0b11 << (pin * 2), 0);
@@ -1518,20 +1519,22 @@ pub(crate) fn backlight(on: bool) {
 fn light_pin(on: bool) {
     unsafe {
         write32(
-            GPIOF_BASE + GPIO_BSRR,
-            if on { 1 << (3 + 16) } else { 1 << 3 },
+            BACKLIGHT.0 + GPIO_BSRR,
+            if on { 1 << (BACKLIGHT.1 + 16) } else { 1 << BACKLIGHT.1 },
         );
     }
 }
 
 /// (port, pin, `PUPDR`), in [`Button::ALL`]'s order; Select's pin is driven, so it has no
 /// pull (`HARDWARE.md`, "Power and reset domain").
-const BUTTONS: [(u32, u32, u32); 4] = [
-    (GPIOD_BASE, 4, 0b01),
-    (GPIOA_BASE, 5, 0b01),
-    (GPIOD_BASE, 8, 0b01),
-    (GPIOD_BASE, 15, 0b00),
-];
+const BUTTONS: [(u32, u32, u32); 4] = {
+    const fn button(pin: wrist_board::Pin, pull: u32) -> (u32, u32, u32) {
+        let (base, number) = gpio(pin);
+        (base, number, pull)
+    }
+    [button(pins::SW1, 0b01), button(pins::SW3, 0b01), button(pins::SW4, 0b01), button(pins::PWR_ON_1V8_L, 0b00)]
+};
+const BACKLIGHT: (u32, u32) = gpio(pins::BACKLIGHT_ON);
 
 unsafe fn init_buttons() {
     enable_clock(RCC_AHB2ENR1, RCC_AHB2ENR1_GPIOAEN | RCC_AHB2ENR1_GPIODEN);

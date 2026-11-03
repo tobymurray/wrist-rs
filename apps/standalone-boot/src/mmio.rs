@@ -3,6 +3,8 @@
 
 #![allow(clippy::inline_always)]
 
+use wrist_board::{Pin, Port};
+
 /// # Safety
 /// `addr` must be a word-aligned address of a readable 32-bit register.
 #[inline(always)]
@@ -119,6 +121,24 @@ pub const GPIOD_BASE: u32 = 0x4202_0C00;
 pub const GPIOE_BASE: u32 = 0x4202_1000;
 pub const GPIOF_BASE: u32 = 0x4202_1400;
 pub const GPIOG_BASE: u32 = 0x4202_1800;
+
+/// `port`'s registers.
+pub const fn gpio_base(port: Port) -> u32 {
+    match port {
+        Port::A => GPIOA_BASE,
+        Port::B => GPIOB_BASE,
+        Port::C => GPIOC_BASE,
+        Port::D => GPIOD_BASE,
+        Port::E => GPIOE_BASE,
+        Port::F => GPIOF_BASE,
+        Port::G => GPIOG_BASE,
+    }
+}
+
+/// A net's port registers and pin number.
+pub const fn gpio(pin: Pin) -> (u32, u32) {
+    (gpio_base(pin.port), pin.number as u32)
+}
 
 pub const GPIO_MODER: u32 = 0x00;
 pub const GPIO_OTYPER: u32 = 0x04;
