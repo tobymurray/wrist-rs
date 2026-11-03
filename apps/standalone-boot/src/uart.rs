@@ -11,7 +11,7 @@ use crate::mmio::{
     enable_clock, modify32, read32, write32, GPIOC_BASE, GPIO_AFRL, GPIO_MODER, GPIO_OSPEEDR,
     GPIO_OTYPER, GPIO_PUPDR, NVIC_ICER0, NVIC_ICPR0, NVIC_ISER0, RCC_AHB2ENR1,
     RCC_AHB2ENR1_GPIOCEN, RCC_APB1ENR1, RCC_APB1ENR1_USART3EN, RCC_CCIPR1, RCC_CCIPR1_USART3SEL,
-    USART3_BASE, USART3_IRQN, USART_BRR, USART_CR1, USART_CR1_TE, USART_CR1_TXFNFIE,
+    USART3_BASE, USART3_IRQN, USART_BRR, USART_CR1, USART_CR1_TCIE, USART_CR1_TE, USART_CR1_TXFNFIE,
     USART_CR1_UE, USART_CR2, USART_CR3, USART_ISR, USART_ISR_TC, USART_ISR_TXFNF, USART_PRESC,
     USART_TDR,
 };
@@ -86,7 +86,6 @@ impl Ring {
 
 static TRACK_SLEEP: AtomicBool = AtomicBool::new(false);
 static TX_GUARD: Mutex<CriticalSectionRawMutex, RefCell<Option<embassy_stm32::rcc::WakeGuard>>> = Mutex::new(RefCell::new(None));
-const TCIE: u32 = 1 << 6;
 pub fn track_sleep() { TRACK_SLEEP.store(true, Ordering::Relaxed); Uart::arm(); }
 
 static TX: Mutex<CriticalSectionRawMutex, RefCell<Ring>> = Mutex::new(RefCell::new(Ring::new()));
@@ -94,8 +93,8 @@ static TX: Mutex<CriticalSectionRawMutex, RefCell<Ring>> = Mutex::new(RefCell::n
 #[no_mangle]
 pub unsafe extern "C" fn USART3() {
     let cr1 = read32(USART3_BASE + USART_CR1);
-    if cr1 & TCIE != 0 && read32(USART3_BASE + USART_ISR) & USART_ISR_TC != 0 {
-        modify32(USART3_BASE + USART_CR1, TCIE, 0);
+    if cr1 & USART_CR1_TCIE != 0 && read32(USART3_BASE + USART_ISR) & USART_ISR_TC != 0 {
+        modify32(USART3_BASE + USART_CR1, USART_CR1_TCIE, 0);
         TX_GUARD.lock(|g| *g.borrow_mut() = None);
     }
     if cr1 & USART_CR1_TXFNFIE == 0 { return; }
@@ -104,7 +103,7 @@ pub unsafe extern "C" fn USART3() {
             return;
         }
         let Some(b) = TX.lock(|ring| ring.borrow_mut().pop()) else {
-            modify32(USART3_BASE + USART_CR1, USART_CR1_TXFNFIE, if TRACK_SLEEP.load(Ordering::Relaxed) { TCIE } else { 0 });
+            modify32(USART3_BASE + USART_CR1, USART_CR1_TXFNFIE, if TRACK_SLEEP.load(Ordering::Relaxed) { USART_CR1_TCIE } else { 0 });
             return;
         };
         write32(USART3_BASE + USART_TDR, u32::from(b));
@@ -195,7 +194,7 @@ impl Uart {
                     if g.is_none() { *g = Some(embassy_stm32::rcc::WakeGuard::new(embassy_stm32::rcc::StopMode::Stop1)); }
                 });
             }
-            unsafe { modify32(USART3_BASE + USART_CR1, TCIE, USART_CR1_TXFNFIE) };
+            unsafe { modify32(USART3_BASE + USART_CR1, USART_CR1_TCIE, USART_CR1_TXFNFIE) };
         }
     }
 

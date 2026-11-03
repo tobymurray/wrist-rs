@@ -10,7 +10,7 @@ use core::ops::Range;
 
 use wrist_flash::layout::bank2::GLYPH_STORE;
 use wrist_flash::plan::{crc32, BANK2_BASE, PAGE_SIZE, PAGE_SIZE_U32, QUADWORD};
-use wrist_flash::survey::{ecc, interrupted, Area};
+use wrist_flash::survey::{code_op, ecc, interrupted, Area};
 
 /// Pages in the store.
 pub const PAGES: usize = (GLYPH_STORE.end - GLYPH_STORE.start) as usize;
@@ -402,9 +402,11 @@ pub fn boot_actions(opsr: u32, eccr: u32, quarantine: Option<u8>) -> BootActions
         let page = u8::try_from(op.page()).ok().and_then(StorePage::new);
         match op.code {
             // Single write, burst write and page erase are the store's own operations.
-            1..=3 if op.bank2 && !op.system_flash && page.is_some() => a.erase_interrupted = page,
-            4 if op.bank2 => (a.erase_store, a.interrupted_elsewhere) = (true, true),
-            5 => (a.erase_store, a.interrupted_elsewhere) = (true, true),
+            code_op::SINGLE_WRITE..=code_op::PAGE_ERASE if op.bank2 && !op.system_flash && page.is_some() => {
+                a.erase_interrupted = page;
+            }
+            code_op::BANK_ERASE if op.bank2 => (a.erase_store, a.interrupted_elsewhere) = (true, true),
+            code_op::MASS_ERASE => (a.erase_store, a.interrupted_elsewhere) = (true, true),
             _ => a.interrupted_elsewhere = true,
         }
     }

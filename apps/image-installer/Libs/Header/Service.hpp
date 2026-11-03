@@ -59,8 +59,14 @@ private:
     static constexpr unsigned kStagingFirstPage = 128u;
     static constexpr unsigned kStagingPages     = 68u;
 
-    /// RM0456 Rev 7, 7.9, non-secure alias.
+    /// RM0456 Rev 7, 7.9, non-secure alias, and Table 79's offsets.
     static constexpr uint32_t kFlashBase = 0x40022000u;
+    static constexpr uint32_t kFlashNssr = 0x20u;
+    static constexpr uint32_t kFlashNscr = 0x28u;
+    static constexpr uint32_t kFlashEccr = 0x30u;
+    static constexpr uint32_t kFlashOpsr = 0x34u;
+    static constexpr uint32_t kFlashOptr = 0x40u;
+    static constexpr uint32_t kFlashWrp[4] = {0x58u, 0x5Cu, 0x68u, 0x6Cu};
 
     /// RM0456 Rev 7, Table 6, 13.4 and 11.8.30.
     static constexpr uint32_t kGpioBBase    = 0x42020400u;

@@ -10,18 +10,13 @@ use wrist_panel::{timing, GCK_EDGES, LINES};
 
 use crate::busy::CORE_MHZ;
 use crate::lcd::Cost;
-use crate::mmio::{modify32, read32, write32, GPIOA_BASE, GPIOB_BASE, GPIO_BSRR, GPIO_IDR, GPIO_MODER, RCC_BASE};
+use crate::mmio::{
+    modify32, read32, write32, GPIOA_BASE, GPIOB_BASE, GPIOE_BASE, GPIO_BRR, GPIO_BSRR, GPIO_IDR, GPIO_MODER, GPIO_ODR,
+    RCC_AHB1ENR, RCC_AHB1SMENR, RCC_AHB2ENR2, RCC_AHB2SMENR1, RCC_AHB2SMENR2, RCC_APB1ENR1, RCC_APB1SMENR1, RCC_APB2ENR,
+    RCC_APB2SMENR,
+};
 use crate::uart::Uart;
 
-const RCC_AHB1ENR: u32 = RCC_BASE + 0x88;
-const RCC_AHB1SMENR: u32 = RCC_BASE + 0xB0;
-const RCC_AHB2SMENR1: u32 = RCC_BASE + 0xB4;
-const RCC_AHB2ENR2: u32 = RCC_BASE + 0x90;
-const RCC_AHB2SMENR2: u32 = RCC_BASE + 0xB8;
-const RCC_APB1ENR1: u32 = RCC_BASE + 0x9C;
-const RCC_APB1SMENR1: u32 = RCC_BASE + 0xC4;
-const RCC_APB2ENR: u32 = RCC_BASE + 0xA4;
-const RCC_APB2SMENR: u32 = RCC_BASE + 0xCC;
 const GPDMA1EN: u32 = 1 << 0;
 const SRAM5EN: u32 = 1 << 31;
 /// TIM2, TIM3 and TIM4 in `APB1ENR1`, TIM1 in `APB2ENR`.
@@ -104,7 +99,25 @@ const SUSPF: u32 = 1 << 13;
 const ERRORS: u32 = (0b111 << 10) | (1 << 14);
 
 const _: () = assert!(dma::E_TR2 & 0x7F == 65 && dma::D_TR2 & 0x7F == 64 && D >= 12);
-const _: () = assert!(dma::TIM3_CCR1 == TIM3 + CCR1 && dma::TIM3_CCR4 == TIM3 + CCR4);
+const _: () = assert!(dma::TIM3_CCR1 == TIM3 + CCR1 && dma::TIM3_CCR4 == TIM3 + CCR4 && dma::TIM1_CR1 == TIM1 + CR1);
+const _: () = assert!(dma::GPIOA_BSRR == GPIOA_BASE + GPIO_BSRR && dma::GPIOA_BRR == GPIOA_BASE + GPIO_BRR);
+const _: () = assert!(dma::GPIOB_BSRR == GPIOB_BASE + GPIO_BSRR && dma::GPIOB_BRR == GPIOB_BASE + GPIO_BRR);
+const _: () = assert!(dma::GPIOE_ODR == GPIOE_BASE + GPIO_ODR);
+const _: () = {
+    use wrist_board::pins::{LCD_B1, LCD_B2, LCD_G1, LCD_G2, LCD_QSPI_CS_VCK, LCD_QSPI_SCK_VST, LCD_R1, LCD_R2};
+    use wrist_board::Port;
+    assert!(matches!(LCD_QSPI_CS_VCK.port, Port::A) && dma::GCK == 1 << LCD_QSPI_CS_VCK.number);
+    assert!(matches!(LCD_QSPI_SCK_VST.port, Port::B) && dma::GSP == 1 << LCD_QSPI_SCK_VST.number);
+    let mut mask = 0;
+    let data = [LCD_R1, LCD_G1, LCD_B1, LCD_R2, LCD_G2, LCD_B2];
+    let mut i = 0;
+    while i < data.len() {
+        assert!(matches!(data[i].port, Port::E));
+        mask |= 1 << data[i].number;
+        i += 1;
+    }
+    assert!(wrist_panel::DATA_MASK == mask);
+};
 
 /// SRAM5's first pages, outside `memory.x`'s RAM.
 const D_AT: u32 = 0x201A_0000;
@@ -632,7 +645,7 @@ pub fn probe(half: u32, uart: Uart) {
     let ctrl = 1;
     let mem = unsafe { memory() };
     let (list, values, stamps) = (mem.d, mem.table, mem.data);
-    for (i, v) in [1 << 4, 0, 1 << 3, dma::OFF].into_iter().enumerate() {
+    for (i, v) in [dma::GCK, 0, dma::OPM, dma::OFF].into_iter().enumerate() {
         values[4 * i..4 * i + 4].fill(v);
     }
     stamps[..4 * PROBE_SAMPLES as usize].fill(0);

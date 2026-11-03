@@ -13,7 +13,9 @@ use embassy_usb::class::cdc_acm::{CdcAcmClass, Receiver, Sender, State};
 use embassy_usb::{Builder, Handler};
 use static_cell::ConstStaticCell;
 
-use crate::mmio::{modify32, read32, PWR_SVMSR, PWR_VOSR, RCC_AHB2ENR1};
+use crate::mmio::{
+    modify32, read32, PWR_SVMSR, PWR_VOSR, RCC_AHB2ENR1, RCC_AHB2ENR1_OTGEN, SYSCFG_OTGHSPHYCR, SYSCFG_OTGHSPHYTUNER2,
+};
 use crate::uart::Uart;
 use crate::update::{self, FlashMutex};
 use crate::{usblog, watchdog};
@@ -30,9 +32,6 @@ const OTG_PCGCCTL: u32 = OTG_HS_BASE + 0xE00;
 const GINTSTS_USBRST: u32 = 1 << 12;
 const DCFG_DAD: u32 = 0x7F << 4;
 const DCTL_SDIS: u32 = 1 << 1;
-const RCC_AHB2ENR1_OTGEN: u32 = 1 << 14;
-const SYSCFG_OTGHSPHYCR: u32 = 0x4600_0400 + 0x74;
-const SYSCFG_OTGHSPHYTUNER2: u32 = 0x4600_0400 + 0x7C;
 
 static BUILT: AtomicBool = AtomicBool::new(false);
 static TERMINAL_OPEN: AtomicBool = AtomicBool::new(false);

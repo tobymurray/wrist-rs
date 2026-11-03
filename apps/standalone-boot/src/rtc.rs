@@ -3,8 +3,10 @@
 use core::sync::atomic::{AtomicU8, Ordering};
 
 use crate::mmio::{
-    enable_clock, modify32, read32, write32, RCC_AHB3ENR, RCC_AHB3ENR_PWREN, RCC_APB3ENR,
-    RCC_APB3ENR_RTCAPBEN, RCC_BDCR, RTC_BASE,
+    enable_clock, modify32, read32, tamp_bkpr, write32, PWR_DBPR, PWR_DBPR_DBP, RCC_AHB3ENR, RCC_AHB3ENR_PWREN,
+    RCC_APB3ENR, RCC_APB3SMENR, RCC_APB3_RTCAPB, RCC_BDCR, RCC_BDCR_LSEBYP, RCC_BDCR_LSEON, RCC_BDCR_LSERDY,
+    RCC_BDCR_LSESYSEN, RCC_BDCR_LSESYSRDY, RCC_BDCR_LSION, RCC_BDCR_LSIRDY, RCC_BDCR_RTCEN, RCC_BDCR_RTCSEL_LSE,
+    RCC_BDCR_RTCSEL_LSI, RCC_BDCR_RTCSEL_MASK, RCC_SRDAMR, RTC_BASE,
 };
 use crate::uart::Uart;
 
@@ -19,30 +21,17 @@ const RTC_SCR: u32 = RTC_BASE + 0x5C;
 const WPR_KEY1: u32 = 0xCA;
 const WPR_KEY2: u32 = 0x53;
 const WPR_LOCK: u32 = 0xFF;
-const TAMP_BKP0R: u32 = 0x4600_7C00 + 0x100;
-const TAMP_BKP1R: u32 = 0x4600_7C00 + 0x104;
-const TAMP_BKP2R: u32 = 0x4600_7C00 + 0x108;
+const TAMP_BKP0R: u32 = tamp_bkpr(0);
+const TAMP_BKP1R: u32 = tamp_bkpr(1);
+const TAMP_BKP2R: u32 = tamp_bkpr(2);
 /// The alarm (`wrist_time::alarm`).
-const TAMP_BKP4R: u32 = 0x4600_7C00 + 0x110;
+const TAMP_BKP4R: u32 = tamp_bkpr(4);
 /// Not `BKP3R` or `BKP5R` (`HARDWARE.md`, "Debug and boot").
-const TAMP_BKP31R: u32 = 0x4600_7C00 + 0x17C;
+const TAMP_BKP31R: u32 = tamp_bkpr(31);
 const SOURCE_TAG: u32 = 0x5352_0000;
 /// The zone's next changes (`wrist_time::zone`).
-const TAMP_BKP11R: u32 = 0x4600_7C00 + 0x12C;
-const PWR_DBPR: u32 = 0x4602_0800 + 0x28;
-const DBPR_DBP: u32 = 1 << 0;
+const TAMP_BKP11R: u32 = tamp_bkpr(11);
 
-const BDCR_LSEON: u32 = 1 << 0;
-const BDCR_LSERDY: u32 = 1 << 1;
-const BDCR_LSEBYP: u32 = 1 << 2;
-const BDCR_LSESYSEN: u32 = 1 << 7;
-const BDCR_LSESYSRDY: u32 = 1 << 11;
-const BDCR_RTCSEL_MASK: u32 = 0b11 << 8;
-const BDCR_RTCSEL_LSE: u32 = 0b01 << 8;
-const BDCR_RTCSEL_LSI: u32 = 0b10 << 8;
-const BDCR_RTCEN: u32 = 1 << 15;
-const BDCR_LSION: u32 = 1 << 26;
-const BDCR_LSIRDY: u32 = 1 << 27;
 const ICSR_INITS: u32 = 1 << 4;
 const ICSR_RSF: u32 = 1 << 5;
 const ICSR_INITF: u32 = 1 << 6;
@@ -57,10 +46,6 @@ const CR_ALRAIE: u32 = 1 << 12;
 const SR_ALRAF: u32 = 1 << 0;
 /// `MSK4`: the date and weekday don't count, so it matches every day.
 const ALRMAR_MSK4: u32 = 1 << 31;
-/// The RTC's bus clock in Stop, which its wake needs (RM0456 11.8).
-const RCC_APB3SMENR: u32 = crate::mmio::RCC_BASE + 0xD0;
-const RCC_SRDAMR: u32 = crate::mmio::RCC_BASE + 0xD8;
-const RTCAPB_IN_STOP: u32 = 1 << 21;
 
 /// `RTC_PRER` for a calendar that divides its clock by `a * s`.
 const fn prer(a: u32, s: u32) -> u32 {
@@ -96,7 +81,7 @@ fn from_bcd(v: u32) -> u8 {
 }
 
 fn clock_bus() {
-    unsafe { modify32(RCC_APB3ENR, 0, RCC_APB3ENR_RTCAPBEN) };
+    unsafe { modify32(RCC_APB3ENR, 0, RCC_APB3_RTCAPB) };
     cortex_m::asm::delay(8); // RM0456 63.3.3
 }
 
@@ -105,7 +90,7 @@ fn clock_bus() {
 fn calendar_ready() -> bool {
     /// A copy takes at most two LSE cycles.
     const RSF_POLLS: u32 = 10_000;
-    if unsafe { read32(RCC_BDCR) } & BDCR_RTCEN == 0 {
+    if unsafe { read32(RCC_BDCR) } & RCC_BDCR_RTCEN == 0 {
         return false;
     }
     clock_bus();
@@ -113,7 +98,7 @@ fn calendar_ready() -> bool {
         return false;
     }
     unsafe {
-        write32(PWR_DBPR, DBPR_DBP);
+        write32(PWR_DBPR, PWR_DBPR_DBP);
         write32(RTC_WPR, WPR_KEY1);
         write32(RTC_WPR, WPR_KEY2);
         modify32(RTC_ICSR, ICSR_RSF, 0);
@@ -154,20 +139,20 @@ pub fn prepare(cycles_per_ms: u32) -> Result<&'static str, &'static str> {
     // `PWR_DBPR` takes writes only with the PWR clock on, which the HAL turns on later.
     unsafe { enable_clock(RCC_AHB3ENR, RCC_AHB3ENR_PWREN) };
     clock_bus();
-    unsafe { write32(PWR_DBPR, DBPR_DBP) };
+    unsafe { write32(PWR_DBPR, PWR_DBPR_DBP) };
     // With the RTC already on, `start` leaves the LSE alone.
-    if unsafe { read32(RCC_BDCR) } & (BDCR_RTCEN | BDCR_LSEON) == BDCR_RTCEN {
-        unsafe { modify32(RCC_BDCR, 0, BDCR_LSEBYP) };
-        unsafe { modify32(RCC_BDCR, 0, BDCR_LSEON) };
-        wait_for_at(RCC_BDCR, BDCR_LSERDY, LSE_START_MS, cycles_per_ms);
+    if unsafe { read32(RCC_BDCR) } & (RCC_BDCR_RTCEN | RCC_BDCR_LSEON) == RCC_BDCR_RTCEN {
+        unsafe { modify32(RCC_BDCR, 0, RCC_BDCR_LSEBYP) };
+        unsafe { modify32(RCC_BDCR, 0, RCC_BDCR_LSEON) };
+        wait_for_at(RCC_BDCR, RCC_BDCR_LSERDY, LSE_START_MS, cycles_per_ms);
     }
     let started = start_at(cycles_per_ms);
-    let lse_ready = unsafe { read32(RCC_BDCR) } & BDCR_LSERDY != 0;
+    let lse_ready = unsafe { read32(RCC_BDCR) } & RCC_BDCR_LSERDY != 0;
     if lse_ready {
-        unsafe { modify32(RCC_BDCR, 0, BDCR_LSESYSEN) };
+        unsafe { modify32(RCC_BDCR, 0, RCC_BDCR_LSESYSEN) };
     }
-    if !lse_ready || !wait_for_at(RCC_BDCR, BDCR_LSESYSRDY, 10, cycles_per_ms) {
-        unsafe { modify32(RCC_BDCR, BDCR_LSESYSEN, 0) };
+    if !lse_ready || !wait_for_at(RCC_BDCR, RCC_BDCR_LSESYSRDY, 10, cycles_per_ms) {
+        unsafe { modify32(RCC_BDCR, RCC_BDCR_LSESYSEN, 0) };
     }
     started
 }
@@ -180,33 +165,33 @@ pub fn start() -> Result<&'static str, &'static str> {
 
 fn start_at(cycles_per_ms: u32) -> Result<&'static str, &'static str> {
     clock_bus();
-    unsafe { write32(PWR_DBPR, DBPR_DBP) };
+    unsafe { write32(PWR_DBPR, PWR_DBPR_DBP) };
     let bdcr = unsafe { read32(RCC_BDCR) };
-    if bdcr & BDCR_RTCEN != 0 {
-        let src = match bdcr & BDCR_RTCSEL_MASK {
-            BDCR_RTCSEL_LSE => SRC_LSE,
-            BDCR_RTCSEL_LSI => SRC_LSI,
+    if bdcr & RCC_BDCR_RTCEN != 0 {
+        let src = match bdcr & RCC_BDCR_RTCSEL_MASK {
+            RCC_BDCR_RTCSEL_LSE => SRC_LSE,
+            RCC_BDCR_RTCSEL_LSI => SRC_LSI,
             _ => return Err("RTC enabled on a clock this image did not choose"),
         };
         SOURCE.store(src, Ordering::Relaxed);
         return Ok(source_name(src));
     }
-    if bdcr & BDCR_LSEON == 0 {
+    if bdcr & RCC_BDCR_LSEON == 0 {
         // LSEBYP is writable only while the LSE is off (RM0456 11.8.49).
-        unsafe { modify32(RCC_BDCR, 0, BDCR_LSEBYP) };
-        unsafe { modify32(RCC_BDCR, 0, BDCR_LSEON) };
+        unsafe { modify32(RCC_BDCR, 0, RCC_BDCR_LSEBYP) };
+        unsafe { modify32(RCC_BDCR, 0, RCC_BDCR_LSEON) };
     }
-    let (sel, src) = if wait_for_at(RCC_BDCR, BDCR_LSERDY, LSE_START_MS, cycles_per_ms) {
-        (BDCR_RTCSEL_LSE, SRC_LSE)
+    let (sel, src) = if wait_for_at(RCC_BDCR, RCC_BDCR_LSERDY, LSE_START_MS, cycles_per_ms) {
+        (RCC_BDCR_RTCSEL_LSE, SRC_LSE)
     } else {
-        unsafe { modify32(RCC_BDCR, 0, BDCR_LSION) };
-        if !wait_for_at(RCC_BDCR, BDCR_LSIRDY, 100, cycles_per_ms) {
+        unsafe { modify32(RCC_BDCR, 0, RCC_BDCR_LSION) };
+        if !wait_for_at(RCC_BDCR, RCC_BDCR_LSIRDY, 100, cycles_per_ms) {
             return Err("neither LSE nor LSI came ready");
         }
-        (BDCR_RTCSEL_LSI, SRC_LSI)
+        (RCC_BDCR_RTCSEL_LSI, SRC_LSI)
     };
-    unsafe { modify32(RCC_BDCR, BDCR_RTCSEL_MASK, sel) };
-    unsafe { modify32(RCC_BDCR, 0, BDCR_RTCEN) };
+    unsafe { modify32(RCC_BDCR, RCC_BDCR_RTCSEL_MASK, sel) };
+    unsafe { modify32(RCC_BDCR, 0, RCC_BDCR_RTCEN) };
     SOURCE.store(src, Ordering::Relaxed);
     Ok(source_name(src))
 }
@@ -248,7 +233,7 @@ pub fn set(c: Civil) -> Result<(), &'static str> {
     }
     clock_bus();
     unsafe {
-        write32(PWR_DBPR, DBPR_DBP);
+        write32(PWR_DBPR, PWR_DBPR_DBP);
         write32(RTC_WPR, WPR_KEY1);
         write32(RTC_WPR, WPR_KEY2);
         modify32(RTC_ICSR, 0, ICSR_INIT);
@@ -291,30 +276,30 @@ pub fn write_report(uart: Uart) {
     let bdcr = unsafe { read32(RCC_BDCR) };
     uart.write_reg("  RCC_BDCR  = ", bdcr);
     uart.write_str("  LSE ");
-    uart.write_str(match (bdcr & BDCR_LSEON != 0, bdcr & BDCR_LSERDY != 0) {
+    uart.write_str(match (bdcr & RCC_BDCR_LSEON != 0, bdcr & RCC_BDCR_LSERDY != 0) {
         (true, true) => "on and ready",
         (true, false) => "on, NOT ready",
         (false, _) => "off",
     });
-    if bdcr & BDCR_LSEBYP != 0 {
+    if bdcr & RCC_BDCR_LSEBYP != 0 {
         uart.write_str(" (bypass)");
     }
     uart.write_str("; LSI ");
-    uart.write_str(match (bdcr & BDCR_LSION != 0, bdcr & BDCR_LSIRDY != 0) {
+    uart.write_str(match (bdcr & RCC_BDCR_LSION != 0, bdcr & RCC_BDCR_LSIRDY != 0) {
         (true, true) => "on and ready",
         (true, false) => "on, not ready",
         (false, true) => "ready (the watchdog's)",
         (false, false) => "off",
     });
     uart.write_str("; RTCSEL ");
-    uart.write_str(match bdcr & BDCR_RTCSEL_MASK {
+    uart.write_str(match bdcr & RCC_BDCR_RTCSEL_MASK {
         0 => "none",
-        BDCR_RTCSEL_LSE => "LSE",
-        BDCR_RTCSEL_LSI => "LSI",
+        RCC_BDCR_RTCSEL_LSE => "LSE",
+        RCC_BDCR_RTCSEL_LSI => "LSI",
         _ => "HSE/32",
     });
     uart.write_str("; RTCEN ");
-    uart.write_line(if bdcr & BDCR_RTCEN != 0 { "1" } else { "0" });
+    uart.write_line(if bdcr & RCC_BDCR_RTCEN != 0 { "1" } else { "0" });
 
     clock_bus();
     let icsr = unsafe { read32(RTC_ICSR) };
@@ -419,7 +404,7 @@ impl Source {
 pub fn note_set(source: Source, local: Civil) {
     clock_bus();
     unsafe {
-        write32(PWR_DBPR, DBPR_DBP);
+        write32(PWR_DBPR, PWR_DBPR_DBP);
         write32(TAMP_BKP2R, SOURCE_TAG | source as u32);
         write32(TAMP_BKP31R, u32::try_from(seconds_of(local)).unwrap_or(0));
     }
@@ -454,7 +439,7 @@ pub fn set_zone(z: &Zone) {
     let w = z.encode();
     clock_bus();
     unsafe {
-        write32(PWR_DBPR, DBPR_DBP);
+        write32(PWR_DBPR, PWR_DBPR_DBP);
         write32(TAMP_BKP1R, w[0]);
         for (i, &v) in (0u32..).zip(&w[1..]) {
             write32(TAMP_BKP11R + 4 * i, v);
@@ -478,14 +463,14 @@ pub fn alarm() -> Option<Alarm> {
 pub fn set_alarm(a: Alarm) {
     clock_bus();
     unsafe {
-        write32(PWR_DBPR, DBPR_DBP);
+        write32(PWR_DBPR, PWR_DBPR_DBP);
         write32(TAMP_BKP4R, a.encode());
     }
 }
 
 /// `BKP16R`: tag `BL` and 1 while the radio should be on, so it comes back after a reset.
 #[cfg(feature = "ble")]
-const TAMP_BKP16R: u32 = 0x4600_7C00 + 0x140;
+const TAMP_BKP16R: u32 = tamp_bkpr(16);
 #[cfg(feature = "ble")]
 const RADIO_ON: u32 = 0x424C_0001;
 
@@ -501,7 +486,7 @@ pub fn radio_wanted() -> bool {
 pub fn set_radio_wanted(on: bool) {
     clock_bus();
     unsafe {
-        write32(PWR_DBPR, DBPR_DBP);
+        write32(PWR_DBPR, PWR_DBPR_DBP);
         write32(TAMP_BKP16R, if on { RADIO_ON } else { 0 });
     }
 }
@@ -509,7 +494,7 @@ pub fn set_radio_wanted(on: bool) {
 pub fn clear_zone() {
     clock_bus();
     unsafe {
-        write32(PWR_DBPR, DBPR_DBP);
+        write32(PWR_DBPR, PWR_DBPR_DBP);
         write32(TAMP_BKP1R, 0);
         for i in 0..4 {
             write32(TAMP_BKP11R + 4 * i, 0);
@@ -552,9 +537,10 @@ pub fn write_zone(uart: Uart, minutes: i32) {
 pub fn arm_alarm_a(hour: u8, minute: u8, second: u8) {
     clock_bus();
     unsafe {
-        modify32(RCC_APB3SMENR, 0, RTCAPB_IN_STOP);
-        modify32(RCC_SRDAMR, 0, RTCAPB_IN_STOP);
-        write32(PWR_DBPR, DBPR_DBP);
+        // The RTC's bus clock in Stop, which its wake needs (RM0456 11.8).
+        modify32(RCC_APB3SMENR, 0, RCC_APB3_RTCAPB);
+        modify32(RCC_SRDAMR, 0, RCC_APB3_RTCAPB);
+        write32(PWR_DBPR, PWR_DBPR_DBP);
         write32(RTC_WPR, WPR_KEY1);
         write32(RTC_WPR, WPR_KEY2);
         // ALRMAR is written only with ALRAE clear (RM0456, RTC alarm).
@@ -592,7 +578,7 @@ pub fn take_alarm_a() -> bool {
 pub fn disarm_alarm_a() {
     clock_bus();
     unsafe {
-        write32(PWR_DBPR, DBPR_DBP);
+        write32(PWR_DBPR, PWR_DBPR_DBP);
         write32(RTC_WPR, WPR_KEY1);
         write32(RTC_WPR, WPR_KEY2);
         modify32(RTC_CR, CR_ALRAE | CR_ALRAIE, 0);

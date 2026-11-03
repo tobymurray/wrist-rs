@@ -354,15 +354,15 @@ int Service::describeProtection(char* out, size_t capacity, int32_t st_erase)
 {
 
     const volatile uint32_t* f = reinterpret_cast<const volatile uint32_t*>(kFlashBase);
-    const uint32_t nssr   = f[0x20 / 4];
-    const uint32_t nscr   = f[0x28 / 4];
-    const uint32_t eccr   = f[0x30 / 4];
-    const uint32_t opsr   = f[0x34 / 4];
-    const uint32_t optr   = f[0x40 / 4];
-    const uint32_t wrp1a  = f[0x58 / 4];
-    const uint32_t wrp1b  = f[0x5C / 4];
-    const uint32_t wrp2a  = f[0x68 / 4];
-    const uint32_t wrp2b  = f[0x6C / 4];
+    const uint32_t nssr   = f[kFlashNssr / 4];
+    const uint32_t nscr   = f[kFlashNscr / 4];
+    const uint32_t eccr   = f[kFlashEccr / 4];
+    const uint32_t opsr   = f[kFlashOpsr / 4];
+    const uint32_t optr   = f[kFlashOptr / 4];
+    const uint32_t wrp1a  = f[kFlashWrp[0] / 4];
+    const uint32_t wrp1b  = f[kFlashWrp[1] / 4];
+    const uint32_t wrp2a  = f[kFlashWrp[2] / 4];
+    const uint32_t wrp2b  = f[kFlashWrp[3] / 4];
 
     const unsigned target = 48u;
     bool covered = false;
