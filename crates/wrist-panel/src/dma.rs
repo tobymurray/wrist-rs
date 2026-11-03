@@ -2,7 +2,8 @@
 //! register a tick of TIM3's compares (`BCK`, `GEN`), `GCK`, `GSP`, TIM1's one pulse (`BSP`),
 //! and TIM3's stop.
 
-use crate::{timing, LINES, PAIRS};
+use crate::minimum::{THH_GCK, THS_BSP, THW_BCK, THW_GCK, THW_GEN, TH_RGB, TLS_BSP, TS_RGB};
+use crate::{timing, BCK_LABELS, GCK_EDGES, LAST_LINE_EDGE, LINES, PAIRS, PIXELS};
 
 /// TIM1's and TIM3's clock.
 pub const TIMER_HZ: u32 = 48_000_000;
@@ -70,33 +71,28 @@ pub const BUS: Bus = Bus::new(26, 19);
 #[must_use]
 pub const fn keeps(bus: &Bus, lat: &Latency) -> bool {
     let (min, max) = lat.e_write;
-    keeps_timer(bus, lat) && bus.edge >= max + cycles(200) && bus.half - bus.edge + min >= cycles(200)
+    keeps_timer(bus, lat) && bus.edge >= max + cycles(TS_RGB) && bus.half - bus.edge + min >= cycles(TH_RGB)
 }
 
 /// All of [`keeps`] but the data window: `BCK`, `BSP`, and both channels keeping up, an item
 /// loaded straight after the last transfer of the one before.
 #[must_use]
 pub const fn keeps_timer(bus: &Bus, lat: &Latency) -> bool {
-    let (h, edge, ns200) = (bus.half, bus.edge, cycles(200));
+    let (h, edge) = (bus.half, bus.edge);
     let (rise, fall) = bus.bsp();
     let (early, late) = (bus.ctrl + lat.d_write.0 + lat.tim1.0, bus.ctrl + lat.d_write.1 + lat.tim1.1);
     let first = 3 * h + edge;
-    h >= cycles(400)
+    h >= cycles(THW_BCK)
         && edge < h
         && bus.ctrl + lat.d_write.1 < h
         && lat.e_link + 2 * lat.e_write.1 <= 2 * h
         && lat.d_link + 2 * lat.d_write.1 <= 2 * h
-        && first >= late + rise + ns200
-        && early + fall >= first + ns200
-        && first + 2 * h >= late + fall + ns200
+        && first >= late + rise + cycles(THS_BSP)
+        && early + fall >= first + cycles(TLS_BSP)
+        && first + 2 * h >= late + fall + cycles(TLS_BSP)
 }
 
 const _: () = assert!(keeps(&BUS, &LATENCY), "tsRGB, thRGB, thwBCK, thsBSP, tlsBSP");
-
-/// `thwGCK` over a written plane, `thwGEN`, and `thhGCK` (Table 6-3-2), each kept with a tick to spare.
-const THW_GCK: u32 = 62_670;
-const THW_GEN: u32 = 9_670;
-const THH_GCK: u32 = 4_000;
 
 pub const GPIOA_BSRR: u32 = 0x4202_0018;
 pub const GPIOA_BRR: u32 = 0x4202_0028;
@@ -137,10 +133,11 @@ pub const D_TR2: u32 = (0b11 << 30) | (1 << 10) | 0x40;
 /// A written plane's data: `BCK` 1, two quiet ticks before it and one after, the pairs, then
 /// black for 122.
 pub const RUN: usize = 4 + PAIRS + 1;
-const RUN_TICKS: u32 = 125;
+#[allow(clippy::cast_possible_truncation)]
+const RUN_TICKS: u32 = RUN as u32;
 /// `D`'s `CCR1` item: a spare tick, then `BCK`'s first 123 edges with a tick out after the first;
 /// the 124th follows on the compare held.
-const SHIFT: u32 = 125;
+const SHIFT: u32 = BCK_LABELS + 2;
 /// Zeros a single quiet item reads; longer waits take more items.
 const QUIET: u32 = 512;
 /// The tables `D` reads, in half-words: `GCK` then zeros, `GSP` then zeros, zeros, the compare
@@ -157,14 +154,13 @@ const GEN_MAX: u32 = 64;
 const HOLD_MAX: u32 = 64;
 pub const TABLE_HALFWORDS: usize = T_GEN + (GEN_MAX + HOLD_MAX) as usize;
 pub const DATA_HALFWORDS: usize = 2 * LINES * RUN;
-const GCK_EDGES: u32 = 483;
 const D_ITEMS: u32 = 5 * GCK_EDGES + 64;
 const PLANES: u32 = 480;
 const E_ITEMS: u32 = 2 * PLANES + 256;
 pub const D_WORDS: usize = 5 * D_ITEMS as usize;
 pub const E_WORDS: usize = 3 * E_ITEMS as usize;
 
-const _: () = assert!(RUN_TICKS as usize == RUN && RUN == 125 && QUIET.is_multiple_of(2) && PLANES as usize == 2 * LINES);
+const _: () = assert!(QUIET.is_multiple_of(2) && PLANES as usize == 2 * LINES);
 const _: () = assert!(D_WORDS * 4 <= 1 << 16 && E_WORDS * 4 <= 1 << 16, "each list fits one LBAR window");
 
 /// Where the program goes; `d_at` and `e_at` are 64 KiB-aligned, each channel's `LBAR`.
@@ -225,7 +221,7 @@ pub const GROUPS: usize = LINES / 4;
 /// a clean line in a group gets a run too, which no list reads.
 pub fn fill(data: &mut [u16; DATA_HALFWORDS], fb: Option<&[u8]>, dirty: &[bool; LINES], groups: core::ops::Range<usize>) {
     let w = LINES;
-    let fb = fb.filter(|fb| fb.len() == w * w);
+    let fb = fb.filter(|fb| fb.len() == w * PIXELS);
     for group in groups.map(|g| 4 * g) {
         // Columns `group` to `group + 3` are gate lines `top` down to `top - 3`, whose eight
         // runs lie together from the lowest line's.
@@ -281,6 +277,7 @@ pub struct Builder<'a> {
 impl<'a> Builder<'a> {
     #[must_use]
     pub fn new(bus: Bus, mem: Memory<'a>) -> Self {
+        // `thwGEN` and `thhGCK` with a tick to spare, and `thwGCK` over a written plane.
         let gen = bus.exact(THW_GEN) + 1;
         let hold = (bus.exact(THH_GCK) + 1).max(bus.written(THW_GCK).saturating_sub(2 + 2 + SHIFT + 2 + gen + 1));
         let (mut near, mut far) = (hold.min(HOLD_MAX - 1), hold.saturating_sub(HOLD_MAX - 1));
@@ -333,7 +330,7 @@ impl<'a> Builder<'a> {
         let to = if edge % 2 == 1 { GPIOA_BSRR } else { GPIOA_BRR };
         let line = (edge as usize).wrapping_sub(2) / 2;
         match edge {
-            3..=481 if dirty[line] => self.plane(to, T_GCK, line, edge.is_multiple_of(2)),
+            3..=LAST_LINE_EDGE if dirty[line] => self.plane(to, T_GCK, line, edge.is_multiple_of(2)),
             GCK_EDGES => self.edge_write(to, T_GCK, self.waits[3]),
             _ => self.edge_write(to, T_GCK, self.waits[2]),
         }
@@ -373,7 +370,7 @@ impl<'a> Builder<'a> {
         if msb {
             self.frame.lines += 1;
         }
-        self.frame.rises += 62;
+        self.frame.rises += BCK_LABELS.div_ceil(2);
         self.frame.pulses += 1;
         self.d_item(to, table, 2, false);
         self.d_item(TIM1_CR1, T_ON, 2, false);

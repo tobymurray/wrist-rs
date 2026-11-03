@@ -2,12 +2,57 @@
 
 //! Whether the watch is on external power, and what a stretch on battery cost.
 
+/// The PCA9420's registers (datasheet Rev 4.2).
+pub mod pca9420 {
+    pub const DEV_INFO: u8 = 0x00;
+    pub const TOP_CNTL0: u8 = 0x09;
+    pub const TOP_CNTL1: u8 = 0x0A;
+    pub const TOP_CNTL2: u8 = 0x0B;
+    pub const TOP_CNTL3: u8 = 0x0C;
+    pub const CHG_STATUS_0: u8 = 0x18;
+    pub const CHG_STATUS_1: u8 = 0x19;
+    pub const REG_STATUS: u8 = 0x20;
+    pub const RESET_MONITOR: u8 = 0x71;
+    /// `CHG_STATUS_1.IN_PWR_STATUS`, bits 7:6; 0 is `VIN` below `VIN_UVLO` (Table 39).
+    pub const IN_PWR_STATUS_SHIFT: u32 = 6;
+}
+
+/// The MAX17262's registers and the bits used (ADI UG6595, UG6597).
+pub mod max17262 {
+    pub const STATUS: u8 = 0x00;
+    pub const REP_SOC: u8 = 0x06;
+    pub const TEMP: u8 = 0x08;
+    pub const VCELL: u8 = 0x09;
+    pub const CURRENT: u8 = 0x0A;
+    pub const AVG_CURRENT: u8 = 0x0B;
+    pub const FULL_CAP_REP: u8 = 0x10;
+    pub const TTE: u8 = 0x11;
+    pub const DESIGN_CAP: u8 = 0x18;
+    pub const ICHG_TERM: u8 = 0x1E;
+    pub const V_EMPTY: u8 = 0x3A;
+    pub const FSTAT: u8 = 0x3D;
+    pub const COMMAND: u8 = 0x60;
+    pub const STATUS2: u8 = 0xB0;
+    pub const HIB_CFG: u8 = 0xBA;
+    pub const MODEL_CFG: u8 = 0xDB;
+
+    pub const STATUS_POR: u16 = 1 << 1;
+    pub const FSTAT_DNR: u16 = 1 << 0;
+    pub const MODEL_CFG_REFRESH: u16 = 1 << 15;
+    pub const SOFT_WAKEUP: u16 = 0x0090;
+}
+
+use max17262::{
+    COMMAND, DESIGN_CAP, FSTAT, FSTAT_DNR, HIB_CFG, ICHG_TERM, MODEL_CFG, MODEL_CFG_REFRESH, SOFT_WAKEUP, STATUS, STATUS_POR,
+    V_EMPTY,
+};
+
 /// From the PCA9420's `CHG_STATUS_1` and the USB-PD attach bit: an attachment
 /// wins, and `None` means neither answered.
 #[must_use]
 pub fn external_power(pd_attached: Option<bool>, charger_status: Option<u8>) -> Option<bool> {
     if pd_attached == Some(true) { return Some(true); }
-    charger_status.map(|v| v >> 6 != 0).or(pd_attached)
+    charger_status.map(|v| v >> pca9420::IN_PWR_STATUS_SHIFT != 0).or(pd_attached)
 }
 
 /// Reads in a row, and the time they span, before an unanswered input counts as battery for Stop.
@@ -154,7 +199,7 @@ pub const fn hibernate_fast(hib_cfg: u16) -> bool {
 /// Whether the MAX17262 has been reset since it was last configured: `Status.POR`, bit 1.
 #[must_use]
 pub const fn gauge_reset(status: u16) -> bool {
-    status & (1 << 1) != 0
+    status & STATUS_POR != 0
 }
 
 /// One step of configuring the MAX17262 after a reset (ADI UG6595, Steps 1 to 3, EZ option).
@@ -174,22 +219,19 @@ pub enum GaugeStep {
 /// The stock firmware's configuration, as read from the watch (`HARDWARE.md`): 200 mAh,
 /// 13.9 mA end of charge, empty at 3.40 V, charged above 4.275 V. `ModelCfg` carries `Refresh`.
 pub const GAUGE_RESTORE: [GaugeStep; 12] = [
-    GaugeStep::WaitClear(0x3D, 1),
+    GaugeStep::WaitClear(FSTAT, FSTAT_DNR),
     GaugeStep::SaveHibCfg,
-    GaugeStep::Write(0x60, 0x0090),
-    GaugeStep::Write(0xBA, 0),
-    GaugeStep::Write(0x60, 0),
-    GaugeStep::Write(0x18, 0x0190),
-    GaugeStep::Write(0x1E, 0x0059),
-    GaugeStep::Write(0x3A, 0xAA63),
-    GaugeStep::Write(0xDB, 0x8400),
-    GaugeStep::WaitClear(0xDB, 0x8000),
+    GaugeStep::Write(COMMAND, SOFT_WAKEUP),
+    GaugeStep::Write(HIB_CFG, 0),
+    GaugeStep::Write(COMMAND, 0),
+    GaugeStep::Write(DESIGN_CAP, 0x0190),
+    GaugeStep::Write(ICHG_TERM, 0x0059),
+    GaugeStep::Write(V_EMPTY, 0xAA63),
+    GaugeStep::Write(MODEL_CFG, 0x8400),
+    GaugeStep::WaitClear(MODEL_CFG, MODEL_CFG_REFRESH),
     GaugeStep::RestoreHibCfg,
     GaugeStep::ClearPor,
 ];
-
-const HIB_CFG: u8 = 0xBA;
-const STATUS: u8 = 0x00;
 
 /// The MAX17262's registers, a little-endian word at a time.
 #[allow(async_fn_in_trait)]
@@ -244,7 +286,7 @@ async fn run_restore(bus: &mut impl GaugeBus, hib_cfg: &mut Option<u16>) -> Resu
             }
             GaugeStep::ClearPor => {
                 let status = bus.read(STATUS).await.ok_or("Status unread")?;
-                if !bus.write(STATUS, status & !(1 << 1)).await {
+                if !bus.write(STATUS, status & !STATUS_POR).await {
                     return Err("Status unwritten");
                 }
                 if gauge_reset(bus.read(STATUS).await.ok_or("Status unread")?) {

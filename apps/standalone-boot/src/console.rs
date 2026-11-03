@@ -13,7 +13,9 @@ use embassy_usb::class::cdc_acm::{CdcAcmClass, Receiver, Sender, State};
 use embassy_usb::{Builder, Handler};
 use static_cell::ConstStaticCell;
 
-use crate::mmio::{modify32, read32, PWR_SVMSR, PWR_VOSR, RCC_AHB2ENR1};
+use crate::mmio::{
+    modify32, read32, PWR_SVMSR, PWR_VOSR, RCC_AHB2ENR1, RCC_AHB2ENR1_OTGEN, SYSCFG_OTGHSPHYCR, SYSCFG_OTGHSPHYTUNER2,
+};
 use crate::uart::Uart;
 use crate::update::{self, FlashMutex};
 use crate::{usblog, watchdog};
@@ -30,9 +32,6 @@ const OTG_PCGCCTL: u32 = OTG_HS_BASE + 0xE00;
 const GINTSTS_USBRST: u32 = 1 << 12;
 const DCFG_DAD: u32 = 0x7F << 4;
 const DCTL_SDIS: u32 = 1 << 1;
-const RCC_AHB2ENR1_OTGEN: u32 = 1 << 14;
-const SYSCFG_OTGHSPHYCR: u32 = 0x4600_0400 + 0x74;
-const SYSCFG_OTGHSPHYTUNER2: u32 = 0x4600_0400 + 0x7C;
 
 static BUILT: AtomicBool = AtomicBool::new(false);
 static TERMINAL_OPEN: AtomicBool = AtomicBool::new(false);
@@ -253,8 +252,8 @@ fn device_config() -> embassy_usb::Config<'static> {
     let mut config = embassy_usb::Config::new(USB_VID, USB_PID);
     config.manufacturer = Some("wrist-rs");
     config.product = Some("standalone-boot console");
-    // The 96-bit unique device ID at 0x0BFA_0700 (RM0456, device electronic
-    // signature), so two watches on one host differ.
+    // The 96-bit unique device ID (RM0456, device electronic signature), so two
+    // watches on one host differ.
     config.serial_number = Some(embassy_stm32::uid::uid_hex());
     config.max_packet_size_0 = u8::try_from(CONTROL_PACKET).unwrap_or(64);
     // A miscellaneous device with IADs, so CDC-ACM binds on every host.

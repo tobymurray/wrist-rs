@@ -97,6 +97,8 @@ pub mod config {
 pub mod address {
     pub const PUBLIC: u8 = 0x00;
     pub const STATIC_RANDOM: u8 = 0x01;
+    /// A peer's random address, static or private.
+    pub const RANDOM: u8 = 0x01;
 }
 
 /// A static random address (Core 6.B 1.3.2.1) from 64 bits, little-endian as the chip carries it.
@@ -114,14 +116,17 @@ pub const fn static_random(bits: u64) -> [u8; 6] {
 /// The watch's static random address from the MCU's 96-bit unique id (FNV-1a).
 #[must_use]
 pub const fn static_random_address(uid: [u32; 3]) -> [u8; 6] {
-    let mut h: u64 = 0xCBF2_9CE4_8422_2325;
+    // 64-bit FNV-1a's offset basis and prime.
+    const OFFSET: u64 = 0xCBF2_9CE4_8422_2325;
+    const PRIME: u64 = 0x0100_0000_01B3;
+    let mut h = OFFSET;
     let mut w = 0;
     while w < 3 {
         let bytes = uid[w].to_le_bytes();
         let mut i = 0;
         while i < 4 {
             h ^= bytes[i] as u64;
-            h = h.wrapping_mul(0x0100_0000_01B3);
+            h = h.wrapping_mul(PRIME);
             i += 1;
         }
         w += 1;
@@ -171,11 +176,71 @@ pub mod vendor {
     pub const GATT_SERVER_CONFIRMATION: u16 = 0x0C17;
 }
 
-/// ST's command status codes (`ble_status.h`).
+/// ST's command status codes (`ble_status.h`), HCI's among them.
 pub mod status {
+    pub const COMMAND_DISALLOWED: u8 = 0x0C;
+    pub const REMOTE_USER_TERMINATED: u8 = 0x13;
     /// No TX buffers for now; `GATT_TX_POOL_AVAILABLE` follows when there are.
     pub const INSUFFICIENT_RESOURCES: u8 = 0x64;
 }
+
+/// `ACI_GATT_ADD_SERVICE`'s and `ACI_GATT_ADD_CHAR`'s UUID types.
+pub mod uuid_type {
+    pub const U16: u8 = 0x01;
+    pub const U128: u8 = 0x02;
+}
+
+/// `ACI_GATT_ADD_SERVICE`'s service type.
+pub const PRIMARY_SERVICE: u8 = 0x01;
+
+/// `ACI_GATT_ADD_CHAR`'s `GATT_Evt_Mask`.
+pub mod evt_mask {
+    pub const NONE: u8 = 0x00;
+    pub const ATTRIBUTE_WRITE: u8 = 0x01;
+}
+
+/// `ACI_GATT_ADD_CHAR`'s smallest `Enc_Key_Size`, and its `Is_Variable`.
+pub const MIN_ENC_KEY_SIZE: u8 = 7;
+pub const VARIABLE_LENGTH: u8 = 0x01;
+
+/// `ACI_GAP_INIT`'s privacy flag.
+pub const PRIVACY_DISABLED: u8 = 0x00;
+
+/// `ACI_GAP_SET_DISCOVERABLE`'s connectable undirected advertising, and its filter policy.
+pub const ADV_IND: u8 = 0x00;
+pub const NO_FILTER: u8 = 0x00;
+
+/// `ACI_GAP_START_GENERAL_DISCOVERY_PROC`'s `Filter_Duplicates`.
+pub const FILTER_DUPLICATES: u8 = 0x01;
+
+/// HCI packet indicators (Core Vol 4 Part A 2).
+pub mod packet {
+    pub const COMMAND: u8 = 0x01;
+    pub const ACL: u8 = 0x02;
+    pub const EVENT: u8 = 0x04;
+}
+
+/// HCI event codes (Core Vol 4 Part E 7.7), and ST's vendor event.
+pub mod event_code {
+    pub const DISCONNECTION_COMPLETE: u8 = 0x05;
+    pub const ENCRYPTION_CHANGE: u8 = 0x08;
+    pub const COMMAND_COMPLETE: u8 = 0x0E;
+    pub const COMMAND_STATUS: u8 = 0x0F;
+    pub const LE_META: u8 = 0x3E;
+    pub const VENDOR: u8 = 0xFF;
+}
+
+/// LE Meta subevent codes (Core Vol 4 Part E 7.7.65).
+pub mod le_subevent {
+    pub const CONNECTION_COMPLETE: u8 = 0x01;
+    pub const ADVERTISING_REPORT: u8 = 0x02;
+    pub const CONNECTION_UPDATE_COMPLETE: u8 = 0x03;
+    pub const DATA_LENGTH_CHANGE: u8 = 0x07;
+    pub const ENHANCED_CONNECTION_COMPLETE: u8 = 0x0A;
+}
+
+/// An advertising report's `Event_Type` for a scan response (Core Vol 4 Part E 7.7.65.2).
+pub const SCAN_RSP: u8 = 0x04;
 
 /// `ACI_GAP_SET_AUTHENTICATION_REQUIREMENT`'s parameters, in ST's order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -197,9 +262,11 @@ pub struct AuthenticationRequirement {
 impl AuthenticationRequirement {
     #[must_use]
     pub const fn params(&self) -> [u8; 12] {
+        const USE_FIXED_PIN: u8 = 0x00;
+        const ASK_FOR_PIN: u8 = 0x01;
         let (use_fixed, pin) = match self.fixed_pin {
-            Some(pin) => (0x00, pin),
-            None => (0x01, 0),
+            Some(pin) => (USE_FIXED_PIN, pin),
+            None => (ASK_FOR_PIN, 0),
         };
         let p = pin.to_le_bytes();
         [
@@ -234,24 +301,30 @@ pub const PAIRING: AuthenticationRequirement = AuthenticationRequirement {
 /// An HCI command packet (`01`, opcode, length, parameters) into `out`;
 /// returns its length. Parameters past 255 bytes, or past `out`, are cut.
 pub fn command(opcode: u16, params: &[u8], out: &mut [u8]) -> usize {
-    let n = params.len().min(255).min(out.len().saturating_sub(4));
-    if out.len() < 4 {
+    let n = params.len().min(MAX_COMMAND_PARAMS).min(out.len().saturating_sub(COMMAND_HEADER_LEN));
+    if out.len() < COMMAND_HEADER_LEN {
         return 0;
     }
-    out[0] = 0x01;
+    out[0] = packet::COMMAND;
     out[1..3].copy_from_slice(&opcode.to_le_bytes());
     out[3] = u8::try_from(n).unwrap_or(0);
-    out[4..4 + n].copy_from_slice(&params[..n]);
-    4 + n
+    out[COMMAND_HEADER_LEN..COMMAND_HEADER_LEN + n].copy_from_slice(&params[..n]);
+    COMMAND_HEADER_LEN + n
 }
+
+/// The indicator, opcode and length before a command's parameters.
+pub const COMMAND_HEADER_LEN: usize = 4;
+pub const MAX_COMMAND_PARAMS: usize = u8::MAX as usize;
+/// The longest packet [`command`] writes.
+pub const MAX_COMMAND: usize = COMMAND_HEADER_LEN + MAX_COMMAND_PARAMS;
 
 /// The length of the HCI packet at the start of `p`, clamped to `p`; 0 if
 /// empty. A read may hold several packets back to back.
 #[must_use]
 pub fn packet_len(p: &[u8]) -> usize {
     match p {
-        [0x04, _, len, ..] => (3 + usize::from(*len)).min(p.len()),
-        [0x02, _, _, lo, hi, ..] => (5 + usize::from(u16::from_le_bytes([*lo, *hi]))).min(p.len()),
+        [packet::EVENT, _, len, ..] => (3 + usize::from(*len)).min(p.len()),
+        [packet::ACL, _, _, lo, hi, ..] => (5 + usize::from(u16::from_le_bytes([*lo, *hi]))).min(p.len()),
         _ => p.len(),
     }
 }
@@ -260,8 +333,8 @@ pub fn packet_len(p: &[u8]) -> usize {
 #[must_use]
 pub fn packet_whole(p: &[u8]) -> bool {
     match p {
-        [0x04, _, len, ..] => 3 + usize::from(*len) <= p.len(),
-        [0x02, _, _, lo, hi, ..] => 5 + usize::from(u16::from_le_bytes([*lo, *hi])) <= p.len(),
+        [packet::EVENT, _, len, ..] => 3 + usize::from(*len) <= p.len(),
+        [packet::ACL, _, _, lo, hi, ..] => 5 + usize::from(u16::from_le_bytes([*lo, *hi])) <= p.len(),
         _ => true,
     }
 }
@@ -313,30 +386,35 @@ pub enum Event<'a> {
 /// The event in one HCI packet, read no further than the packet's own length.
 #[must_use]
 pub fn parse(p: &[u8]) -> Event<'_> {
+    // The interval after the peer's address; the Enhanced event puts two more addresses first.
+    const LEGACY_INTERVAL_AT: usize = 15;
+    use event_code as ev;
+    use le_subevent as le;
+    use packet::EVENT;
     if !packet_whole(p) {
         return Event::Malformed(p);
     }
     let p = &p[..packet_len(p)];
     let u16_at = |i: usize| u16::from_le_bytes([p[i], p[i + 1]]);
     match p {
-        [0x04, 0x0E, _, _num, lo, hi, status, return_param_bytes @ ..] => Event::CommandComplete {
+        [EVENT, ev::COMMAND_COMPLETE, _, _num, lo, hi, status, return_param_bytes @ ..] => Event::CommandComplete {
             cmd_opcode: u16::from_le_bytes([*lo, *hi]),
             status: *status,
             return_param_bytes,
         },
-        [0x04, 0x0F, _, status, _num, lo, hi, ..] => {
+        [EVENT, ev::COMMAND_STATUS, _, status, _num, lo, hi, ..] => {
             Event::CommandStatus { cmd_opcode: u16::from_le_bytes([*lo, *hi]), status: *status }
         }
-        [0x04, 0x05, _, status, _, _, reason, ..] => {
+        [EVENT, ev::DISCONNECTION_COMPLETE, _, status, _, _, reason, ..] => {
             Event::DisconnectionComplete { handle: u16_at(4), status: *status, reason: *reason }
         }
-        [0x04, 0x08, _, status, _, _, enabled, ..] => {
+        [EVENT, ev::ENCRYPTION_CHANGE, _, status, _, _, enabled, ..] => {
             Event::EncryptionChange { handle: u16_at(4), status: *status, enabled: *enabled }
         }
         // Status, handle, role, peer address type and address, then (Enhanced) two resolvable
         // addresses, then interval and latency.
-        [0x04, 0x3E, _, sub @ (0x01 | 0x0A), 0x00, _, _, role, kind, a0, a1, a2, a3, a4, a5, ..] => {
-            let at = if *sub == 0x01 { 15 } else { 27 };
+        [EVENT, ev::LE_META, _, sub @ (le::CONNECTION_COMPLETE | le::ENHANCED_CONNECTION_COMPLETE), 0x00, _, _, role, kind, a0, a1, a2, a3, a4, a5, ..] => {
+            let at = if *sub == le::CONNECTION_COMPLETE { LEGACY_INTERVAL_AT } else { LEGACY_INTERVAL_AT + 12 };
             Event::LeConnectionComplete {
                 handle: u16_at(5),
                 central: *role == 0,
@@ -347,26 +425,42 @@ pub fn parse(p: &[u8]) -> Event<'_> {
                     .map(|v| (u16::from_le_bytes([v[0], v[1]]), u16::from_le_bytes([v[2], v[3]]))),
             }
         }
-        [0x04, 0x3E, _, 0x01 | 0x0A, status @ 0x01..=0xFF, ..] => Event::LeConnectionFailed { status: *status },
-        [0x04, 0x3E, _, 0x03, 0x00, _, _, _, _, _, _, ..] => Event::LeConnectionUpdateComplete {
+        [EVENT, ev::LE_META, _, le::CONNECTION_COMPLETE | le::ENHANCED_CONNECTION_COMPLETE, status @ 0x01..=0xFF, ..] => Event::LeConnectionFailed { status: *status },
+        [EVENT, ev::LE_META, _, le::CONNECTION_UPDATE_COMPLETE, 0x00, _, _, _, _, _, _, ..] => Event::LeConnectionUpdateComplete {
             handle: u16_at(5),
             conn_interval: u16_at(7),
             peripheral_latency: u16_at(9),
         },
-        [0x04, 0x3E, _, 0x03, status @ 0x01..=0xFF, _, _, ..] => {
+        [EVENT, ev::LE_META, _, le::CONNECTION_UPDATE_COMPLETE, status @ 0x01..=0xFF, _, _, ..] => {
             Event::LeConnectionUpdateFailed { handle: u16_at(5), status: *status }
         }
-        [0x04, 0x3E, _, 0x07, _, _, _, _, _, _, _, _, _, _, ..] => Event::LeDataLengthChange {
+        [EVENT, ev::LE_META, _, le::DATA_LENGTH_CHANGE, _, _, _, _, _, _, _, _, _, _, ..] => Event::LeDataLengthChange {
             handle: u16_at(4),
             max_tx_octets: u16_at(6),
             max_tx_time: u16_at(8),
             max_rx_octets: u16_at(10),
             max_rx_time: u16_at(12),
         },
-        [0x04, 0x3E, _, 0x02, data @ ..] => Event::LeAdvertisingReport { data },
-        [0x04, 0x3E, _, sub, ..] if !matches!(sub, 0x01 | 0x03 | 0x07 | 0x0A) => Event::LeUnknown { subevent_code: *sub },
-        [0x04, 0xFF, _, lo, hi, params @ ..] => Event::Vendor { code: u16::from_le_bytes([*lo, *hi]), params },
-        [0x04, code, _, ..] if !matches!(code, 0x05 | 0x08 | 0x0E | 0x0F | 0x3E | 0xFF) => {
+        [EVENT, ev::LE_META, _, le::ADVERTISING_REPORT, data @ ..] => Event::LeAdvertisingReport { data },
+        [EVENT, ev::LE_META, _, sub, ..]
+            if !matches!(
+                *sub,
+                le::CONNECTION_COMPLETE | le::CONNECTION_UPDATE_COMPLETE | le::DATA_LENGTH_CHANGE | le::ENHANCED_CONNECTION_COMPLETE
+            ) =>
+        {
+            Event::LeUnknown { subevent_code: *sub }
+        }
+        [EVENT, ev::VENDOR, _, lo, hi, params @ ..] => Event::Vendor { code: u16::from_le_bytes([*lo, *hi]), params },
+        [EVENT, code, _, ..]
+            if !matches!(
+                *code,
+                ev::DISCONNECTION_COMPLETE
+                    | ev::ENCRYPTION_CHANGE
+                    | ev::COMMAND_COMPLETE
+                    | ev::COMMAND_STATUS
+                    | ev::LE_META
+                    | ev::VENDOR
+            ) => {
             Event::Unknown { code: *code }
         }
         _ => Event::Malformed(p),

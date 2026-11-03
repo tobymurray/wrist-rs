@@ -402,9 +402,12 @@ pub fn fresh_for(p: &Profile) -> Millis {
 
 /// Up to a quarter of `base`, fixed per peer and step so that peers do not retry in step.
 fn jitter(peer: PeerAddr, step: u8, base: Millis) -> Millis {
-    let mut h: u32 = 0x811c_9dc5;
+    // 32-bit FNV-1a's offset basis and prime.
+    const OFFSET: u32 = 0x811c_9dc5;
+    const PRIME: u32 = 0x0100_0193;
+    let mut h = OFFSET;
     for &b in peer.addr.raw().iter().chain(&[step]) {
-        h = (h ^ u32::from(b)).wrapping_mul(0x0100_0193);
+        h = (h ^ u32::from(b)).wrapping_mul(PRIME);
     }
     Millis(h % (base.0 / 4 + 1))
 }

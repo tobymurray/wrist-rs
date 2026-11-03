@@ -6,11 +6,10 @@ use embassy_stm32::gpio::{Level, Output, Pin, Speed};
 use embassy_stm32::i2c::{I2c, Master};
 use embassy_stm32::mode::Blocking;
 use embassy_stm32::{peripherals, Peri};
-use wrist_board::{pins as net, Pin as Net, Port};
+use wrist_board::{pins as net, Pin as Net};
 
 use crate::mmio::{
-    enable_clock, modify32, read32, write32, GPIOA_BASE, GPIOB_BASE, GPIOC_BASE, GPIOD_BASE,
-    GPIOE_BASE, GPIOF_BASE, GPIOG_BASE, GPIO_MODER, GPIO_PUPDR, PWR_CR2, PWR_CR2_DC1RAM,
+    enable_clock, gpio_base, modify32, read32, write32, GPIO_MODER, GPIO_PUPDR, PWR_CR2, PWR_CR2_DC1RAM,
     PWR_CR2_DMA2DRAM, PWR_CR2_PKARAM, PWR_CR2_SRAM2, PWR_CR2_SRAM3_1_TO_8, PWR_CR2_SRAM4, PWR_CR3,
     PWR_CR3_REGSEL, PWR_CR4, PWR_CR4_SRAM3_9_TO_13, PWR_CR4_SRAM5_1_TO_12, PWR_SVMSR,
     PWR_SVMSR_REGS, RCC_AHB2ENR1, RCC_AHB2ENR1_GPIOAEN, RCC_AHB2ENR1_GPIOBEN, RCC_AHB2ENR1_GPIOCEN,
@@ -181,18 +180,6 @@ unsafe fn sdmmc_off() -> bool {
     write32(SDMMC1_BASE + SDMMC_POWER, 0);
     modify32(RCC_AHB2ENR1, RCC_AHB2ENR1_SDMMC1EN, 0);
     true
-}
-
-fn gpio_base(port: Port) -> u32 {
-    match port {
-        Port::A => GPIOA_BASE,
-        Port::B => GPIOB_BASE,
-        Port::C => GPIOC_BASE,
-        Port::D => GPIOD_BASE,
-        Port::E => GPIOE_BASE,
-        Port::F => GPIOF_BASE,
-        Port::G => GPIOG_BASE,
-    }
 }
 
 fn hold_low(pin: Peri<'static, impl Pin>) {

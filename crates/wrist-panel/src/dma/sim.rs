@@ -21,9 +21,12 @@ use std::vec::Vec;
 use super::{
     cycles, Bus, Frame, Latency, Memory, BUS, DATA_HALFWORDS, D_BR2, D_TR1, D_TR2, D_TR3, D_WORDS, E_TR1, E_TR2,
     E_WORDS, CEN, GCK, GPIOA_BRR, GPIOA_BSRR, GPIOB_BRR, GPIOB_BSRR, GPIOE_ODR, GSP, LATENCY, OPM, TABLE_HALFWORDS, TIM1_CR1,
-    TIM3_CR1,
+    TIM3_CR1, TIMER_HZ,
 };
-use crate::{word, DATA_MASK, LINES, PAIRS};
+use crate::minimum::{
+    GCK_KEPT, THH_GCK, THS_BSP, THS_GSP, THS_INTB, THW_BCK, THW_GCK, THW_GEN, TH_RGB, TLS_BSP, TLS_GSP, TS_RGB,
+};
+use crate::{word, BCK_LABELS, DATA_MASK, GCK_EDGES, LAST_LINE_EDGE, LINES, PAIRS, PIXELS};
 
 const D_AT: u32 = 0x201A_0000;
 const E_AT: u32 = 0x201B_0000;
@@ -31,7 +34,7 @@ const TABLE_AT: u32 = 0x201B_8000;
 const DATA_AT: u32 = 0x201C_0000;
 const TIM3: u32 = 0x4000_0400;
 /// Bus words latched for `BCK` edges 2 to 124.
-pub const LATCHED: usize = 123;
+pub const LATCHED: usize = BCK_LABELS as usize;
 pub type Latched = BTreeMap<(usize, u32), [u16; LATCHED]>;
 
 /// Byte-addressed memory the channels read.
@@ -391,7 +394,7 @@ pub fn run(s: &Setup) -> Run {
 }
 
 fn ns(cycles: u64) -> u64 {
-    cycles * 1000 / 48
+    cycles * 1000 / u64::from(TIMER_HZ / 1_000_000)
 }
 
 /// Tables 6-3-2 and 6-3-3 against `changes`, and what the panel latches.
@@ -403,16 +406,16 @@ fn check(changes: &[Change], end: u64, broken: &mut Vec<String>) -> Latched {
     let from = |pins: &[Change], at: u64| pins.partition_point(|c| c.early < at);
 
     for w in bck.windows(2) {
-        if w[1].early - w[0].late < at_least(400) {
+        if w[1].early - w[0].late < at_least(THW_BCK) {
             flag("thwBCK/tlwBCK", w[1].early);
         }
     }
     let mut next = 0;
     for e in &bck {
-        while next < data.len() && data[next].late + at_least(200) <= e.early {
+        while next < data.len() && data[next].late + at_least(TS_RGB) <= e.early {
             next += 1;
         }
-        if next < data.len() && data[next].early < e.late + at_least(200) {
+        if next < data.len() && data[next].early < e.late + at_least(TH_RGB) {
             flag("tsRGB/thRGB", e.early);
         }
     }
@@ -423,10 +426,10 @@ fn check(changes: &[Change], end: u64, broken: &mut Vec<String>) -> Latched {
             continue;
         };
         let second = bck.get(from(&bck, first.late + 1));
-        if first.early < rise.late + at_least(200) || fall.early < first.late + at_least(200) {
+        if first.early < rise.late + at_least(THS_BSP) || fall.early < first.late + at_least(TLS_BSP) {
             flag("thsBSP/tlsBSP", rise.early);
         }
-        if second.is_none_or(|s| s.early < fall.late + at_least(200)) {
+        if second.is_none_or(|s| s.early < fall.late + at_least(TLS_BSP)) {
             flag("BSP low before the second edge", fall.early);
         }
     }
@@ -435,27 +438,27 @@ fn check(changes: &[Change], end: u64, broken: &mut Vec<String>) -> Latched {
             flag("GEN left high", pulse[0].early);
             continue;
         };
-        if fall.early < rise.late + at_least(9_670) {
+        if fall.early < rise.late + at_least(THW_GEN) {
             flag("thwGEN", rise.early);
         }
         if bck.get(from(&bck, rise.early)).is_some_and(|e| e.early <= fall.late) {
             flag("tlsGEN: BCK during GEN", rise.early);
         }
-        if gck.get(gck.partition_point(|g| g.late < fall.early)).is_none_or(|g| g.early < fall.late + at_least(4_000)) {
+        if gck.get(gck.partition_point(|g| g.late < fall.early)).is_none_or(|g| g.early < fall.late + at_least(THH_GCK)) {
             flag("thhGCK", fall.early);
         }
     }
-    if gck.len() != 483 || gck.iter().enumerate().any(|(i, g)| g.level != u16::from(i % 2 == 0)) {
-        flag(&format!("{} GCK writes, not 483 alternating from high", gck.len()), 0);
+    if gck.len() != GCK_EDGES as usize || gck.iter().enumerate().any(|(i, g)| g.level != u16::from(i % 2 == 0)) {
+        flag(&format!("{} GCK writes, not {GCK_EDGES} alternating from high", gck.len()), 0);
     }
     if gsp.len() != 2 || gsp[0].level != 1 || gck.len() < 3 {
         flag("GSP is not one pulse", 0);
         return Latched::new();
     }
-    if gsp[0].early < at_least(10_000) || gck[0].early < gsp[0].late + at_least(10_000) {
+    if gsp[0].early < at_least(THS_INTB) || gck[0].early < gsp[0].late + at_least(THS_GSP) {
         flag("INTB to GSP, thsGSP", gsp[0].early);
     }
-    if gsp[1].early < gck[1].late + at_least(10_000) || gsp[1].late > gck[2].early {
+    if gsp[1].early < gck[1].late + at_least(TLS_GSP) || gsp[1].late > gck[2].early {
         flag("tlsGSP", gsp[1].early);
     }
     latch([&gck, &bck, &gen, &bsp, &data], end, &mut flag)
@@ -476,8 +479,8 @@ fn latch([gck, bck, gen, bsp, data]: [&[Change]; 5], end: u64, flag: &mut impl F
         let (edges, pulses, rises) =
             (&bck[from(bck, lo)..from(bck, hi)], &gen[from(gen, lo)..from(gen, hi)], &bsp[from(bsp, lo)..from(bsp, hi)]);
         let edge = i + 1;
-        let normal = matches!(edge, 1 | 2 | 483) || !pulses.is_empty();
-        let half = if normal { at_least(62_670) } else { at_least(1_000) };
+        let normal = matches!(edge, 1 | 2) || edge == GCK_EDGES as usize || !pulses.is_empty();
+        let half = if normal { at_least(THW_GCK) } else { at_least(GCK_KEPT) };
         if until < g.late + half {
             flag(&format!("GCK {edge} half-period"), g.early);
         }
@@ -487,7 +490,7 @@ fn latch([gck, bck, gen, bsp, data]: [&[Change]; 5], end: u64, flag: &mut impl F
             }
             continue;
         }
-        if !(2..=481).contains(&edge) || edges.len() != 124 || pulses.len() != 2 || rises.len() != 2 {
+        if !(2..=LAST_LINE_EDGE as usize).contains(&edge) || edges.len() != LATCHED + 1 || pulses.len() != 2 || rises.len() != 2 {
             flag(&format!("GCK {edge}: {} BCK edges, {} GEN and {} BSP changes", edges.len(), pulses.len(), rises.len()), g.early);
             continue;
         }
@@ -514,7 +517,7 @@ pub fn reference(fb: Option<&[u8]>, dirty: &[bool; LINES]) -> Latched {
         let x = LINES - 1 - line;
         for plane in [1, 0] {
             let mut words = [0u16; LATCHED];
-            if let Some(fb) = fb.filter(|fb| fb.len() == LINES * LINES) {
+            if let Some(fb) = fb.filter(|fb| fb.len() == LINES * PIXELS) {
                 for (pair, w) in words.iter_mut().take(PAIRS).enumerate() {
                     let (odd, even) = (fb[2 * pair * LINES + x], fb[(2 * pair + 1) * LINES + x]);
                     *w = (word(odd, even, plane) & DATA_MASK) as u16;
@@ -549,7 +552,7 @@ pub fn program(bus: Bus, fb: Option<&[u8]>, dirty: &[bool; LINES]) -> Program {
     crate::dma::fill(mem.data, fb, dirty, 0..crate::dma::GROUPS);
     let mut b = crate::dma::Builder::new(bus, mem);
     b.head(dirty);
-    for edge in 3..=483 {
+    for edge in 3..=GCK_EDGES {
         b.edge(edge, dirty);
     }
     let frame = b.finish().expect("the lists hold the frame");
@@ -776,7 +779,7 @@ mod tests {
         let fb = random_fb(5);
         for (bus, most) in [(Bus::new(32, 24), 52.0), (Bus::new(28, 20), 46.0), (BUS, 44.0)] {
             assert!(keeps(&bus, &LATENCY), "{bus:?}");
-            let ms = |dirty: [bool; LINES]| checked(bus, LATENCY, Some(&fb), &dirty).cycles as f64 / 48_000.0;
+            let ms = |dirty: [bool; LINES]| checked(bus, LATENCY, Some(&fb), &dirty).cycles as f64 / f64::from(TIMER_HZ / 1_000);
             let full = ms(pattern(|_| true));
             let page = ms(pattern(|l| (12..228).contains(&l)));
             let minute = ms(pattern(|l| (60..80).contains(&l) || (150..170).contains(&l)));

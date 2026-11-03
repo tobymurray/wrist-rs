@@ -13,17 +13,21 @@ import sys
 import zipfile
 from pathlib import Path
 
+BUILD_HASH_DIGITS = 12
+FNV_OFFSET = 0x811C9DC5
+FNV_PRIME = 0x01000193
+
 
 def fnv1a(data):
-    value = 0x811C9DC5
+    value = FNV_OFFSET
     for byte in data:
-        value = ((value ^ byte) * 0x01000193) & 0xFFFFFFFF
+        value = ((value ^ byte) * FNV_PRIME) & 0xFFFFFFFF
     return value
 
 
 def as_recorded(build_id):
     """A build ID as `Build::text` in crates/wrist-crash prints it."""
-    if re.fullmatch(r'[0-9a-fA-F]{12}(-dirty)?', build_id):
+    if re.fullmatch(rf'[0-9a-fA-F]{{{BUILD_HASH_DIGITS}}}(-dirty)?', build_id):
         return build_id.lower()
     return f'#{fnv1a(build_id.encode()):08x}'
 

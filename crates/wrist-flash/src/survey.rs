@@ -130,14 +130,39 @@ pub struct Registers {
     pub wrp: [u32; 4],
 }
 
+/// The non-secure alias (RM0456 Table 6).
+pub const FLASH_BASE: u32 = 0x4002_2000;
+
 /// RM0456 7.9, Table 79.
 pub mod offset {
+    pub const NSKEYR: u32 = 0x08;
     pub const NSSR: u32 = 0x20;
     pub const NSCR: u32 = 0x28;
     pub const ECCR: u32 = 0x30;
     pub const OPSR: u32 = 0x34;
     pub const OPTR: u32 = 0x40;
     pub const WRP: [u32; 4] = [0x58, 0x5C, 0x68, 0x6C];
+}
+
+/// RM0456 7.9.7, 7.9.9, 7.9.12 and 7.9.13.
+pub const NSSR_BSY: u32 = 1 << 16;
+pub const NSSR_WDW: u32 = 1 << 17;
+pub const NSCR_LOCK: u32 = 1 << 31;
+pub const OPSR_CODE_OP_SHIFT: u32 = 29;
+pub const OPSR_BK_OP: u32 = 1 << 21;
+pub const OPSR_SYSF_OP: u32 = 1 << 22;
+pub const OPTR_SWAP_BANK: u32 = 1 << 20;
+pub const OPTR_DUALBANK: u32 = 1 << 21;
+pub const OPTR_TZEN: u32 = 1 << 31;
+
+/// `OPSR.CODE_OP`.
+pub mod code_op {
+    pub const SINGLE_WRITE: u8 = 1;
+    pub const BURST_WRITE: u8 = 2;
+    pub const PAGE_ERASE: u8 = 3;
+    pub const BANK_ERASE: u8 = 4;
+    pub const MASS_ERASE: u8 = 5;
+    pub const OPTION_CHANGE: u8 = 6;
 }
 
 /// `ADDR_OP` and `ADDR_ECC`: 21 bits on this part, an offset within the bank up to `0x1FFFF0`
@@ -158,12 +183,12 @@ impl Interrupted {
     #[must_use]
     pub const fn name(&self) -> &'static str {
         match self.code {
-            1 => "single write",
-            2 => "burst write",
-            3 => "page erase",
-            4 => "bank erase",
-            5 => "mass erase",
-            6 => "option change",
+            code_op::SINGLE_WRITE => "single write",
+            code_op::BURST_WRITE => "burst write",
+            code_op::PAGE_ERASE => "page erase",
+            code_op::BANK_ERASE => "bank erase",
+            code_op::MASS_ERASE => "mass erase",
+            code_op::OPTION_CHANGE => "option change",
             _ => "reserved",
         }
     }
@@ -237,14 +262,14 @@ pub const fn ecc(eccr: u32) -> Option<Ecc> {
 /// The operation `opsr` says a reset interrupted, if any.
 #[must_use]
 pub const fn interrupted(opsr: u32) -> Option<Interrupted> {
-    let code = (opsr >> 29) as u8;
+    let code = (opsr >> OPSR_CODE_OP_SHIFT) as u8;
     if code == 0 {
         return None;
     }
     Some(Interrupted {
         code,
-        bank2: opsr & (1 << 21) != 0,
-        system_flash: opsr & (1 << 22) != 0,
+        bank2: opsr & OPSR_BK_OP != 0,
+        system_flash: opsr & OPSR_SYSF_OP != 0,
         offset: opsr & ADDR_MASK,
     })
 }
@@ -268,25 +293,25 @@ impl Registers {
     /// `NSCR.LOCK`: nothing can program or erase until the keys are written.
     #[must_use]
     pub const fn locked(&self) -> bool {
-        self.nscr & (1 << 31) != 0
+        self.nscr & NSCR_LOCK != 0
     }
 
     /// `OPTR.SWAP_BANK`: bank 2 is mapped at `0x08000000`.
     #[must_use]
     pub const fn swapped(&self) -> bool {
-        self.optr & (1 << 20) != 0
+        self.optr & OPTR_SWAP_BANK != 0
     }
 
     /// `OPTR.DUALBANK`.
     #[must_use]
     pub const fn dual_bank(&self) -> bool {
-        self.optr & (1 << 21) != 0
+        self.optr & OPTR_DUALBANK != 0
     }
 
     /// `NSSR.BSY | WDW`.
     #[must_use]
     pub const fn busy(&self) -> bool {
-        self.nssr & (0b11 << 16) != 0
+        self.nssr & (NSSR_BSY | NSSR_WDW) != 0
     }
 
     #[must_use]
@@ -332,6 +357,23 @@ impl Registers {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_installer_reads_these_registers() {
+        let constant = |text: &str, name: &str| -> Vec<u32> {
+            let line = text.lines().find(|l| l.contains(&format!(" {name} "))).unwrap();
+            line.split("0x").skip(1).map(|h| u32::from_str_radix(&h[..h.find(|c: char| !c.is_ascii_hexdigit()).unwrap()], 16).unwrap()).collect()
+        };
+        let service = include_str!("../../../apps/image-installer/Libs/Header/Service.hpp");
+        assert_eq!(constant(service, "kFlashBase"), [FLASH_BASE]);
+        for (name, at) in [("kFlashNssr", offset::NSSR), ("kFlashNscr", offset::NSCR), ("kFlashEccr", offset::ECCR), ("kFlashOpsr", offset::OPSR), ("kFlashOptr", offset::OPTR)] {
+            assert_eq!(constant(service, name), [at], "{name}");
+        }
+        assert_eq!(constant(service, "kFlashWrp[4]"), offset::WRP);
+        let gate = include_str!("../../../apps/image-installer/Libs/Header/IsolationGate.hpp");
+        assert_eq!(constant(gate, "kFlashOptr"), [FLASH_BASE + offset::OPTR]);
+        assert!(gate.contains(&format!("kOptrTzen      = 1u << {};", OPTR_TZEN.trailing_zeros())));
+    }
 
     #[test]
     fn a_page_is_blank_only_when_every_word_is_erased() {

@@ -370,9 +370,9 @@ fn write_page(uart: Uart) {
     uart.write_str("[glass] last frame's CPU, total/longest step us:");
     for (label, step) in [(" layout ", c.layout), (", render ", c.render), (", changed ", c.changed), (", write ", c.write)] {
         uart.write_str(label);
-        uart.write_u32(step.total / 48);
+        uart.write_u32(step.total / crate::busy::CORE_MHZ);
         uart.write_str("/");
-        uart.write_u32(step.longest / 48);
+        uart.write_u32(step.longest / crate::busy::CORE_MHZ);
     }
     uart.write_line("");
     let probed = LAG_PROBED_US.swap(0, Ordering::Relaxed) / 1000;

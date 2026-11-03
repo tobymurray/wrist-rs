@@ -52,20 +52,23 @@ use wrist_glass::pages;
 use wrist_glass::scene::Scene;
 use wrist_glass::text::Glass;
 use wrist_flash::vectors::{HANDOFF_POP, SRAM_END, SRAM_START};
+use wrist_board::pins;
 use wrist_pages::{Button, Nav, Page, Press};
 
 use crate::mmio::{
-    enable_clock, modify32, read32, write32, DBGMCU_IDCODE, FLASH_ACR, FLASH_OPTR, GPIOA_BASE,
-    GPIOB_BASE, GPIOC_BASE, GPIOD_BASE, GPIOF_BASE, GPIO_BSRR, GPIO_IDR, GPIO_MODER, GPIO_OSPEEDR,
+    enable_clock, gpio, modify32, read32, write32, DBGMCU_IDCODE, FLASH_ACR, FLASH_OPTR, GPIOC_BASE, GPIO_BSRR, GPIO_IDR, GPIO_MODER, GPIO_OSPEEDR,
     GPIO_OTYPER, GPIO_PUPDR, ICACHE_CR, ICACHE_CR_EN, ICSR_PENDSTCLR, PWR_SVMCR, PWR_SVMCR_USV, PWR_SVMCR_UVMEN, PWR_SVMSR,
     PWR_SVMSR_VDDUSBRDY, PWR_VOSR, PWR_VOSR_USBBOOSTEN, PWR_VOSR_USBBOOSTRDY, PWR_VOSR_USBPWREN, ICSR_PENDSVCLR, NVIC_ICER0, NVIC_ICPR0, NVIC_REGS,
     RCC_AHB1ENR, RCC_AHB2ENR1, RCC_AHB2ENR2, RCC_AHB3ENR, RCC_APB1ENR1, RCC_APB1ENR2, RCC_APB2ENR,
     RCC_APB3ENR, RCC_AHB2ENR1_GPIOAEN, RCC_AHB2ENR1_GPIOBEN, RCC_AHB2ENR1_GPIOCEN,
-    RCC_AHB2ENR1_GPIODEN, RCC_AHB2ENR1_GPIOFEN, RCC_BDCR, RCC_CCIPR1, RCC_CFGR1,
-    RCC_CFGR1_SWS_MASK, RCC_CFGR1_SW_MASK, RCC_CFGR2, RCC_CR, RCC_CR_MSISON, RCC_CR_MSISRDY,
-    RCC_CSR, RCC_CSR_RMVF, RCC_ICSCR1, RCC_ICSCR1_MSIRGSEL, RCC_ICSCR1_MSISRANGE_4, RCC_ICSCR1_MSISRANGE_MASK,
+    RCC_AHB2ENR1_GPIODEN, RCC_AHB2ENR1_GPIOFEN, RCC_BDCR, RCC_BDCR_LSEBYP, RCC_BDCR_LSEON, RCC_BDCR_LSERDY,
+    RCC_BDCR_LSESYSEN, RCC_BDCR_LSESYSRDY, RCC_BDCR_RTCEN, RCC_BDCR_RTCSEL_LSE, RCC_BDCR_RTCSEL_LSI,
+    RCC_BDCR_RTCSEL_MASK, RCC_CCIPR1, RCC_CFGR1, RCC_CFGR1_SWS_MASK, RCC_CFGR1_SWS_SHIFT, RCC_CFGR1_SW_MASK,
+    RCC_CFGR2, RCC_CR, RCC_CR_HSEON, RCC_CR_HSERDY, RCC_CR_HSION, RCC_CR_MSISON, RCC_CR_MSISRDY, RCC_CR_PLL1ON,
+    RCC_CSR, RCC_CSR_MSISSRANGE_SHIFT, RCC_CSR_RMVF, RCC_ICSCR1, RCC_ICSCR1_MSIRGSEL, RCC_ICSCR1_MSISRANGE_4,
+    RCC_ICSCR1_MSISRANGE_MASK, RCC_ICSCR1_MSISRANGE_SHIFT,
     RCC_ICSCR2, RCC_ICSCR3, RCC_PLL1CFGR, SCB_BFAR, SCB_CFSR, SCB_HFSR, SCB_ICSR, SCB_MMFAR,
-    SCB_SHCSR, SCB_VTOR, SHCSR_BUSFAULTENA, SHCSR_MEMFAULTENA, SHCSR_USGFAULTENA, SYST_CSR,
+    SCB_SHCSR, SCB_VTOR, SHCSR_BUSFAULTENA, SHCSR_MEMFAULTENA, SHCSR_USGFAULTENA, SYSCFG_OTGHSPHYTUNER2, SYST_CSR,
 };
 use crate::uart::{Uart, BAUD, PCLK1_HZ};
 
@@ -107,13 +110,14 @@ unsafe fn assert_alive_pins() {
         RCC_AHB2ENR1_GPIOBEN | RCC_AHB2ENR1_GPIOCEN | RCC_AHB2ENR1_GPIOFEN,
     );
 
-    // PF3, `BACKLIGHT_ON`: open-drain, released (`HARDWARE.md`, "Power and reset domain").
-    write32(GPIOF_BASE + GPIO_BSRR, 1 << 3);
-    modify32(GPIOF_BASE + GPIO_OTYPER, 0, 1 << 3);
-    modify32(GPIOF_BASE + GPIO_PUPDR, 0b11 << 6, 0);
-    modify32(GPIOF_BASE + GPIO_MODER, 0b11 << 6, 0b01 << 6);
+    // Open-drain, released (`HARDWARE.md`, "Power and reset domain").
+    let (base, pin) = BACKLIGHT;
+    write32(base + GPIO_BSRR, 1 << pin);
+    modify32(base + GPIO_OTYPER, 0, 1 << pin);
+    modify32(base + GPIO_PUPDR, 0b11 << (pin * 2), 0);
+    modify32(base + GPIO_MODER, 0b11 << (pin * 2), 0b01 << (pin * 2));
 
-    for (base, pin) in [(GPIOB_BASE, 15u32), (GPIOC_BASE, 5u32), (GPIOB_BASE, 3u32)] {
+    for (base, pin) in [gpio(pins::DAM_DETECT), (GPIOC_BASE, 5), gpio(pins::SWO)] {
         modify32(base + GPIO_OTYPER, 1 << pin, 0);
         modify32(base + GPIO_PUPDR, 0b11 << (pin * 2), 0);
         modify32(base + GPIO_OSPEEDR, 0b11 << (pin * 2), 0);
@@ -331,9 +335,9 @@ fn main() -> ! {
     let p = embassy_stm32::init(config);
     // `panel_dma.rs` drives these through registers.
     let _ = (p.TIM1, p.TIM3, p.TIM4, p.GPDMA1_CH12, p.GPDMA1_CH13, p.GPDMA1_CH14, p.GPDMA1_CH15, p.PA6, p.PA7, p.PB0);
-    uart = unsafe { Uart::init_at(48_000_000) };
+    uart = unsafe { Uart::init_at(busy::CORE_HZ) };
     let bdcr = unsafe { read32(RCC_BDCR) };
-    uart.write_line(match (bdcr & BDCR_LSERDY != 0, bdcr & BDCR_LSESYSRDY != 0) {
+    uart.write_line(match (bdcr & RCC_BDCR_LSERDY != 0, bdcr & RCC_BDCR_LSESYSRDY != 0) {
         (true, true) => "[9] embassy-stm32 initialised: MSIS 48 MHz, time driver on LPTIM4/LSE, UART re-divided",
         (true, false) => "[9] embassy-stm32 initialised: MSIS 48 MHz, time driver on LPTIM4/LSE WITHOUT LSESYS: NO TIMERS, UART re-divided",
         (false, _) => "[9] embassy-stm32 initialised: MSIS 48 MHz, time driver on LPTIM4/LSI (NO LSE: timers 2.3 % slow), UART re-divided",
@@ -483,7 +487,7 @@ fn spawn<S>(spawner: embassy_executor::Spawner, name: &'static str, token: embas
     spawner.spawn(token);
 }
 
-const _: () = assert!(lcd::WIDTH == wrist_glass::WIDTH && lcd::HEIGHT == wrist_glass::HEIGHT);
+const _: () = assert!(lcd::WIDTH as usize == wrist_panel::LINES && lcd::HEIGHT as usize == wrist_panel::PIXELS);
 static FRAMEBUFFER: ConstStaticCell<[u8; (lcd::WIDTH * lcd::HEIGHT) as usize]> =
     ConstStaticCell::new([0u8; (lcd::WIDTH * lcd::HEIGHT) as usize]);
 /// The scene on the glass and the one being drawn, by turns.
@@ -502,7 +506,7 @@ pub(crate) fn rcc_config(usb: bool) -> rcc::Config {
     c.ls = ls_config_as_found();
     c.sys = rcc::Sysclk::Msis;
     // As the time driver chooses LPTIM4's.
-    c.mux.lptim1sel = if c.ls.lse.is_some() && unsafe { read32(RCC_BDCR) } & BDCR_LSERDY != 0 {
+    c.mux.lptim1sel = if c.ls.lse.is_some() && unsafe { read32(RCC_BDCR) } & RCC_BDCR_LSERDY != 0 {
         rcc::mux::Lptimsel::Lse
     } else {
         rcc::mux::Lptimsel::Lsi
@@ -526,22 +530,12 @@ pub(crate) fn rcc_config(usb: bool) -> rcc::Config {
     c
 }
 
-const BDCR_LSEON: u32 = 1 << 0;
-const BDCR_LSERDY: u32 = 1 << 1;
-const BDCR_LSEBYP: u32 = 1 << 2;
-const BDCR_LSESYSEN: u32 = 1 << 7;
-const BDCR_LSESYSRDY: u32 = 1 << 11;
-const BDCR_RTCSEL_MASK: u32 = 0b11 << 8;
-const BDCR_RTCSEL_LSE: u32 = 0b01 << 8;
-const BDCR_RTCSEL_LSI: u32 = 0b10 << 8;
-const BDCR_RTCEN: u32 = 1 << 15;
-
 /// The LSE on, ready and in bypass, clocking the RTC and LPTIM4 (`HARDWARE.md`, "Stop modes").
 /// A power-on reset clears `LSESYSEN` and leaves the rest (RM0456 11.8.49).
 fn backup_domain_as_measured(bdcr: u32) -> bool {
     let running =
-        BDCR_LSEON | BDCR_LSERDY | BDCR_LSEBYP | BDCR_LSESYSEN | BDCR_LSESYSRDY | BDCR_RTCSEL_LSE | BDCR_RTCEN;
-    bdcr & (running | BDCR_RTCSEL_MASK) == running
+        RCC_BDCR_LSEON | RCC_BDCR_LSERDY | RCC_BDCR_LSEBYP | RCC_BDCR_LSESYSEN | RCC_BDCR_LSESYSRDY | RCC_BDCR_RTCSEL_LSE | RCC_BDCR_RTCEN;
+    bdcr & (running | RCC_BDCR_RTCSEL_MASK) == running
 }
 
 /// The low-speed clocks as the backup domain holds them, so neither `init` nor a
@@ -550,22 +544,22 @@ fn backup_domain_as_measured(bdcr: u32) -> bool {
 fn ls_config_as_found() -> rcc::LsConfig {
     let bdcr = unsafe { read32(RCC_BDCR) };
     // `peripherals_clocked` is mirrored, so `init` sees no mismatch.
-    let lse = (bdcr & (BDCR_LSEON | BDCR_LSEBYP) == BDCR_LSEON | BDCR_LSEBYP).then_some(rcc::LseConfig {
+    let lse = (bdcr & (RCC_BDCR_LSEON | RCC_BDCR_LSEBYP) == RCC_BDCR_LSEON | RCC_BDCR_LSEBYP).then_some(rcc::LseConfig {
         frequency: Hertz(32_768),
         mode: rcc::LseMode::Bypass,
-        peripherals_clocked: bdcr & BDCR_LSESYSEN != 0,
+        peripherals_clocked: bdcr & RCC_BDCR_LSESYSEN != 0,
     });
     if backup_domain_as_measured(bdcr) {
         return rcc::LsConfig { rtc: rcc::RtcClockSource::Lse, lsi: false, lse };
     }
-    let rtc = match (bdcr & BDCR_RTCEN != 0, bdcr & BDCR_RTCSEL_MASK) {
+    let rtc = match (bdcr & RCC_BDCR_RTCEN != 0, bdcr & RCC_BDCR_RTCSEL_MASK) {
         (false, 0) => rcc::RtcClockSource::Disable,
-        (true, BDCR_RTCSEL_LSE) if lse.is_some() => rcc::RtcClockSource::Lse,
-        (true, BDCR_RTCSEL_LSI) => rcc::RtcClockSource::Lsi,
+        (true, RCC_BDCR_RTCSEL_LSE) if lse.is_some() => rcc::RtcClockSource::Lse,
+        (true, RCC_BDCR_RTCSEL_LSI) => rcc::RtcClockSource::Lsi,
         // None the HAL can keep, so it resets the domain.
         _ => return rcc::LsConfig { lsi: true, ..rcc::LsConfig::off() },
     };
-    let lse_ready = lse.is_some() && bdcr & BDCR_LSERDY != 0;
+    let lse_ready = lse.is_some() && bdcr & RCC_BDCR_LSERDY != 0;
     rcc::LsConfig { rtc, lsi: rtc == rcc::RtcClockSource::Lsi || !lse_ready, lse }
 }
 
@@ -608,7 +602,6 @@ pub(crate) unsafe fn usb_power_ready() -> Result<(), &'static str> {
     const BUDGET: u32 = 500_000;
 
     // RM0456 15.2.3 step 3.
-    const SYSCFG_OTGHSPHYTUNER2: u32 = 0x4600_0400 + 0x7C;
     modify32(SYSCFG_OTGHSPHYTUNER2, 0b111 | (0b111 << 4), 0b010);
 
     modify32(PWR_SVMCR, 0, PWR_SVMCR_UVMEN);
@@ -639,20 +632,18 @@ pub(crate) unsafe fn usb_power_off() {
 
 /// [`start_hse`]'s 20 ms, in polls at each core clock.
 pub(crate) const HSE_POLLS_4MHZ: u32 = 20_000;
-pub(crate) const HSE_POLLS_48MHZ: u32 = 240_000;
+pub(crate) const HSE_POLLS_48MHZ: u32 = HSE_POLLS_4MHZ * (busy::CORE_HZ / PCLK1_HZ);
 
 /// False, with `HSEON` cleared again, if `HSERDY` did not set within `polls`
 /// (RM0456 11.8.1).
 pub(crate) unsafe fn start_hse(polls: u32) -> bool {
-    const HSEON: u32 = 1 << 16;
-    const HSERDY: u32 = 1 << 17;
-    modify32(RCC_CR, 0, HSEON);
+    modify32(RCC_CR, 0, RCC_CR_HSEON);
     for _ in 0..polls {
-        if read32(RCC_CR) & HSERDY != 0 {
+        if read32(RCC_CR) & RCC_CR_HSERDY != 0 {
             return true;
         }
     }
-    modify32(RCC_CR, HSEON, 0);
+    modify32(RCC_CR, RCC_CR_HSEON, 0);
     false
 }
 
@@ -1333,9 +1324,9 @@ fn measure_pclk1(uart: Uart) -> (u32, bool) {
     }
 
     let range = if icscr1 & RCC_ICSCR1_MSIRGSEL != 0 {
-        icscr1 >> 28
+        icscr1 >> RCC_ICSCR1_MSISRANGE_SHIFT
     } else {
-        (csr >> 12) & 0xF
+        (csr >> RCC_CSR_MSISSRANGE_SHIFT) & 0xF
     };
     (msis_range_khz(range) * 1000, true)
 }
@@ -1351,20 +1342,20 @@ fn report_handoff(uart: Uart, h: &RccSnapshot) {
     uart.write_reg("RCC_PLL1CFGR= ", h.pll1cfgr);
     uart.write_reg("FLASH_ACR   = ", h.flash_acr);
     uart.write_str("SYSCLK src  = ");
-    uart.write_line(match (h.cfgr1 & RCC_CFGR1_SWS_MASK) >> 2 {
+    uart.write_line(match (h.cfgr1 & RCC_CFGR1_SWS_MASK) >> RCC_CFGR1_SWS_SHIFT {
         0b00 => "MSIS",
         0b01 => "HSI16",
         0b10 => "HSE",
         _ => "PLL1 pll1_r_ck",
     });
     uart.write_str("PLL1ON      = ");
-    uart.write_u32((h.cr >> 24) & 1);
+    uart.write_u32(u32::from(h.cr & RCC_CR_PLL1ON != 0));
     uart.write_str("  HSION = ");
-    uart.write_u32((h.cr >> 8) & 1);
+    uart.write_u32(u32::from(h.cr & RCC_CR_HSION != 0));
     uart.write_str("  HSEON = ");
-    uart.write_u32((h.cr >> 16) & 1);
+    uart.write_u32(u32::from(h.cr & RCC_CR_HSEON != 0));
     uart.write_str("  MSISON = ");
-    uart.write_u32(h.cr & 1);
+    uart.write_u32(u32::from(h.cr & RCC_CR_MSISON != 0));
     uart.write_line("");
 }
 
@@ -1387,7 +1378,7 @@ fn report_clocks(uart: Uart) {
     uart.write_reg("FLASH_OPTR  = ", unsafe { read32(FLASH_OPTR) });
 
     uart.write_str("SYSCLK src  = ");
-    uart.write_line(match (cfgr1 & RCC_CFGR1_SWS_MASK) >> 2 {
+    uart.write_line(match (cfgr1 & RCC_CFGR1_SWS_MASK) >> RCC_CFGR1_SWS_SHIFT {
         0b00 => "MSIS",
         0b01 => "HSI16",
         0b10 => "HSE",
@@ -1396,9 +1387,9 @@ fn report_clocks(uart: Uart) {
 
     let rgsel = u32::from(icscr1 & RCC_ICSCR1_MSIRGSEL != 0);
     let range = if rgsel == 1 {
-        icscr1 >> 28
+        icscr1 >> RCC_ICSCR1_MSISRANGE_SHIFT
     } else {
-        (csr >> 12) & 0xF
+        (csr >> RCC_CSR_MSISSRANGE_SHIFT) & 0xF
     };
     uart.write_str("MSIRGSEL    = ");
     uart.write_u32(rgsel);
@@ -1409,13 +1400,13 @@ fn report_clocks(uart: Uart) {
     uart.write_line(" kHz nominal)");
 
     uart.write_str("PLL1ON      = ");
-    uart.write_u32((cr >> 24) & 1);
+    uart.write_u32(u32::from(cr & RCC_CR_PLL1ON != 0));
     uart.write_str("  HSION = ");
-    uart.write_u32((cr >> 8) & 1);
+    uart.write_u32(u32::from(cr & RCC_CR_HSION != 0));
     uart.write_str("  HSEON = ");
-    uart.write_u32((cr >> 16) & 1);
+    uart.write_u32(u32::from(cr & RCC_CR_HSEON != 0));
     uart.write_str("  MSISON = ");
-    uart.write_u32(cr & 1);
+    uart.write_u32(u32::from(cr & RCC_CR_MSISON != 0));
     uart.write_line("");
 }
 
@@ -1528,20 +1519,22 @@ pub(crate) fn backlight(on: bool) {
 fn light_pin(on: bool) {
     unsafe {
         write32(
-            GPIOF_BASE + GPIO_BSRR,
-            if on { 1 << (3 + 16) } else { 1 << 3 },
+            BACKLIGHT.0 + GPIO_BSRR,
+            if on { 1 << (BACKLIGHT.1 + 16) } else { 1 << BACKLIGHT.1 },
         );
     }
 }
 
 /// (port, pin, `PUPDR`), in [`Button::ALL`]'s order; Select's pin is driven, so it has no
 /// pull (`HARDWARE.md`, "Power and reset domain").
-const BUTTONS: [(u32, u32, u32); 4] = [
-    (GPIOD_BASE, 4, 0b01),
-    (GPIOA_BASE, 5, 0b01),
-    (GPIOD_BASE, 8, 0b01),
-    (GPIOD_BASE, 15, 0b00),
-];
+const BUTTONS: [(u32, u32, u32); 4] = {
+    const fn button(pin: wrist_board::Pin, pull: u32) -> (u32, u32, u32) {
+        let (base, number) = gpio(pin);
+        (base, number, pull)
+    }
+    [button(pins::SW1, 0b01), button(pins::SW3, 0b01), button(pins::SW4, 0b01), button(pins::PWR_ON_1V8_L, 0b00)]
+};
+const BACKLIGHT: (u32, u32) = gpio(pins::BACKLIGHT_ON);
 
 unsafe fn init_buttons() {
     enable_clock(RCC_AHB2ENR1, RCC_AHB2ENR1_GPIOAEN | RCC_AHB2ENR1_GPIODEN);

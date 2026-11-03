@@ -2,6 +2,7 @@
 use crate::{mmio::{read32, write32}, uart::Uart};
 use wrist_crash::{Build, Decoded, Kind, Record};
 const ADDRS: [u32; 6] = wrist_flash::vectors::FAILURE_RECORD;
+const _: () = assert!(wrist_glass::pages::ID_CHARS == wrist_crash::BUILD_HASH_DIGITS);
 fn read() -> Decoded { wrist_crash::decode(ADDRS.map(|a| unsafe { read32(a) })) }
 fn write(words: wrist_crash::Words) {
     // The tag last.
@@ -38,7 +39,7 @@ pub fn report(uart: Uart) {
     let Decoded::Record(r) = record else {
         return uart.write_line(" (an older image's record: no build, uptime or count)");
     };
-    uart.write_str(" build="); uart.write_str(r.build.text(&mut [0; 18]));
+    uart.write_str(" build="); uart.write_str(r.build.text(&mut [0; wrist_crash::TEXT_LEN]));
     uart.write_str(" uptime_s="); uart.write_u32(r.uptime_s);
     uart.write_str(" count="); uart.write_u32(u32::from(r.count));
     uart.write_line(if r.build == Build::from_id(crate::version::BUILD_ID) { "" } else { " (not the running build)" });

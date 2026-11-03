@@ -6,21 +6,17 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use embassy_stm32::rcc::{StopMode, WakeGuard};
 use embassy_time::{Duration, Instant, Timer};
 use wrist_panel::dma::{self, Builder, Bus, Frame, Memory};
-use wrist_panel::{timing, LINES};
+use wrist_panel::{timing, GCK_EDGES, LINES};
 
-use crate::lcd::Cost;
-use crate::mmio::{modify32, read32, write32, GPIOA_BASE, GPIOB_BASE, GPIO_BSRR, GPIO_IDR, GPIO_MODER, RCC_BASE};
+use crate::busy::CORE_MHZ;
+use crate::lcd::{Cost, BCK, BSP, GEN, INTB};
+use crate::mmio::{
+    modify32, read32, write32, GPIOA_BASE, GPIOB_BASE, GPIOE_BASE, GPIO_BRR, GPIO_BSRR, GPIO_IDR, GPIO_MODER, GPIO_ODR,
+    RCC_AHB1ENR, RCC_AHB1SMENR, RCC_AHB2ENR2, RCC_AHB2SMENR1, RCC_AHB2SMENR2, RCC_APB1ENR1, RCC_APB1SMENR1, RCC_APB2ENR,
+    RCC_APB2SMENR,
+};
 use crate::uart::Uart;
 
-const RCC_AHB1ENR: u32 = RCC_BASE + 0x88;
-const RCC_AHB1SMENR: u32 = RCC_BASE + 0xB0;
-const RCC_AHB2SMENR1: u32 = RCC_BASE + 0xB4;
-const RCC_AHB2ENR2: u32 = RCC_BASE + 0x90;
-const RCC_AHB2SMENR2: u32 = RCC_BASE + 0xB8;
-const RCC_APB1ENR1: u32 = RCC_BASE + 0x9C;
-const RCC_APB1SMENR1: u32 = RCC_BASE + 0xC4;
-const RCC_APB2ENR: u32 = RCC_BASE + 0xA4;
-const RCC_APB2SMENR: u32 = RCC_BASE + 0xCC;
 const GPDMA1EN: u32 = 1 << 0;
 const SRAM5EN: u32 = 1 << 31;
 /// TIM2, TIM3 and TIM4 in `APB1ENR1`, TIM1 in `APB2ENR`.
@@ -53,6 +49,8 @@ const BDTR: u32 = 0x44;
 const CEN: u32 = 1 << 0;
 const OPM: u32 = 1 << 3;
 const UG: u32 = 1 << 0;
+const CC3G: u16 = 1 << 3;
+const CC4G: u16 = 1 << 4;
 const UDE: u32 = 1 << 8;
 const CC2DE: u32 = 1 << 10;
 const CC3DE: u32 = 1 << 11;
@@ -103,7 +101,25 @@ const SUSPF: u32 = 1 << 13;
 const ERRORS: u32 = (0b111 << 10) | (1 << 14);
 
 const _: () = assert!(dma::E_TR2 & 0x7F == 65 && dma::D_TR2 & 0x7F == 64 && D >= 12);
-const _: () = assert!(dma::TIM3_CCR1 == TIM3 + CCR1 && dma::TIM3_CCR4 == TIM3 + CCR4);
+const _: () = assert!(dma::TIM3_CCR1 == TIM3 + CCR1 && dma::TIM3_CCR4 == TIM3 + CCR4 && dma::TIM1_CR1 == TIM1 + CR1);
+const _: () = assert!(dma::GPIOA_BSRR == GPIOA_BASE + GPIO_BSRR && dma::GPIOA_BRR == GPIOA_BASE + GPIO_BRR);
+const _: () = assert!(dma::GPIOB_BSRR == GPIOB_BASE + GPIO_BSRR && dma::GPIOB_BRR == GPIOB_BASE + GPIO_BRR);
+const _: () = assert!(dma::GPIOE_ODR == GPIOE_BASE + GPIO_ODR);
+const _: () = {
+    use wrist_board::pins::{LCD_B1, LCD_B2, LCD_G1, LCD_G2, LCD_QSPI_CS_VCK, LCD_QSPI_SCK_VST, LCD_R1, LCD_R2};
+    use wrist_board::Port;
+    assert!(matches!(LCD_QSPI_CS_VCK.port, Port::A) && dma::GCK == 1 << LCD_QSPI_CS_VCK.number);
+    assert!(matches!(LCD_QSPI_SCK_VST.port, Port::B) && dma::GSP == 1 << LCD_QSPI_SCK_VST.number);
+    let mut mask = 0;
+    let data = [LCD_R1, LCD_G1, LCD_B1, LCD_R2, LCD_G2, LCD_B2];
+    let mut i = 0;
+    while i < data.len() {
+        assert!(matches!(data[i].port, Port::E));
+        mask |= 1 << data[i].number;
+        i += 1;
+    }
+    assert!(wrist_panel::DATA_MASK == mask);
+};
 
 /// SRAM5's first pages, outside `memory.x`'s RAM.
 const D_AT: u32 = 0x201A_0000;
@@ -123,10 +139,6 @@ const _: () = assert!(4 * dma::D_WORDS <= (E_AT - D_AT) as usize && 4 * dma::E_W
 const _: () = assert!(2 * dma::TABLE_HALFWORDS <= (DATA_AT - TABLE_AT) as usize);
 const _: () = assert!(2 * dma::DATA_HALFWORDS <= (SRAM5_TOP_PAGE - DATA_AT) as usize);
 
-const BCK: (u32, u32) = (GPIOA_BASE, 6);
-const GEN: (u32, u32) = (GPIOA_BASE, 7);
-const BSP: (u32, u32) = (GPIOB_BASE, 0);
-const INTB: (u32, u32) = (GPIOB_BASE, 1);
 const AF_TIM3: u32 = 2;
 const AF_TIM1: u32 = 1;
 const GROUPS_PER_YIELD: usize = 8;
@@ -308,8 +320,8 @@ pub async fn scan(fb: Option<&[u8]>, dirty: &[bool; LINES]) -> Result<(u32, Cost
     let mut b = Builder::new(bus, mem);
     masked[1] += timed(&mut || b.head(dirty));
     let mut edge = 3;
-    while edge <= 483 {
-        let to = (edge + edges_per_yield).min(484);
+    while edge <= GCK_EDGES {
+        let to = (edge + edges_per_yield).min(GCK_EDGES + 1);
         masked[1] += timed(&mut || (edge..to).for_each(|e| b.edge(e, dirty)));
         edge = to;
         cost.end_step(step);
@@ -317,7 +329,7 @@ pub async fn scan(fb: Option<&[u8]>, dirty: &[bool; LINES]) -> Result<(u32, Cost
         step = crate::busy::cycles();
     }
     if bench {
-        LAST_MASKED.store(((masked[0] / 48) << 16) | (masked[1] / 48).min(0xFFFF), Ordering::Relaxed);
+        LAST_MASKED.store(((masked[0] / CORE_MHZ) << 16) | (masked[1] / CORE_MHZ).min(0xFFFF), Ordering::Relaxed);
     }
     let Ok(frame) = b.finish() else {
         give_up(WHY_FULL);
@@ -572,9 +584,9 @@ pub fn command(args: &str, uart: Uart) {
     uart.write_str(" of ");
     uart.write_u32(LAST_COUNTS[3].load(Ordering::Relaxed));
     uart.write_str("; runs filled in ");
-    uart.write_u32(LAST_FILL_CYCLES.load(Ordering::Relaxed) / 48);
+    uart.write_u32(LAST_FILL_CYCLES.load(Ordering::Relaxed) / CORE_MHZ);
     uart.write_str(" us, lists in ");
-    uart.write_u32(LAST_LIST_CYCLES.load(Ordering::Relaxed) / 48);
+    uart.write_u32(LAST_LIST_CYCLES.load(Ordering::Relaxed) / CORE_MHZ);
     let masked = LAST_MASKED.load(Ordering::Relaxed);
     uart.write_str(" us (interrupts counted); bench frame masked: filled in ");
     uart.write_u32(masked >> 16);
@@ -631,7 +643,7 @@ pub fn probe(half: u32, uart: Uart) {
     let ctrl = 1;
     let mem = unsafe { memory() };
     let (list, values, stamps) = (mem.d, mem.table, mem.data);
-    for (i, v) in [1 << 4, 0, 1 << 3, dma::OFF].into_iter().enumerate() {
+    for (i, v) in [CC4G, 0, CC3G, dma::OFF].into_iter().enumerate() {
         values[4 * i..4 * i + 4].fill(v);
     }
     stamps[..4 * PROBE_SAMPLES as usize].fill(0);

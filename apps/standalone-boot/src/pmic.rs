@@ -8,6 +8,9 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::mutex::Mutex as AsyncMutex;
 
+use wrist_power::max17262::{self, HIB_CFG};
+use wrist_power::pca9420;
+
 use crate::uart::Lines;
 
 /// Blocking calls only before the first async transfer (`HARDWARE.md`, "Debug and boot").
@@ -25,7 +28,6 @@ pub fn share(bus: AsyncBus) {
 
 const PCA9420: u8 = wrist_board::i2c::PCA9420_PMIC;
 const MAX17262: u8 = wrist_board::i2c::MAX17262_GAUGE;
-const HIB_CFG: u8 = 0xBA;
 
 /// `None` is a read that failed.
 #[derive(Clone, Copy, Default)]
@@ -55,26 +57,26 @@ pub struct Snapshot {
 
 /// (chip, register, two bytes wide), in [`Snapshot`]'s order.
 const READS: [(u8, u8, bool); 20] = [
-    (PCA9420, 0x00, false),
-    (PCA9420, 0x09, false),
-    (PCA9420, 0x0A, false),
-    (PCA9420, 0x0B, false),
-    (PCA9420, 0x0C, false),
-    (PCA9420, 0x18, false),
-    (PCA9420, 0x19, false),
-    (PCA9420, 0x20, false),
-    (PCA9420, 0x71, false),
-    (MAX17262, 0x09, true),
-    (MAX17262, 0x06, true),
-    (MAX17262, 0x08, true),
-    (MAX17262, 0x0A, true),
-    (MAX17262, 0x0B, true),
-    (MAX17262, 0x11, true),
-    (MAX17262, 0xB0, true),
-    (MAX17262, 0xBA, true),
-    (MAX17262, 0x10, true),
-    (MAX17262, 0x18, true),
-    (MAX17262, 0x00, true),
+    (PCA9420, pca9420::DEV_INFO, false),
+    (PCA9420, pca9420::TOP_CNTL0, false),
+    (PCA9420, pca9420::TOP_CNTL1, false),
+    (PCA9420, pca9420::TOP_CNTL2, false),
+    (PCA9420, pca9420::TOP_CNTL3, false),
+    (PCA9420, pca9420::CHG_STATUS_0, false),
+    (PCA9420, pca9420::CHG_STATUS_1, false),
+    (PCA9420, pca9420::REG_STATUS, false),
+    (PCA9420, pca9420::RESET_MONITOR, false),
+    (MAX17262, max17262::VCELL, true),
+    (MAX17262, max17262::REP_SOC, true),
+    (MAX17262, max17262::TEMP, true),
+    (MAX17262, max17262::CURRENT, true),
+    (MAX17262, max17262::AVG_CURRENT, true),
+    (MAX17262, max17262::TTE, true),
+    (MAX17262, max17262::STATUS2, true),
+    (MAX17262, max17262::HIB_CFG, true),
+    (MAX17262, max17262::FULL_CAP_REP, true),
+    (MAX17262, max17262::DESIGN_CAP, true),
+    (MAX17262, max17262::STATUS, true),
 ];
 
 fn assemble(v: &[Option<u16>; READS.len()]) -> Snapshot {
@@ -318,7 +320,7 @@ pub fn slow_gauge_hibernate(bus: &mut AsyncBus) -> Option<u16> {
 
 /// The gauge's `Status`, whose `POR` marks a reset, and the `DesignCap`, `IChgTerm`, `VEmpty`
 /// and `ModelCfg` a reset loses (ADI UG6597, "EZ configuration").
-const GAUGE_CONFIG: [u8; 5] = [0x00, 0x18, 0x1E, 0x3A, 0xDB];
+const GAUGE_CONFIG: [u8; 5] = [max17262::STATUS, max17262::DESIGN_CAP, max17262::ICHG_TERM, max17262::V_EMPTY, max17262::MODEL_CFG];
 
 /// Read once at boot, before [`slow_gauge_hibernate`].
 static GAUGE_AT_BOOT: Mutex<CriticalSectionRawMutex, Cell<[Option<u16>; 5]>> =

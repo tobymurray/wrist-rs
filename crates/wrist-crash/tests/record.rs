@@ -7,6 +7,11 @@ fn panic(build: Build) -> Record {
 }
 
 #[test]
+fn fnv1a_is_wrist_crash_py_s() {
+    assert_eq!(fnv1a(b"src/main.rs"), 0x1660_407C);
+}
+
+#[test]
 fn records_round_trip() {
     let fault = Record {
         kind: Kind::Fault { cfsr_low20: 0x8200, pc: 0x0806_8251 },
@@ -29,7 +34,7 @@ fn the_tag_and_its_word_keep_the_older_layout() {
 
 #[test]
 fn build_ids_parse_and_print() {
-    let mut out = [0; 18];
+    let mut out = [0; wrist_crash::TEXT_LEN];
     assert_eq!(Build::from_id("b7fdeedecd9f"), Build::Hash { id: 0xb7fd_eede_cd9f, dirty: false });
     assert_eq!(Build::from_id("b7fdeedecd9f").text(&mut out), "b7fdeedecd9f");
     assert_eq!(Build::from_id("00fdeedecd9f-dirty").text(&mut out), "00fdeedecd9f-dirty");

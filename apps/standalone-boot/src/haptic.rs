@@ -14,11 +14,12 @@ use embassy_time::{with_timeout, Duration, Instant, Timer};
 pub use wrist_haptic::Pattern;
 use wrist_haptic::{reg, Ending, Pulse, Status, BRING_UP};
 
-use crate::mmio::{read32, write32, GPIOF_BASE, GPIO_BSRR, GPIO_IDR, GPIO_MODER};
+use crate::mmio::{gpio, read32, write32, GPIOF_BASE, GPIO_BSRR, GPIO_IDR, GPIO_MODER};
 use crate::pmic::AsyncBus;
 use crate::uart::{Lines, Uart};
 
-const RST_PIN: u32 = 2;
+const RST_PIN: u32 = gpio(wrist_board::pins::HAPTIC_RST_N).1;
+const _: () = assert!(gpio(wrist_board::pins::HAPTIC_RST_N).0 == GPIOF_BASE);
 
 /// PF2 as the pin reads, and whether it is still an output.
 fn rst_state() -> (bool, bool) {

@@ -65,7 +65,11 @@ use wrist_aci::opcode::{
     ACI_GATT_UPDATE_CHAR_VALUE, ACI_HAL_GET_FW_BUILD_NUMBER, ACI_HAL_SET_TX_POWER_LEVEL, ACI_HAL_WRITE_CONFIG_DATA,
     ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_REQ, HCI_LE_RAND, HCI_READ_LOCAL_VERSION, HCI_SET_EVENT_MASK,
 };
-use wrist_aci::{address, config, permission, role, vendor, AttributeModified, Event, L2capUpdateResponse, ATT_HEADER_LEN};
+use wrist_aci::{
+    address, config, event_code, evt_mask, permission, props, role, uuid_type, vendor, AttributeModified, Event,
+    L2capUpdateResponse, ADV_IND, ATT_HEADER_LEN, MAX_COMMAND, MIN_ENC_KEY_SIZE, NO_FILTER, PRIMARY_SERVICE,
+    PRIVACY_DISABLED, VARIABLE_LENGTH,
+};
 use wrist_wake::ble::{timing, IntervalAsk, Lines, Outbox, PairAsk, Power, Radio, Scan, Sink, Timing};
 
 use crate::console::Target;
@@ -100,15 +104,17 @@ const TRANSFER_IDLE: Duration = Duration::from_secs(5);
 const MAX_PACKET: usize = 1024;
 
 const DEVICE_NAME: &[u8] = b"UNA";
+/// `ACI_GAP_INIT`'s `device_name_char_len`.
+const GAP_NAME_LEN: u8 = 7;
+/// `ACI_HAL_SET_TX_POWER_LEVEL`'s `En_High_Power` and `PA_Level`.
+const TX_POWER: [u8; 2] = [0x01, 0x04];
+/// `HCI_SET_EVENT_MASK` (Core Vol 4 Part E 7.3.1).
+const EVENT_MASK: [u8; 8] = [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xBF, 0x3D];
 // Bluetooth SIG assigned numbers: the Device Information service.
 const UUID_DEVICE_INFORMATION: u16 = 0x180A;
 const UUID_MANUFACTURER_NAME: u16 = 0x2A29;
 const UUID_MODEL_NUMBER: u16 = 0x2A24;
 const UUID_FIRMWARE_REVISION: u16 = 0x2A26;
-const CHAR_PROP_READ: u8 = 0x02;
-const CHAR_PROP_WRITE_WITHOUT_RESPONSE: u8 = 0x04;
-const CHAR_PROP_WRITE: u8 = 0x08;
-const CHAR_PROP_NOTIFY: u8 = 0x10;
 const MANUFACTURER: &[u8] = b"wrist-rs";
 const MODEL: &[u8] = b"UNA Watch";
 // The Nordic UART Service shape, which nRF Connect's UART tab recognises:
@@ -129,8 +135,6 @@ const DEFAULT_MTU: usize = wrist_aci::ATT_DEFAULT_MTU;
 const DEFAULT_VALUE_LEN: usize = DEFAULT_MTU - ATT_HEADER_LEN;
 /// `IO_CAP_DISPLAY_YES_NO`: the console shows the number, `ble yes` answers.
 const IO_CAP_DISPLAY_YES_NO: u8 = 0x01;
-/// The STM32U5's 96-bit unique id, for the address (RM0456 "Unique device ID").
-const UID_BASE: u32 = 0x0BFA_0700;
 /// Console notifications at most this often.
 const CONSOLE_PACE: Duration = Duration::from_millis(10);
 
@@ -663,8 +667,7 @@ impl Link<'_> {
             }
             Request::Disconnect => {
                 let h = CONN_HANDLE.load(Ordering::Relaxed).to_le_bytes();
-                // Reason 0x13: remote user terminated connection.
-                let _ = self.command(ACI_GAP_TERMINATE, &[h[0], h[1], 0x13]).await;
+                let _ = self.command(ACI_GAP_TERMINATE, &[h[0], h[1], wrist_aci::status::REMOTE_USER_TERMINATED]).await;
             }
             Request::IntervalNow(min, max) => {
                 if STATE.load(Ordering::Relaxed) == STATE_CONNECTED {
@@ -827,7 +830,7 @@ impl Link<'_> {
         }
         let mut random = [0u8; 8];
         random[0] = config::STATIC_RANDOM_ADDRESS;
-        random[1] = 6;
+        random[1] = u8::try_from(addr.len()).unwrap_or(0);
         random[2..].copy_from_slice(&addr);
         let mut public = random;
         public[0] = config::PUBLIC_ADDRESS;
@@ -835,8 +838,8 @@ impl Link<'_> {
             ("static random address", ACI_HAL_WRITE_CONFIG_DATA, &random),
             // Pairing failed at the `DHKey` check until this slot had been written (HARDWARE.md).
             ("public address slot", ACI_HAL_WRITE_CONFIG_DATA, &public),
-            ("TX power", ACI_HAL_SET_TX_POWER_LEVEL, &[0x01, 0x04]),
-            ("event mask", HCI_SET_EVENT_MASK, &[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xBF, 0x3D]),
+            ("TX power", ACI_HAL_SET_TX_POWER_LEVEL, &TX_POWER),
+            ("event mask", HCI_SET_EVENT_MASK, &EVENT_MASK),
             ("GATT init", ACI_GATT_INIT, &[]),
         ];
         for (what, opcode, params) in early {
@@ -848,7 +851,7 @@ impl Link<'_> {
         // central role.
         let mut handles = None;
         for roles in [role::PERIPHERAL | role::CENTRAL, role::PERIPHERAL] {
-            match self.command(ACI_GAP_INIT, &[roles, 0x00, 0x07]).await {
+            match self.command(ACI_GAP_INIT, &[roles, PRIVACY_DISABLED, GAP_NAME_LEN]).await {
                 Ok(r) if r.status == 0 && r.len >= 6 => {
                     let service = u16::from_le_bytes([r.params[0], r.params[1]]);
                     let name_char = u16::from_le_bytes([r.params[2], r.params[3]]);
@@ -931,8 +934,8 @@ impl Link<'_> {
         // response; `attribute_modified` drops the rest unless the link is encrypted.
         let secured = permission::AUTHEN_WRITE | permission::ENCRY_WRITE;
         let (Some(rx), Some(tx)) = (
-            self.add_char_128(nus, NUS_RX, CHAR_PROP_WRITE | CHAR_PROP_WRITE_WITHOUT_RESPONSE, secured, 0x01).await,
-            self.add_char_128(nus, NUS_TX, CHAR_PROP_NOTIFY, permission::NONE, 0x00).await,
+            self.add_char_128(nus, NUS_RX, props::WRITE | props::WRITE_WITHOUT_RESPONSE, secured, evt_mask::ATTRIBUTE_WRITE).await,
+            self.add_char_128(nus, NUS_TX, props::NOTIFY, permission::NONE, evt_mask::NONE).await,
         ) else {
             self.fail("adding a console characteristic");
             return false;
@@ -944,10 +947,10 @@ impl Link<'_> {
     /// A primary service with the console's 128-bit UUID, byte 12 `last`.
     async fn add_service_128(&mut self, last: u8, max_records: u8) -> Option<u16> {
         let mut p = [0u8; 19];
-        p[0] = 0x02;
+        p[0] = uuid_type::U128;
         p[1..17].copy_from_slice(&NUS_BASE);
         p[13] = last;
-        p[17] = 0x01;
+        p[17] = PRIMARY_SERVICE;
         p[18] = max_records;
         match self.command(ACI_GATT_ADD_SERVICE, &p).await {
             Ok(r) if r.status == 0 && r.len >= 2 => Some(u16::from_le_bytes([r.params[0], r.params[1]])),
@@ -955,20 +958,19 @@ impl Link<'_> {
         }
     }
 
-    /// A variable-length characteristic with the console's 128-bit UUID, byte 12 `last`;
-    /// `evt_mask` 1 reports the central's writes to us.
+    /// A variable-length characteristic with the console's 128-bit UUID, byte 12 `last`.
     async fn add_char_128(&mut self, service: u16, last: u8, props: u8, security: u8, evt_mask: u8) -> Option<u16> {
         let mut p = [0u8; 26];
         p[0..2].copy_from_slice(&service.to_le_bytes());
-        p[2] = 0x02;
+        p[2] = uuid_type::U128;
         p[3..19].copy_from_slice(&NUS_BASE);
         p[15] = last;
         p[19..21].copy_from_slice(&u16::try_from(NUS_VALUE_LEN).unwrap_or(0).to_le_bytes());
         p[21] = props;
         p[22] = security;
         p[23] = evt_mask;
-        p[24] = 0x07;
-        p[25] = 0x01;
+        p[24] = MIN_ENC_KEY_SIZE;
+        p[25] = VARIABLE_LENGTH;
         match self.command(ACI_GATT_ADD_CHAR, &p).await {
             Ok(r) if r.status == 0 && r.len >= 2 => Some(u16::from_le_bytes([r.params[0], r.params[1]])),
             _ => None,
@@ -977,8 +979,7 @@ impl Link<'_> {
 
     async fn add_service(&mut self, uuid: u16, max_records: u8) -> Option<u16> {
         let u = uuid.to_le_bytes();
-        // 16-bit UUID, primary service.
-        match self.command(ACI_GATT_ADD_SERVICE, &[0x01, u[0], u[1], 0x01, max_records]).await {
+        match self.command(ACI_GATT_ADD_SERVICE, &[uuid_type::U16, u[0], u[1], PRIMARY_SERVICE, max_records]).await {
             Ok(r) if r.status == 0 && r.len >= 2 => Some(u16::from_le_bytes([r.params[0], r.params[1]])),
             _ => {
                 self.fail("adding a service");
@@ -992,8 +993,10 @@ impl Link<'_> {
         let sv = service.to_le_bytes();
         let u = uuid.to_le_bytes();
         let l = u16::try_from(len).unwrap_or(0).to_le_bytes();
-        // No security permissions, no write events, key size 7, variable length.
-        let p = [sv[0], sv[1], 0x01, u[0], u[1], l[0], l[1], CHAR_PROP_READ, permission::NONE, 0x00, 0x07, 0x01];
+        let p = [
+            sv[0], sv[1], uuid_type::U16, u[0], u[1], l[0], l[1], props::READ, permission::NONE, evt_mask::NONE, MIN_ENC_KEY_SIZE,
+            VARIABLE_LENGTH,
+        ];
         match self.command(ACI_GATT_ADD_CHAR, &p).await {
             Ok(r) if r.status == 0 && r.len >= 2 => Some(u16::from_le_bytes([r.params[0], r.params[1]])),
             _ => {
@@ -1132,13 +1135,13 @@ impl Link<'_> {
     async fn advertise(&mut self) {
         let want = timing(power(), false);
         let mut p = [0u8; 20];
-        p[0] = 0x00;
+        p[0] = ADV_IND;
         p[1..3].copy_from_slice(&want.advertise.to_le_bytes());
         p[3..5].copy_from_slice(&want.advertise.to_le_bytes());
         p[5] = address::STATIC_RANDOM;
-        p[6] = 0x00;
+        p[6] = NO_FILTER;
         p[7] = u8::try_from(1 + DEVICE_NAME.len()).unwrap_or(0);
-        p[8] = 0x09;
+        p[8] = wrist_aci::ad::NAME_COMPLETE;
         p[9..9 + DEVICE_NAME.len()].copy_from_slice(DEVICE_NAME);
         let n = 9 + DEVICE_NAME.len();
         // Service UUID length 0, then slave connection interval min and max 0.
@@ -1232,7 +1235,7 @@ impl Link<'_> {
     /// Send a command and wait for its Command Complete (or Command Status), handling every
     /// other event that arrives meanwhile.
     async fn command(&mut self, opcode: u16, params: &[u8]) -> Result<Reply, &'static str> {
-        let mut packet = [0u8; 4 + 255];
+        let mut packet = [0u8; MAX_COMMAND];
         let n = wrist_aci::command(opcode, params, &mut packet);
         self.waiting_for = Some(opcode);
         self.reply = None;
@@ -1405,7 +1408,7 @@ impl Link<'_> {
             }
             Event::LeAdvertisingReport { data } => self.scanner.advertising(data, self.uart),
             Event::Vendor { code, params } => self.vendor(code, params),
-            Event::LeUnknown { subevent_code } => self.unknown("[ble] LE event ", 0x3E, subevent_code),
+            Event::LeUnknown { subevent_code } => self.unknown("[ble] LE event ", event_code::LE_META, subevent_code),
             Event::Unknown { code } => self.unknown("[ble] event ", code, 0),
             Event::Malformed(_) => {
                 UNKNOWN.fetch_add(1, Ordering::Relaxed);
@@ -1429,7 +1432,7 @@ impl Link<'_> {
         UNKNOWN.fetch_add(1, Ordering::Relaxed);
         if self.seen.first(u16::from_be_bytes([code, subevent])) {
             self.uart.write_str(label);
-            self.uart.write_hex8(if code == 0x3E { subevent } else { code });
+            self.uart.write_hex8(if code == event_code::LE_META { subevent } else { code });
             self.uart.write_line("");
         }
     }
@@ -1555,7 +1558,7 @@ impl Link<'_> {
             // so do we.
             let accepted = (1..=1024).contains(&wbuf) && wbuf >= packet.len();
             if accepted {
-                let mut out = [0u8; 4 + 255];
+                let mut out = [0u8; MAX_COMMAND];
                 out[..packet.len()].copy_from_slice(packet);
                 let _ = self.spi.blocking_transfer_in_place(&mut out[..packet.len()]);
             }
@@ -1588,7 +1591,8 @@ fn write_interval(uart: Uart, units: u16) {
 }
 
 fn address_from_uid() -> [u8; 6] {
-    let w = |i: u32| unsafe { core::ptr::read_volatile((UID_BASE + 4 * i) as *const u32) };
+    let uid = embassy_stm32::uid::uid();
+    let w = |i: usize| u32::from_le_bytes([uid[4 * i], uid[4 * i + 1], uid[4 * i + 2], uid[4 * i + 3]]);
     wrist_aci::static_random_address([w(0), w(1), w(2)])
 }
 

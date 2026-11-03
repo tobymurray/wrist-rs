@@ -3,6 +3,8 @@
 
 #![allow(clippy::inline_always)]
 
+use wrist_board::{Pin, Port};
+
 /// # Safety
 /// `addr` must be a word-aligned address of a readable 32-bit register.
 #[inline(always)]
@@ -55,6 +57,11 @@ pub const RCC_APB1ENR1: u32 = RCC_BASE + 0x09C;
 pub const RCC_APB1ENR2: u32 = RCC_BASE + 0x0A0;
 pub const RCC_APB2ENR: u32 = RCC_BASE + 0x0A4;
 pub const RCC_APB3ENR: u32 = RCC_BASE + 0x0A8;
+pub const RCC_AHB1SMENR: u32 = RCC_BASE + 0x0B0;
+pub const RCC_AHB2SMENR1: u32 = RCC_BASE + 0x0B4;
+pub const RCC_AHB2SMENR2: u32 = RCC_BASE + 0x0B8;
+pub const RCC_APB1SMENR1: u32 = RCC_BASE + 0x0C4;
+pub const RCC_APB2SMENR: u32 = RCC_BASE + 0x0CC;
 pub const RCC_APB3SMENR: u32 = RCC_BASE + 0x0D0;
 pub const RCC_SRDAMR: u32 = RCC_BASE + 0x0D8;
 pub const RCC_CCIPR1: u32 = RCC_BASE + 0x0E0;
@@ -68,24 +75,42 @@ pub const RCC_AHB2ENR1_GPIOEEN: u32 = 1 << 4;
 pub const RCC_AHB2ENR1_GPIOCEN: u32 = 1 << 2;
 pub const RCC_AHB2ENR1_GPIOFEN: u32 = 1 << 5;
 pub const RCC_AHB2ENR1_GPIOGEN: u32 = 1 << 6;
+pub const RCC_AHB2ENR1_OTGEN: u32 = 1 << 14;
 pub const RCC_AHB2ENR1_SDMMC1EN: u32 = 1 << 27;
 pub const RCC_APB1ENR1_USART3EN: u32 = 1 << 18;
-pub const RCC_APB3ENR_RTCAPBEN: u32 = 1 << 21;
 /// The same bit in `APB3ENR`, `APB3SMENR` and `SRDAMR`.
 pub const RCC_APB3_LPTIM1: u32 = 1 << 11;
 pub const RCC_APB3_LPTIM3: u32 = 1 << 12;
+pub const RCC_APB3_RTCAPB: u32 = 1 << 21;
 pub const RCC_CCIPR1_USART3SEL: u32 = 0b11 << 4;
+pub const RCC_BDCR_LSEON: u32 = 1 << 0;
+pub const RCC_BDCR_LSERDY: u32 = 1 << 1;
+pub const RCC_BDCR_LSEBYP: u32 = 1 << 2;
+pub const RCC_BDCR_LSESYSEN: u32 = 1 << 7;
+pub const RCC_BDCR_RTCSEL_MASK: u32 = 0b11 << 8;
+pub const RCC_BDCR_RTCSEL_LSE: u32 = 0b01 << 8;
+pub const RCC_BDCR_RTCSEL_LSI: u32 = 0b10 << 8;
+pub const RCC_BDCR_LSESYSRDY: u32 = 1 << 11;
+pub const RCC_BDCR_RTCEN: u32 = 1 << 15;
+pub const RCC_BDCR_LSION: u32 = 1 << 26;
 pub const RCC_BDCR_LSIRDY: u32 = 1 << 27;
 pub const RCC_CSR_RMVF: u32 = 1 << 23;
 pub const RCC_AHB3ENR_PWREN: u32 = 1 << 2;
 
 pub const RCC_ICSCR1_MSIRGSEL: u32 = 1 << 23;
-pub const RCC_ICSCR1_MSISRANGE_MASK: u32 = 0xF << 28;
-pub const RCC_ICSCR1_MSISRANGE_4: u32 = 4 << 28;
+pub const RCC_ICSCR1_MSISRANGE_SHIFT: u32 = 28;
+pub const RCC_ICSCR1_MSISRANGE_MASK: u32 = 0xF << RCC_ICSCR1_MSISRANGE_SHIFT;
+pub const RCC_ICSCR1_MSISRANGE_4: u32 = 4 << RCC_ICSCR1_MSISRANGE_SHIFT;
+pub const RCC_CSR_MSISSRANGE_SHIFT: u32 = 12;
 pub const RCC_CR_MSISON: u32 = 1 << 0;
 pub const RCC_CR_MSISRDY: u32 = 1 << 2;
+pub const RCC_CR_HSION: u32 = 1 << 8;
+pub const RCC_CR_HSEON: u32 = 1 << 16;
+pub const RCC_CR_HSERDY: u32 = 1 << 17;
+pub const RCC_CR_PLL1ON: u32 = 1 << 24;
 pub const RCC_CFGR1_SW_MASK: u32 = 0b11;
-pub const RCC_CFGR1_SWS_MASK: u32 = 0b11 << 2;
+pub const RCC_CFGR1_SWS_SHIFT: u32 = 2;
+pub const RCC_CFGR1_SWS_MASK: u32 = 0b11 << RCC_CFGR1_SWS_SHIFT;
 
 // --- GPIO (RM0456 13.4) ------------------------------------------------------
 
@@ -97,14 +122,34 @@ pub const GPIOE_BASE: u32 = 0x4202_1000;
 pub const GPIOF_BASE: u32 = 0x4202_1400;
 pub const GPIOG_BASE: u32 = 0x4202_1800;
 
+/// `port`'s registers.
+pub const fn gpio_base(port: Port) -> u32 {
+    match port {
+        Port::A => GPIOA_BASE,
+        Port::B => GPIOB_BASE,
+        Port::C => GPIOC_BASE,
+        Port::D => GPIOD_BASE,
+        Port::E => GPIOE_BASE,
+        Port::F => GPIOF_BASE,
+        Port::G => GPIOG_BASE,
+    }
+}
+
+/// A net's port registers and pin number.
+pub const fn gpio(pin: Pin) -> (u32, u32) {
+    (gpio_base(pin.port), pin.number as u32)
+}
+
 pub const GPIO_MODER: u32 = 0x00;
 pub const GPIO_OTYPER: u32 = 0x04;
 pub const GPIO_OSPEEDR: u32 = 0x08;
 pub const GPIO_PUPDR: u32 = 0x0C;
 pub const GPIO_IDR: u32 = 0x10;
+pub const GPIO_ODR: u32 = 0x14;
 pub const GPIO_BSRR: u32 = 0x18;
 pub const GPIO_AFRL: u32 = 0x20;
 pub const GPIO_AFRH: u32 = 0x24;
+pub const GPIO_BRR: u32 = 0x28;
 
 // --- LPTIM (RM0456 58) -------------------------------------------------------
 
@@ -129,11 +174,15 @@ pub const LPTIM_CCMR1_CC1P_INVERTED: u32 = 0b01 << 2;
 
 // --- PWR (RM0456 10.10) ------------------------------------------------------
 
-pub const PWR_CR1: u32 = 0x4602_0800;
+pub const PWR_BASE: u32 = 0x4602_0800;
+
+pub const PWR_CR1: u32 = PWR_BASE;
 pub const PWR_CR1_ULPMEN: u32 = 1 << 7;
-pub const PWR_VOSR: u32 = 0x4602_0800 + 0x0C;
-pub const PWR_SVMCR: u32 = 0x4602_0800 + 0x10;
-pub const PWR_SVMSR: u32 = 0x4602_0800 + 0x3C;
+pub const PWR_VOSR: u32 = PWR_BASE + 0x0C;
+pub const PWR_SVMCR: u32 = PWR_BASE + 0x10;
+pub const PWR_SVMSR: u32 = PWR_BASE + 0x3C;
+pub const PWR_DBPR: u32 = PWR_BASE + 0x28;
+pub const PWR_DBPR_DBP: u32 = 1 << 0;
 pub const PWR_VOSR_USBBOOSTRDY: u32 = 1 << 13;
 pub const PWR_VOSR_USBPWREN: u32 = 1 << 19;
 pub const PWR_VOSR_USBBOOSTEN: u32 = 1 << 20;
@@ -142,10 +191,10 @@ pub const PWR_SVMCR_USV: u32 = 1 << 28;
 pub const PWR_SVMSR_VDDUSBRDY: u32 = 1 << 24;
 pub const PWR_SVMSR_REGS: u32 = 1 << 1;
 
-pub const PWR_CR2: u32 = 0x4602_0800 + 0x04;
-pub const PWR_CR3: u32 = 0x4602_0800 + 0x08;
+pub const PWR_CR2: u32 = PWR_BASE + 0x04;
+pub const PWR_CR3: u32 = PWR_BASE + 0x08;
 pub const PWR_CR3_REGSEL: u32 = 1 << 1;
-pub const PWR_CR4: u32 = 0x4602_0800 + 0xA8;
+pub const PWR_CR4: u32 = PWR_BASE + 0xA8;
 pub const PWR_CR2_SRAM2: u32 = 0b11 << 4;
 pub const PWR_CR2_SRAM4: u32 = 1 << 6;
 pub const PWR_CR2_DC1RAM: u32 = 1 << 9;
@@ -170,9 +219,21 @@ pub const ICACHE_SR_BUSYF: u32 = 1 << 0;
 pub const SDMMC1_BASE: u32 = 0x420C_8000;
 pub const SDMMC_POWER: u32 = 0x00;
 
-// --- RTC ---------------------------------------------------------------------
+// --- RTC and TAMP --------------------------------------------------------------
 
 pub const RTC_BASE: u32 = 0x4600_7800;
+pub const TAMP_BASE: u32 = 0x4600_7C00;
+
+/// `TAMP_BKPnR` (RM0456 64.6).
+pub const fn tamp_bkpr(n: u32) -> u32 {
+    TAMP_BASE + 0x100 + 4 * n
+}
+
+// --- SYSCFG (RM0456 15.3) ----------------------------------------------------
+
+pub const SYSCFG_BASE: u32 = 0x4600_0400;
+pub const SYSCFG_OTGHSPHYCR: u32 = SYSCFG_BASE + 0x74;
+pub const SYSCFG_OTGHSPHYTUNER2: u32 = SYSCFG_BASE + 0x7C;
 
 // --- USART3 (RM0456 66.8) ----------------------------------------------------
 
@@ -188,6 +249,7 @@ pub const USART_PRESC: u32 = 0x2C;
 
 pub const USART_CR1_UE: u32 = 1 << 0;
 pub const USART_CR1_TE: u32 = 1 << 3;
+pub const USART_CR1_TCIE: u32 = 1 << 6;
 pub const USART_CR1_TXFNFIE: u32 = 1 << 7;
 /// RM0456 Table 164.
 pub const USART3_IRQN: u32 = 63;
@@ -242,7 +304,7 @@ pub const IWDG_SR_UPDATING: u32 = (1 << 0) | (1 << 1);
 
 // --- FLASH (RM0456 7.9) ------------------------------------------------------
 
-pub const FLASH_BASE: u32 = 0x4002_2000;
+pub const FLASH_BASE: u32 = wrist_flash::survey::FLASH_BASE;
 
 pub const FLASH_ACR: u32 = FLASH_BASE;
-pub const FLASH_OPTR: u32 = FLASH_BASE + 0x40;
+pub const FLASH_OPTR: u32 = FLASH_BASE + wrist_flash::survey::offset::OPTR;

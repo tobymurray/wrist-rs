@@ -13,16 +13,15 @@ use crate::plan::{
     STAGING_ADDRESS,
 };
 
-// RM0456 7.9, Table 79.
-const FLASH_BASE: u32 = 0x4002_2000;
-const FLASH_NSKEYR: u32 = FLASH_BASE + 0x08;
-const FLASH_NSSR: u32 = FLASH_BASE + 0x20;
-const FLASH_NSCR: u32 = FLASH_BASE + 0x28;
+use crate::survey::{offset, FLASH_BASE, NSCR_LOCK, NSSR_BSY, NSSR_WDW};
+
+const FLASH_NSKEYR: u32 = FLASH_BASE + offset::NSKEYR;
+const FLASH_NSSR: u32 = FLASH_BASE + offset::NSSR;
+const FLASH_NSCR: u32 = FLASH_BASE + offset::NSCR;
 
 const KEY1: u32 = 0x4567_0123;
 const KEY2: u32 = 0xCDEF_89AB;
 
-const NSCR_LOCK: u32 = 1 << 31;
 const NSCR_STRT: u32 = 1 << 16;
 const NSCR_BKER: u32 = 1 << 11;
 const NSCR_PNB_SHIFT: u32 = 3;
@@ -30,8 +29,6 @@ const NSCR_PNB: u32 = 0xFF << NSCR_PNB_SHIFT;
 const NSCR_PER: u32 = 1 << 1;
 const NSCR_PG: u32 = 1 << 0;
 
-const NSSR_BSY: u32 = 1 << 16;
-const NSSR_WDW: u32 = 1 << 17;
 const NSSR_NOT_IDLE: u32 = NSSR_BSY | NSSR_WDW;
 const NSSR_EOP: u32 = 1 << 0;
 const NSSR_ERRORS: u32 = 0x20FA;

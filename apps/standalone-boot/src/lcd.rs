@@ -5,13 +5,15 @@
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 
 use embassy_time::{Duration, Instant, Timer};
-use wrist_panel::{timing, Clock, Pace};
+use wrist_board::pins;
+use wrist_panel::dma::cycles;
+use wrist_panel::{timing, Clock, Pace, GCK_EDGES, LAST_LINE_EDGE};
 use wrist_vcom::{Mode, Rate};
 
 use crate::uart::Uart;
 
 use crate::mmio::{
-    enable_clock, modify32, read32, write32, GPIOA_BASE, GPIOB_BASE, GPIOD_BASE, GPIOE_BASE,
+    enable_clock, gpio, modify32, read32, write32, GPIOE_BASE,
     GPIO_AFRH, GPIO_AFRL, GPIO_BSRR, GPIO_MODER, GPIO_OSPEEDR, GPIO_OTYPER, GPIO_PUPDR,
     LPTIM1_BASE, LPTIM3_BASE, LPTIM_ARR, LPTIM_ARROK, LPTIM_CCMR1, LPTIM_CCMR1_CC1E,
     LPTIM_CCMR1_CC1P_INVERTED, LPTIM_CCR1, LPTIM_CFGR, LPTIM_CMP1OK, LPTIM_CNT, LPTIM_CR,
@@ -21,29 +23,23 @@ use crate::mmio::{
 };
 
 // Control signals, panel name first, board net second.
-const GSP: (u32, u32) = (GPIOB_BASE, 10); // VST
-const GCK: (u32, u32) = (GPIOA_BASE, 4); // VCK
-const GEN: (u32, u32) = (GPIOA_BASE, 7); // ENB
-const INTB: (u32, u32) = (GPIOB_BASE, 1); // XRST
-const BSP: (u32, u32) = (GPIOB_BASE, 0); // HST
-const BCK: (u32, u32) = (GPIOA_BASE, 6); // HCK
-const VCOM_VB: (u32, u32) = (GPIOB_BASE, 2); // FRP
-const VA: (u32, u32) = (GPIOD_BASE, 14); // XFRP
+const GSP: (u32, u32) = gpio(pins::LCD_QSPI_SCK_VST);
+const GCK: (u32, u32) = gpio(pins::LCD_QSPI_CS_VCK);
+pub(crate) const GEN: (u32, u32) = gpio(pins::LCD_QSPI_IO2_ENB);
+pub(crate) const INTB: (u32, u32) = gpio(pins::LCD_QSPI_IO0_XRST);
+pub(crate) const BSP: (u32, u32) = gpio(pins::LCD_QSPI_IO1_HST);
+pub(crate) const BCK: (u32, u32) = gpio(pins::LCD_QSPI_IO3_HCK);
+const VCOM_VB: (u32, u32) = gpio(pins::LCD_FRP);
+const VA: (u32, u32) = gpio(pins::LCD_XFRP);
 const AF_LPTIM1_CH1: u32 = 1;
 const AF_LPTIM3_CH1: u32 = 14;
 
-pub const WIDTH: u32 = 240;
-pub const HEIGHT: u32 = 240;
+pub const WIDTH: u32 = wrist_glass::WIDTH;
+pub const HEIGHT: u32 = wrist_glass::HEIGHT;
 const LINES: usize = wrist_panel::LINES;
 const PAIRS: usize = wrist_panel::PAIRS;
-const GCK_EDGES: u32 = 483;
 /// Kept lines fast-forwarded between yields.
 const FAST_RUN: u32 = 32;
-
-/// At `rcc_config`'s 48 MHz system clock.
-const fn cycles(ns: u32) -> u32 {
-    (ns * 48).div_ceil(1000)
-}
 const INTB_HIGH: Duration = Duration::from_millis(timing::INTB_HIGH_MS as u64);
 
 /// LSE ticks a `VCOM` period: 0.5 Hz, Table 6-3-3's reflective minimum, and about 31 Hz,
@@ -346,7 +342,7 @@ impl Lcd {
                 pace.after(cycles(timing::GSP_SETUP), || set(GSP, false));
             }
             let line = (edge as usize).wrapping_sub(2) / 2;
-            if (2..=481).contains(&edge) && dirty[line] {
+            if (2..=LAST_LINE_EDGE).contains(&edge) && dirty[line] {
                 // The MSB plane, on the even edge, comes first.
                 let plane = usize::from(edge % 2 == 0);
                 if plane == 1 {

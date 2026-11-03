@@ -9,18 +9,17 @@ use embassy_sync::watch::{Receiver, Watch};
 use wrist_power::{BatteryRun, StopInput};
 use embassy_time::{Duration, Instant};
 
-use crate::mmio::{read32, write32, GPIOB_BASE, GPIOG_BASE, GPIO_BSRR, GPIO_IDR, PWR_CR1, PWR_CR1_ULPMEN};
+use crate::mmio::{gpio, read32, write32, GPIO_BSRR, GPIO_IDR, PWR_CR1, PWR_CR1_ULPMEN};
 use crate::{pmic, uart::Uart};
 
 const PD_PORT_STATUS_1: u8 = 0x0E;
 const PD_ATTACH: u8 = 1 << 0;
-const PMIC_CHG_STATUS_1: u8 = 0x19;
 /// PCA9420 datasheet Rev 4.2, Tables 11 to 15: write 1 to clear.
 const PMIC_SUB_INT: [u8; 3] = [0x02, 0x04, 0x06];
 const PMIC_SUB_INT0_MASK: u8 = 0x03;
 const PMIC_IN_PWR: u8 = 1 << 0;
-const DAM_DETECT_PIN: u32 = 15;
-const PWR_INT_L_PIN: u32 = 7;
+const DAM_DETECT: (u32, u32) = gpio(wrist_board::pins::DAM_DETECT);
+const PWR_INT_L: (u32, u32) = gpio(wrist_board::pins::PWR_INT_L);
 /// While something holds `PWR_INT_L` low.
 const RETRY: Duration = Duration::from_secs(1);
 
@@ -130,7 +129,7 @@ impl Sampler {
             .map(|()| port[0] & PD_ATTACH != 0);
         let mut status = [0];
         let charger = bus
-            .write_read(wrist_board::i2c::PCA9420_PMIC, &[PMIC_CHG_STATUS_1], &mut status)
+            .write_read(wrist_board::i2c::PCA9420_PMIC, &[wrist_power::pca9420::CHG_STATUS_1], &mut status)
             .await
             .ok()
             .map(|()| status[0]);
@@ -146,8 +145,8 @@ impl Sampler {
         };
         if INPUT.swap(code, Ordering::Relaxed) != code {
             // `HARDWARE.md`, "What the image turns off".
-            let bsrr = if code == BATTERY { 1 << (DAM_DETECT_PIN + 16) } else { 1 << DAM_DETECT_PIN };
-            unsafe { write32(GPIOB_BASE + GPIO_BSRR, bsrr) };
+            let bsrr = if code == BATTERY { 1 << (DAM_DETECT.1 + 16) } else { 1 << DAM_DETECT.1 };
+            unsafe { write32(DAM_DETECT.0 + GPIO_BSRR, bsrr) };
             let now = Instant::now().as_millis();
             RUNS.lock(|r| {
                 let mut r = r.borrow_mut();
@@ -285,6 +284,6 @@ fn write_tenths(uart: Uart, v: u16) {
 }
 
 fn line_low() -> bool {
-    let idr = unsafe { read32(GPIOG_BASE + GPIO_IDR) };
-    idr & (1 << PWR_INT_L_PIN) == 0
+    let idr = unsafe { read32(PWR_INT_L.0 + GPIO_IDR) };
+    idr & (1 << PWR_INT_L.1) == 0
 }

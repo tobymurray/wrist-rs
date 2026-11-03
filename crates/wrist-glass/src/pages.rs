@@ -139,8 +139,8 @@ const ABOUT_VERSION: i32 = 137;
 const ABOUT_BUILD: i32 = 160;
 const ABOUT_SUFFIX: i32 = 180;
 const ABOUT_CRC: i32 = 202;
-/// Twelve hex digits.
-const ID_CHARS: usize = 12;
+/// A firmware hash's hex digits.
+pub const ID_CHARS: usize = 12;
 
 /// The charge, the cell's voltage and the input.
 #[must_use]

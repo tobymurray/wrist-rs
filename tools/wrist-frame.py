@@ -14,7 +14,9 @@ import sys
 import time
 import zlib
 
-W = H = 240
+W = 240
+H = 240
+FORMAT = 'abgr2222'
 
 
 def decode(lines):
@@ -29,7 +31,7 @@ def decode(lines):
         if not words:
             continue
         if words[0] == 'begin':
-            if words[1:4] != ['240', '240', 'abgr2222']:
+            if words[1:4] != [str(W), str(H), FORMAT]:
                 sys.exit(f"unexpected frame format: {' '.join(words)}")
             rows, crc, began = {}, None, True
         elif words[0] == 'end' and began:
