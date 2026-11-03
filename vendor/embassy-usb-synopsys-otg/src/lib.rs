@@ -609,6 +609,21 @@ where
     /// * `instance` - The USB OTG peripheral instance and its configuration.
     /// * `config` - The USB driver configuration.
     pub fn new(ep_out_buffer: &'d mut [u8], instance: OtgInstance<'d, M>, config: Config) -> Self {
+        // wrist-rs: clear what a previous instance left in the shared State; see WRIST-PATCHES.md.
+        instance.state.mutex.lock(|| {
+            for ep in instance.state.ep_states {
+                unsafe {
+                    *ep.in_alloc.get() = None;
+                    *ep.out_alloc.get() = None;
+                    *ep.out_buffer.get() = core::ptr::null_mut();
+                    *ep.out_xfer.get() = None;
+                }
+                ep.out_size.store(EP_OUT_BUFFER_EMPTY, Ordering::Release);
+                ep.in_enabled.store(false, Ordering::Release);
+                ep.out_enabled.store(false, Ordering::Release);
+            }
+            instance.state.cp_state.setup_ready.store(false, Ordering::Release);
+        });
         Self {
             config,
             ep_out_buffer,
