@@ -78,7 +78,8 @@ pub use wrist_time::alarm::Alarm;
 pub use wrist_time::zone::Zone;
 pub use wrist_time::{civil_of_seconds, parse_civil, seconds_of, Civil};
 
-const CYCLES_PER_MS: u32 = 48_000;
+const CYCLES_PER_MS: u32 = crate::busy::CORE_MHZ * 1_000;
+// Over four times the SiT1532's t_start, 450 ms at most (its datasheet).
 const LSE_START_MS: u32 = 2000;
 
 fn write_bcd(uart: Uart, value: u32) {
@@ -130,14 +131,19 @@ fn wait_for(reg: u32, mask: u32, ms: u32) -> bool {
     wait_for_at(reg, mask, ms, CYCLES_PER_MS)
 }
 
+/// On the cycle counter, at `cycles_per_ms` core cycles a millisecond.
 fn wait_for_at(reg: u32, mask: u32, ms: u32, cycles_per_ms: u32) -> bool {
-    for _ in 0..ms {
+    crate::busy::init();
+    let budget = ms.saturating_mul(cycles_per_ms);
+    let from = crate::busy::cycles();
+    loop {
         if unsafe { read32(reg) } & mask != 0 {
             return true;
         }
-        cortex_m::asm::delay(cycles_per_ms);
+        if crate::busy::cycles().wrapping_sub(from) >= budget {
+            return false;
+        }
     }
-    false
 }
 
 /// At boot, before the HAL's clock configuration copies the backup domain: the LSE in bypass if

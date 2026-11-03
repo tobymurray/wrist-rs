@@ -39,6 +39,8 @@ private:
     static constexpr int32_t kUnlockPassed = 3;
     /// `wrist_flash_erase_selftest`: erased, blank, programmed, read back, erased, blank.
     static constexpr int32_t kFlashTestPassed = 0x3F;
+    /// `wrist_flash_erase_selftest`: a step's flash poll timed out.
+    static constexpr int32_t kFlashTestTimedOut = 0x40;
 
     SDK::Kernel&              mKernel;
     InstallerMessage::Verdict mVerdict{};

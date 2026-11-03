@@ -19,11 +19,14 @@ pub mod heart_rate {
         pub const WRIST: u8 = 2;
     }
 
-    /// The most RR intervals a measurement carries here: a 20-byte notification (the default
-    /// ATT MTU) with an 8-bit rate and no energy holds nine.
-    pub const MAX_RR: usize = 9;
+    /// A notification's payload at the default ATT MTU of 23 (Core Vol 3 Part F 3.4.7.1).
+    pub const DEFAULT_PAYLOAD: usize = 20;
 
-    /// The longest measurement [`Measurement::encode`] writes.
+    /// The most RR intervals a measurement holds: what [`DEFAULT_PAYLOAD`] carries with an
+    /// 8-bit rate and no energy.
+    pub const MAX_RR: usize = (DEFAULT_PAYLOAD - 2) / 2;
+
+    /// The longest measurement [`Measurement::encode`] writes, given room.
     pub const MAX_LEN: usize = 1 + 2 + 2 + 2 * MAX_RR;
 
     const FLAG_RATE_U16: u8 = 0x01;
@@ -102,12 +105,17 @@ pub mod heart_rate {
             Some(m)
         }
 
-        /// The measurement as a notification into `out`; returns its length (0 if `out` is
-        /// shorter than [`MAX_LEN`]). The rate goes in 8 bits when it fits.
-        pub fn encode(&self, out: &mut [u8]) -> usize {
-            if out.len() < MAX_LEN {
-                return 0;
+        /// The measurement as a notification of at most `out.len()` bytes, with the oldest RR
+        /// intervals that fit; the rest wait for the next (HRS 1.0, RR-Interval). Returns its
+        /// length, 0 if not even the rate and energy fit, and how many of [`Self::rr`] it
+        /// carries. The rate goes in 8 bits when it fits.
+        pub fn encode(&self, out: &mut [u8]) -> (usize, usize) {
+            let rate_len = if self.bpm > 0xFF { 2 } else { 1 };
+            let fixed = 1 + rate_len + if self.energy_kj.is_some() { 2 } else { 0 };
+            if out.len() < fixed {
+                return (0, 0);
             }
+            let rr = self.rr_len.min((out.len() - fixed) / 2);
             let mut flags = match self.contact {
                 Contact::Unsupported => 0,
                 Contact::Lost => FLAG_CONTACT_SUPPORTED,
@@ -127,15 +135,15 @@ pub mod heart_rate {
                 out[n..n + 2].copy_from_slice(&kj.to_le_bytes());
                 n += 2;
             }
-            if self.rr_len > 0 {
+            if rr > 0 {
                 flags |= FLAG_RR;
-                for v in self.rr() {
+                for v in &self.rr[..rr] {
                     out[n..n + 2].copy_from_slice(&v.to_le_bytes());
                     n += 2;
                 }
             }
             out[0] = flags;
-            n
+            (n, rr)
         }
     }
 

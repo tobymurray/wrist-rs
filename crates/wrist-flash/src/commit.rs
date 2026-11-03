@@ -21,7 +21,7 @@ pub const OUTCOME_VERIFY_FAILED: u32 = 4;
 pub const OUTCOME_ERASE_NOT_BLANK: u32 = 5;
 /// `detail`: [`POLL_TIMED_OUT`], after the page's index `<< 24` when erasing.
 pub const OUTCOME_TIMEOUT: u32 = 6;
-/// `detail`: the page's index `<< 24`, then [`NOT_ARMED`] with `NSCR`'s top half.
+/// `detail`: the page's index `<< 24`, then [`not_armed`] of `NSCR`.
 pub const OUTCOME_ERASE_NOT_ARMED: u32 = 7;
 
 pub const ERR_UNLOCK: i32 = -6;
@@ -29,7 +29,29 @@ pub const ERR_STATUS_PAGE: i32 = -7;
 pub const ERR_WITNESS_FOREIGN: i32 = -8;
 
 pub const POLL_TIMED_OUT: u32 = 0xFFFF;
-pub const NOT_ARMED: u32 = 0xE000;
+/// Above `NSSR`'s errors and [`POLL_TIMED_OUT`], below the page index.
+pub const NOT_ARMED: u32 = 0xE0_0000;
+pub const NOT_ARMED_MASK: u32 = 0xF0_0000;
+
+/// [`NOT_ARMED`], `NSCR[31:28]` (`LOCK`, `OPTLOCK`) in bits 16 to 19, and `NSCR[15:0]`
+/// (`BKER`, `PNB`, `PER`) below.
+#[must_use]
+pub const fn not_armed(nscr: u32) -> u32 {
+    NOT_ARMED | (nscr >> 28) << 16 | (nscr & 0xFFFF)
+}
+
+/// The scratch-page self-test's bit for a poll of any of its steps that timed out.
+pub const SELF_TEST_TIMED_OUT: i32 = 1 << 6;
+
+/// A self-test step's `bit` if it passed, or [`SELF_TEST_TIMED_OUT`].
+#[must_use]
+pub const fn self_test_bit(result: Result<(), u32>, bit: i32) -> i32 {
+    match result {
+        Ok(()) => bit,
+        Err(POLL_TIMED_OUT) => SELF_TEST_TIMED_OUT,
+        Err(_) => 0,
+    }
+}
 
 pub const WRITE_ATTEMPTS: u32 = 3;
 
@@ -44,7 +66,7 @@ pub trait Flash {
     /// Leaves `PER` set for [`Flash::end_erase`].
     ///
     /// # Errors
-    /// `NSSR`'s errors, [`POLL_TIMED_OUT`], or [`NOT_ARMED`] with `NSCR`'s top half.
+    /// `NSSR`'s errors, [`POLL_TIMED_OUT`], or [`not_armed`] of `NSCR`.
     fn erase_page(&mut self, page: u8, bank2: bool) -> Result<(), u32>;
     /// Clears `PER` and `STRT`.
     fn end_erase(&mut self);
@@ -115,7 +137,7 @@ pub fn commit<F: Flash>(f: &mut F, plan: Plan, image_crc: u32, words: &[u32]) ->
             if let Err(errors) = f.erase_page(plan.first_page + i, false) {
                 outcome = if errors == POLL_TIMED_OUT {
                     OUTCOME_TIMEOUT
-                } else if errors & 0xF000 == NOT_ARMED {
+                } else if errors & NOT_ARMED_MASK == NOT_ARMED {
                     OUTCOME_ERASE_NOT_ARMED
                 } else {
                     OUTCOME_ERASE_FAILED
@@ -190,6 +212,15 @@ mod tests {
     const PROGERR: u32 = 1 << 3;
     /// `PG` set while `PER` is (RM0456 7.9.7).
     const PGSERR: u32 = 1 << 7;
+    /// `NSSR`'s errors (RM0456 7.9.7).
+    const NSSR_ERRORS: u32 = 0x20FA;
+
+    // RM0456 7.9.9.
+    const NSCR_LOCK: u32 = 1 << 31;
+    const NSCR_OPTLOCK: u32 = 1 << 30;
+    const NSCR_STRT: u32 = 1 << 16;
+    const NSCR_BKER: u32 = 1 << 11;
+    const NSCR_PER: u32 = 1 << 1;
 
     /// The old kernel's first word in each of its pages.
     const OLD: u32 = 0x1234_5678;
@@ -287,7 +318,7 @@ mod tests {
             assert!(!bank2, "the commit erases bank 1 only");
             self.log.push(Op::Erase(page));
             if self.locked {
-                return Err(NOT_ARMED | (1 << 15));
+                return Err(not_armed(NSCR_LOCK | NSCR_OPTLOCK));
             }
             self.per = true;
             let before = self.erased.entry(page).or_insert(0);
@@ -456,8 +487,9 @@ mod tests {
         for (errors, code) in [
             (1 << 7, OUTCOME_ERASE_FAILED),
             (POLL_TIMED_OUT, OUTCOME_TIMEOUT),
-            // `NSCR` read back locked, with `STRT` set.
-            (NOT_ARMED | 0x8001, OUTCOME_ERASE_NOT_ARMED),
+            (not_armed(NSCR_LOCK | NSCR_STRT | NSCR_PER), OUTCOME_ERASE_NOT_ARMED),
+            (not_armed(NSCR_STRT), OUTCOME_ERASE_NOT_ARMED),
+            (not_armed(NSCR_BKER | NSCR_PER), OUTCOME_ERASE_NOT_ARMED),
         ] {
             let mut m = Model::failing_erase(move |page, _| if page == 50 { Err(errors) } else { Ok(()) });
             assert_eq!(run(&mut m), Ok(()), "past the point of no return it resets either way");
@@ -466,6 +498,29 @@ mod tests {
             assert_eq!(m.kernel_programs(), 0);
             assert_eq!(m.log.last(), Some(&Op::Lock));
         }
+    }
+
+    #[test]
+    fn a_not_armed_record_keeps_every_bit_the_readback_tests() {
+        let nscr = |detail: u32| (detail >> 16 & 0xF) << 28 | (detail & 0xFFFF);
+        for cr in [0, NSCR_LOCK, NSCR_OPTLOCK, NSCR_BKER, NSCR_PER, NSCR_LOCK | NSCR_OPTLOCK | NSCR_BKER | NSCR_PER] {
+            let errors = not_armed(cr | NSCR_STRT | (45 << 3));
+            assert_eq!(errors & NOT_ARMED_MASK, NOT_ARMED, "{cr:#x}");
+            assert_eq!(nscr(errors), cr | (45 << 3), "{cr:#x}");
+            assert_eq!(errors >> 24, 0, "the page index has the top byte");
+        }
+        assert_ne!(POLL_TIMED_OUT & NOT_ARMED_MASK, NOT_ARMED);
+        assert_ne!(NSSR_ERRORS & NOT_ARMED_MASK, NOT_ARMED);
+    }
+
+    #[test]
+    fn a_self_test_step_that_timed_out_says_so() {
+        assert_eq!(self_test_bit(Ok(()), 4), 4);
+        assert_eq!(self_test_bit(Err(PGSERR), 4), 0);
+        assert_eq!(self_test_bit(Err(not_armed(NSCR_LOCK)), 4), 0);
+        assert_eq!(self_test_bit(Err(POLL_TIMED_OUT), 4), SELF_TEST_TIMED_OUT);
+        assert_eq!(SELF_TEST_TIMED_OUT & 0x3F, 0, "outside the six steps' bits");
+        assert_eq!(SELF_TEST_TIMED_OUT & (0xFFFF << 8), 0, "outside NSSR's");
     }
 
     #[test]
@@ -501,12 +556,15 @@ mod tests {
         let source = include_str!("../../../apps/image-installer/Libs/Sources/Service.cpp");
         let constant = |name: &str| {
             let line = header.lines().find(|l| l.contains(&format!("{name} "))).unwrap();
-            let hex = line.split("0x").nth(1).unwrap().split('u').next().unwrap().replace('\'', "");
+            let hex: String = line.split("0x").nth(1).unwrap().chars().take_while(|c| c.is_ascii_hexdigit() || *c == '\'').filter(|c| *c != '\'').collect();
             u32::from_str_radix(&hex, 16).unwrap()
         };
         assert_eq!(constant("kStatusAddress"), STATUS_ADDRESS);
         assert_eq!(constant("kStatusMagic"), STATUS_MAGIC);
         assert_eq!(constant("kKernelBase"), KERNEL_BASE);
+        assert_eq!(constant("kFlashTestTimedOut"), SELF_TEST_TIMED_OUT as u32);
+        assert!(source.contains("(st_erase & kFlashTestTimedOut) ? \" [poll timeout]\""));
+        assert!(!source.contains("0xFFFFu) ? \"(poll timeout)\""), "outcomes 2 and 3 never carry a timeout");
         assert!(source.contains(&format!("((st[1] >> 16) & 0xFFFFu) == {OUTCOME_BEGAN}u")));
         assert!(source.contains("const bool finished = (st[4] == kStatusMagic);"));
         assert!(source.contains("const uint32_t outcome = (st[5] >> 16) & 0xFFFFu;"));
@@ -524,5 +582,7 @@ mod tests {
             assert!(verdict.contains(&format!("OUTCOME {code}:")) && verdict.contains(word), "case {code}: {verdict}");
         }
         assert!(source.contains(&format!("(install will refuse, {ERR_WITNESS_FOREIGN})")));
+        assert!(source.contains("| E << 20 | NSCR[31:28] << 16 | NSCR[15:0])"));
+        assert!(source.contains("const uint32_t nscr = ((st[6] >> 16) & 0xFu) << 28 | (st[6] & 0xFFFFu);"));
     }
 }

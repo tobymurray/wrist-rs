@@ -409,7 +409,7 @@ int Service::describeProtection(char* out, size_t capacity, int32_t st_erase)
                     ((st_erase >> 8) & 1u) ? "SET"
                                            : "CLEAR (expected: EOP needs EOPIE=1, which we "
                                              "deliberately do not set)",
-                    (((st_erase >> 8) & 0xFFFFu) == 0xFFFFu) ? " [poll timeout]" : "");
+                    (st_erase & kFlashTestTimedOut) ? " [poll timeout]" : "");
 }
 
 int Service::describeFlash(char* out, size_t capacity)
@@ -436,7 +436,8 @@ int Service::describeFlash(char* out, size_t capacity)
             case 6:  verdict = "OUTCOME 6: a flash status poll TIMED OUT (detail = FFFF, "
                                "with the page index << 24 when erasing)"; break;
             case 7:  verdict = "OUTCOME 7: the erase command DID NOT STICK -- NSCR read back "
-                               "locked or without PER (detail = page index << 24 | E000 | NSCR >> 16)"; break;
+                               "locked, without PER or in the wrong bank (detail = page index << 24 "
+                               "| E << 20 | NSCR[31:28] << 16 | NSCR[15:0])"; break;
             default: verdict = "outcome record present, code unrecognised"; break;
         }
     } else if (st[0] != 0xFFFFFFFFu) {
@@ -455,7 +456,12 @@ int Service::describeFlash(char* out, size_t capacity)
                  (e & (1u << 1)) ? "OPERR " : "", (e & (1u << 3)) ? "PROGERR " : "",
                  (e & (1u << 4)) ? "WRPERR " : "", (e & (1u << 5)) ? "PGAERR " : "",
                  (e & (1u << 6)) ? "SIZERR " : "", (e & (1u << 7)) ? "PGSERR " : "",
-                 (e == 0xFFFFu) ? "(poll timeout)" : (e == 0u ? "(none set)" : ""));
+                 e == 0u ? "(none set)" : "");
+    } else if (finished && outcome == 7u) {
+        const uint32_t nscr = ((st[6] >> 16) & 0xFu) << 28 | (st[6] & 0xFFFFu);
+        snprintf(bits, sizeof(bits), "  nscr read back: %s%s%s%s\n",
+                 (nscr & (1u << 31)) ? "LOCK " : "", (nscr & (1u << 30)) ? "OPTLOCK " : "",
+                 (nscr & (1u << 11)) ? "BKER " : "", (nscr & (1u << 1)) ? "PER" : "no PER");
     }
 
     return snprintf(out, capacity,
