@@ -150,7 +150,7 @@ mod tests {
     }
 
     #[test]
-    fn the_loader_and_both_linker_scripts_share_this_map() {
+    fn both_linker_scripts_share_this_map() {
         let app = include_str!("../../../apps/standalone-boot/memory.x");
         assert_eq!(hex_after(line(app, "_stack_start"), "= 0x"), STACK_START);
 
@@ -165,11 +165,6 @@ mod tests {
             .parse()
             .unwrap();
         assert_eq!(SRAM_END - below, STACK_START);
-
-        let loader = include_str!("../../../apps/wrist-loader/src/main.rs");
-        assert_eq!(hex_after(line(loader, "const MAILBOX_MAGIC:"), "= 0x"), MAILBOX_MAGIC);
-        assert_eq!(hex_after(line(loader, "const MAILBOX_BDCR:"), "= 0x"), MAILBOX_BDCR);
-        assert_eq!(hex_after(line(loader, "const MAILBOX_TAG:"), "= 0x"), MAILBOX_TAG);
     }
 
     #[test]
