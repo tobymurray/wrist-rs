@@ -5,6 +5,7 @@
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 
 use embassy_time::{Duration, Instant, Timer};
+use wrist_panel::dma::cycles;
 use wrist_panel::{timing, Clock, Pace};
 use wrist_vcom::{Mode, Rate};
 
@@ -39,11 +40,6 @@ const PAIRS: usize = wrist_panel::PAIRS;
 const GCK_EDGES: u32 = 483;
 /// Kept lines fast-forwarded between yields.
 const FAST_RUN: u32 = 32;
-
-/// At `rcc_config`'s 48 MHz system clock.
-const fn cycles(ns: u32) -> u32 {
-    (ns * 48).div_ceil(1000)
-}
 const INTB_HIGH: Duration = Duration::from_millis(timing::INTB_HIGH_MS as u64);
 
 /// LSE ticks a `VCOM` period: 0.5 Hz, Table 6-3-3's reflective minimum, and about 31 Hz,

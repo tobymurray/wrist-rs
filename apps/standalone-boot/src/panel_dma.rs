@@ -8,6 +8,7 @@ use embassy_time::{Duration, Instant, Timer};
 use wrist_panel::dma::{self, Builder, Bus, Frame, Memory};
 use wrist_panel::{timing, LINES};
 
+use crate::busy::CORE_MHZ;
 use crate::lcd::Cost;
 use crate::mmio::{modify32, read32, write32, GPIOA_BASE, GPIOB_BASE, GPIO_BSRR, GPIO_IDR, GPIO_MODER, RCC_BASE};
 use crate::uart::Uart;
@@ -317,7 +318,7 @@ pub async fn scan(fb: Option<&[u8]>, dirty: &[bool; LINES]) -> Result<(u32, Cost
         step = crate::busy::cycles();
     }
     if bench {
-        LAST_MASKED.store(((masked[0] / 48) << 16) | (masked[1] / 48).min(0xFFFF), Ordering::Relaxed);
+        LAST_MASKED.store(((masked[0] / CORE_MHZ) << 16) | (masked[1] / CORE_MHZ).min(0xFFFF), Ordering::Relaxed);
     }
     let Ok(frame) = b.finish() else {
         give_up(WHY_FULL);
@@ -572,9 +573,9 @@ pub fn command(args: &str, uart: Uart) {
     uart.write_str(" of ");
     uart.write_u32(LAST_COUNTS[3].load(Ordering::Relaxed));
     uart.write_str("; runs filled in ");
-    uart.write_u32(LAST_FILL_CYCLES.load(Ordering::Relaxed) / 48);
+    uart.write_u32(LAST_FILL_CYCLES.load(Ordering::Relaxed) / CORE_MHZ);
     uart.write_str(" us, lists in ");
-    uart.write_u32(LAST_LIST_CYCLES.load(Ordering::Relaxed) / 48);
+    uart.write_u32(LAST_LIST_CYCLES.load(Ordering::Relaxed) / CORE_MHZ);
     let masked = LAST_MASKED.load(Ordering::Relaxed);
     uart.write_str(" us (interrupts counted); bench frame masked: filled in ");
     uart.write_u32(masked >> 16);

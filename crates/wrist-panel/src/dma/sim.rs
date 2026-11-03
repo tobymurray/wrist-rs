@@ -21,7 +21,7 @@ use std::vec::Vec;
 use super::{
     cycles, Bus, Frame, Latency, Memory, BUS, DATA_HALFWORDS, D_BR2, D_TR1, D_TR2, D_TR3, D_WORDS, E_TR1, E_TR2,
     E_WORDS, CEN, GCK, GPIOA_BRR, GPIOA_BSRR, GPIOB_BRR, GPIOB_BSRR, GPIOE_ODR, GSP, LATENCY, OPM, TABLE_HALFWORDS, TIM1_CR1,
-    TIM3_CR1,
+    TIM3_CR1, TIMER_HZ,
 };
 use crate::{word, DATA_MASK, LINES, PAIRS};
 
@@ -391,7 +391,7 @@ pub fn run(s: &Setup) -> Run {
 }
 
 fn ns(cycles: u64) -> u64 {
-    cycles * 1000 / 48
+    cycles * 1000 / u64::from(TIMER_HZ / 1_000_000)
 }
 
 /// Tables 6-3-2 and 6-3-3 against `changes`, and what the panel latches.
@@ -776,7 +776,7 @@ mod tests {
         let fb = random_fb(5);
         for (bus, most) in [(Bus::new(32, 24), 52.0), (Bus::new(28, 20), 46.0), (BUS, 44.0)] {
             assert!(keeps(&bus, &LATENCY), "{bus:?}");
-            let ms = |dirty: [bool; LINES]| checked(bus, LATENCY, Some(&fb), &dirty).cycles as f64 / 48_000.0;
+            let ms = |dirty: [bool; LINES]| checked(bus, LATENCY, Some(&fb), &dirty).cycles as f64 / f64::from(TIMER_HZ / 1_000);
             let full = ms(pattern(|_| true));
             let page = ms(pattern(|l| (12..228).contains(&l)));
             let minute = ms(pattern(|l| (60..80).contains(&l) || (150..170).contains(&l)));

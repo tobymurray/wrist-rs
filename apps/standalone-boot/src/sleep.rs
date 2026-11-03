@@ -5,6 +5,7 @@ use embassy_stm32::low_power::{set_stop_observer, StopEvent};
 use embassy_stm32::rcc::{StopMode, WakeGuard};
 use embassy_sync::blocking_mutex::{raw::CriticalSectionRawMutex, Mutex};
 use embassy_time::Instant;
+use crate::busy::CORE_MHZ;
 use crate::uart::Uart;
 
 const UNKNOWN: u8 = 0;
@@ -96,9 +97,6 @@ pub fn command(text: &str, uart: Uart) {
     uart.write_line("; USB, unknown input, active UART/DMA/timers inhibit Stop2");
     write_time_driver(uart);
 }
-
-/// The core's clock whenever the time driver runs (`main.rs`, "[9]").
-const CORE_MHZ: u32 = 48;
 
 fn write_cycles(uart: Uart, label: &str, waits: u32, cycles: u32, max: u32) {
     uart.write_str(label); uart.write_u32(waits);

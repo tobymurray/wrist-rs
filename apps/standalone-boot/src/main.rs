@@ -331,7 +331,7 @@ fn main() -> ! {
     let p = embassy_stm32::init(config);
     // `panel_dma.rs` drives these through registers.
     let _ = (p.TIM1, p.TIM3, p.TIM4, p.GPDMA1_CH12, p.GPDMA1_CH13, p.GPDMA1_CH14, p.GPDMA1_CH15, p.PA6, p.PA7, p.PB0);
-    uart = unsafe { Uart::init_at(48_000_000) };
+    uart = unsafe { Uart::init_at(busy::CORE_HZ) };
     let bdcr = unsafe { read32(RCC_BDCR) };
     uart.write_line(match (bdcr & BDCR_LSERDY != 0, bdcr & BDCR_LSESYSRDY != 0) {
         (true, true) => "[9] embassy-stm32 initialised: MSIS 48 MHz, time driver on LPTIM4/LSE, UART re-divided",
@@ -639,7 +639,7 @@ pub(crate) unsafe fn usb_power_off() {
 
 /// [`start_hse`]'s 20 ms, in polls at each core clock.
 pub(crate) const HSE_POLLS_4MHZ: u32 = 20_000;
-pub(crate) const HSE_POLLS_48MHZ: u32 = 240_000;
+pub(crate) const HSE_POLLS_48MHZ: u32 = HSE_POLLS_4MHZ * (busy::CORE_HZ / PCLK1_HZ);
 
 /// False, with `HSEON` cleared again, if `HSERDY` did not set within `polls`
 /// (RM0456 11.8.1).
