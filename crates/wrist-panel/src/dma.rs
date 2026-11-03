@@ -2,6 +2,7 @@
 //! register a tick of TIM3's compares (`BCK`, `GEN`), `GCK`, `GSP`, TIM1's one pulse (`BSP`),
 //! and TIM3's stop.
 
+use crate::minimum::{THH_GCK, THS_BSP, THW_BCK, THW_GCK, THW_GEN, TH_RGB, TLS_BSP, TS_RGB};
 use crate::{timing, BCK_LABELS, GCK_EDGES, LAST_LINE_EDGE, LINES, PAIRS, PIXELS};
 
 /// TIM1's and TIM3's clock.
@@ -70,33 +71,28 @@ pub const BUS: Bus = Bus::new(26, 19);
 #[must_use]
 pub const fn keeps(bus: &Bus, lat: &Latency) -> bool {
     let (min, max) = lat.e_write;
-    keeps_timer(bus, lat) && bus.edge >= max + cycles(200) && bus.half - bus.edge + min >= cycles(200)
+    keeps_timer(bus, lat) && bus.edge >= max + cycles(TS_RGB) && bus.half - bus.edge + min >= cycles(TH_RGB)
 }
 
 /// All of [`keeps`] but the data window: `BCK`, `BSP`, and both channels keeping up, an item
 /// loaded straight after the last transfer of the one before.
 #[must_use]
 pub const fn keeps_timer(bus: &Bus, lat: &Latency) -> bool {
-    let (h, edge, ns200) = (bus.half, bus.edge, cycles(200));
+    let (h, edge) = (bus.half, bus.edge);
     let (rise, fall) = bus.bsp();
     let (early, late) = (bus.ctrl + lat.d_write.0 + lat.tim1.0, bus.ctrl + lat.d_write.1 + lat.tim1.1);
     let first = 3 * h + edge;
-    h >= cycles(400)
+    h >= cycles(THW_BCK)
         && edge < h
         && bus.ctrl + lat.d_write.1 < h
         && lat.e_link + 2 * lat.e_write.1 <= 2 * h
         && lat.d_link + 2 * lat.d_write.1 <= 2 * h
-        && first >= late + rise + ns200
-        && early + fall >= first + ns200
-        && first + 2 * h >= late + fall + ns200
+        && first >= late + rise + cycles(THS_BSP)
+        && early + fall >= first + cycles(TLS_BSP)
+        && first + 2 * h >= late + fall + cycles(TLS_BSP)
 }
 
 const _: () = assert!(keeps(&BUS, &LATENCY), "tsRGB, thRGB, thwBCK, thsBSP, tlsBSP");
-
-/// `thwGCK` over a written plane, `thwGEN`, and `thhGCK` (Table 6-3-2), each kept with a tick to spare.
-const THW_GCK: u32 = 62_670;
-const THW_GEN: u32 = 9_670;
-const THH_GCK: u32 = 4_000;
 
 pub const GPIOA_BSRR: u32 = 0x4202_0018;
 pub const GPIOA_BRR: u32 = 0x4202_0028;
@@ -281,6 +277,7 @@ pub struct Builder<'a> {
 impl<'a> Builder<'a> {
     #[must_use]
     pub fn new(bus: Bus, mem: Memory<'a>) -> Self {
+        // `thwGEN` and `thhGCK` with a tick to spare, and `thwGCK` over a written plane.
         let gen = bus.exact(THW_GEN) + 1;
         let hold = (bus.exact(THH_GCK) + 1).max(bus.written(THW_GCK).saturating_sub(2 + 2 + SHIFT + 2 + gen + 1));
         let (mut near, mut far) = (hold.min(HOLD_MAX - 1), hold.saturating_sub(HOLD_MAX - 1));

@@ -23,6 +23,9 @@ use super::{
     E_WORDS, CEN, GCK, GPIOA_BRR, GPIOA_BSRR, GPIOB_BRR, GPIOB_BSRR, GPIOE_ODR, GSP, LATENCY, OPM, TABLE_HALFWORDS, TIM1_CR1,
     TIM3_CR1, TIMER_HZ,
 };
+use crate::minimum::{
+    GCK_KEPT, THH_GCK, THS_BSP, THS_GSP, THS_INTB, THW_BCK, THW_GCK, THW_GEN, TH_RGB, TLS_BSP, TLS_GSP, TS_RGB,
+};
 use crate::{word, BCK_LABELS, DATA_MASK, GCK_EDGES, LAST_LINE_EDGE, LINES, PAIRS, PIXELS};
 
 const D_AT: u32 = 0x201A_0000;
@@ -403,16 +406,16 @@ fn check(changes: &[Change], end: u64, broken: &mut Vec<String>) -> Latched {
     let from = |pins: &[Change], at: u64| pins.partition_point(|c| c.early < at);
 
     for w in bck.windows(2) {
-        if w[1].early - w[0].late < at_least(400) {
+        if w[1].early - w[0].late < at_least(THW_BCK) {
             flag("thwBCK/tlwBCK", w[1].early);
         }
     }
     let mut next = 0;
     for e in &bck {
-        while next < data.len() && data[next].late + at_least(200) <= e.early {
+        while next < data.len() && data[next].late + at_least(TS_RGB) <= e.early {
             next += 1;
         }
-        if next < data.len() && data[next].early < e.late + at_least(200) {
+        if next < data.len() && data[next].early < e.late + at_least(TH_RGB) {
             flag("tsRGB/thRGB", e.early);
         }
     }
@@ -423,10 +426,10 @@ fn check(changes: &[Change], end: u64, broken: &mut Vec<String>) -> Latched {
             continue;
         };
         let second = bck.get(from(&bck, first.late + 1));
-        if first.early < rise.late + at_least(200) || fall.early < first.late + at_least(200) {
+        if first.early < rise.late + at_least(THS_BSP) || fall.early < first.late + at_least(TLS_BSP) {
             flag("thsBSP/tlsBSP", rise.early);
         }
-        if second.is_none_or(|s| s.early < fall.late + at_least(200)) {
+        if second.is_none_or(|s| s.early < fall.late + at_least(TLS_BSP)) {
             flag("BSP low before the second edge", fall.early);
         }
     }
@@ -435,13 +438,13 @@ fn check(changes: &[Change], end: u64, broken: &mut Vec<String>) -> Latched {
             flag("GEN left high", pulse[0].early);
             continue;
         };
-        if fall.early < rise.late + at_least(9_670) {
+        if fall.early < rise.late + at_least(THW_GEN) {
             flag("thwGEN", rise.early);
         }
         if bck.get(from(&bck, rise.early)).is_some_and(|e| e.early <= fall.late) {
             flag("tlsGEN: BCK during GEN", rise.early);
         }
-        if gck.get(gck.partition_point(|g| g.late < fall.early)).is_none_or(|g| g.early < fall.late + at_least(4_000)) {
+        if gck.get(gck.partition_point(|g| g.late < fall.early)).is_none_or(|g| g.early < fall.late + at_least(THH_GCK)) {
             flag("thhGCK", fall.early);
         }
     }
@@ -452,10 +455,10 @@ fn check(changes: &[Change], end: u64, broken: &mut Vec<String>) -> Latched {
         flag("GSP is not one pulse", 0);
         return Latched::new();
     }
-    if gsp[0].early < at_least(10_000) || gck[0].early < gsp[0].late + at_least(10_000) {
+    if gsp[0].early < at_least(THS_INTB) || gck[0].early < gsp[0].late + at_least(THS_GSP) {
         flag("INTB to GSP, thsGSP", gsp[0].early);
     }
-    if gsp[1].early < gck[1].late + at_least(10_000) || gsp[1].late > gck[2].early {
+    if gsp[1].early < gck[1].late + at_least(TLS_GSP) || gsp[1].late > gck[2].early {
         flag("tlsGSP", gsp[1].early);
     }
     latch([&gck, &bck, &gen, &bsp, &data], end, &mut flag)
@@ -477,7 +480,7 @@ fn latch([gck, bck, gen, bsp, data]: [&[Change]; 5], end: u64, flag: &mut impl F
             (&bck[from(bck, lo)..from(bck, hi)], &gen[from(gen, lo)..from(gen, hi)], &bsp[from(bsp, lo)..from(bsp, hi)]);
         let edge = i + 1;
         let normal = matches!(edge, 1 | 2) || edge == GCK_EDGES as usize || !pulses.is_empty();
-        let half = if normal { at_least(62_670) } else { at_least(1_000) };
+        let half = if normal { at_least(THW_GCK) } else { at_least(GCK_KEPT) };
         if until < g.late + half {
             flag(&format!("GCK {edge} half-period"), g.early);
         }

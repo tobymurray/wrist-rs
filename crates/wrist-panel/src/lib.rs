@@ -80,8 +80,33 @@ impl<C: Clock> Pace<C> {
 /// The end of a wait [`Pace::after`] spins masked, so a short wait ends on time.
 const MASKED_SPIN: u32 = 48;
 
-/// Nanoseconds, against the minimums of Tables 6-3-2 and 6-3-3.
+/// Tables 6-3-2 and 6-3-3's minimums, in nanoseconds.
+pub mod minimum {
+    pub const TS_RGB: u32 = 200;
+    pub const TH_RGB: u32 = 200;
+    /// `thwBCK` and `tlwBCK`.
+    pub const THW_BCK: u32 = 400;
+    pub const THS_BSP: u32 = 200;
+    pub const TLS_BSP: u32 = 200;
+    pub const THW_GEN: u32 = 9_670;
+    pub const THH_GCK: u32 = 4_000;
+    /// `thwGCK`, `tlwGCK` and `thhINTB`.
+    pub const THW_GCK: u32 = 62_670;
+    /// Note 6-3-1's half-period over a kept line.
+    pub const GCK_KEPT: u32 = 1_000;
+    pub const THS_INTB: u32 = 10_000;
+    pub const THS_GSP: u32 = 10_000;
+    pub const TLS_GSP: u32 = 10_000;
+    pub const THW_INTB: u32 = 30_300_000;
+    pub const TLW_INTB: u32 = 10_000;
+}
+
+/// Nanoseconds, against [`minimum`].
 pub mod timing {
+    use super::minimum::{
+        GCK_KEPT, THH_GCK, THS_BSP, THS_GSP, THW_BCK, THW_GCK, THW_GEN, THW_INTB, TH_RGB, TLS_BSP, TLS_GSP, TLW_INTB, TS_RGB,
+    };
+
     /// Data held after a `BCK` edge, then set up before the next: a half-period is both.
     pub const DATA_HOLD: u32 = 300;
     pub const DATA_SETUP: u32 = 300;
@@ -104,16 +129,16 @@ pub mod timing {
     pub const WRITTEN_HALF: u32 = BSP_SETUP + super::BCK_LABELS * (DATA_HOLD + DATA_SETUP) + GEN_SETUP + GEN_HIGH + GEN_HOLD;
 
     const _: () = {
-        assert!(DATA_HOLD >= 200 && DATA_SETUP >= 200, "thRGB, tsRGB");
-        assert!(DATA_HOLD + DATA_SETUP >= 400, "thwBCK, tlwBCK");
-        assert!(BSP_SETUP >= 200 && DATA_HOLD >= 200, "thsBSP, tlsBSP");
-        assert!(GEN_HIGH >= 9_670, "thwGEN");
-        assert!(GEN_HOLD >= 4_000, "thhGCK");
-        assert!(GCK_HALF >= 62_670 && WRITTEN_HALF >= 62_670, "thwGCK, tlwGCK, thhINTB");
-        assert!(GCK_FAST >= 1_000, "Note 6-3-1");
-        assert!(GSP_SETUP >= 10_000, "thsGSP, tlsGSP");
-        assert!(INTB_HIGH_MS * 1_000_000 >= 30_300_000, "thwINTB");
-        assert!(INTB_LOW >= 10_000, "tlwINTB");
+        assert!(DATA_HOLD >= TH_RGB && DATA_SETUP >= TS_RGB, "thRGB, tsRGB");
+        assert!(DATA_HOLD + DATA_SETUP >= THW_BCK, "thwBCK, tlwBCK");
+        assert!(BSP_SETUP >= THS_BSP && DATA_HOLD >= TLS_BSP, "thsBSP, tlsBSP");
+        assert!(GEN_HIGH >= THW_GEN, "thwGEN");
+        assert!(GEN_HOLD >= THH_GCK, "thhGCK");
+        assert!(GCK_HALF >= THW_GCK && WRITTEN_HALF >= THW_GCK, "thwGCK, tlwGCK, thhINTB");
+        assert!(GCK_FAST >= GCK_KEPT, "Note 6-3-1");
+        assert!(GSP_SETUP >= THS_GSP && GSP_SETUP >= TLS_GSP, "thsGSP, tlsGSP");
+        assert!(INTB_HIGH_MS * 1_000_000 >= THW_INTB, "thwINTB");
+        assert!(INTB_LOW >= TLW_INTB, "tlwINTB");
     };
 }
 
