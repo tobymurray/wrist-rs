@@ -3,7 +3,7 @@
 // Target only, where `usize` is `u32`.
 #![allow(clippy::cast_possible_truncation)]
 
-use crate::commit::{self, Flash, NOT_ARMED, POLL_TIMED_OUT};
+use crate::commit::{self, not_armed, Flash, POLL_TIMED_OUT};
 pub use crate::commit::{ERR_STATUS_PAGE, ERR_UNLOCK, ERR_WITNESS_FOREIGN};
 use crate::plan::{
     self, bank2_page_address, crc32, quadword, Plan, MAX_PAGES, QUADWORD, SELF_TEST_PAGE,
@@ -153,7 +153,7 @@ unsafe fn clear_op_bits(mask: u32) {
 }
 
 /// Leaves `PER` set for [`clear_op_bits`] after the last page; `Err` as
-/// [`wait_idle`]'s, or [`NOT_ARMED`] with `NSCR`'s top half.
+/// [`wait_idle`]'s, or [`not_armed`] of `NSCR`.
 unsafe fn erase_page(page: u8, bank2: bool) -> Result<(), u32> {
     wait_idle()?;
 
@@ -168,7 +168,7 @@ unsafe fn erase_page(page: u8, bank2: bool) -> Result<(), u32> {
     // Page numbers repeat across banks, so a dropped bank select would erase a live kernel page.
     let mut cr = read32(FLASH_NSCR);
     if (cr & NSCR_BKER != 0) != bank2 || cr & NSCR_LOCK != 0 {
-        return Err(NOT_ARMED | (cr >> 16));
+        return Err(not_armed(cr));
     }
     cr &= !(NSCR_STRT | NSCR_PNB | NSCR_PER);
     cr |= (u32::from(page) << NSCR_PNB_SHIFT) | NSCR_STRT | NSCR_PER;
@@ -177,7 +177,7 @@ unsafe fn erase_page(page: u8, bank2: bool) -> Result<(), u32> {
     // A locked `NSCR` drops a store without a flag, so read it back.
     let readback = read32(FLASH_NSCR);
     if readback & NSCR_LOCK != 0 || readback & NSCR_PER == 0 {
-        return Err(NOT_ARMED | (readback >> 16));
+        return Err(not_armed(readback));
     }
 
     wait_idle()
