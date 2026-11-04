@@ -31,9 +31,6 @@ revision. Remove this copy once upstream has all of these, or equivalents:
   flags it read. It also cleared the enable mask, and `UEIE` and `UECF` are the same bit,
   so an overflow arriving during the handler was cleared unseen: a counter period lost for
   good, and time 2 s behind.
-- **ICACHE re-enable after a flash operation (U5).** The wait for the invalidation's
-  `BUSYF` to clear is bounded, and the cache re-enabled either way: until the invalidation
-  ends, every access is noncacheable.
 - **Time driver counters.** `low_power::time_driver_stats::snapshot()` returns the `DIER`
   and compare waits, the compare writes skipped, Stop entries with a write unacknowledged,
   the waits that timed out, with the registers at the last, and the last late alarms.
