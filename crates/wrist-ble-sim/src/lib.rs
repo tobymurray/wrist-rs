@@ -1,10 +1,12 @@
 //! A fake BlueNRG-2 and the devices around it on virtual time, to run the Bluetooth core on the
 //! host against the chip's documented behaviour.
 
+pub mod checks;
 pub mod fake;
 pub mod menu;
 pub mod peers;
 pub mod rng;
+pub mod sim;
 
 /// Runs a future that never waits, as every one the fake returns.
 ///
