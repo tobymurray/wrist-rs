@@ -43,8 +43,7 @@ fn pm0257_figure_14_at_fixed_lengths() {
     assert_eq!(b, Err(SchedKind::LengthFailed));
 }
 
-/// A closed link leaves a gap: a new slot goes in a gap that holds it, else after the last slot,
-/// never in their sum (PM0257 §4.2.2).
+/// PM0257 §4.2.2.
 #[test]
 fn a_slot_fits_a_gap_or_the_time_after_the_last() {
     let mut a = Activities::IDLE;
@@ -61,7 +60,6 @@ fn a_slot_fits_a_gap_or_the_time_after_the_last() {
     assert_eq!(tail.central[3].map(|s| s.offset.0), Some(84_500));
 }
 
-/// Slots are found by where they sit, not by their place in the list.
 #[test]
 fn a_slot_after_the_last_follows_the_latest_in_time() {
     let mut a = Activities::IDLE;
@@ -82,7 +80,6 @@ fn a_retimed_link_may_keep_its_place() {
     assert_eq!(a.central[0].map(|s| (s.offset.0, s.ce_len.as_u16())), Some((0, 8)));
 }
 
-/// Advertising's place in the period is not modelled, but its event still takes its time.
 #[test]
 fn a_link_beside_advertising_leaves_it_its_event() {
     let a = Activities { advertising: Some(adv(160)), ..Activities::IDLE };
@@ -90,7 +87,7 @@ fn a_link_beside_advertising_leaves_it_its_event() {
     assert!(connect(&a, link(105.0, 105.0, 139)).is_ok());
 }
 
-/// A shorter anchor period must still hold every slot already placed (PM0257 §4.2.2, case 3).
+/// PM0257 §4.2.2, case 3.
 #[test]
 fn a_shorter_anchor_holds_every_slot_already_placed() {
     let mut a = Activities::IDLE;

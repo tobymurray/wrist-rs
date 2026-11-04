@@ -177,9 +177,7 @@ fn free(period: Ns, occupied: Ns) -> Ns {
     period.saturating_sub(occupied + micros(CAPABILITIES.guard))
 }
 
-/// Where a slot of `want` goes in `period` beside the other slots, and the room it has there: the
-/// first gap a closed link left that holds it, else after the last slot (§4.2.2). A slot asking
-/// for no length goes after the last. `None` when the slots already placed overrun `period`.
+/// The offset and room for a slot of `want` (§4.2.2), or `None` when the slots already placed overrun `period`.
 fn place(a: &Activities, except: Option<usize>, period: Ns, want: Ns) -> Option<(Ns, Ns)> {
     let guard = micros(CAPABILITIES.guard);
     let mut spans = [(0, 0); MAX_LINKS];
