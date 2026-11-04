@@ -5,6 +5,9 @@ use core::hash::{Hash, Hasher};
 
 use wrist_ble::{Activities, AdvParams, Capabilities, Change, ConnParams, Instant, Op, OpId, Schedule};
 
+use crate::chip::Chip;
+use crate::phone::Phone;
+
 use crate::goals::{Goals, Power, MAX_PERIPHERALS};
 use crate::State;
 
@@ -75,6 +78,8 @@ pub struct Menu {
     pub connecting: &'static [Choice<ConnParams>],
     /// A central link once it delivers readings.
     pub live: &'static [Choice<ConnParams>],
+    /// What this device asks of the phone's link, as its peripheral.
+    pub phone: &'static [Choice<ConnParams>],
 }
 
 pub struct PlanInput<'a> {
@@ -90,6 +95,43 @@ pub struct PlanInput<'a> {
 /// A pure function from goals and what is running to the target.
 pub trait Planner {
     fn plan(&self, input: &PlanInput<'_>) -> Target;
+}
+
+/// Plans the phone's advertising from the menu, the first option the schedule admits and the chip
+/// has not refused, and tells every wanted peripheral it fits without planning a link to it.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MenuPlanner;
+
+impl Planner for MenuPlanner {
+    fn plan(&self, i: &PlanInput<'_>) -> Target {
+        let (g, s) = (i.goals, i.state);
+        let mut t = Target { activities: s.radio, phone: Verdict::NotWanted, peripherals: [Verdict::NotWanted; MAX_PERIPHERALS] };
+        for (v, w) in t.peripherals.iter_mut().zip(&g.peripherals) {
+            if w.is_some() {
+                *v = Verdict::Fits;
+            }
+        }
+        if !g.radio_on || !matches!(s.chip.state, Chip::Ready(_)) {
+            return t;
+        }
+        if let Phone::Up(_) = s.phone {
+            t.activities.advertising = None;
+            t.phone = Verdict::Fits;
+            return t;
+        }
+        if !g.phone.discoverable {
+            t.activities.advertising = None;
+            return t;
+        }
+        let beside_central = s.radio.centrals() > 0;
+        let choice = i.menu.advertising.iter().filter(|c| c.when.matches(g.power, beside_central, false)).map(|c| c.params).find(|&p| {
+            let change = Change::Advertise(Some(p));
+            s.radio.advertising == Some(p) || (i.schedule.admit(&s.radio, &change).is_ok() && !i.refused.contains(fingerprint(&s.radio, &change)))
+        });
+        t.activities.advertising = choice;
+        t.phone = if choice.is_some() { Verdict::Fits } else { Verdict::Busy(Conflict::Refused) };
+        t
+    }
 }
 
 /// An operation in flight, until its terminal event or its deadline.
@@ -109,10 +151,18 @@ pub trait Reconciler {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Fingerprint(pub u64);
 
+/// What a change replaces is left out, so that one refused setting is not tried again from each
+/// setting it would have replaced.
 #[must_use]
 pub fn fingerprint(current: &Activities, change: &Change) -> Fingerprint {
+    let mut base = *current;
+    match change {
+        Change::Advertise(_) => base.advertising = None,
+        Change::Scan(_) => base.scanning = None,
+        _ => {}
+    }
     let mut h = Fnv(Fnv::OFFSET);
-    current.hash(&mut h);
+    base.hash(&mut h);
     change.hash(&mut h);
     Fingerprint(h.finish())
 }

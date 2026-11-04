@@ -30,4 +30,8 @@ pub const MENU: Menu = Menu {
         Choice { params: link(400, 400, 0, 600), when: when(None, None, None), cost_ua: 7 },
         Choice { params: link(200, 200, 0, 600), when: when(None, None, None), cost_ua: 14 },
     ],
+    phone: &[
+        Choice { params: link(12, 24, 0, 500), when: when(Some(Power::Cable), None, None), cost_ua: 120 },
+        Choice { params: link(80, 160, 4, 600), when: when(Some(Power::Battery), None, None), cost_ua: 8 },
+    ],
 };

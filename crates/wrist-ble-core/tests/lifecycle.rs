@@ -157,3 +157,20 @@ fn an_idle_sensor_is_not_woken_for_coverage() {
     let p = run(p, &c, t(1_000), t(40_000));
     assert_eq!(p.deadline(&c, t(40_000)), None);
 }
+
+#[test]
+fn the_slow_search_starts_at_once_from_a_backoff() {
+    let c = Ctx { workout: true, ..ctx(&HR) };
+    let mark = t(u64::from(GIVE_UP.0));
+    let p = run(Peripheral::default().step(&c, t(0), Event::Want), &c, t(0), mark - Millis(1_000));
+    let p = match p.stage {
+        Stage::Seeking { .. } => p.step(&c, mark - Millis(1_000), Event::ConnectFailed(wrist_ble::FailureKind::Timeout)),
+        _ => p,
+    };
+    let Stage::Backoff { until } = p.stage else { panic!("{p:?}") };
+    assert!(until > mark, "{p:?}");
+    assert_eq!(p.deadline(&c, mark - Millis(1_000)), Some(mark));
+    let p = p.step(&c, mark, Event::Tick);
+    assert_eq!(p.slow_until, Some(mark + wrist_ble_core::peripheral::SLOW_FOR));
+    assert_eq!(p.stage, Stage::Seeking { since: mark, quick: 0 });
+}
