@@ -2,11 +2,14 @@
 
 use wrist_ble::{ChipInfo, Instant, Millis, ResetCause};
 
-/// Resets the core may ask for in any hour before it declares a fault.
+/// Resets in any hour, the core's and the chip's own alike, before the core declares a fault.
 pub const RESETS_PER_HOUR: usize = 3;
 
-/// A chip in fault is tried again this often, or when the user asks.
+/// A chip in fault is started once this often, or when the user asks.
 pub const FAULT_RETRY: Millis = Millis::mins(60);
+
+/// A start out of a fault that lasts this long has worked, and the budget is whole again.
+pub const RETRY_PROVEN: Millis = Millis::mins(5);
 
 const HOUR: Millis = Millis::mins(60);
 
@@ -25,11 +28,13 @@ pub enum Chip {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FaultCause {
     StartFailed,
     /// The chip refused even the safe baseline.
     BaselineRefused,
+    /// The chip reset itself more often than the budget allows.
+    KeptResetting,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,12 +74,13 @@ impl ChipMachine {
                 self.state = Chip::Off;
                 Some(Action::Hold)
             }
-            (Chip::Off, Event::RadioOn) | (Chip::Ready(_), Event::Reset(_)) | (Chip::Fault { .. }, Event::Retry) => {
+            (Chip::Off, Event::RadioOn) | (Chip::Fault { .. }, Event::Retry) => {
                 self.state = Chip::Starting { since: now };
                 Some(Action::Start)
             }
             (Chip::Fault { retry_at, .. }, Event::Tick) if now >= retry_at => {
                 self.state = Chip::Starting { since: now };
+                self.resets = [Some(now + RETRY_PROVEN - HOUR); RESETS_PER_HOUR];
                 Some(Action::Start)
             }
             (Chip::Starting { .. }, Event::Ready(info)) => {
@@ -83,6 +89,7 @@ impl ChipMachine {
             }
             (Chip::Starting { .. }, Event::StartFailed) => Some(self.escalate(now, FaultCause::StartFailed)),
             (Chip::Ready(_), Event::BaselineRefused) => Some(self.escalate(now, FaultCause::BaselineRefused)),
+            (Chip::Ready(_), Event::Reset(_)) => Some(self.escalate(now, FaultCause::KeptResetting)),
             _ => None,
         };
         (self, action)
