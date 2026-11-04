@@ -217,6 +217,41 @@ fn peer_reconnecting_since_the_link_was_lost() {
 }
 
 #[test]
+fn peer_rechecking_while_it_waits_to_look_for_the_service_again() {
+    let c = ctx(&HR);
+    let p = Peripheral::default().step(&c, t(0), Event::Want).step(&c, t(100), Event::LinkUp(sensor())).step(&c, t(200), Event::Discovered(false));
+    assert_eq!(peer_token(&hr(p), t(250)), "hr:rechecking");
+    let p = p.step(&c, t(300), Event::LinkDown(sensor(), Status::CONN_TERMINATED_BY_LOCAL_HOST));
+    let state = hr(p);
+    assert_eq!(peer_state(&state, t(2_300)), PeerState::Rechecking { left: Some(Millis::secs(8)) });
+    assert_eq!(peer_token(&state, t(2_300)), "hr:rechecking(8s)");
+    assert_eq!(peer_token(&state, t(2_301)), "hr:rechecking(8s)");
+    let state = hr(run(p, &c, t(300), t(10_400)));
+    assert!(matches!(peer_state(&state, t(10_400)), PeerState::Reconnecting { since: Millis(10_200), .. }), "{:?}", peer_state(&state, t(10_400)));
+}
+
+#[test]
+fn peer_reconnecting_after_a_procedure_failed_on_its_link() {
+    let c = ctx(&HR);
+    let p = Peripheral::default().step(&c, t(0), Event::Want).step(&c, t(100), Event::LinkUp(sensor())).step(&c, t(5_000), Event::ProcedureFailed);
+    assert_eq!(peer_token(&hr(p), t(5_000)), "hr:reconnecting(0s)");
+    let p = p.step(&c, t(5_100), Event::LinkDown(sensor(), Status::CONN_TERMINATED_BY_LOCAL_HOST));
+    assert_eq!(peer_token(&hr(p), t(7_100)), "hr:reconnecting(2s)");
+}
+
+#[test]
+fn peer_reconnecting_from_the_drop_after_an_idle_sensor_set_up_late() {
+    let c = ctx(&CSC);
+    for setback in [Event::Discovered(false), Event::ProcedureFailed, Event::LinkDown(sensor(), Status::REMOTE_USER_TERMINATED_CONN)] {
+        let p = Peripheral::default().step(&c, t(0), Event::Want).step(&c, t(100), Event::LinkUp(sensor())).step(&c, t(200), setback);
+        let p = run(p.step(&c, t(300), Event::LinkDown(sensor(), Status::CONN_TERMINATED_BY_LOCAL_HOST)), &c, t(300), t(10_300));
+        let p = [Event::LinkUp(sensor()), Event::Discovered(true), Event::Subscribed(true)].into_iter().fold(p, |p, e| p.step(&c, t(10_400), e));
+        let p = p.step(&c, t(3_600_000), Event::LinkDown(sensor(), Status::REMOTE_USER_TERMINATED_CONN));
+        assert_eq!(peer_state(&with_peer(ready(t(0)), &CSC, p), t(3_602_000)), PeerState::Reconnecting { since: Millis::secs(2), attempts: p.attempts });
+    }
+}
+
+#[test]
 fn peer_stopped_kept_dropping() {
     let c = ctx(&HR);
     let mut p = live(&c, t(0)).step(&c, t(1_000), bpm(72));
