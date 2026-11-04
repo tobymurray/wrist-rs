@@ -363,13 +363,14 @@ pub enum Event<'a> {
     /// Command Status (7.7.15): a command accepted (0) or refused, results to follow.
     CommandStatus { cmd_opcode: u16, status: u8 },
     /// LE (Enhanced) Connection Complete (7.7.65.1, 7.7.65.10) with success: the handle,
-    /// whether the watch is the central, the peer, and the interval (1.25 ms units) and
-    /// latency when the packet carries them.
-    LeConnectionComplete { handle: u16, central: bool, peer: Address, conn_interval: Option<(u16, u16)> },
+    /// whether the watch is the central, the peer, and the interval (1.25 ms units), latency and
+    /// supervision timeout (10 ms units) when the packet carries them.
+    LeConnectionComplete { handle: u16, central: bool, peer: Address, conn_interval: Option<(u16, u16)>, supervision_timeout: Option<u16> },
     /// LE (Enhanced) Connection Complete with an error: no connection formed.
     LeConnectionFailed { status: u8 },
-    /// LE Connection Update Complete (7.7.65.3) with success: interval (1.25 ms units), latency.
-    LeConnectionUpdateComplete { handle: u16, conn_interval: u16, peripheral_latency: u16 },
+    /// LE Connection Update Complete (7.7.65.3) with success: interval (1.25 ms units), latency,
+    /// supervision timeout (10 ms units).
+    LeConnectionUpdateComplete { handle: u16, conn_interval: u16, peripheral_latency: u16, supervision_timeout: u16 },
     /// LE Connection Update Complete with an error: the link keeps the parameters it had.
     LeConnectionUpdateFailed { handle: u16, status: u8 },
     /// Disconnection Complete (7.7.5): a nonzero status is a disconnection that failed, the
@@ -456,6 +457,7 @@ fn le_meta(params: &[u8]) -> Option<Event<'_>> {
                     handle: e.handle.raw(),
                     conn_interval: e.conn_interval.as_u16(),
                     peripheral_latency: e.peripheral_latency,
+                    supervision_timeout: e.supervision_timeout.as_u16(),
                 }
             } else {
                 // A failure's interval, latency and timeout mean nothing (Core Vol 4 Part E §7.7.65.3).
@@ -481,7 +483,7 @@ fn le_meta(params: &[u8]) -> Option<Event<'_>> {
 }
 
 /// LE (Enhanced) Connection Complete: a failure by its status alone, a success by the fields
-/// both layouts share, and the interval and latency when the whole event decodes.
+/// both layouts share, and the interval, latency and timeout when the whole event decodes.
 fn connection_complete(code: u8, params: &[u8]) -> Option<Event<'_>> {
     use bt_hci::event::le;
     let (status, rest) = Status::from_hci_bytes(params).ok()?;
@@ -494,17 +496,18 @@ fn connection_complete(code: u8, params: &[u8]) -> Option<Event<'_>> {
     let (role, rest) = u8::from_hci_bytes(rest).ok()?;
     let (kind, rest) = AddrKind::from_hci_bytes(rest).ok()?;
     let peer: BdAddr = first(rest)?;
-    let conn_interval = if code == le_subevent::CONNECTION_COMPLETE {
-        first::<le::LeConnectionComplete>(params).map(|e| (e.conn_interval.as_u16(), e.peripheral_latency))
+    let timing = if code == le_subevent::CONNECTION_COMPLETE {
+        first::<le::LeConnectionComplete>(params).map(|e| (e.conn_interval.as_u16(), e.peripheral_latency, e.supervision_timeout.as_u16()))
     } else {
-        first::<le::LeEnhancedConnectionComplete>(params).map(|e| (e.conn_interval.as_u16(), e.peripheral_latency))
+        first::<le::LeEnhancedConnectionComplete>(params).map(|e| (e.conn_interval.as_u16(), e.peripheral_latency, e.supervision_timeout.as_u16()))
     };
     Some(Event::LeConnectionComplete {
         handle: handle.raw(),
         central: role == 0,
         // An Enhanced event says 2 or 3 for an identity it resolved: still public or random.
         peer: Address { kind: kind.as_raw() & 0x01, bytes: peer.into_inner() },
-        conn_interval,
+        conn_interval: timing.map(|(interval, latency, _)| (interval, latency)),
+        supervision_timeout: timing.map(|(.., timeout)| timeout),
     })
 }
 

@@ -49,6 +49,7 @@ mod hand {
                     conn_interval: p
                         .get(at..at + 4)
                         .map(|v| (u16::from_le_bytes([v[0], v[1]]), u16::from_le_bytes([v[2], v[3]]))),
+                    supervision_timeout: p.get(at + 4..at + 6).map(|v| u16::from_le_bytes([v[0], v[1]])),
                 }
             }
             [EVENT, ev::LE_META, _, le::CONNECTION_COMPLETE | le::ENHANCED_CONNECTION_COMPLETE, status @ 0x01..=0xFF, ..] => Event::LeConnectionFailed { status: *status },
@@ -56,6 +57,8 @@ mod hand {
                 handle: u16_at(5),
                 conn_interval: u16_at(7),
                 peripheral_latency: u16_at(9),
+                // A shorter one is malformed, so what stands in here is never compared.
+                supervision_timeout: p.get(11..13).map_or(0, |v| u16::from_le_bytes([v[0], v[1]])),
             },
             [EVENT, ev::LE_META, _, le::CONNECTION_UPDATE_COMPLETE, status @ 0x01..=0xFF, _, _, ..] => {
                 Event::LeConnectionUpdateFailed { handle: u16_at(5), status: *status }
@@ -108,10 +111,16 @@ fn expected(p: &[u8]) -> Event<'_> {
         Event::LeConnectionUpdateComplete { .. } if params.len() < 1 + 9 => Event::Malformed(whole),
         // The interval and latency come only with a whole event, its Role and Central_Clock_Accuracy
         // not reserved (Core Vol 4 Part E §7.7.65.1, §7.7.65.10).
-        Event::LeConnectionComplete { handle, central, peer, conn_interval: Some(interval) } => {
+        Event::LeConnectionComplete { handle, central, peer, conn_interval, supervision_timeout } => {
             let (len, accuracy_at) = if params[0] == 0x01 { (1 + 18, 1 + 17) } else { (1 + 30, 1 + 29) };
             let full = params.len() >= len && params[1 + 3] <= 1 && params[accuracy_at] <= 7;
-            Event::LeConnectionComplete { handle, central, peer, conn_interval: full.then_some(interval) }
+            Event::LeConnectionComplete {
+                handle,
+                central,
+                peer,
+                conn_interval: conn_interval.filter(|_| full),
+                supervision_timeout: supervision_timeout.filter(|_| full),
+            }
         }
         e => e,
     }
@@ -249,8 +258,11 @@ fn where_the_hand_decoder_took_what_the_layout_does_not_allow() {
     let mut reserved_accuracy = connection.clone();
     reserved_accuracy[21] = 0x08;
     for (p, central) in [(shortened(&connection, 17), false), (reserved_role, false), (reserved_accuracy, false)] {
-        assert_eq!(hand::parse(&p), Event::LeConnectionComplete { handle: 0x0801, central, peer, conn_interval: Some((24, 0)) });
-        assert_eq!(parse(&p), Event::LeConnectionComplete { handle: 0x0801, central, peer, conn_interval: None });
+        assert!(matches!(hand::parse(&p), Event::LeConnectionComplete { handle: 0x0801, conn_interval: Some((24, 0)), .. }));
+        assert_eq!(
+            parse(&p),
+            Event::LeConnectionComplete { handle: 0x0801, central, peer, conn_interval: None, supervision_timeout: None }
+        );
     }
     let encryption = hci_event(0x08, &[0x00, 0x01, 0x08, 0x03]);
     assert_eq!(hand::parse(&encryption), Event::EncryptionChange { handle: 0x0801, status: 0, enabled: 3 });
