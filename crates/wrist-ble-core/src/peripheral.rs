@@ -222,6 +222,10 @@ impl Peripheral {
                     self.backoff = 0;
                     self.rediscoveries = 0;
                     self.coverage.begin(now);
+                    // An idle sensor may send nothing, so its loss ends here rather than at a reading.
+                    if ctx.profile.silence == Silence::Idle {
+                        self.lost_since = None;
+                    }
                 } else {
                     self.missing(now, link);
                 }
