@@ -10,6 +10,8 @@
 
 #![no_std]
 
+pub mod probe;
+
 /// The SPI header the host sends to write (`0A`) or read (`0B`); the chip
 /// answers in the same five bytes.
 pub const HEADER_WRITE: [u8; 5] = [0x0A, 0, 0, 0, 0];
@@ -31,8 +33,12 @@ pub mod opcode {
     pub const HCI_SET_EVENT_MASK: u16 = 0x0C01;
     pub const HCI_LE_RAND: u16 = 0x2018;
     pub const ACI_HAL_GET_FW_BUILD_NUMBER: u16 = 0xFC00;
+    pub const ACI_HAL_GET_FIRMWARE_DETAILS: u16 = 0xFC01;
     pub const ACI_HAL_WRITE_CONFIG_DATA: u16 = 0xFC0C;
     pub const ACI_HAL_SET_TX_POWER_LEVEL: u16 = 0xFC0F;
+    pub const ACI_HAL_GET_ANCHOR_PERIOD: u16 = 0xFC19;
+    /// Reads only; the updater's start command reboots the chip into it.
+    pub const ACI_HAL_GET_UPDATER_VERSION: u16 = 0xFC22;
     pub const ACI_GAP_SET_NON_DISCOVERABLE: u16 = 0xFC81;
     pub const ACI_GAP_SET_DISCOVERABLE: u16 = 0xFC83;
     pub const ACI_GAP_SET_IO_CAPABILITY: u16 = 0xFC85;

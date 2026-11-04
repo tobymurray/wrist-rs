@@ -38,6 +38,8 @@
 //! Address. A static random address from the MCU's unique id
 //! (`wrist_aci::static_random_address`), so bonds survive updates.
 
+#[cfg(feature = "ble-probe")]
+mod probe;
 mod scan;
 
 use core::cell::RefCell;
@@ -152,6 +154,8 @@ enum Request {
     IntervalNow(u16, u16),
     /// `ble scan`: seconds, and a duty in place of the power source's.
     Scan(u8, Option<Scan>),
+    #[cfg(feature = "ble-probe")]
+    Probe,
 }
 
 static REQUESTS: Channel<CriticalSectionRawMutex, Request, 4> = Channel::new();
@@ -291,6 +295,8 @@ pub fn command(args: &[u8], uart: Uart) {
         b"bonds" => Request::Bonds,
         b"forget" => Request::Forget,
         b"disconnect" => Request::Disconnect,
+        #[cfg(feature = "ble-probe")]
+        b"probe" => Request::Probe,
         rest if rest.starts_with(b"profile") => {
             let (code, word) = match &rest[7..] {
                 b" auto" => (0, "follows the power source"),
@@ -432,6 +438,8 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
                 | Request::Scan(..) => {
                     uart.write_line("[ble] off; `ble on` starts it");
                 }
+                #[cfg(feature = "ble-probe")]
+                Request::Probe => uart.write_line("[ble] off; `ble on` starts it"),
                 Request::Off => {
                     STATE.store(STATE_OFF, Ordering::Relaxed);
                     crate::rtc::set_radio_wanted(false);
@@ -680,6 +688,8 @@ impl Link<'_> {
                 }
             }
             Request::Scan(seconds, duty) => self.scan_request(seconds, duty).await,
+            #[cfg(feature = "ble-probe")]
+            Request::Probe => self.probe().await,
         }
     }
 
