@@ -49,15 +49,11 @@ impl Checks {
             // Truthful status: between steps the state holds still, so the status may only change
             // class in the last second before the step that follows.
             let first = class(status(&before, at).phone);
-            let mut t = at + SAMPLE;
-            while t < now {
-                if class(status(&before, t).phone) != first {
-                    if now.since(t) > STATUS_WITHIN {
-                        return Err(format!("truthful status: it became {:?} at {t:?} and the core next ran at {now:?}", status(&before, t).phone));
-                    }
-                    break;
+            let samples = now.since(at).0.div_ceil(SAMPLE.0);
+            if let Some(t) = (1..samples).map(|k| at + Millis(k * SAMPLE.0)).find(|&t| class(status(&before, t).phone) != first) {
+                if now.since(t) > STATUS_WITHIN {
+                    return Err(format!("truthful status: it became {:?} at {t:?} and the core next ran at {now:?}", status(&before, t).phone));
                 }
-                t = t + SAMPLE;
             }
         }
         self.before = Some((*state, now));
@@ -125,7 +121,7 @@ impl Checks {
                 last.1 = Some(now);
             }
         }
-        while self.gaps.front().is_some_and(|(_, end)| end.is_some_and(|e| now.since(e) > REACHABLE_WINDOW)) {
+        while self.gaps.front().is_some_and(|(_, end)| end.is_some_and(|e| now.since(e) >= REACHABLE_WINDOW)) {
             self.gaps.pop_front();
         }
         let len = |(s, e): &(Instant, Option<Instant>)| e.unwrap_or(now).since(*s);
