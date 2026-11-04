@@ -497,6 +497,8 @@ pub fn command(cmd: &[u8], flash: &'static FlashMutex) {
             uart.write_line("[usb]   haptic [tap|alarm|stop]: the vibration motor; bare, what the driver reads back");
             #[cfg(feature = "ble")]
             uart.write_line("[usb]   ble scan [s [interval window]]: lists advertisers for s seconds (10 by default), listening for window ms in every interval ms");
+            #[cfg(feature = "ble-probe")]
+            uart.write_line("[usb]   ble probe: the chip's firmware and updater versions, and its anchor period idle, advertising, or beside a link");
         }
         #[cfg(feature = "ble")]
         b"ble" => crate::ble::command(b"", uart),

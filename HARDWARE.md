@@ -284,6 +284,8 @@ the link1 module `BLUENRG2` rev 1.3, from Linux (BlueZ 5.87) unless a row says o
 | ST's general discovery delivers advertising reports, but lets repeats through with duplicate filtering on, and reports an advertiser without a discoverable flag only by its scan responses | `ble scan` in a room of advertisers |
 | While the watch advertises, a scan gets about one window per advertising period: advertising every 995 ms, 6 s scans heard 3 reports at 20 ms every 100 ms, 7 at 30 ms every 50 ms, 20 at 100 ms every 500 ms and 51 at 200 ms every second | `ble scan 6 <interval> <window>` |
 | ST ends a general discovery by itself about 10.2 s after it starts, with `GAP_PROC_COMPLETE` status 0: a scan asked for 30 s reported done at 10.2 s | `ble scan 30` on a cable |
+| The chip runs DTM 3.2.0 (variant 2) around stack 2.1.3 (variant `0x000f`, build 2353), and refuses `ACI_HAL_GET_UPDATER_VERSION` with status `0x01` | `ble probe` |
+| `ACI_HAL_GET_ANCHOR_PERIOD` reads 0 for both the period and the longest free slot with nothing on air, and beside one link as peripheral (a Mac's, 30 ms, latency 0); advertising every 100 ms, it reads a 105 ms period with an 86.875 ms slot free | `ble probe` |
 
 ## Haptics (DRV2625)
 

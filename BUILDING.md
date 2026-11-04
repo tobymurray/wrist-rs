@@ -21,7 +21,8 @@ rustup component add llvm-tools
 
 `cargo build --release --features usb-log` also keeps `embassy-usb`'s own log of the link,
 which the console's `usblog` prints. `--features ble` adds the console and updates over
-Bluetooth ([below](#bluetooth)).
+Bluetooth ([below](#bluetooth)), and `--features ble-probe` adds `ble probe` to those: the
+chip's firmware and updater versions and its anchor period, one `key=value` line each.
 
 The console's `version` prints the image's version, build ID and CRC:
 
