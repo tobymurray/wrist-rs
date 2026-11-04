@@ -174,7 +174,7 @@ unsafe fn take_over_core() {
 
 /// False if the invalidation never finished, leaving the cache off.
 unsafe fn icache_on() -> bool {
-    if !update::invalidate_icache() {
+    if !flash::invalidate_icache() {
         return false;
     }
     modify32(ICACHE_CR, 0, ICACHE_CR_EN);

@@ -169,8 +169,13 @@ pub(super) fn after_op(state: &State, range: (u32, u32)) {
     #[cfg(all(icache, any(flash_v4_l5, flash_v4_u5, flash_v4_u3, flash_v4_wba, flash_v5)))]
     if state.icache {
         let icache = pac::ICACHE;
-        // Wait for the invalidation triggered by the disable to finish.
-        while icache.sr().read().busyf() {}
+        // Wait for the invalidation triggered by the disable to finish. Bounded: until it does,
+        // the cache treats every access as noncacheable (RM0456 8.4.5).
+        for _ in 0..100_000 {
+            if !icache.sr().read().busyf() {
+                break;
+            }
+        }
         icache.fcr().write(|w| w.set_cbsyendf(true));
         icache.cr().modify(|w| w.set_en(true));
     }

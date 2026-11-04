@@ -1,7 +1,7 @@
 //! `flash survey` and `flash ecc-test`, which never write flash, and the NMI's catch for a
 //! double ECC error in the page a read has armed.
 use crate::{
-    mmio::{read32, write32, FLASH_BASE},
+    mmio::{read32, write32, FLASH_BASE, ICACHE_CR, ICACHE_CR_CACHEINV, ICACHE_SR, ICACHE_SR_BUSYF},
     uart::Uart,
 };
 use core::{
@@ -40,10 +40,24 @@ pub fn nmi_caught() -> bool {
     }
     unsafe { write32(FLASH_BASE + offset::ECCR, eccr_clearing_double(eccr)) };
     // RM0456 7.3.2: the NMI "must clean the cache".
-    crate::update::invalidate_icache();
+    invalidate_icache();
     LAST_CAUGHT.store(eccr, Relaxed);
     CAUGHT.fetch_add(1, Relaxed);
     true
+}
+
+/// The instruction cache serves data reads of flash too (RM0456 8.7.1); embassy-stm32's
+/// flash driver empties it around its own writes. False if the invalidation never finished.
+pub fn invalidate_icache() -> bool {
+    unsafe {
+        write32(ICACHE_CR, read32(ICACHE_CR) | ICACHE_CR_CACHEINV);
+        for _ in 0..100_000 {
+            if read32(ICACHE_SR) & ICACHE_SR_BUSYF == 0 {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn fence() {
@@ -65,13 +79,13 @@ fn ecc_test(uart: Uart) {
         return;
     }
     clear_ecc();
-    crate::update::invalidate_icache();
+    invalidate_icache();
     let _ = unsafe { read_volatile(TEST_WORD_CORRECTED as *const u32) };
     fence();
     let corrected = eccr();
     write_eccr(uart, "[flash] ecc-test 1-bit word: eccr ", corrected);
     clear_ecc();
-    crate::update::invalidate_icache();
+    invalidate_icache();
 
     let before = CAUGHT.load(Relaxed);
     ARMED.store(arm(Area::System, (TEST_WORD_DOUBLE - SYSTEM_FLASH_BASE) / PAGE_SIZE_U32), Relaxed);
@@ -271,7 +285,7 @@ pub async fn survey(uart: Uart) {
     }
 
     // A cached line would not be read from flash again, nor raise its error again.
-    crate::update::invalidate_icache();
+    invalidate_icache();
     let caught_before = CAUGHT.load(Relaxed);
     let first = u16::from(FIRST_KERNEL_PAGE);
     let (mut bank1, mut bank2) = (Map::default(), Map::default());

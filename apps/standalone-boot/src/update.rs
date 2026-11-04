@@ -21,8 +21,7 @@ use embassy_usb::class::cdc_acm::device::Receiver;
 
 use crate::console::Usb;
 use crate::mmio::{
-    modify32, read32, write32, ICACHE_CR, ICACHE_CR_CACHEINV, ICACHE_SR, ICACHE_SR_BUSYF, PWR_CR2,
-    PWR_CR2_SRAM3_1_TO_8,
+    modify32, PWR_CR2, PWR_CR2_SRAM3_1_TO_8,
 };
 use crate::uart::Uart;
 use crate::watchdog;
@@ -37,7 +36,6 @@ pub fn init(flash: Peri<'static, FLASH>) -> &'static FlashMutex {
 }
 
 pub fn state_name(flash: &'static FlashMutex) -> &'static str {
-    invalidate_icache();
     let mut aligned = AlignedBuffer([0; WRITE_SIZE]);
     let config = FirmwareUpdaterConfig::from_linkerfile_blocking(flash, flash);
     let mut state = BlockingFirmwareState::from_config(config, &mut aligned.0);
@@ -52,7 +50,6 @@ pub fn state_name(flash: &'static FlashMutex) -> &'static str {
 
 /// Swapped in by an update and not yet marked booted.
 pub fn just_updated(flash: &'static FlashMutex) -> bool {
-    invalidate_icache();
     let mut aligned = AlignedBuffer([0; WRITE_SIZE]);
     let config = FirmwareUpdaterConfig::from_linkerfile_blocking(flash, flash);
     let mut state = BlockingFirmwareState::from_config(config, &mut aligned.0);
@@ -66,20 +63,6 @@ pub fn mark_booted(flash: &'static FlashMutex) -> Result<&'static str, ()> {
     let config = FirmwareUpdaterConfig::from_linkerfile_blocking(flash, flash);
     let mut state = BlockingFirmwareState::from_config(config, &mut aligned.0);
     state.mark_booted().map(|()| was).map_err(|_| ())
-}
-
-/// Before any read of flash this image may have written, which the instruction cache would
-/// otherwise serve stale (RM0456 8.7.1); false if the invalidation never finished.
-pub fn invalidate_icache() -> bool {
-    unsafe {
-        write32(ICACHE_CR, read32(ICACHE_CR) | ICACHE_CR_CACHEINV);
-        for _ in 0..100_000 {
-            if read32(ICACHE_SR) & ICACHE_SR_BUSYF == 0 {
-                return true;
-            }
-        }
-    }
-    false
 }
 
 /// The whole image arrives here before flash is touched, so receiving and flashing never overlap:
@@ -260,7 +243,6 @@ fn release() {
 }
 
 pub fn app_update_allowed(flash: &'static FlashMutex) -> Result<(), &'static str> {
-    invalidate_icache();
     let mut aligned = AlignedBuffer([0; WRITE_SIZE]);
     let config = FirmwareUpdaterConfig::from_linkerfile_blocking(flash, flash);
     let mut updater = BlockingFirmwareUpdater::new(config, &mut aligned.0);
@@ -367,7 +349,6 @@ fn write_loader(flash: &'static FlashMutex, image: &[u8], crc: u32) -> Result<()
                 .map_err(|_| "loader write failed")?;
             offset += u32::try_from(piece.len()).unwrap_or(0);
         }
-        invalidate_icache();
         let mut hasher: u32 = 0xFFFF_FFFF;
         let mut done = 0usize;
         while done < image.len() {
@@ -392,7 +373,6 @@ fn write_loader(flash: &'static FlashMutex, image: &[u8], crc: u32) -> Result<()
 
 fn write_and_mark(flash: &'static FlashMutex, image: &[u8], crc: u32) -> Result<(), &'static str> {
     const CHUNK: usize = 2048;
-    invalidate_icache();
     let mut aligned = AlignedBuffer([0; WRITE_SIZE]);
     let config = FirmwareUpdaterConfig::from_linkerfile_blocking(flash, flash);
     let mut updater = BlockingFirmwareUpdater::new(config, &mut aligned.0);
@@ -410,7 +390,6 @@ fn write_and_mark(flash: &'static FlashMutex, image: &[u8], crc: u32) -> Result<
             .map_err(|_| "DFU write failed")?;
         offset += piece.len();
     }
-    invalidate_icache();
     let mut hasher: u32 = 0xFFFF_FFFF;
     let mut done = 0usize;
     while done < image.len() {
