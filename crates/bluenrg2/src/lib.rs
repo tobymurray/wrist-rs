@@ -5,8 +5,7 @@
 //! code), over SPI with a five-byte header each way. This crate holds the
 //! numbers (from ST's public BlueNRG-1/2 ACI documentation), builds command
 //! packets, measures packets in a read, and decodes every packet into an
-//! event ([`parse`], then the vendor payload decoders). The image's
-//! `ble` module does the transfers and keeps the link's state around it.
+//! event ([`parse`], then the vendor payload decoders).
 
 #![no_std]
 

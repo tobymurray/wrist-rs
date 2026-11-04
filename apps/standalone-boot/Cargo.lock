@@ -81,6 +81,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "bluenrg2"
+version = "0.0.0"
+
+[[package]]
 name = "byteorder"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -860,6 +864,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 name = "standalone-boot"
 version = "0.4.0"
 dependencies = [
+ "bluenrg2",
  "cortex-m",
  "cortex-m-rt",
  "critical-section",
@@ -872,7 +877,6 @@ dependencies = [
  "embassy-usb",
  "log",
  "static_cell",
- "wrist-aci",
  "wrist-board",
  "wrist-crash",
  "wrist-eeprom",
@@ -1094,10 +1098,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wrist-aci"
-version = "0.0.0"
-
-[[package]]
 name = "wrist-board"
 version = "0.0.0"
 
@@ -1158,7 +1158,7 @@ version = "0.0.0"
 name = "wrist-wake"
 version = "0.0.0"
 dependencies = [
- "wrist-aci",
+ "bluenrg2",
 ]
 
 [[package]]

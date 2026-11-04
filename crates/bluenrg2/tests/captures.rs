@@ -2,7 +2,7 @@
 
 use std::fmt::Write;
 
-use wrist_aci::{parse, Event};
+use bluenrg2::{parse, Event};
 
 fn packets() -> Vec<Vec<u8>> {
     decode(include_str!("captures/bluez-reconnect.hex"))

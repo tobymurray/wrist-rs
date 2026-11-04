@@ -1,8 +1,8 @@
 //! `ble probe`'s replies, as Command Complete packets, decoded and printed.
 
-use wrist_aci::opcode::{ACI_HAL_GET_ANCHOR_PERIOD, ACI_HAL_GET_FIRMWARE_DETAILS, ACI_HAL_GET_UPDATER_VERSION};
-use wrist_aci::probe::{updater_version, AnchorPeriod, Beside, FirmwareDetails, Line, Probe};
-use wrist_aci::{command, parse, Event};
+use bluenrg2::opcode::{ACI_HAL_GET_ANCHOR_PERIOD, ACI_HAL_GET_FIRMWARE_DETAILS, ACI_HAL_GET_UPDATER_VERSION};
+use bluenrg2::probe::{updater_version, AnchorPeriod, Beside, FirmwareDetails, Line, Probe};
+use bluenrg2::{command, parse, Event};
 
 /// `04 0E len 01 opcode status params`.
 fn command_complete(opcode: u16, status: u8, params: &[u8]) -> Vec<u8> {

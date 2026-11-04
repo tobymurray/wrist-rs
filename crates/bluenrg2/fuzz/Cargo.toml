@@ -1,19 +1,19 @@
 [package]
-name = "wrist-aci-fuzz"
+name = "bluenrg2-fuzz"
 version = "0.0.0"
 edition = "2021"
-license = "AGPL-3.0-or-later"
+license = "MIT OR Apache-2.0"
 publish = false
 
 [package.metadata]
 cargo-fuzz = true
 
-# Not a member of the repository's workspace: `cargo fuzz run decode` from crates/wrist-aci.
+# Not a member of the repository's workspace: `cargo fuzz run decode` from crates/bluenrg2.
 [workspace]
 
 [dependencies]
 libfuzzer-sys = "0.4"
-wrist-aci = { path = ".." }
+bluenrg2 = { path = ".." }
 
 [[bin]]
 name = "decode"

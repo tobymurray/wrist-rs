@@ -1,7 +1,7 @@
 //! Packets as the BlueNRG-2 sends them, in the shapes installs 40 to 51 met:
 //! the 217-byte console write, two events in one read, a read cut short.
 
-use wrist_aci::{
+use bluenrg2::{
     ad_name, ad_uuid128s, ad_uuid16s, att_mtu, characteristics, command, descriptors, gap_proc_complete, gatt_error,
     header_sizes, notification, numeric_comparison, packet_len, packet_whole, pairing_complete, parse, read_value,
     reports, service_range, services, vendor, Address, AttributeModified, Characteristic, Event, L2capUpdateRequest,
@@ -381,7 +381,7 @@ fn the_mtu_exchange_decodes() {
 
 #[test]
 fn pairing_is_secure_connections_only_with_mitm_and_16_byte_keys() {
-    let p = wrist_aci::PAIRING.params();
+    let p = bluenrg2::PAIRING.params();
     // Bonding, MITM, SC only, no keypress, key 16 to 16, no fixed pin (the host is asked), pin 0,
     // static random identity.
     assert_eq!(p, [0x01, 0x01, 0x02, 0x00, 0x10, 0x10, 0x01, 0, 0, 0, 0, 0x01]);
@@ -389,13 +389,13 @@ fn pairing_is_secure_connections_only_with_mitm_and_16_byte_keys() {
 
 #[test]
 fn a_fixed_pin_goes_little_endian_after_its_flag() {
-    let r = wrist_aci::AuthenticationRequirement { fixed_pin: Some(123_456), ..wrist_aci::PAIRING };
+    let r = bluenrg2::AuthenticationRequirement { fixed_pin: Some(123_456), ..bluenrg2::PAIRING };
     assert_eq!(r.params()[6..11], [0x00, 0x40, 0xE2, 0x01, 0x00]);
 }
 
 #[test]
 fn the_address_is_static_random_and_never_changes() {
-    use wrist_aci::{static_random, static_random_address};
+    use bluenrg2::{static_random, static_random_address};
     // Pinned: a different address would orphan every bond.
     let uid = [0x0034_0021, 0x3133_5111, 0x3039_3533];
     assert_eq!(static_random_address(uid), static_random_address(uid));
@@ -415,7 +415,7 @@ fn neighbouring_dies_get_different_addresses() {
     let mut seen = std::collections::HashSet::new();
     for x in 0..64u32 {
         for y in 0..64u32 {
-            assert!(seen.insert(wrist_aci::static_random_address([(x << 16) | y, 0x3133_5111, 0x3039_3533])));
+            assert!(seen.insert(bluenrg2::static_random_address([(x << 16) | y, 0x3133_5111, 0x3039_3533])));
         }
     }
 }
