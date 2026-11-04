@@ -288,6 +288,7 @@ fn cause(c: FaultCause) -> &'static str {
     match c {
         FaultCause::StartFailed => "start-failed",
         FaultCause::BaselineRefused => "baseline-refused",
+        FaultCause::KeptResetting => "kept-resetting",
     }
 }
 
