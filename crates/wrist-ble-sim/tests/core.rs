@@ -219,3 +219,119 @@ fn events_lost_while_the_chip_starts_reset_it_at_once() {
     let out = core.step(Instant(100), Input::Radio(RadioEvent::EventsLost));
     assert_eq!(out.chip, Some(wrist_ble_core::chip::Action::Start));
 }
+
+fn done(id: u16) -> Input {
+    Input::Radio(RadioEvent::Done(OpId(id), Ok(wrist_ble::Outcome::Done)))
+}
+
+/// A core advertising on battery, then asked to advertise at the cable interval, that op accepted as `OpId(2)`.
+fn retiming_advertising() -> Core<'static> {
+    let mut core = Core::new(&CAPABILITIES, &Scheduler, &MENU);
+    core.step(Instant(0), Input::Goals(Goals { radio_on: true, ..Goals::OFF }));
+    core.step(Instant(0), Input::Started(Ok(INFO)));
+    core.step(Instant(0), Input::Submitted(Ok(OpId(1))));
+    core.step(Instant(1), done(1));
+    let out = core.step(Instant(1_000), Input::Goals(Goals { radio_on: true, power: Power::Cable, ..Goals::OFF }));
+    assert!(matches!(out.op, Some(Op::Advertise(Some(_)))), "{out:?}");
+    core.step(Instant(1_000), Input::Submitted(Ok(OpId(2))));
+    core
+}
+
+fn snapshot_with(link: ConnHandle) -> wrist_ble::Snapshot {
+    let mut links = [None; wrist_ble::MAX_LINKS];
+    links[0] = Some(wrist_ble::LinkStatus { link, role: LeConnRole::Peripheral, peer: phone_addr() });
+    wrist_ble::Snapshot { at: Instant(0), links, advertising: false, scanning: false, initiating: false, anchor: None }
+}
+
+#[test]
+fn advertising_done_after_the_phone_connects_stays_ended() {
+    let mut core = retiming_advertising();
+    let link = ConnHandle::new(0x801);
+    core.step(Instant(1_001), Input::Radio(RadioEvent::LinkUp { link, role: LeConnRole::Peripheral, peer: phone_addr(), params: PHONE }));
+    core.step(Instant(1_001), done(2));
+    assert_eq!(core.state.radio.advertising, None);
+}
+
+#[test]
+fn advertising_done_after_a_resync_finds_the_phone_stays_ended() {
+    let mut core = retiming_advertising();
+    core.step(Instant(1_001), Input::Radio(RadioEvent::EventsLost));
+    core.step(Instant(1_002), Input::Snapshot(Ok(snapshot_with(ConnHandle::new(0x801)))));
+    core.step(Instant(1_003), done(2));
+    assert_eq!(core.state.radio.advertising, None);
+}
+
+#[test]
+fn a_phone_link_found_by_resync_is_asked_for_its_parameters() {
+    let mut h = Harness::new(Goals { radio_on: true, ..Goals::OFF });
+    let old = ConnHandle::new(0x801);
+    phone_up(&mut h, 0, old);
+    h.at(1_500, Input::Tick);
+    assert!(matches!(h.ops.last(), Some(Op::UpdateParams(l, _)) if *l == old), "{:?}", h.ops);
+    let fits = LinkParams { interval: Duration::from_u16(120), latency: 4, timeout: Duration::from_u16(600) };
+    h.at(1_600, Input::Radio(RadioEvent::Params { link: old, result: Ok(fits) }));
+    let new = ConnHandle::new(0x802);
+    h.at(10_000, Input::Radio(RadioEvent::EventsLost));
+    h.at(10_000, Input::Snapshot(Ok(snapshot_with(new))));
+    while h.now < Instant(12_000) {
+        let next = h.next().unwrap();
+        h.at(next.0, Input::Tick);
+    }
+    assert!(h.ops.iter().any(|op| matches!(op, Op::UpdateParams(l, _) if *l == new)), "{:?}", h.ops);
+}
+
+#[test]
+fn a_refusal_the_plan_cannot_avoid_sends_the_chip_to_its_baseline() {
+    let mut core = Core::new(&CAPABILITIES, &Scheduler, &MENU);
+    core.step(Instant(0), Input::Goals(Goals { radio_on: true, ..Goals::OFF }));
+    core.step(Instant(0), Input::Started(Ok(INFO)));
+    core.step(Instant(0), Input::Submitted(Ok(OpId(1))));
+    core.step(Instant(1), done(1));
+    let hidden = Goals { radio_on: true, phone: wrist_ble_core::goals::PhoneGoal { discoverable: false, pairing_open: false }, ..Goals::OFF };
+    let out = core.step(Instant(1_000), Input::Goals(hidden));
+    assert_eq!(out.op, Some(Op::Advertise(None)));
+    let refused = wrist_ble::Failure { kind: wrist_ble::FailureKind::ModeExclusion, native: 0x0C };
+    let out = core.step(Instant(1_000), Input::Submitted(Err(refused)));
+    assert_eq!(out.op, Some(Op::Advertise(None)));
+    let out = core.step(Instant(1_000), Input::Submitted(Err(refused)));
+    assert_eq!((out.op, out.chip), (None, Some(wrist_ble_core::chip::Action::Start)));
+}
+
+#[test]
+fn a_refusal_the_retry_gets_past_is_not_held_against_a_later_one() {
+    let mut core = Core::new(&CAPABILITIES, &Scheduler, &MENU);
+    let shown = Goals { radio_on: true, ..Goals::OFF };
+    let hidden = Goals { radio_on: true, phone: wrist_ble_core::goals::PhoneGoal { discoverable: false, pairing_open: false }, ..Goals::OFF };
+    let refused = wrist_ble::Failure { kind: wrist_ble::FailureKind::ModeExclusion, native: 0x0C };
+    core.step(Instant(0), Input::Goals(shown));
+    core.step(Instant(0), Input::Started(Ok(INFO)));
+    core.step(Instant(0), Input::Submitted(Ok(OpId(1))));
+    core.step(Instant(1), done(1));
+    core.step(Instant(1_000), Input::Goals(hidden));
+    core.step(Instant(1_000), Input::Submitted(Err(refused)));
+    core.step(Instant(1_000), Input::Submitted(Ok(OpId(2))));
+    core.step(Instant(1_001), done(2));
+    core.step(Instant(3_600_000), Input::Goals(shown));
+    core.step(Instant(3_600_000), Input::Submitted(Ok(OpId(3))));
+    core.step(Instant(3_600_001), done(3));
+    let out = core.step(Instant(7_200_000), Input::Goals(hidden));
+    assert_eq!(out.op, Some(Op::Advertise(None)));
+    let out = core.step(Instant(7_200_000), Input::Submitted(Err(refused)));
+    assert_eq!((out.op, out.chip), (Some(Op::Advertise(None)), None));
+}
+
+#[test]
+fn a_refusal_before_the_chip_resets_is_forgotten_with_it() {
+    let mut core = Core::new(&CAPABILITIES, &Scheduler, &MENU);
+    let refused = wrist_ble::Failure { kind: wrist_ble::FailureKind::ModeExclusion, native: 0x0C };
+    let busy = wrist_ble::Failure { kind: wrist_ble::FailureKind::Busy, native: 0x0C };
+    core.step(Instant(0), Input::Goals(Goals { radio_on: true, power: Power::Cable, ..Goals::OFF }));
+    let first = core.step(Instant(0), Input::Started(Ok(INFO))).op;
+    let second = core.step(Instant(0), Input::Submitted(Err(refused))).op;
+    assert_ne!(first, second);
+    core.step(Instant(0), Input::Submitted(Err(busy)));
+    core.step(Instant(5), Input::Radio(RadioEvent::ChipReset(wrist_ble::ResetCause::Watchdog)));
+    assert_eq!(core.step(Instant(10), Input::Started(Ok(INFO))).op, first);
+    let out = core.step(Instant(10), Input::Submitted(Err(refused)));
+    assert_eq!((out.op, out.chip), (second, None));
+}

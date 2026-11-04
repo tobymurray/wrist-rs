@@ -10,7 +10,7 @@ use crate::goals::{Goals, Power, MAX_PERIPHERALS};
 use crate::invariants::REACHABLE_GAP;
 use crate::peripheral::{self, Ctx, Peripheral, Stage, StopReason, Then};
 use crate::phone::{self, Phone, Security, ASK_TO_PAIR_AFTER};
-use crate::plan::{fingerprint, Menu, MenuPlanner, Pending, PlanHealth, PlanInput, Planner, Refused, Target, Verdict};
+use crate::plan::{fingerprint, Fingerprint, Menu, MenuPlanner, Pending, PlanHealth, PlanInput, Planner, Refused, Target, Verdict};
 use crate::{Peer, State};
 
 #[derive(Clone, Copy, Debug)]
@@ -104,6 +104,7 @@ pub struct Core<'a> {
     schedule: &'a dyn Schedule,
     menu: &'a Menu,
     refused: Refused,
+    last_refused: Option<Fingerprint>,
     target: Target,
     /// Asked for, and not yet answered by [`Input::Submitted`].
     asked: Option<Op>,
@@ -130,6 +131,7 @@ impl<'a> Core<'a> {
             schedule,
             menu,
             refused: Refused::EMPTY,
+            last_refused: None,
             target: Target { activities: Activities::IDLE, phone: Verdict::NotWanted, peripherals: [Verdict::NotWanted; MAX_PERIPHERALS] },
             asked: None,
             pending: None,
@@ -263,6 +265,7 @@ impl<'a> Core<'a> {
         self.state.radio = Activities::IDLE;
         self.state.silent_since = now;
         self.refused.clear();
+        self.last_refused = None;
         self.asked = None;
         self.pending = None;
         self.queue = [None; QUEUE];
@@ -300,6 +303,8 @@ impl<'a> Core<'a> {
             RadioEvent::Done(id, r) => self.done(now, id, r),
             RadioEvent::LinkUp { link, role: LeConnRole::Peripheral, params, .. } => {
                 if self.state.phone.link().is_none() {
+                    // A link ends advertising, whatever an advertising op still in flight reports.
+                    self.end_pending(|op| op.kind() == OpKind::Advertise);
                     self.phone(now, phone::Event::LinkUp(link), out);
                     self.phone_params = Some(params);
                     self.phone_asked = None;
@@ -417,6 +422,7 @@ impl<'a> Core<'a> {
         let Some(op) = self.asked.take() else { return };
         match r {
             Ok(id) => {
+                self.last_refused = None;
                 let deadline = now + (self.caps.op_deadline)(op.kind());
                 self.pending = Some(Pending { id, op, deadline });
             }
@@ -427,7 +433,9 @@ impl<'a> Core<'a> {
                     (FailureKind::Schedule(_) | FailureKind::ModeExclusion, Some(change)) => {
                         self.counters.divergences += 1;
                         out.tell(Tell::Divergence { kind: op.kind(), native: f.native });
-                        if !self.refused.insert(fingerprint(&self.state.radio, &change)) {
+                        // Refused twice running: the plan cannot avoid it.
+                        let key = fingerprint(&self.state.radio, &change);
+                        if self.last_refused.replace(key) == Some(key) || !self.refused.insert(key) {
                             self.chip(now, chip::Event::BaselineRefused, out);
                         }
                     }
@@ -450,11 +458,14 @@ impl<'a> Core<'a> {
         let phone = s.links.iter().flatten().find(|l| l.role == LeConnRole::Peripheral).map(|l| l.link);
         if phone != self.state.phone.link() {
             mismatch = true;
+            self.phone_params = None;
+            self.phone_asked = None;
             if let Some(l) = self.state.phone.link() {
                 self.state.phone = self.state.phone.step(now, phone::Event::LinkDown(l)).0;
                 self.state.silent_since = now;
             }
             if let Some(l) = phone {
+                self.end_pending(|op| op.kind() == OpKind::Advertise);
                 self.state.phone = self.state.phone.step(now, phone::Event::LinkUp(l)).0;
             }
         }
