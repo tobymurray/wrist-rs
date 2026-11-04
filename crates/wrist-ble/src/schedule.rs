@@ -65,6 +65,7 @@ pub struct GattLimits {
 pub enum Exclusion {
     NoAdvertiseWhileInitiating,
     NoScanWhileInitiating,
+    NoInitiateWhileInitiating,
 }
 
 /// A pure model of the chip's scheduler, shared by the planner, the fake chip and the probe
@@ -119,7 +120,7 @@ pub struct Admitted {
     pub slot: Option<CentralSlot>,
     /// The other central links' latency is multiplied by this when a shorter interval divides
     /// the anchor period (PM0257 §4.2.2); 1 otherwise.
-    pub latency_scale: u8,
+    pub latency_scale: u16,
 }
 
 impl Admitted {
@@ -157,7 +158,7 @@ impl Activities {
         let scale = |next: &mut Self, except: Option<usize>| {
             for (i, slot) in next.central.iter_mut().enumerate() {
                 if let Some(s) = slot.as_mut().filter(|_| Some(i) != except) {
-                    s.latency = s.latency.saturating_mul(u16::from(admitted.latency_scale));
+                    s.latency = s.latency.saturating_mul(admitted.latency_scale);
                 }
             }
         };

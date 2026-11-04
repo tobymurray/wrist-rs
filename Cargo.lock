@@ -1202,6 +1202,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "wrist-bluenrg2"
+version = "0.0.0"
+dependencies = [
+ "wrist-ble",
+]
+
+[[package]]
 name = "wrist-board"
 version = "0.0.0"
 
