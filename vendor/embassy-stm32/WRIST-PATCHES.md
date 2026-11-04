@@ -31,6 +31,9 @@ revision. Remove this copy once upstream has all of these, or equivalents:
   flags it read. It also cleared the enable mask, and `UEIE` and `UECF` are the same bit,
   so an overflow arriving during the handler was cleared unseen: a counter period lost for
   good, and time 2 s behind.
+- **Backup SRAM clock (U5).** `BKPSRAMEN` is set by `BackupMemory::new`, not by every
+  `LsConfig::init`, which runs at each Stop exit too, so an image that does not use the
+  backup SRAM can leave its clock off.
 - **Time driver counters.** `low_power::time_driver_stats::snapshot()` returns the `DIER`
   and compare waits, the compare writes skipped, Stop entries with a write unacknowledged,
   the waits that timed out, with the registers at the last, and the last late alarms.

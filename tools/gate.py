@@ -83,11 +83,12 @@ def park_checks(report, bits=None):
     bits = mmio_bits() if bits is None else bits
     want = lambda prefix: sum(v for k, v in bits.items() if k.startswith(prefix))
     has = lambda name, mask: (v := register(report, name)) is not None and v & mask == mask
-    ahb2 = register(report, 'RCC_AHB2ENR1')
+    clear = lambda name, bit: (v := register(report, name)) is not None and not v & bits[f'{name}_{bit}']
     return [(has('PWR_CR2', want('PWR_CR2_')), 'PWR_CR2 holds mmio.rs\'s SRAM bits'),
             (has('PWR_CR4', want('PWR_CR4_')), 'PWR_CR4 holds mmio.rs\'s SRAM bits'),
             (has('ICACHE_CR', bits['ICACHE_CR_EN']), 'ICACHE_CR_EN set'),
-            (ahb2 is not None and not ahb2 & bits['RCC_AHB2ENR1_SDMMC1EN'], 'RCC_AHB2ENR1_SDMMC1EN clear')]
+            (clear('RCC_AHB1ENR', 'BKPSRAMEN'), 'RCC_AHB1ENR_BKPSRAMEN clear'),
+            (clear('RCC_AHB2ENR1', 'SDMMC1EN'), 'RCC_AHB2ENR1_SDMMC1EN clear')]
 
 
 def check_install_log(text, crc, size, pages=None):

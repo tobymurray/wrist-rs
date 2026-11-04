@@ -632,6 +632,7 @@ At boot ([`apps/standalone-boot/src/park.rs`](apps/standalone-boot/src/park.rs))
 - **The unused lines.** The slots' buses and interrupts, `BUZZER_PWM`, the touch lines, and
   the gauge's and USB switch's open-drain alerts: with the eMMC's six, 35 pins set
   to analog, no pull. I2C4's pair follows once the boot's module checks are done.
+- **The backup SRAM's clock** (`BKPSRAMEN`), on at handover; the image keeps nothing there.
 - **RTC alarm A**, disarmed in case an earlier image armed it; the alarm's task arms it again
   once the executor runs.
 - **SRAM the image does not use**, powered down in the Stop modes through `PWR_CR2` and

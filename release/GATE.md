@@ -65,8 +65,8 @@ The watch runs an earlier wrist-rs.
    alarm A off, unused SRAM off in Stop with the SRAM bits of
    [`apps/standalone-boot/src/mmio.rs`](../apps/standalone-boot/src/mmio.rs) set in `PWR_CR2` and `PWR_CR4`, the IMU and
    compass reset to suspend, and `HAPTIC_RST_N (PF2) low, output`: the vibration motor's
-   driver in reset. Under `-- clocks on --`: `ICACHE_CR_EN` set and
-   `RCC_AHB2ENR1_SDMMC1EN` clear (`mmio.rs`).
+   driver in reset. Under `-- clocks on --`: `ICACHE_CR_EN` set, and
+   `RCC_AHB1ENR_BKPSRAMEN` and `RCC_AHB2ENR1_SDMMC1EN` clear (`mmio.rs`).
 7. `cmd modules`: each of `view`, `link1` and `link2` reads `expected`. `cmd "page lag 10"`, wait ten seconds, then
    `cmd page`: the longest time a task kept the executor is a few milliseconds at most.
    `cmd "page bus"`: the bus keeps the data window, and `failed 0`.

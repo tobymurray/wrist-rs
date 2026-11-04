@@ -622,10 +622,12 @@ class GateScript(unittest.TestCase):
         bits = gate.mmio_bits()
         self.assertEqual(bits['RCC_AHB2ENR1_SDMMC1EN'], 1 << 27)
         report = ('PWR_CR2 = 0x00FF1670\nPWR_CR4 = 0x0FFF7DFF\nICACHE_CR   = 0x00000005\n'
-                  'RCC_AHB2ENR1= 0xC000C3FF\n')
+                  'RCC_AHB1ENR = 0xC0201101\nRCC_AHB2ENR1= 0xC000C3FF\n')
         self.assertTrue(all(ok for ok, _ in gate.park_checks(report)))
         self.assertEqual([w for ok, w in gate.park_checks(report.replace('C000C3FF', 'C800C3FF')) if not ok],
                          ['RCC_AHB2ENR1_SDMMC1EN clear'])
+        self.assertEqual([w for ok, w in gate.park_checks(report.replace('C0201101', 'D0201101')) if not ok],
+                         ['RCC_AHB1ENR_BKPSRAMEN clear'])
         self.assertEqual([w for ok, w in gate.park_checks(report.replace('00FF1670', '00FF1600')) if not ok],
                          ["PWR_CR2 holds mmio.rs's SRAM bits"])
 
