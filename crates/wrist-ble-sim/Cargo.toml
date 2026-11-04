@@ -11,5 +11,8 @@ wrist-bluenrg2 = { path = "../wrist-bluenrg2" }
 wrist-ble = { path = "../wrist-ble" }
 wrist-ble-core = { path = "../wrist-ble-core" }
 
+[dev-dependencies]
+proptest = { version = "1.11.0", default-features = false, features = ["std"] }
+
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }

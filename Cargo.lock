@@ -1206,6 +1206,7 @@ dependencies = [
 name = "wrist-ble-sim"
 version = "0.0.0"
 dependencies = [
+ "proptest",
  "wrist-ble",
  "wrist-ble-core",
  "wrist-bluenrg2",
