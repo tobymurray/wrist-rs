@@ -84,7 +84,7 @@ fn phone_unsecured_after_five_seconds() {
 #[test]
 fn phone_discoverable_with_the_interval() {
     let mut state = ready(t(0));
-    state.advertising = Some(ADV_995);
+    state.radio.advertising = Some(ADV_995);
     assert_eq!(status(&state, t(60_000)).phone, PhoneStatus::Discoverable { interval_ms: Some(995) });
     assert_eq!(phone_token(&state, t(60_000)), "discoverable(995ms)");
 }

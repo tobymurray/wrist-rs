@@ -123,7 +123,7 @@ fn phone_status(state: &State, now: Instant) -> PhoneStatus {
                 Security::Unsecured if now.since(l.since) > ASK_TO_PAIR_AFTER => PhoneStatus::Unsecured { since: now.since(l.since) },
                 Security::Unsecured => PhoneStatus::Securing,
             },
-            Phone::Off | Phone::Discoverable => match state.advertising {
+            Phone::Off | Phone::Discoverable => match state.radio.advertising {
                 Some(a) if a.connectable => PhoneStatus::Discoverable { interval_ms: Some(a.interval_min.as_millis()) },
                 _ if now.since(state.silent_since) <= REACHABLE_GAP => PhoneStatus::Discoverable { interval_ms: None },
                 _ => PhoneStatus::Unreachable {
