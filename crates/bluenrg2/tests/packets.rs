@@ -159,20 +159,20 @@ fn enhanced_connection_complete() -> Vec<u8> {
 }
 
 #[test]
-fn connection_complete_gives_handle_role_peer_interval_and_latency() {
+fn connection_complete_gives_handle_role_peer_interval_latency_and_timeout() {
     let p = connection_complete();
     assert_eq!(p.len(), 3 + 19);
     let peer = Address { kind: 0, bytes: [0x11, 0x22, 0x33, 0x44, 0x55, 0x66] };
     assert_eq!(
         parse(&p),
-        Event::LeConnectionComplete { handle: 0x0801, central: false, peer, conn_interval: Some((24, 0)) }
+        Event::LeConnectionComplete { handle: 0x0801, central: false, peer, conn_interval: Some((24, 0)), supervision_timeout: Some(500) }
     );
     let mut e = enhanced_connection_complete();
     assert_eq!(e.len(), 3 + 31);
     let peer = Address { kind: 0, bytes: [0x11; 6] };
     assert_eq!(
         parse(&e),
-        Event::LeConnectionComplete { handle: 0x0801, central: false, peer, conn_interval: Some((39, 0)) }
+        Event::LeConnectionComplete { handle: 0x0801, central: false, peer, conn_interval: Some((39, 0)), supervision_timeout: Some(500) }
     );
     // The watch as the central (role 0), to a random address resolved (type 3).
     e[7] = 0x00;
@@ -208,7 +208,7 @@ fn connection_update_complete_succeeds_or_fails_with_its_handle() {
     let p = le_event(0x03, &[0x00, 0x01, 0x08, 12, 0, 0, 0, 0xF4, 0x01]);
     assert_eq!(
         parse(&p),
-        Event::LeConnectionUpdateComplete { handle: 0x0801, conn_interval: 12, peripheral_latency: 0 }
+        Event::LeConnectionUpdateComplete { handle: 0x0801, conn_interval: 12, peripheral_latency: 0, supervision_timeout: 500 }
     );
     // Unacceptable Connection Parameters, Unsupported Remote Feature, LL Response Timeout:
     // the interval and latency fields mean nothing then.
