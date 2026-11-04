@@ -36,7 +36,7 @@
 //! echoes MOSI.
 //!
 //! Address. A static random address from the MCU's unique id
-//! (`wrist_aci::static_random_address`), so bonds survive updates.
+//! (`bluenrg2::static_random_address`), so bonds survive updates.
 
 #[cfg(feature = "ble-probe")]
 mod probe;
@@ -58,7 +58,7 @@ use embassy_sync::channel::Channel;
 use embassy_sync::pipe::Pipe;
 use embassy_sync::signal::Signal;
 use embassy_time::{with_timeout, Duration, Instant, Timer};
-use wrist_aci::opcode::{
+use bluenrg2::opcode::{
     ACI_GAP_ALLOW_REBOND, ACI_GAP_CLEAR_SECURITY_DB, ACI_GAP_GET_BONDED_DEVICES, ACI_GAP_INIT,
     ACI_GAP_NUMERIC_COMPARISON_CONFIRM, ACI_GAP_PASS_KEY_RESP,
     ACI_GAP_SET_AUTHENTICATION_REQUIREMENT, ACI_GAP_SET_DISCOVERABLE, ACI_GAP_SET_IO_CAPABILITY,
@@ -67,7 +67,7 @@ use wrist_aci::opcode::{
     ACI_GATT_UPDATE_CHAR_VALUE, ACI_HAL_GET_FW_BUILD_NUMBER, ACI_HAL_SET_TX_POWER_LEVEL, ACI_HAL_WRITE_CONFIG_DATA,
     ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_REQ, HCI_LE_RAND, HCI_READ_LOCAL_VERSION, HCI_SET_EVENT_MASK,
 };
-use wrist_aci::{
+use bluenrg2::{
     address, config, event_code, evt_mask, permission, props, role, uuid_type, vendor, AttributeModified, Event,
     L2capUpdateResponse, ADV_IND, ATT_HEADER_LEN, MAX_COMMAND, MIN_ENC_KEY_SIZE, NO_FILTER, PRIMARY_SERVICE,
     PRIVACY_DISABLED, VARIABLE_LENGTH,
@@ -132,7 +132,7 @@ const MAX_MTU: usize = 247;
 /// The characteristics' value size: the most [`MAX_MTU`] carries.
 const NUS_VALUE_LEN: usize = MAX_MTU - ATT_HEADER_LEN;
 /// Until an exchange raises it.
-const DEFAULT_MTU: usize = wrist_aci::ATT_DEFAULT_MTU;
+const DEFAULT_MTU: usize = bluenrg2::ATT_DEFAULT_MTU;
 /// The value a default-MTU write or notification carries.
 const DEFAULT_VALUE_LEN: usize = DEFAULT_MTU - ATT_HEADER_LEN;
 /// `IO_CAP_DISPLAY_YES_NO`: the console shows the number, `ble yes` answers.
@@ -678,7 +678,7 @@ impl Link<'_> {
             }
             Request::Disconnect => {
                 let h = CONN_HANDLE.load(Ordering::Relaxed).to_le_bytes();
-                let _ = self.command(ACI_GAP_TERMINATE, &[h[0], h[1], wrist_aci::status::REMOTE_USER_TERMINATED]).await;
+                let _ = self.command(ACI_GAP_TERMINATE, &[h[0], h[1], bluenrg2::status::REMOTE_USER_TERMINATED]).await;
             }
             Request::IntervalNow(min, max) => {
                 if STATE.load(Ordering::Relaxed) == STATE_CONNECTED {
@@ -900,7 +900,7 @@ impl Link<'_> {
         let late: [(&str, u16, &[u8]); 3] = [
             ("device name", ACI_GATT_UPDATE_CHAR_VALUE, &name[..6 + DEVICE_NAME.len()]),
             ("IO capability", ACI_GAP_SET_IO_CAPABILITY, &[IO_CAP_DISPLAY_YES_NO]),
-            ("security requirements", ACI_GAP_SET_AUTHENTICATION_REQUIREMENT, &wrist_aci::PAIRING.params()),
+            ("security requirements", ACI_GAP_SET_AUTHENTICATION_REQUIREMENT, &bluenrg2::PAIRING.params()),
         ];
         for (what, opcode, params) in late {
             if !self.step(what, opcode, params).await {
@@ -1157,7 +1157,7 @@ impl Link<'_> {
         p[5] = address::STATIC_RANDOM;
         p[6] = NO_FILTER;
         p[7] = u8::try_from(1 + DEVICE_NAME.len()).unwrap_or(0);
-        p[8] = wrist_aci::ad::NAME_COMPLETE;
+        p[8] = bluenrg2::ad::NAME_COMPLETE;
         p[9..9 + DEVICE_NAME.len()].copy_from_slice(DEVICE_NAME);
         let n = 9 + DEVICE_NAME.len();
         // Service UUID length 0, then slave connection interval min and max 0.
@@ -1252,7 +1252,7 @@ impl Link<'_> {
     /// other event that arrives meanwhile.
     async fn command(&mut self, opcode: u16, params: &[u8]) -> Result<Reply, &'static str> {
         let mut packet = [0u8; MAX_COMMAND];
-        let n = wrist_aci::command(opcode, params, &mut packet);
+        let n = bluenrg2::command(opcode, params, &mut packet);
         self.waiting_for = Some(opcode);
         self.reply = None;
         if !self.send(&packet[..n]).await {
@@ -1280,10 +1280,10 @@ impl Link<'_> {
         while self.irq.is_high() && rounds < 8 {
             rounds += 1;
             let mut buf = [0u8; MAX_PACKET];
-            let mut header = wrist_aci::HEADER_READ;
+            let mut header = bluenrg2::HEADER_READ;
             self.cs.set_low();
             let _ = self.spi.blocking_transfer_in_place(&mut header);
-            let (wbuf, announced) = wrist_aci::header_sizes(&header);
+            let (wbuf, announced) = bluenrg2::header_sizes(&header);
             let count = announced.min(MAX_PACKET);
             if count > 0 {
                 let _ = self.spi.blocking_transfer_in_place(&mut buf[..count]);
@@ -1313,11 +1313,11 @@ impl Link<'_> {
             // The read may hold several packets back to back.
             let mut at = 0;
             while at < count {
-                let len = wrist_aci::packet_len(&buf[at..count]);
+                let len = bluenrg2::packet_len(&buf[at..count]);
                 if len == 0 {
                     break;
                 }
-                if !wrist_aci::packet_whole(&buf[at..count]) {
+                if !bluenrg2::packet_whole(&buf[at..count]) {
                     // Half an event handled would feed half a console write into a transfer,
                     // and the rest would never come.
                     CUT_SHORT.fetch_add(1, Ordering::Relaxed);
@@ -1332,7 +1332,7 @@ impl Link<'_> {
 
     /// One packet from the chip: capture a reply, act on an event.
     fn handle(&mut self, p: &[u8]) {
-        match wrist_aci::parse(p) {
+        match bluenrg2::parse(p) {
             Event::CommandComplete { cmd_opcode, status, return_param_bytes: params } => {
                 if self.waiting_for == Some(cmd_opcode) {
                     let mut reply = Reply { status, params: [0; 64], len: params.len().min(64) };
@@ -1484,7 +1484,7 @@ impl Link<'_> {
     }
 
     fn vendor(&mut self, ecode: u16, rest: &[u8]) {
-        let handle = wrist_aci::connection_handle;
+        let handle = bluenrg2::connection_handle;
         match ecode {
             vendor::BLUE_INITIALIZED => self.uart.write_line("[ble] chip initialised"),
             vendor::HAL_EVENTS_LOST => self.uart.write_line("[ble] the chip dropped events: the host read too slowly"),
@@ -1496,7 +1496,7 @@ impl Link<'_> {
             vendor::GAP_NUMERIC_COMPARISON_VALUE if rest.len() >= 6 => {
                 self.pair_ask.settled();
                 self.interval_ask.pairing();
-                let (conn, value) = wrist_aci::numeric_comparison(rest).unwrap_or_default();
+                let (conn, value) = bluenrg2::numeric_comparison(rest).unwrap_or_default();
                 PROMPT_VALUE.store(value, Ordering::Relaxed);
                 PROMPT_KIND.store(2, Ordering::Relaxed);
                 ANSWER.store(0, Ordering::Relaxed);
@@ -1506,7 +1506,7 @@ impl Link<'_> {
                 self.uart.write_line(", `ble yes` on the USB console (`ble no` rejects)");
             }
             vendor::GAP_PAIRING_COMPLETE if rest.len() >= 4 => {
-                let (status, reason) = wrist_aci::pairing_complete(rest).unwrap_or_default();
+                let (status, reason) = bluenrg2::pairing_complete(rest).unwrap_or_default();
                 LAST_PAIRING.store(status.saturating_add(1), Ordering::Relaxed);
                 LAST_PAIRING_REASON.store(reason, Ordering::Relaxed);
                 self.confirm_for = None;
@@ -1527,7 +1527,7 @@ impl Link<'_> {
             vendor::GAP_SLAVE_SECURITY_INITIATED => self.uart.write_line("[ble] security request sent"),
             vendor::GAP_BOND_LOST => self.rebond_for = Some(CONN_HANDLE.load(Ordering::Relaxed)),
             vendor::ATT_EXCHANGE_MTU_RESP if rest.len() >= 4 => {
-                self.mtu = usize::from(wrist_aci::att_mtu(rest).unwrap_or(0)).clamp(DEFAULT_MTU, MAX_MTU);
+                self.mtu = usize::from(bluenrg2::att_mtu(rest).unwrap_or(0)).clamp(DEFAULT_MTU, MAX_MTU);
                 self.uart.write_str("[ble] ATT MTU ");
                 self.uart.write_u32(u32::try_from(self.mtu).unwrap_or(0));
                 self.uart.write_line("");
@@ -1545,7 +1545,7 @@ impl Link<'_> {
                 }
             }
             vendor::GAP_PROC_COMPLETE => {
-                if let Some((code, status)) = wrist_aci::gap_proc_complete(rest) {
+                if let Some((code, status)) = bluenrg2::gap_proc_complete(rest) {
                     self.scanner.gap_proc_complete(code, status, self.uart);
                 }
             }
@@ -1568,9 +1568,9 @@ impl Link<'_> {
                 Timer::after_millis(10).await;
                 continue;
             }
-            let mut header = wrist_aci::HEADER_WRITE;
+            let mut header = bluenrg2::HEADER_WRITE;
             let _ = self.spi.blocking_transfer_in_place(&mut header);
-            let (wbuf, _) = wrist_aci::header_sizes(&header);
+            let (wbuf, _) = bluenrg2::header_sizes(&header);
             // The BlueNRG-2 sends no ready byte, only buffer sizes; ST checks the size alone,
             // so do we.
             let accepted = (1..=1024).contains(&wbuf) && wbuf >= packet.len();
@@ -1600,7 +1600,7 @@ fn clear_prompt() {
 
 /// A connection interval in 1.25 ms units as milliseconds, `48.75 ms`.
 fn write_interval(uart: Uart, units: u16) {
-    let hundredths = wrist_aci::interval_hundredths_ms(units);
+    let hundredths = bluenrg2::interval_hundredths_ms(units);
     uart.write_u32(hundredths / 100);
     uart.write_str(if hundredths % 100 < 10 { ".0" } else { "." });
     uart.write_u32(hundredths % 100);
@@ -1610,7 +1610,7 @@ fn write_interval(uart: Uart, units: u16) {
 fn address_from_uid() -> [u8; 6] {
     let uid = embassy_stm32::uid::uid();
     let w = |i: usize| u32::from_le_bytes([uid[4 * i], uid[4 * i + 1], uid[4 * i + 2], uid[4 * i + 3]]);
-    wrist_aci::static_random_address([w(0), w(1), w(2)])
+    bluenrg2::static_random_address([w(0), w(1), w(2)])
 }
 
 fn write_six_digits(uart: Uart, v: u32) {

@@ -61,5 +61,6 @@ change follows, and [HARDWARE.md](HARDWARE.md) what the firmware relies on about
 
 ## License
 
-AGPL-3.0-or-later; see [LICENSE](LICENSE). The vendored Embassy crates keep MIT OR
-Apache-2.0, and the other notices are in [release/NOTICES.md](release/NOTICES.md).
+AGPL-3.0-or-later; see [LICENSE](LICENSE). [`crates/bluenrg2`](crates/bluenrg2) is MIT OR
+Apache-2.0, the vendored Embassy crates keep MIT OR Apache-2.0, and the other notices are in
+[release/NOTICES.md](release/NOTICES.md).

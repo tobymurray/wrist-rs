@@ -396,7 +396,7 @@ pub mod ble {
                     self.cut = chunk[..n].last() != Some(&b'\n');
                     Ok(())
                 }
-                wrist_aci::status::INSUFFICIENT_RESOURCES => {
+                bluenrg2::status::INSUFFICIENT_RESOURCES => {
                     self.held = Some((chunk, n));
                     Ok(())
                 }

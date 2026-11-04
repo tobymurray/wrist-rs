@@ -4,8 +4,8 @@
 use core::fmt::{self, Write};
 use core::sync::atomic::Ordering;
 
-use wrist_aci::opcode::{ACI_GAP_SET_NON_DISCOVERABLE, ACI_HAL_GET_ANCHOR_PERIOD};
-use wrist_aci::probe::{Beside, Line, Probe};
+use bluenrg2::opcode::{ACI_GAP_SET_NON_DISCOVERABLE, ACI_HAL_GET_ANCHOR_PERIOD};
+use bluenrg2::probe::{Beside, Line, Probe};
 
 use super::{Link, INTERVAL, LATENCY, STATE, STATE_ADVERTISING, STATE_CONNECTED, STATE_IDLE};
 use crate::uart::Uart;

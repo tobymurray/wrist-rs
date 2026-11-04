@@ -52,6 +52,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06"
 
 [[package]]
+name = "bluenrg2"
+version = "0.0.0"
+
+[[package]]
 name = "bt-hci"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1447,10 +1451,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
-name = "wrist-aci"
-version = "0.0.0"
-
-[[package]]
 name = "wrist-ble"
 version = "0.0.0"
 dependencies = [
@@ -1578,7 +1578,7 @@ version = "0.0.0"
 name = "wrist-wake"
 version = "0.0.0"
 dependencies = [
- "wrist-aci",
+ "bluenrg2",
 ]
 
 [[package]]

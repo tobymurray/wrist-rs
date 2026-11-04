@@ -3,8 +3,8 @@
 use core::sync::atomic::Ordering;
 
 use embassy_time::{Duration, Instant};
-use wrist_aci::opcode::{ACI_GAP_SET_NON_DISCOVERABLE, ACI_GAP_START_GENERAL_DISCOVERY_PROC, ACI_GAP_TERMINATE_GAP_PROC};
-use wrist_aci::{address, gap_proc, Address, Uuid, FILTER_DUPLICATES, SCAN_RSP};
+use bluenrg2::opcode::{ACI_GAP_SET_NON_DISCOVERABLE, ACI_GAP_START_GENERAL_DISCOVERY_PROC, ACI_GAP_TERMINATE_GAP_PROC};
+use bluenrg2::{address, gap_proc, Address, Uuid, FILTER_DUPLICATES, SCAN_RSP};
 use wrist_wake::ble::{scan, Scan};
 
 use super::{power, Link, Request, STATE, STATE_ADVERTISING, STATE_IDLE};
@@ -133,7 +133,7 @@ impl Scanner {
         let Some((_, printed, heard)) = self.scan.as_mut() else {
             return;
         };
-        for r in wrist_aci::reports(data) {
+        for r in bluenrg2::reports(data) {
             *heard += 1;
             // One line per advertiser and kind.
             let key = (r.address, r.kind == SCAN_RSP);
@@ -154,15 +154,15 @@ impl Scanner {
             if r.kind == SCAN_RSP {
                 uart.write_str(" (scan response)");
             }
-            if let Some(name) = wrist_aci::ad_name(r.data) {
+            if let Some(name) = bluenrg2::ad_name(r.data) {
                 uart.write_str(" ");
                 write_name(uart, name);
             }
-            for u in wrist_aci::ad_uuid16s(r.data) {
+            for u in bluenrg2::ad_uuid16s(r.data) {
                 uart.write_str(" ");
                 write_uuid(uart, Uuid::U16(u));
             }
-            for u in wrist_aci::ad_uuid128s(r.data) {
+            for u in bluenrg2::ad_uuid128s(r.data) {
                 uart.write_str(" ");
                 write_uuid(uart, Uuid::U128(*u));
             }
@@ -198,7 +198,7 @@ impl Link<'_> {
     /// resumes when the scan is over.
     async fn while_advertising(&mut self, opcode: u16, params: &[u8]) -> Result<u8, &'static str> {
         let status = self.command(opcode, params).await?.status;
-        if status != wrist_aci::status::COMMAND_DISALLOWED || STATE.load(Ordering::Relaxed) != STATE_ADVERTISING {
+        if status != bluenrg2::status::COMMAND_DISALLOWED || STATE.load(Ordering::Relaxed) != STATE_ADVERTISING {
             return Ok(status);
         }
         if self.command(ACI_GAP_SET_NON_DISCOVERABLE, &[]).await.is_ok() {

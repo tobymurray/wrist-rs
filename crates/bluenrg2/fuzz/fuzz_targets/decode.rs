@@ -4,7 +4,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use wrist_aci::{
+use bluenrg2::{
     ad_name, ad_uuid128s, ad_uuid16s, att_mtu, characteristics, descriptors, gap_proc_complete, gatt_error,
     notification, numeric_comparison, packet_len, packet_whole, pairing_complete, parse, proc_complete, read_value,
     reports, service_range, services, AttributeModified, Event, L2capUpdateRequest, L2capUpdateResponse,

@@ -1,0 +1,12 @@
+[package]
+name = "bluenrg2"
+version = "0.0.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "ST's BlueNRG-2 Bluetooth network coprocessor: its SPI framing, HCI and ACI command packets, and every event decoded. no_std, no allocation"
+publish = false
+
+[dependencies]
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }

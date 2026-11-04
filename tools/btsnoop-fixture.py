@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Turn a btsnoop capture into a test fixture of HCI events that carries no keys and no addresses.
 
-    tools/btsnoop-fixture.py capture.btsnoop > crates/wrist-aci/tests/captures/name.hex
+    tools/btsnoop-fixture.py capture.btsnoop > crates/bluenrg2/tests/captures/name.hex
 """
 
 import argparse
