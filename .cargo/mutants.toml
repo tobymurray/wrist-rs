@@ -2,3 +2,6 @@
 test_package = ["wrist-ble", "wrist-bluenrg2", "wrist-ble-sim"]
 # The stateright models check the core's own machines, which no mutant here reaches.
 additional_cargo_test_args = ["--", "--skip", "every_peripheral", "--skip", "the_phone_machine", "--skip", "the_chip_is_reset"]
+# The replay's reading of a capture is a diagnostic: its fixtures check the core through it, and
+# its one verdict, `replay/agree.rs`, is tested on its own.
+exclude_globs = ["crates/wrist-ble-sim/src/replay/mod.rs", "crates/wrist-ble-sim/src/bin/replay.rs"]

@@ -5,6 +5,7 @@ pub mod checks;
 pub mod fake;
 pub mod menu;
 pub mod peers;
+pub mod replay;
 pub mod rng;
 pub mod sim;
 

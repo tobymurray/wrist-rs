@@ -184,6 +184,15 @@ pub fn tee(bytes: &[u8]) -> &[u8] {
     rest
 }
 
+/// Queues what fits of `bytes` for the USB host alone: not the UART, nor the Bluetooth mirror.
+#[cfg(feature = "ble-trace")]
+pub fn usb_only(bytes: &[u8]) {
+    let mut rest = bytes;
+    while let Ok(n @ 1..) = OUT.try_write(rest) {
+        rest = &rest[n..];
+    }
+}
+
 /// Wait, boundedly, for the pipe to be half empty, so long output written in
 /// pieces reaches the host whole.
 pub async fn make_room() {
