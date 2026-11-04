@@ -11,6 +11,9 @@
 
 pub mod probe;
 
+use bt_hci::param::{AddrKind, BdAddr, ConnHandle, Status};
+use bt_hci::FromHciBytes;
+
 /// The SPI header the host sends to write (`0A`) or read (`0B`); the chip
 /// answers in the same five bytes.
 pub const HEADER_WRITE: [u8; 5] = [0x0A, 0, 0, 0, 0];
@@ -384,92 +387,125 @@ pub enum Event<'a> {
     LeUnknown { subevent_code: u8 },
     /// Another HCI event, by event code.
     Unknown { code: u8 },
-    /// Not an HCI event, cut short by the end of the read, or too short for its layout.
+    /// Not an HCI event, cut short by the end of the read, or not fitting its layout.
     Malformed(&'a [u8]),
 }
 
 /// The event in one HCI packet, read no further than the packet's own length.
 #[must_use]
 pub fn parse(p: &[u8]) -> Event<'_> {
-    // The interval after the peer's address; the Enhanced event puts two more addresses first.
-    const LEGACY_INTERVAL_AT: usize = 15;
-    use event_code as ev;
-    use le_subevent as le;
-    use packet::EVENT;
     if !packet_whole(p) {
         return Event::Malformed(p);
     }
     let p = &p[..packet_len(p)];
-    let u16_at = |i: usize| u16::from_le_bytes([p[i], p[i + 1]]);
-    match p {
-        [EVENT, ev::COMMAND_COMPLETE, _, _num, lo, hi, status, return_param_bytes @ ..] => Event::CommandComplete {
-            cmd_opcode: u16::from_le_bytes([*lo, *hi]),
-            status: *status,
-            return_param_bytes,
-        },
-        [EVENT, ev::COMMAND_STATUS, _, status, _num, lo, hi, ..] => {
-            Event::CommandStatus { cmd_opcode: u16::from_le_bytes([*lo, *hi]), status: *status }
+    let event = match p {
+        [packet::EVENT, code, _, params @ ..] => standard(*code, params),
+        _ => None,
+    };
+    event.unwrap_or(Event::Malformed(p))
+}
+
+/// The value at the start of `b`, the bytes after it ignored.
+fn first<'a, T: FromHciBytes<'a>>(b: &'a [u8]) -> Option<T> {
+    T::from_hci_bytes(b).ok().map(|(v, _)| v)
+}
+
+/// An event by its code and parameters; `None` when they do not fit its layout.
+fn standard(code: u8, params: &[u8]) -> Option<Event<'_>> {
+    use bt_hci::event as hci;
+    use event_code as ev;
+    Some(match code {
+        ev::COMMAND_COMPLETE => {
+            let e: hci::CommandComplete = first(params)?;
+            let (status, return_param_bytes) = Status::from_hci_bytes(&params[params.len() - e.bytes.len()..]).ok()?;
+            Event::CommandComplete { cmd_opcode: e.cmd_opcode.to_raw(), status: status.into_inner(), return_param_bytes }
         }
-        [EVENT, ev::DISCONNECTION_COMPLETE, _, status, _, _, reason, ..] => {
-            Event::DisconnectionComplete { handle: u16_at(4), status: *status, reason: *reason }
+        ev::COMMAND_STATUS => {
+            let e: hci::CommandStatus = first(params)?;
+            Event::CommandStatus { cmd_opcode: e.cmd_opcode.to_raw(), status: e.status.into_inner() }
         }
-        [EVENT, ev::ENCRYPTION_CHANGE, _, status, _, _, enabled, ..] => {
-            Event::EncryptionChange { handle: u16_at(4), status: *status, enabled: *enabled }
+        ev::DISCONNECTION_COMPLETE => {
+            let e: hci::DisconnectionComplete = first(params)?;
+            Event::DisconnectionComplete { handle: e.handle.raw(), status: e.status.into_inner(), reason: e.reason.into_inner() }
         }
-        // Status, handle, role, peer address type and address, then (Enhanced) two resolvable
-        // addresses, then interval and latency.
-        [EVENT, ev::LE_META, _, sub @ (le::CONNECTION_COMPLETE | le::ENHANCED_CONNECTION_COMPLETE), 0x00, _, _, role, kind, a0, a1, a2, a3, a4, a5, ..] => {
-            let at = if *sub == le::CONNECTION_COMPLETE { LEGACY_INTERVAL_AT } else { LEGACY_INTERVAL_AT + 12 };
-            Event::LeConnectionComplete {
-                handle: u16_at(5),
-                central: *role == 0,
-                // An Enhanced event says 2 or 3 for an identity it resolved: still public or random.
-                peer: Address { kind: kind & 0x01, bytes: [*a0, *a1, *a2, *a3, *a4, *a5] },
-                conn_interval: p
-                    .get(at..at + 4)
-                    .map(|v| (u16::from_le_bytes([v[0], v[1]]), u16::from_le_bytes([v[2], v[3]]))),
+        ev::ENCRYPTION_CHANGE => {
+            let e: hci::EncryptionChangeV1 = first(params)?;
+            Event::EncryptionChange { handle: e.handle.raw(), status: e.status.into_inner(), enabled: e.enabled as u8 }
+        }
+        ev::LE_META => le_meta(params)?,
+        ev::VENDOR => {
+            let (code, params) = u16::from_hci_bytes(params).ok()?;
+            Event::Vendor { code, params }
+        }
+        code => Event::Unknown { code },
+    })
+}
+
+/// An LE Meta event by its subevent code and parameters.
+fn le_meta(params: &[u8]) -> Option<Event<'_>> {
+    use bt_hci::event::le;
+    use le_subevent as sub;
+    let (&code, params) = params.split_first()?;
+    Some(match code {
+        sub::CONNECTION_COMPLETE | sub::ENHANCED_CONNECTION_COMPLETE => connection_complete(code, params)?,
+        sub::CONNECTION_UPDATE_COMPLETE => {
+            let (status, rest) = Status::from_hci_bytes(params).ok()?;
+            if status == Status::SUCCESS {
+                let e: le::LeConnectionUpdateComplete = first(params)?;
+                Event::LeConnectionUpdateComplete {
+                    handle: e.handle.raw(),
+                    conn_interval: e.conn_interval.as_u16(),
+                    peripheral_latency: e.peripheral_latency,
+                }
+            } else {
+                // A failure's interval, latency and timeout mean nothing (Core Vol 4 Part E §7.7.65.3).
+                Event::LeConnectionUpdateFailed { handle: first::<ConnHandle>(rest)?.raw(), status: status.into_inner() }
             }
         }
-        [EVENT, ev::LE_META, _, le::CONNECTION_COMPLETE | le::ENHANCED_CONNECTION_COMPLETE, status @ 0x01..=0xFF, ..] => Event::LeConnectionFailed { status: *status },
-        [EVENT, ev::LE_META, _, le::CONNECTION_UPDATE_COMPLETE, 0x00, _, _, _, _, _, _, ..] => Event::LeConnectionUpdateComplete {
-            handle: u16_at(5),
-            conn_interval: u16_at(7),
-            peripheral_latency: u16_at(9),
-        },
-        [EVENT, ev::LE_META, _, le::CONNECTION_UPDATE_COMPLETE, status @ 0x01..=0xFF, _, _, ..] => {
-            Event::LeConnectionUpdateFailed { handle: u16_at(5), status: *status }
+        sub::DATA_LENGTH_CHANGE => {
+            let e: le::LeDataLengthChange = first(params)?;
+            Event::LeDataLengthChange {
+                handle: e.handle.raw(),
+                max_tx_octets: e.max_tx_octets,
+                max_tx_time: e.max_tx_time,
+                max_rx_octets: e.max_rx_octets,
+                max_rx_time: e.max_rx_time,
+            }
         }
-        [EVENT, ev::LE_META, _, le::DATA_LENGTH_CHANGE, _, _, _, _, _, _, _, _, _, _, ..] => Event::LeDataLengthChange {
-            handle: u16_at(4),
-            max_tx_octets: u16_at(6),
-            max_tx_time: u16_at(8),
-            max_rx_octets: u16_at(10),
-            max_rx_time: u16_at(12),
-        },
-        [EVENT, ev::LE_META, _, le::ADVERTISING_REPORT, data @ ..] => Event::LeAdvertisingReport { data },
-        [EVENT, ev::LE_META, _, sub, ..]
-            if !matches!(
-                *sub,
-                le::CONNECTION_COMPLETE | le::CONNECTION_UPDATE_COMPLETE | le::DATA_LENGTH_CHANGE | le::ENHANCED_CONNECTION_COMPLETE
-            ) =>
-        {
-            Event::LeUnknown { subevent_code: *sub }
+        sub::ADVERTISING_REPORT => {
+            first::<le::LeAdvertisingReport>(params)?;
+            Event::LeAdvertisingReport { data: params }
         }
-        [EVENT, ev::VENDOR, _, lo, hi, params @ ..] => Event::Vendor { code: u16::from_le_bytes([*lo, *hi]), params },
-        [EVENT, code, _, ..]
-            if !matches!(
-                *code,
-                ev::DISCONNECTION_COMPLETE
-                    | ev::ENCRYPTION_CHANGE
-                    | ev::COMMAND_COMPLETE
-                    | ev::COMMAND_STATUS
-                    | ev::LE_META
-                    | ev::VENDOR
-            ) => {
-            Event::Unknown { code: *code }
-        }
-        _ => Event::Malformed(p),
+        subevent_code => Event::LeUnknown { subevent_code },
+    })
+}
+
+/// LE (Enhanced) Connection Complete: a failure by its status alone, a success by the fields
+/// both layouts share, and the interval and latency when the whole event decodes.
+fn connection_complete(code: u8, params: &[u8]) -> Option<Event<'_>> {
+    use bt_hci::event::le;
+    let (status, rest) = Status::from_hci_bytes(params).ok()?;
+    if status != Status::SUCCESS {
+        // No connection formed, so the other fields mean nothing (Core Vol 4 Part E §7.7.65.1).
+        return Some(Event::LeConnectionFailed { status: status.into_inner() });
     }
+    // The link exists on the chip even when the rest is short or reserved, so it is still taken.
+    let (handle, rest) = ConnHandle::from_hci_bytes(rest).ok()?;
+    let (role, rest) = u8::from_hci_bytes(rest).ok()?;
+    let (kind, rest) = AddrKind::from_hci_bytes(rest).ok()?;
+    let peer: BdAddr = first(rest)?;
+    let conn_interval = if code == le_subevent::CONNECTION_COMPLETE {
+        first::<le::LeConnectionComplete>(params).map(|e| (e.conn_interval.as_u16(), e.peripheral_latency))
+    } else {
+        first::<le::LeEnhancedConnectionComplete>(params).map(|e| (e.conn_interval.as_u16(), e.peripheral_latency))
+    };
+    Some(Event::LeConnectionComplete {
+        handle: handle.raw(),
+        central: role == 0,
+        // An Enhanced event says 2 or 3 for an identity it resolved: still public or random.
+        peer: Address { kind: kind.as_raw() & 0x01, bytes: peer.into_inner() },
+        conn_interval,
+    })
 }
 
 /// One advertising report: what kind (0 connectable undirected, 4 a scan response, ...),
