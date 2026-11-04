@@ -5,7 +5,7 @@
 
 use wrist_ble::{
     Activities, AdvParams, Admitted, Capabilities, CentralSlot, Change, ConnParams, Duration, Exclusion, GattLimits, Interval, Micros,
-    Millis, OpKind, ParamAnswer, RoleSet, SchedKind, Schedule, ScanParams, Slots,
+    Millis, OpKind, ParamAnswer, RoleSet, SchedKind, Schedule, ScanParams, Slots, MAX_LINKS,
 };
 
 pub const CAPABILITIES: Capabilities = Capabilities {
@@ -177,6 +177,33 @@ fn free(period: Ns, occupied: Ns) -> Ns {
     period.saturating_sub(occupied + micros(CAPABILITIES.guard))
 }
 
+/// The offset and room for a slot of `want` (§4.2.2), or `None` when the slots already placed overrun `period`.
+fn place(a: &Activities, except: Option<usize>, period: Ns, want: Ns) -> Option<(Ns, Ns)> {
+    let guard = micros(CAPABILITIES.guard);
+    let mut spans = [(0, 0); MAX_LINKS];
+    let mut n = 0;
+    for (i, s) in a.central.iter().enumerate() {
+        if let Some(s) = s.filter(|_| Some(i) != except) {
+            let start = micros(s.offset);
+            spans[n] = (start, start + len_ns(s.ce_len));
+            n += 1;
+        }
+    }
+    let spans = &mut spans[..n];
+    spans.sort_unstable();
+    if spans.last().is_some_and(|&(_, end)| end + guard > period) {
+        return None;
+    }
+    let mut at = 0;
+    for &(start, end) in spans.iter() {
+        if want > 0 && at + want + guard <= start {
+            return Some((at, want));
+        }
+        at = end + guard;
+    }
+    Some((at, period.saturating_sub(at + guard)))
+}
+
 /// A link with `p` joining the time base, or link `except` re-timed to `p` (§4.2.1, §4.2.2).
 fn join(a: &Activities, p: &ConnParams, except: Option<usize>) -> Result<Admitted, SchedKind> {
     let (min, max) = (interval_ns(p.interval_min), interval_ns(p.interval_max));
@@ -205,8 +232,9 @@ fn join(a: &Activities, p: &ConnParams, except: Option<usize>) -> Result<Admitte
             (b / k, b / k, 1, k)
         }
     };
-    let room = free(period, used);
     let want = len_ns(p.ce_len);
+    let (offset, room) = place(a, except, period, want).ok_or(SchedKind::LengthFailed)?;
+    let room = room.min(free(period, used));
     if room < want.max(1) || used > period {
         return Err(SchedKind::LengthFailed);
     }
@@ -215,6 +243,7 @@ fn join(a: &Activities, p: &ConnParams, except: Option<usize>) -> Result<Admitte
         interval: Duration::from_u16(u16::try_from(interval / UNIT).map_err(|_| SchedKind::IntervalTooLarge)?),
         latency: u16::try_from(latency).map_err(|_| SchedKind::IntervalTooLarge)?,
         ce_len: Duration::from_u16(u16::try_from(granted / SLOT).unwrap_or(u16::MAX)),
+        offset: Micros(u32::try_from(offset / 1_000).map_err(|_| SchedKind::LengthFailed)?),
     };
     Ok(Admitted { slot: Some(slot), latency_scale: u16::try_from(scale).map_err(|_| SchedKind::NewIntervalFailed)? })
 }
