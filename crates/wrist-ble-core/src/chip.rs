@@ -1,6 +1,6 @@
 //! The chip's life as the core sees it: started, reset, given up on.
 
-use wrist_ble::{ChipInfo, Instant, Millis, ResetCause};
+use wrist_ble::{Capabilities, ChipInfo, Instant, Millis, ResetCause};
 
 /// Resets in any hour, the core's and the chip's own alike, before the core declares a fault.
 pub const RESETS_PER_HOUR: usize = 3;
@@ -68,7 +68,7 @@ impl ChipMachine {
     pub const OFF: Self = Self { state: Chip::Off, resets: [None; RESETS_PER_HOUR] };
 
     #[must_use]
-    pub fn step(mut self, now: Instant, event: Event) -> (Self, Option<Action>) {
+    pub fn step(mut self, caps: &Capabilities, now: Instant, event: Event) -> (Self, Option<Action>) {
         let action = match (self.state, event) {
             (_, Event::RadioOff) => {
                 self.state = Chip::Off;
@@ -88,6 +88,7 @@ impl ChipMachine {
                 None
             }
             (Chip::Starting { .. }, Event::StartFailed) => Some(self.escalate(now, FaultCause::StartFailed)),
+            (Chip::Starting { since }, Event::Tick) if now >= since + caps.start_within => Some(self.escalate(now, FaultCause::StartFailed)),
             (Chip::Ready(_), Event::BaselineRefused) => Some(self.escalate(now, FaultCause::BaselineRefused)),
             (Chip::Ready(_), Event::Reset(_)) => Some(self.escalate(now, FaultCause::KeptResetting)),
             _ => None,
@@ -96,9 +97,10 @@ impl ChipMachine {
     }
 
     #[must_use]
-    pub fn deadline(&self) -> Option<Instant> {
+    pub fn deadline(&self, caps: &Capabilities) -> Option<Instant> {
         match self.state {
             Chip::Fault { retry_at, .. } => Some(retry_at),
+            Chip::Starting { since } => Some(since + caps.start_within),
             _ => None,
         }
     }

@@ -22,6 +22,8 @@ pub const CAPABILITIES: Capabilities = Capabilities {
     op_deadline,
     exclusions: &[Exclusion::NoAdvertiseWhileInitiating, Exclusion::NoInitiateWhileInitiating],
     encryption_quiet: Millis(1_500),
+    // Up within 3 s of reset (HARDWARE.md, the Bluetooth module), then configured.
+    start_within: Millis::secs(5),
 };
 
 /// The latest each kind of operation ends: a command's reply, or the procedure on air within the

@@ -27,10 +27,10 @@ fn phone_off_when_the_radio_is_off() {
 #[test]
 fn phone_fault_once_the_reset_budget_is_spent() {
     let mut state = ready(t(0));
-    let mut c = state.chip.step(t(0), chip::Event::RadioOff).0;
-    c = c.step(t(0), chip::Event::RadioOn).0;
+    let mut c = state.chip.step(CAPS, t(0), chip::Event::RadioOff).0;
+    c = c.step(CAPS, t(0), chip::Event::RadioOn).0;
     for _ in 0..=chip::RESETS_PER_HOUR {
-        c = c.step(t(1_000), chip::Event::StartFailed).0;
+        c = c.step(CAPS, t(1_000), chip::Event::StartFailed).0;
     }
     state.chip = c;
     assert!(matches!(status(&state, t(2_000)).phone, PhoneStatus::Fault { cause: chip::FaultCause::StartFailed, .. }));
@@ -105,7 +105,7 @@ fn phone_unreachable_past_the_gap_with_the_reason() {
 #[test]
 fn phone_unreachable_while_the_chip_starts() {
     let mut state = ready(t(0));
-    state.chip = chip::ChipMachine::OFF.step(t(0), chip::Event::RadioOn).0;
+    state.chip = chip::ChipMachine::OFF.step(CAPS, t(0), chip::Event::RadioOn).0;
     assert_eq!(status(&state, t(1_000)).phone, PhoneStatus::Unreachable { reason: Unreachable::Starting, since: Millis::secs(1) });
     assert_eq!(status(&state, t(1_000)).radio, RadioStatus::Starting);
 }

@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use wrist_ble::{AddrKind, AdvParams, BdAddr, BluetoothUuid, ChipInfo, ConnHandle, CoreSpecificationVersion, Duration, Instant, Millis, PeerAddr};
+use wrist_ble::{AddrKind, AdvParams, BdAddr, BluetoothUuid, Capabilities, ChipInfo, ConnHandle, CoreSpecificationVersion, Duration, Instant, Millis, PeerAddr};
 use wrist_ble_core::chip::{self, ChipMachine};
 use wrist_ble_core::goals::{Power, Want};
 use wrist_ble_core::peripheral::{Ctx, Event, Peripheral};
@@ -99,9 +99,11 @@ pub fn run(mut p: Peripheral, ctx: &Ctx<'_>, from: Instant, to: Instant) -> Peri
     p
 }
 
+pub const CAPS: &Capabilities = &wrist_bluenrg2::CAPABILITIES;
+
 pub fn ready_chip(at: Instant) -> ChipMachine {
-    let (c, _) = ChipMachine::OFF.step(at, chip::Event::RadioOn);
-    c.step(at, chip::Event::Ready(INFO)).0
+    let (c, _) = ChipMachine::OFF.step(CAPS, at, chip::Event::RadioOn);
+    c.step(CAPS, at, chip::Event::Ready(INFO)).0
 }
 
 /// The chip ready and the phone discoverable, nothing advertising yet.
