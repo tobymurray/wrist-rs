@@ -1,92 +1,154 @@
 //! Ethernet (ETH)
 #![macro_use]
 
-#[cfg(all(feature = "ptp", not(eth_v2), not(eth_v2a)))]
-compile_error!("The 'ptp' feature is only supported on STM32 Ethernet MAC v2/v2a peripherals.");
+#[cfg(all(feature = "ptp", eth_v1a))]
+compile_error!("The 'ptp' feature is not supported on STM32 Ethernet MAC v1a.");
 
 #[cfg_attr(any(eth_v1a, eth_v1b, eth_v1c), path = "v1/mod.rs")]
-#[cfg_attr(any(eth_v2, eth_v2a), path = "v2/mod.rs")]
+#[cfg_attr(any(eth_v2, eth_v2a, eth_v2b), path = "v2/mod.rs")]
 mod _version;
 mod generic_phy;
-#[cfg(feature = "ptp")]
-mod ptp;
+mod ring;
 mod sma;
 
 use core::mem::MaybeUninit;
-use core::task::Context;
+use core::task::{Context, Waker};
 
-use embassy_hal_internal::PeripheralType;
-#[cfg(feature = "ptp")]
-use embassy_net_driver::PacketMeta;
-use embassy_net_driver::{Capabilities, HardwareAddress, LinkState};
 use embassy_sync::waitqueue::AtomicWaker;
+#[cfg(feature = "ptp")]
+use heapless::Deque;
+#[cfg(feature = "ptp")]
+use xarxa_driver::TxTimestamp;
+use xarxa_driver::{Capabilities, Driver, HardwareAddress, LinkState, Medium, NotSupported, PacketBuf};
 
 pub use crate::eth::_version::{InterruptHandler, *};
 pub use crate::eth::generic_phy::*;
-#[cfg(feature = "ptp")]
-use crate::eth::ptp::{PacketState, PtpTimestampSink};
-#[cfg(feature = "ptp")]
-pub use crate::eth::ptp::{PtpTimestamp, PtpTimestampStore};
 pub use crate::eth::sma::{Instance as SmaInstance, Sma, StationManagement};
-use crate::rcc::RccPeripheral;
+use crate::pac::eth::Eth as Regs;
 
-#[allow(unused)]
+/// Failure to initialize or access the Ethernet MAC or PHY.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[non_exhaustive]
+pub enum Error {
+    /// The MAC DMA software reset did not complete.
+    DmaResetTimeout,
+    /// An MDIO transaction did not complete.
+    MdioTimeout,
+    /// No MDIO address completed a PHY software reset.
+    PhyNotFound,
+    /// The PHY did not complete its software reset.
+    PhyResetTimeout,
+}
+
+impl core::fmt::Display for Error {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::DmaResetTimeout => "MAC DMA software reset timed out",
+            Self::MdioTimeout => "MDIO transaction timed out",
+            Self::PhyNotFound => "no MDIO address completed a PHY software reset",
+            Self::PhyResetTimeout => "PHY software reset timed out",
+        })
+    }
+}
+
+impl core::error::Error for Error {}
+
+// ST's F4/H7 HAL gives Ethernet DMA reset 500 ms. Use the same limit so
+// a slow reset is not rejected before the vendor driver would time out.
+pub(crate) const MAC_RESET_TIMEOUT_US: u64 = 500_000;
+
+// IEEE 802.3 allows a PHY reset to take up to 500 ms.
+pub(crate) const PHY_RESET_TIMEOUT_US: u64 = 500_000;
+
+// DMA shutdown has no universal completion time across MACs and traffic loads.
+// The 100 ms wait is a failure budget: if it expires, Drop must not release
+// buffers the DMA might still own.
+pub(crate) const DMA_STOP_TIMEOUT_US: u64 = 100_000;
+
+// With `time` the deadline is a real clock. Without it the budget is a cycle count, which
+// depends on the core and can run shorter than `timeout_us`.
+pub(crate) fn wait_for(mut ready: impl FnMut() -> bool, timeout_us: u64) -> bool {
+    if ready() {
+        return true;
+    }
+    #[cfg(feature = "time")]
+    {
+        let timeout = crate::wait::Timeout::from_micros(timeout_us);
+        while timeout.check().is_ok() {
+            if ready() {
+                return true;
+            }
+        }
+        ready()
+    }
+    #[cfg(not(feature = "time"))]
+    {
+        // SAFETY: Ethernet operations run after RCC initializes CLOCK_FREQS; the
+        // configured system clock is not changed during this synchronous wait.
+        let sys_hz = unsafe { crate::rcc::get_freqs().sys.to_hertz().unwrap().0 };
+        let cycles_per_us = sys_hz.div_ceil(1_000_000).max(1);
+        for _ in 0..timeout_us {
+            cortex_m::asm::delay(cycles_per_us);
+            if ready() {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+#[cfg(feature = "ptp")]
+fn adjusted_ptp_addend(nominal: u32, adjustment: embassy_ptp_driver::ScaledPpm) -> u32 {
+    let scale = 1.0 + f64::from(adjustment.raw()) / ((1i32 << 16) as f64 * 1e6);
+    // The cast saturates; the addend must remain nonzero.
+    ((f64::from(nominal) * scale + 0.5) as u32).max(1)
+}
+
+/// Maximum Ethernet frame size, header included, FCS excluded.
 const MTU: usize = 1514;
-const TX_BUFFER_SIZE: usize = 1514;
-const RX_BUFFER_SIZE: usize = 1536;
 
-#[repr(C, align(8))]
-#[derive(Copy, Clone)]
-pub(crate) struct Packet<const N: usize>([u8; N]);
-
-/// Ethernet packet queue.
+/// Ethernet descriptor rings.
 ///
-/// This struct owns the memory used for reading and writing packets.
+/// This struct owns the DMA descriptors of the transmit and receive rings.
+/// The frames themselves live in `embassy-net`'s packet buffer pool: the
+/// receive ring holds one buffer per descriptor, filled by DMA in place, and
+/// the transmit ring holds each frame's buffer until the hardware is done
+/// with it.
 ///
-/// `TX` is the number of packets in the transmit queue, `RX` in the receive
-/// queue. A bigger queue allows the hardware to receive more packets while the
-/// CPU is busy doing other things, which may increase performance (especially for RX)
-/// at the cost of more RAM usage.
+/// `TX` is the number of descriptors in the transmit ring, `RX` in the receive
+/// ring. A bigger ring allows the hardware to receive more frames while the
+/// CPU is busy doing other things, which may increase performance (especially
+/// for RX), at the cost of pinning more packet buffers. Make sure the packet
+/// pool is bigger than `TX + RX`, with room to spare for the stack and sockets.
+/// The pool's buffers must be 8-byte aligned, and the DMA uses their size
+/// rounded down to a multiple of 8. To receive full 1514-byte frames, use
+/// `StaticPool<1520, N, 8>`.
+/// The v2 driver reserves one descriptor in each ring as a DMA tail guard.
+/// It requires at least two TX/RX descriptors, or three RX descriptors with PTP.
 pub struct PacketQueue<const TX: usize, const RX: usize> {
     tx_desc: [TDes; TX],
     rx_desc: [RDes; RX],
-    tx_buf: [Packet<TX_BUFFER_SIZE>; TX],
-    rx_buf: [Packet<RX_BUFFER_SIZE>; RX],
     #[cfg(feature = "ptp")]
-    packet_state: PacketState<TX, RX>,
+    tx_timestamps: Deque<TxTimestamp, TX>,
+    tx_buf: [Option<PacketBuf>; TX],
+    rx_buf: [Option<PacketBuf>; RX],
 }
 
 impl<const TX: usize, const RX: usize> PacketQueue<TX, RX> {
     /// Create a new packet queue.
     pub const fn new() -> Self {
-        Self::new_inner(
-            #[cfg(feature = "ptp")]
-            PtpTimestampSink::new(),
-        )
+        Self::new_inner()
     }
 
-    /// Create a new packet queue with Ethernet PTP packet timestamps.
-    ///
-    /// The queue records hardware RX/TX timestamps in `timestamps`. Use the
-    /// [`PacketMeta`] supplied by `embassy-net` to retrieve them from the store.
-    ///
-    /// The MAC PTP clock and timestamping registers must be configured
-    /// separately before the hardware will produce timestamps.
-    #[cfg(feature = "ptp")]
-    pub const fn new_with_ptp<const PTP_TX: usize, const PTP_RX: usize>(
-        timestamps: &'static PtpTimestampStore<PTP_TX, PTP_RX>,
-    ) -> Self {
-        Self::new_inner(PtpTimestampSink::from_store(timestamps))
-    }
-
-    const fn new_inner(#[cfg(feature = "ptp")] ptp: PtpTimestampSink) -> Self {
+    const fn new_inner() -> Self {
         Self {
             tx_desc: [const { TDes::new() }; TX],
             rx_desc: [const { RDes::new() }; RX],
-            tx_buf: [Packet([0; TX_BUFFER_SIZE]); TX],
-            rx_buf: [Packet([0; RX_BUFFER_SIZE]); RX],
             #[cfg(feature = "ptp")]
-            packet_state: PacketState::new(ptp),
+            tx_timestamps: Deque::new(),
+            tx_buf: [const { None }; TX],
+            rx_buf: [const { None }; RX],
         }
     }
 
@@ -99,166 +161,163 @@ impl<const TX: usize, const RX: usize> PacketQueue<TX, RX> {
     /// in a stack overflow.
     ///
     /// With this function, you can create an uninitialized `static` with type `MaybeUninit<PacketQueue<...>>`
-    /// and initialize it in-place, guaranteeing no stack usage.
+    /// and initialize the descriptor and buffer arrays in-place.
     ///
     /// After calling this function, calling `assume_init` on the MaybeUninit is guaranteed safe.
     pub fn init(this: &mut MaybeUninit<Self>) {
+        // Descriptors are valid when zeroed. Construct buffers without relying
+        // on their private representation.
         unsafe {
-            this.as_mut_ptr().write_bytes(0u8, 1);
+            let ptr = this.as_mut_ptr();
+            (&raw mut (*ptr).tx_desc).write_bytes(0, 1);
+            (&raw mut (*ptr).rx_desc).write_bytes(0, 1);
+            // Copy a constant template: constructing a deque by value can also
+            // put its backing array on the stack, especially without optimization.
             #[cfg(feature = "ptp")]
-            (&raw mut (*this.as_mut_ptr()).packet_state).write(PacketState::new(PtpTimestampSink::new()));
-        }
-    }
-
-    /// Initialize a packet queue in-place with Ethernet PTP packet timestamps.
-    ///
-    /// This is the PTP equivalent of [`PacketQueue::init`]. It avoids a
-    /// temporary stack allocation of the full packet queue while still attaching
-    /// the timestamp store used for packet timestamp lookup.
-    #[cfg(feature = "ptp")]
-    pub fn init_with_ptp<const PTP_TX: usize, const PTP_RX: usize>(
-        this: &mut MaybeUninit<Self>,
-        timestamps: &'static PtpTimestampStore<PTP_TX, PTP_RX>,
-    ) {
-        unsafe {
-            this.as_mut_ptr().write_bytes(0u8, 1);
-            (&raw mut (*this.as_mut_ptr()).packet_state)
-                .write(PacketState::new(PtpTimestampSink::from_store(timestamps)));
+            (&raw mut (*ptr).tx_timestamps).copy_from_nonoverlapping(const { &Deque::new() }, 1);
+            for i in 0..TX {
+                (&raw mut (*ptr).tx_buf[i]).write(None);
+            }
+            for i in 0..RX {
+                (&raw mut (*ptr).rx_buf[i]).write(None);
+            }
         }
     }
 }
 
 static WAKER: AtomicWaker = AtomicWaker::new();
 
-impl<'d, T: Instance, P: Phy> embassy_net_driver::Driver for Ethernet<'d, T, P> {
-    type RxToken<'a>
-        = RxToken<'a, 'd>
-    where
-        Self: 'a;
-    type TxToken<'a>
-        = TxToken<'a, 'd>
-    where
-        Self: 'a;
-
-    fn receive(&mut self, cx: &mut Context) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
-        WAKER.register(cx.waker());
-        #[cfg(feature = "ptp")]
-        self.tx.collect_completed();
-
-        if let Some(rx) = self.rx.available()
-            && let Some(tx) = self.tx.available()
-        {
-            Some((
-                RxToken {
-                    pkt: rx,
-                    rx: &mut self.rx,
-                },
-                TxToken {
-                    pkt: tx,
-                    tx: &mut self.tx,
-                },
-            ))
-        } else {
-            None
-        }
-    }
-
-    fn transmit(&mut self, cx: &mut Context) -> Option<Self::TxToken<'_>> {
-        WAKER.register(cx.waker());
-        if let Some(tx) = self.tx.available() {
-            Some(TxToken {
-                pkt: tx,
-                tx: &mut self.tx,
-            })
-        } else {
-            None
-        }
-    }
-
+impl<'d, T: Instance, P: Phy> Driver for Ethernet<'d, T, P> {
+    #[inline]
     fn capabilities(&self) -> Capabilities {
         let mut caps = Capabilities::default();
+        caps.medium = Medium::Ethernet;
         caps.max_transmission_unit = MTU;
-        caps.max_burst_size = Some(self.tx.len());
-        // The v2 MAC offloads the IPv4 header and TCP/UDP payload
+        // The v2/v1b/v1c MAC offloads the IPv4 header and TCP/UDP payload
         // checksums in hardware (MACCR.IPC + TDES3.CIC; bad RX frames are dropped
-        // in the descriptor ring), so smoltcp can skip them.
-        #[cfg(any(eth_v2, eth_v2a, eth_v1b, eth_v1c))]
+        // in the descriptor ring), so xarxa can skip them.
+        #[cfg(any(eth_v2, eth_v2a, eth_v2b, eth_v1b, eth_v1c))]
         {
-            use embassy_net_driver::Checksum;
-            caps.checksum.ipv4 = Checksum::None;
-            caps.checksum.tcp = Checksum::None;
-            caps.checksum.udp = Checksum::None;
+            use xarxa_driver::ChecksumOffload;
+            caps.checksum.ipv4 = ChecksumOffload::BOTH;
+            caps.checksum.tcp = ChecksumOffload::BOTH;
+            caps.checksum.udp = ChecksumOffload::BOTH;
+            caps.checksum.icmpv4 = ChecksumOffload::BOTH;
+            caps.checksum.icmpv6 = ChecksumOffload::BOTH;
         }
         caps
     }
 
-    fn link_state(&mut self, cx: &mut Context) -> LinkState {
-        if let Some(link_state) = self.phy.poll_link(cx) {
-            self.link_state = if link_state { LinkState::Up } else { LinkState::Down };
-        }
+    fn rx_wanted(&mut self) -> usize {
+        self.rx.wanted()
+    }
 
-        self.link_state
+    fn rx_give(&mut self, buf: PacketBuf) {
+        self.rx.give(buf);
+    }
+
+    fn receive(&mut self) -> Option<PacketBuf> {
+        self.tx.fast_forward();
+
+        match self.rx.receive() {
+            Some(buf) => {
+                self.wake_guard.disable();
+                Some(buf)
+            }
+            None => {
+                self.wake_guard.enable();
+                None
+            }
+        }
+    }
+
+    fn can_transmit(&mut self) -> bool {
+        self.tx.fast_forward();
+
+        if self.tx.can_transmit() {
+            self.wake_guard.disable();
+            true
+        } else {
+            self.wake_guard.enable();
+            false
+        }
+    }
+
+    fn transmit(&mut self, buf: PacketBuf) -> Result<(), PacketBuf> {
+        self.tx.fast_forward();
+
+        if !self.tx.can_transmit() {
+            return Err(buf);
+        }
+        self.tx.transmit(buf);
+        Ok(())
     }
 
     fn hardware_address(&self) -> HardwareAddress {
         HardwareAddress::Ethernet(self.mac_addr)
     }
-}
 
-/// `embassy-net` RX token.
-pub struct RxToken<'a, 'd> {
-    pkt: *mut [u8],
-    rx: &'a mut RDesRing<'d>,
-}
+    fn link_state(&mut self) -> LinkState {
+        self.link_state
+    }
 
-impl<'a, 'd> embassy_net_driver::RxToken for RxToken<'a, 'd> {
+    fn register_waker(&mut self, waker: &Waker) -> Result<(), NotSupported> {
+        WAKER.register(waker);
+
+        // The periodic PHY link poll is driven from here: this is called once
+        // per stack poll, with the waker `Phy::poll_link` re-arms its timer
+        // against. `Driver::link_state` then reports the cached state.
+        let mut cx = Context::from_waker(waker);
+        if let Some(link_state) = self.phy.poll_link(&mut cx) {
+            self.link_state = if link_state { LinkState::Up } else { LinkState::Down };
+        }
+
+        Ok(())
+    }
+
     #[cfg(feature = "ptp")]
-    fn meta(&self) -> PacketMeta {
-        self.rx.meta()
-    }
-
-    #[inline]
-    fn consume<R, F>(self, f: F) -> R
-    where
-        F: FnOnce(&mut [u8]) -> R,
-    {
-        let r = f(unsafe { &mut *self.pkt });
-        self.rx.pop_packet();
-        r
+    fn poll_tx_timestamp(&mut self) -> Option<xarxa_driver::TxTimestamp> {
+        self.tx.fast_forward();
+        self.tx.poll_timestamp()
     }
 }
 
-/// `embassy-net` TX token.
-pub struct TxToken<'a, 'd> {
-    pkt: *mut [u8],
-    tx: &'a mut TDesRing<'d>,
-}
+#[cfg(all(test, feature = "ptp"))]
+mod tests {
+    use embassy_ptp_driver::ScaledPpm;
 
-impl<'a, 'd> embassy_net_driver::TxToken for TxToken<'a, 'd> {
-    #[cfg(feature = "ptp")]
-    fn set_meta(&mut self, meta: PacketMeta) {
-        self.tx.set_meta(meta);
+    use super::adjusted_ptp_addend;
+
+    const NOMINAL: u32 = 0xa000_0000;
+
+    #[test]
+    fn ptp_addend_uses_absolute_scaled_ppm() {
+        assert_eq!(adjusted_ptp_addend(NOMINAL, ScaledPpm::ZERO), NOMINAL);
+        assert_eq!(
+            adjusted_ptp_addend(NOMINAL, ScaledPpm::from_raw(500 << 16)),
+            0xa014_7ae1
+        );
+        assert_eq!(
+            adjusted_ptp_addend(NOMINAL, ScaledPpm::from_raw(-500 << 16)),
+            0x9feb_851f
+        );
     }
 
-    #[inline]
-    fn consume<R, F>(self, len: usize, f: F) -> R
-    where
-        F: FnOnce(&mut [u8]) -> R,
-    {
-        // NOTE(unwrap): we checked the queue wasn't full when creating the token.
-        let pkt = unsafe { &mut *self.pkt };
-        let r = f(&mut pkt[..len]);
-        self.tx.transmit(len);
-        r
+    #[test]
+    fn ptp_addend_stays_in_the_valid_register_range() {
+        assert!(adjusted_ptp_addend(NOMINAL, ScaledPpm::from_raw(i32::MIN)) >= 1);
+        assert_eq!(adjusted_ptp_addend(u32::MAX, ScaledPpm::from_raw(i32::MAX)), u32::MAX);
     }
 }
 
 /// Trait for an Ethernet PHY
 pub trait Phy {
     /// Reset PHY and wait for it to come out of reset.
-    fn phy_reset(&mut self);
+    /// Returns an error if reset or MDIO access fails.
+    fn phy_reset(&mut self) -> Result<(), Error>;
     /// PHY initialisation.
-    fn phy_init(&mut self);
+    /// Returns an error if initialization fails.
+    fn phy_init(&mut self) -> Result<(), Error>;
     /// Poll link to see if it is up and FD with 100Mbps
     fn poll_link(&mut self, cx: &mut Context) -> Option<bool>;
 }
@@ -275,32 +334,26 @@ impl<'d, T: Instance, P: Phy> Ethernet<'d, T, P> {
     }
 }
 
-trait SealedInstance {
-    fn regs() -> crate::pac::eth::Eth;
-}
+struct State {}
 
-/// Ethernet instance.
-#[allow(private_bounds)]
-pub trait Instance: SealedInstance + PeripheralType + RccPeripheral + Send + 'static {}
-
-#[cfg(not(eth_v2a))]
-impl SealedInstance for crate::peripherals::ETH {
-    fn regs() -> crate::pac::eth::Eth {
-        crate::pac::ETH
+impl State {
+    const fn new() -> Self {
+        Self {}
     }
 }
 
-#[cfg(eth_v2a)]
-impl SealedInstance for crate::peripherals::ETH1 {
-    fn regs() -> crate::pac::eth::Eth {
-        crate::pac::ETH1
-    }
-}
+peri_trait!(
+    irqs: [Interrupt],
+);
 
-#[cfg(not(eth_v2a))]
-impl Instance for crate::peripherals::ETH {}
-#[cfg(eth_v2a)]
-impl Instance for crate::peripherals::ETH1 {}
+foreach_interrupt! {
+    ($inst:ident, eth, $block:ident, GLOBAL, $irq:ident) => {
+        peri_trait_impl!(
+            $inst,
+            irqs: [Interrupt : $irq]
+        );
+    };
+}
 
 pin_trait!(RXClkPin, Instance, @A);
 pin_trait!(TXClkPin, Instance, @A);

@@ -105,7 +105,7 @@ impl<I: Instance> interrupt::typelevel::Handler<I::Interrupt> for USBHostInterru
 
 const EP_COUNT: usize = 8;
 
-#[cfg(any(usbram_16x1_512, usbram_16x2_512))]
+#[cfg(usbram_16x1_512)]
 const USBRAM_SIZE: usize = 512;
 #[cfg(any(usbram_16x2_1024, usbram_32_1024))]
 const USBRAM_SIZE: usize = 1024;
@@ -289,9 +289,9 @@ impl<'d, I: SealedHostInstance> UsbHost<'d, I> {
     /// Create a new USB driver.
     pub fn new(
         _usb: Peri<'d, USB>,
-        _irq: impl interrupt::typelevel::Binding<I::Interrupt, USBHostInterruptHandler<I>> + 'd,
         dp: Peri<'d, impl DpPin<I>>,
         dm: Peri<'d, impl DmPin<I>>,
+        _irq: impl interrupt::typelevel::Binding<I::Interrupt, USBHostInterruptHandler<I>> + 'd,
     ) -> Self {
         super::super::common_init::<I>();
 

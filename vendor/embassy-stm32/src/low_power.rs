@@ -4,6 +4,9 @@
 //! to reduce power consumption. The `embassy-stm32` HAL provides a `sleep()` function which
 //! can use knowledge of which peripherals are currently blocked upon to transparently and safely
 //! enter such low-power modes including `STOP1` and `STOP2` when possible.
+//! To archive lower power consumption consider enabling the `gpio-init-analog` feature, in
+//! order to start with all GPIOs set to analog input as recommended by STs low-power guidance
+//! AN4899 chapter 7.1
 //!
 //! `sleep()` determines which peripherals are active by their RCC state; consequently,
 //! low-power states can only be entered if peripherals which block stop have been `drop`'d and if
@@ -24,9 +27,33 @@
 //! in the `embassy_stm32::executor` module, and is enabled by the `executor-thread` or `executor-interrupt` features. This stm32-specific
 //! executor is the preferred way to lower power consumption if you're using `async`, instead of calling `sleep()` directly.
 
-use core::ops::{Deref, DerefMut};
+// Fail loudly on families that have no low-power implementation.
+//
+// This is a stopgap, not an endorsement of the split: the families listed below are simply the
+// ones for which `platform::enter_stop` below actually programs PWR. On any other family,
+// enabling `low-power` would still set `SLEEPDEEP` and execute `WFI`, but with PWR left at its
+// reset value. The consequences are silent and severe:
+//
+//   * the mode actually entered is whatever `PWR` defaults to, not the mode `rcc::get_stop_mode()`
+//     reports to callers and tests;
+//   * the wake-up flags are not cleared before entry, so entry can be silently ignored;
+//   * `platform::exit_stop` has no branch for these families, so the system clock is not restored
+//     after wake-up.
+//
+// Negative list `not(any(...))` rather than an explicit deny-list so that a newly added family
+// fails here until it is implemented deliberately. See `docs/low-power/00-hardware-survey.md`
+// §6.1 for the full analysis.
+#[cfg(not(any(
+    stm32f4, stm32g4, stm32l0, stm32l4, stm32l5, stm32u0, stm32u3, stm32u5, stm32h5, stm32wb, stm32wba, stm32wl
+)))]
+compile_error!(
+    "the `low-power` feature is not implemented for this STM32 family. \
+     Implemented families: f4, g4, l0, l4, l5, u0, u3, u5, h5, wb, wba, wl. \
+     See embassy-stm32/src/low_power.rs and docs/low-power/00-hardware-survey.md."
+);
+
+use core::mem;
 use core::sync::atomic::{AtomicUsize, Ordering, compiler_fence};
-use core::{mem, ptr};
 
 /// wrist-rs: a Stop entry or exit, for [`set_stop_observer`].
 #[derive(Clone, Copy)]
@@ -109,11 +136,9 @@ impl Into<Lpms> for StopMode {
     fn into(self) -> Lpms {
         match self {
             StopMode::Stop1 => Lpms::Stop1,
-            #[cfg(not(stm32wba))]
+            #[cfg(any(feature = "stm32wba65ri", not(stm32wba)))]
             StopMode::Standby | StopMode::Stop2 => Lpms::Stop2,
-            #[cfg(stm32wba)]
-            // WBA STOP2 is auto-entered by hardware when LPMS=STOP0 and
-            // the 2.4 GHz radio is in deep sleep. It's not a separate LPMS value.
+            #[cfg(all(stm32wba, not(feature = "stm32wba65ri")))]
             StopMode::Standby | StopMode::Stop2 => Lpms::Stop0,
         }
     }
@@ -208,6 +233,30 @@ mod platform {
             });
         }
 
+        #[cfg(stm32f4)]
+        crate::pac::PWR.cr1().modify(|w| {
+            w.set_pdds(crate::pac::pwr::vals::Pdds::StopMode);
+            w.set_lpds(true);
+        });
+
+        #[cfg(stm32g4)]
+        {
+            // G4's stop modes are numbered the opposite way round from the L4/U5 families, and
+            // there is no Stop 2 at all: RM0440 §6.3.6/§6.3.7 define "Stop 0" as the main
+            // regulator staying on (fastest wake, higher current) and "Stop 1" as the main
+            // regulator being off with only the low-power regulator running (lowest current,
+            // slower wake). Table 41 in the RM uses a single merged "Stop 0/1" column, i.e. the
+            // two modes have *identical* peripheral availability and wake-up sources - the only
+            // difference is regulator current versus latency.
+            //
+            // Therefore every stop request maps to LPMS = 0b001 (G4 "Stop 1"), the lowest-current
+            // stop available: there is nothing to gain from the shallower G4 "Stop 0" here.
+            // LPMS = 0b011 is Standby and 0b1xx is Shutdown; neither is ever entered from here
+            // because both lose program state (see `rcc::get_stop_mode`).
+            crate::pac::PWR.cr1().modify(|w| w.set_lpms(0b001));
+            let _ = stop_mode;
+        }
+
         #[cfg(stm32wb)]
         drop(mutex);
 
@@ -233,6 +282,20 @@ mod platform {
 
         #[cfg(stm32l0)]
         crate::pac::PWR.cr().modify(|w| w.set_cwuf(true));
+
+        #[cfg(stm32g4)]
+        // G4 keeps its wake-up flags (WUF1..WUF5) in PWR_SR1 and the standby flag (SBF) there
+        // too; both are cleared by writing ones to PWR_SCR. A stale flag left over from a
+        // previous wake must not survive into the next entry. Writes are used rather than
+        // `modify` so we don't depend on the read-back value of a write-one-to-clear register.
+        crate::pac::PWR.scr().write(|w| {
+            w.set_cwuf1(true);
+            w.set_cwuf2(true);
+            w.set_cwuf3(true);
+            w.set_cwuf4(true);
+            w.set_cwuf5(true);
+            w.set_csbf(true);
+        });
     }
 
     /// Exit stop mode, reinitializing timer and rcc if required
@@ -263,7 +326,7 @@ mod platform {
             crate::pac::PWR.sr().modify(|w| w.set_cssf(true));
         }
 
-        #[cfg(any(stm32wl, stm32wb, stm32wba))]
+        #[cfg(any(stm32wl, stm32wb, stm32wba, stm32f4, stm32g4))]
         {
             // stm32wl5x is dual core and we don't want BOTH cores to re-initialize RCC so we hold a lock
             #[cfg(stm32wl5x)]
@@ -276,7 +339,7 @@ mod platform {
             let es = crate::pac::PWR.sr().read();
 
             // we need to re-initialize RCC if *BOTH* cores have been in some STOP mode!
-            #[cfg(any(stm32wl, stm32wba))]
+            #[cfg(any(stm32wl, stm32wba, stm32f4, stm32g4))]
             let re_initialize_rcc = {
                 #[cfg(stm32wl5x)]
                 {
@@ -290,6 +353,15 @@ mod platform {
                 #[cfg(stm32wba)]
                 {
                     es.stopf()
+                }
+                // F4 and G4 always need it: neither has STOPWUCK (RM0440 Table 40 lists HSI16 as
+                // the only wake-up system clock for Stop 0/1), so exiting Stop always lands us on
+                // HSI16 rather than the configured PLL. `reinit_saved` re-runs the full clock
+                // init, which also re-inits the time driver so the timer's prescaler matches the
+                // restored clock.
+                #[cfg(any(stm32f4, stm32g4))]
+                {
+                    true
                 }
             };
 
@@ -309,7 +381,7 @@ mod platform {
                 }
             };
 
-            #[cfg(any(stm32wl, stm32wba))]
+            #[cfg(any(stm32wl, stm32wba, stm32f4, stm32g4))]
             if re_initialize_rcc {
                 // when we wake from any stop mode we need to re-initialize the rcc
                 crate::rcc::reinit_saved(_cs);
@@ -391,9 +463,9 @@ fn configure_pwr(cs: CriticalSection) -> bool {
 
         false
     } else {
-        #[cfg(stm32l0)]
+        #[cfg(any(stm32l0, stm32f4))]
         trace!("low power: enter stop");
-        #[cfg(not(stm32l0))]
+        #[cfg(not(any(stm32l0, stm32f4)))]
         trace!("low power: enter stop: {:?}", stop_mode);
         notify_stop(StopEvent::Enter);
 
@@ -424,8 +496,11 @@ pub unsafe fn sleep(cs: CriticalSection) {
         notify_stop(StopEvent::Sleep { stop1_holds, stop2_holds });
     }
 
+    // Only flush defmt if we are actually going into Stop. Avoids flush on every tiny WFE
     #[cfg(feature = "low-power-defmt-flush")]
-    defmt::flush();
+    if stop {
+        defmt::flush();
+    }
 
     cortex_m::asm::dsb();
     cortex_m::asm::wfi();
@@ -438,136 +513,5 @@ pub unsafe fn sleep(cs: CriticalSection) {
         on_wakeup(cs);
     } else {
         notify_stop(StopEvent::Woke);
-    }
-}
-
-trait_set::trait_set! {
-    /// Peripheral that can be suspended
-    #[allow(private_bounds)]
-    pub trait SuspendablePeripheral = SealedSuspendablePeripheral;
-}
-
-pub(crate) trait SealedSuspendablePeripheral {
-    type InternalState;
-
-    #[allow(dead_code)]
-    fn suspend(self) -> Self::InternalState;
-    #[allow(dead_code)]
-    fn resume(state: Self::InternalState) -> Self;
-}
-
-/// A suspended peripheral
-pub struct SuspendedPeripheral<T: SuspendablePeripheral> {
-    state: T::InternalState,
-}
-
-impl<T: SuspendablePeripheral> SuspendedPeripheral<T> {
-    /// Suspend a peripheral
-    pub fn from(peripheral: T) -> Self {
-        Self {
-            state: T::suspend(peripheral),
-        }
-    }
-
-    /// Resume a peripheral
-    pub fn resume(self) -> T {
-        T::resume(self.state)
-    }
-}
-
-enum ResumableState<T: SuspendablePeripheral> {
-    Suspended(SuspendedPeripheral<T>),
-    Resumed(T),
-}
-
-impl<T: SuspendablePeripheral> ResumableState<T> {
-    pub fn resume(&mut self) -> &mut T {
-        if let ResumableState::Suspended(peripheral) = &self {
-            unsafe {
-                let peripheral = ptr::read(peripheral).resume();
-
-                ptr::write(self, ResumableState::Resumed(peripheral));
-            }
-        }
-
-        if let ResumableState::Resumed(peripheral) = self {
-            peripheral
-        } else {
-            unreachable!()
-        }
-    }
-
-    pub fn suspend(&mut self) {
-        if let ResumableState::Resumed(peripheral) = &self {
-            unsafe {
-                let peripheral = SuspendedPeripheral::from(ptr::read(peripheral));
-
-                ptr::write(self, ResumableState::Suspended(peripheral));
-            }
-        }
-    }
-}
-
-/// A mutex-like object to resume a peripheral
-pub struct ResumablePeripheral<T: SuspendablePeripheral> {
-    state: ResumableState<T>,
-}
-
-impl<T: SuspendablePeripheral> ResumablePeripheral<T> {
-    /// Create the object. Will suspend the peripheral as soon as it is passed.
-    pub fn new(peripheral: T) -> Self {
-        Self {
-            state: ResumableState::Suspended(SuspendedPeripheral::from(peripheral)),
-        }
-    }
-
-    /// Suspend the peripheral, if it is resumed
-    pub fn suspend(&mut self) {
-        self.state.suspend()
-    }
-
-    /// Resume the peripheral and get a mutable reference to it
-    pub fn resume(&mut self) -> &mut T {
-        self.state.resume()
-    }
-
-    /// Get a guard that will put the peripheral back to sleep once it is dropped
-    pub fn borrow(&mut self) -> ResumablePeripheralGuard<'_, T> {
-        self.state.resume();
-
-        ResumablePeripheralGuard { state: &mut self.state }
-    }
-}
-
-/// A mutex-like object guard, that when held, activates the peripheral
-pub struct ResumablePeripheralGuard<'a, T: SuspendablePeripheral> {
-    state: &'a mut ResumableState<T>,
-}
-
-impl<'a, T: SuspendablePeripheral> Drop for ResumablePeripheralGuard<'a, T> {
-    fn drop(&mut self) {
-        self.state.suspend();
-    }
-}
-
-impl<'a, T: SuspendablePeripheral> Deref for ResumablePeripheralGuard<'a, T> {
-    type Target = T;
-
-    fn deref(&self) -> &T {
-        if let ResumableState::Resumed(peripheral) = &self.state {
-            peripheral
-        } else {
-            unreachable!()
-        }
-    }
-}
-
-impl<'a, T: SuspendablePeripheral> DerefMut for ResumablePeripheralGuard<'a, T> {
-    fn deref_mut(&mut self) -> &mut T {
-        if let ResumableState::Resumed(peripheral) = &mut self.state {
-            peripheral
-        } else {
-            unreachable!()
-        }
     }
 }

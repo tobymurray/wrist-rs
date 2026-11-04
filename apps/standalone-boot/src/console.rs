@@ -9,7 +9,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::pipe::Pipe;
 use embassy_time::{Instant, Timer};
 use embassy_usb::driver::EndpointError;
-use embassy_usb::class::cdc_acm::{CdcAcmClass, Receiver, Sender, State};
+use embassy_usb::class::cdc_acm::device::{CdcAcmClass, Receiver, Sender, State};
 use embassy_usb::{Builder, Handler};
 use static_cell::ConstStaticCell;
 
@@ -296,9 +296,9 @@ pub async fn service(mut pins: Pins, flash: &'static FlashMutex) -> ! {
         driver_config.vbus_detection = false;
         let driver = Driver::new_hs(
             pins.otg.reborrow(),
-            Irqs,
             pins.dp.reborrow(),
             pins.dm.reborrow(),
+            Irqs,
             &mut ep_out[..],
             driver_config,
         );

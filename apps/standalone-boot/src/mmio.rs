@@ -190,6 +190,8 @@ pub const PWR_SVMCR_UVMEN: u32 = 1 << 24;
 pub const PWR_SVMCR_USV: u32 = 1 << 28;
 pub const PWR_SVMSR_VDDUSBRDY: u32 = 1 << 24;
 pub const PWR_SVMSR_REGS: u32 = 1 << 1;
+pub const PWR_BDCR1: u32 = 0x4602_0800 + 0x20;
+pub const PWR_BDCR1_BREN: u32 = 1 << 0;
 
 pub const PWR_CR2: u32 = PWR_BASE + 0x04;
 pub const PWR_CR3: u32 = PWR_BASE + 0x08;

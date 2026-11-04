@@ -424,9 +424,24 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
                 if use_high_group {
                     w.set_iohen(true);
                     w.set_iohsrc(data_src);
+                    if w.iolsrc() == data_src {
+                        w.set_iolen(false);
+                    }
                 } else {
                     w.set_iolen(true);
                     w.set_iolsrc(data_src);
+                    if w.iohsrc() == data_src {
+                        w.set_iohen(false);
+                    }
+                }
+            });
+            //Make sure that no other pins share the same configuration
+            T::OCTOSPIM_REGS.p1cr().modify(|w| {
+                if w.iohsrc() == data_src {
+                    w.set_iohen(false);
+                }
+                if w.iolsrc() == data_src {
+                    w.set_iolen(false);
                 }
             });
         } else {
@@ -434,9 +449,24 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
                 if use_high_group {
                     w.set_iohen(true);
                     w.set_iohsrc(data_src);
+                    if w.iolsrc() == data_src {
+                        w.set_iolen(false);
+                    }
                 } else {
                     w.set_iolen(true);
                     w.set_iolsrc(data_src);
+                    if w.iohsrc() == data_src {
+                        w.set_iohen(false);
+                    }
+                }
+            });
+            //Make sure that no other pins share the same configuration
+            T::OCTOSPIM_REGS.p2cr().modify(|w| {
+                if w.iohsrc() == data_src {
+                    w.set_iohen(false);
+                }
+                if w.iolsrc() == data_src {
+                    w.set_iolen(false);
                 }
             });
         }
@@ -460,6 +490,18 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
                     w.set_dqsen(false);
                 }
             });
+            //Make sure that no other pins share the same configuration
+            T::OCTOSPIM_REGS.p1cr().modify(|w| {
+                if w.clksrc() == signal_src {
+                    w.set_clken(false);
+                }
+                if w.ncssrc() == signal_src {
+                    w.set_ncsen(false);
+                }
+                if w.dqssrc() == signal_src {
+                    w.set_dqsen(false);
+                }
+            });
         } else {
             T::OCTOSPIM_REGS.p1cr().modify(|w| {
                 w.set_clken(true);
@@ -471,6 +513,18 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
                     w.set_dqsen(true);
                     w.set_dqssrc(signal_src);
                 } else {
+                    w.set_dqsen(false);
+                }
+            });
+            //Make sure that no other pins share the same configuration
+            T::OCTOSPIM_REGS.p2cr().modify(|w| {
+                if w.clksrc() == signal_src {
+                    w.set_clken(false);
+                }
+                if w.ncssrc() == signal_src {
+                    w.set_ncsen(false);
+                }
+                if w.dqssrc() == signal_src {
                     w.set_dqsen(false);
                 }
             });
@@ -680,7 +734,7 @@ impl<'d, T: Instance, M: PeriMode> Ospi<'d, T, M> {
             });
         } else {
             T::REGS.dlr().write(|v| {
-                v.set_dl((0) as u32);
+                v.set_dl(0_u32);
             });
         }
 
@@ -2082,8 +2136,8 @@ macro_rules! ospi_signal_src_trait_impl {
 
 dma_trait!(OctoDma, Instance);
 
-cfg_if::cfg_if! {
-    if #[cfg(octospim_v1)] {
+cfg_select! {
+    octospim_v1 => {
         // signal sources when using OCTOSPIM
         ospi_signal_src_trait!(SckSrc);
         ospi_signal_src_trait!(NckSrc);
@@ -2097,7 +2151,8 @@ cfg_if::cfg_if! {
         ospi_signal_src_trait!(D5Src);
         ospi_signal_src_trait!(D6Src);
         ospi_signal_src_trait!(D7Src);
-    } else {
+    }
+    _ => {
         // pins when NOT using OCTOSPIM
         pin_trait!(SckPin, Instance);
         pin_trait!(NckPin, Instance);

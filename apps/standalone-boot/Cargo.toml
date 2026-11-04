@@ -64,18 +64,18 @@ pedantic = { level = "warn", priority = -1 }
 # Every Embassy crate on one revision, so their types match (vendor/*/WRIST-PATCHES.md).
 [patch.crates-io]
 embassy-stm32 = { path = "../../vendor/embassy-stm32" }
-embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "81cabe7e5307c702d27e98577ac5e063c7796910" }
-embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "81cabe7e5307c702d27e98577ac5e063c7796910" }
-embassy-time-driver = { git = "https://github.com/embassy-rs/embassy", rev = "81cabe7e5307c702d27e98577ac5e063c7796910" }
-embassy-time-queue-utils = { git = "https://github.com/embassy-rs/embassy", rev = "81cabe7e5307c702d27e98577ac5e063c7796910" }
-embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "81cabe7e5307c702d27e98577ac5e063c7796910" }
-embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev = "81cabe7e5307c702d27e98577ac5e063c7796910" }
-embassy-hal-internal = { git = "https://github.com/embassy-rs/embassy", rev = "81cabe7e5307c702d27e98577ac5e063c7796910" }
-embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy", rev = "81cabe7e5307c702d27e98577ac5e063c7796910" }
-embassy-net-driver = { git = "https://github.com/embassy-rs/embassy", rev = "81cabe7e5307c702d27e98577ac5e063c7796910" }
-embassy-usb-driver = { git = "https://github.com/embassy-rs/embassy", rev = "81cabe7e5307c702d27e98577ac5e063c7796910" }
+embassy-executor = { git = "https://github.com/embassy-rs/embassy", rev = "592a8c2e1f727f483d238dd01c0862e1e0c51c73" }
+embassy-time = { git = "https://github.com/embassy-rs/embassy", rev = "592a8c2e1f727f483d238dd01c0862e1e0c51c73" }
+embassy-time-driver = { git = "https://github.com/embassy-rs/embassy", rev = "592a8c2e1f727f483d238dd01c0862e1e0c51c73" }
+embassy-time-queue-utils = { git = "https://github.com/embassy-rs/embassy", rev = "592a8c2e1f727f483d238dd01c0862e1e0c51c73" }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy", rev = "592a8c2e1f727f483d238dd01c0862e1e0c51c73" }
+embassy-futures = { git = "https://github.com/embassy-rs/embassy", rev = "592a8c2e1f727f483d238dd01c0862e1e0c51c73" }
+embassy-hal-internal = { git = "https://github.com/embassy-rs/embassy", rev = "592a8c2e1f727f483d238dd01c0862e1e0c51c73" }
+embassy-embedded-hal = { git = "https://github.com/embassy-rs/embassy", rev = "592a8c2e1f727f483d238dd01c0862e1e0c51c73" }
+embassy-crypto = { git = "https://github.com/embassy-rs/embassy", rev = "592a8c2e1f727f483d238dd01c0862e1e0c51c73" }
+embassy-usb-driver = { git = "https://github.com/embassy-rs/embassy", rev = "592a8c2e1f727f483d238dd01c0862e1e0c51c73" }
 embassy-usb-synopsys-otg = { path = "../../vendor/embassy-usb-synopsys-otg" }
-embassy-usb = { git = "https://github.com/embassy-rs/embassy", rev = "81cabe7e5307c702d27e98577ac5e063c7796910" }
+embassy-usb = { git = "https://github.com/embassy-rs/embassy", rev = "592a8c2e1f727f483d238dd01c0862e1e0c51c73" }
 
 # What draws the face is built for speed rather than size.
 [profile.release.package.wrist-glass]

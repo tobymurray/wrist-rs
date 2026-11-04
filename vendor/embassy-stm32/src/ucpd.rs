@@ -2,7 +2,7 @@
 
 // Implementation Notes
 //
-// As of Feb. 2024 the UCPD peripheral is availalbe on: G0, G4, H5, L5, U5
+// As of Feb. 2024 the UCPD peripheral is available on: G0, G4, H5, L5, U5
 //
 // Cube HAL LL Driver (g0):
 // https://github.com/STMicroelectronics/stm32g0xx_hal_driver/blob/v1.4.6/Inc/stm32g0xx_ll_ucpd.h
@@ -123,9 +123,9 @@ impl<'d, T: Instance> Ucpd<'d, T> {
     /// Creates a new UCPD driver instance.
     pub fn new(
         _peri: Peri<'d, T>,
-        _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
         cc1: Peri<'d, impl Cc1Pin<T>>,
         cc2: Peri<'d, impl Cc2Pin<T>>,
+        _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
         config: Config,
     ) -> Self {
         cc1.set_as_analog();
@@ -165,7 +165,7 @@ impl<'d, T: Instance> Ucpd<'d, T> {
             w.set_ifrgap(17 - 1);
 
             // UNDOCUMENTED: This register can only be written while UCPDEN=0 (found by testing).
-            let rxordset = (config.sop as u16) << 0
+            let rxordset = (config.sop as u16)
                 | (config.sop_prime as u16) << 1
                 | (config.sop_double_prime as u16) << 2
                 // Hard reset
@@ -257,7 +257,7 @@ impl<'d, T: Instance> Ucpd<'d, T> {
     }
 }
 
-/// Control and monitoring of TypeC CC pin functionailty.
+/// Control and monitoring of TypeC CC pin functionality.
 pub struct CcPhy<'d, T: Instance> {
     _lifetime: PhantomData<&'d mut T>,
 }
@@ -565,10 +565,10 @@ impl<'d, T: Instance> PdPhy<'d, T> {
         // When a previous transmission was dropped before it had finished it
         // might still be running because there is no way to abort an ongoing
         // message transmission. Wait for it to finish but ignore errors.
-        if r.cr().read().txsend() {
-            if let Err(TxError::HardReset) = Self::wait_tx_done().await {
-                return Err(TxError::HardReset);
-            }
+        if r.cr().read().txsend()
+            && let Err(TxError::HardReset) = Self::wait_tx_done().await
+        {
+            return Err(TxError::HardReset);
         }
 
         // Clear the TX interrupt flags.

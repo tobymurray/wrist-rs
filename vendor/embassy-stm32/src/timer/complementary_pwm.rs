@@ -16,6 +16,7 @@ pub use crate::pac::timer::vals::{Bkbid as BreakBidirectionalMode, Bkdsrm as Bre
 pub use crate::pac::timer::vals::{
     Bkinp as BreakComparatorPolarity, Bkp as BreakInputPolarity, Ccds, Ckd, Mms2, Ossi, Ossr,
 };
+use crate::rcc::WakeGuard;
 use crate::time::Hertz;
 use crate::timer::TimerChannel;
 #[cfg(timer_v2)]
@@ -78,6 +79,7 @@ pub struct ComplementaryPwm<'d, T: AdvancedInstance4Channel> {
     _ch3n: Option<Flex<'d>>,
     _ch4: Option<Flex<'d>>,
     _ch4n: Option<Flex<'d>>,
+    _wake_guard: WakeGuard,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -143,6 +145,7 @@ impl<'d, T: AdvancedInstance4Channel> ComplementaryPwm<'d, T> {
             _ch3n,
             _ch4,
             _ch4n,
+            _wake_guard: T::RCC_INFO.wake_guard(),
         };
 
         this.inner.set_counting_mode(counting_mode);
@@ -413,6 +416,20 @@ impl<'d, T: AdvancedInstance4Channel> ComplementaryPwm<'d, T> {
         self.inner.get_break_input_pin_enable()
     }
 
+    /// Enable/disable routing DFSDM1_BREAK0 to this timer's break input.
+    ///
+    /// See `Timer::set_break_dfsdm_enable` for the part-availability caveat.
+    #[cfg(all(dfsdm, any(timer_v1, timer_v3)))]
+    pub fn set_break_dfsdm_enable(&mut self, enable: bool) {
+        self.inner.set_break_dfsdm_enable(enable);
+    }
+
+    /// Get DFSDM1_BREAK0 break input enable state.
+    #[cfg(all(dfsdm, any(timer_v1, timer_v3)))]
+    pub fn get_break_dfsdm_enable(&self) -> bool {
+        self.inner.get_break_dfsdm_enable()
+    }
+
     /// Enable/disable comparator output as break input 2 source.
     pub fn set_break2_comparator_enable(&mut self, comp_index: usize, enable: bool) {
         self.inner.set_break2_comparator_enable(comp_index, enable);
@@ -443,6 +460,20 @@ impl<'d, T: AdvancedInstance4Channel> ComplementaryPwm<'d, T> {
         self.inner.get_break2_input_pin_enable()
     }
 
+    /// Enable/disable routing DFSDM1_BREAK1 to this timer's break input 2.
+    ///
+    /// See `Timer::set_break2_dfsdm_enable` for the part-availability caveat.
+    #[cfg(all(dfsdm, any(timer_v1, timer_v3)))]
+    pub fn set_break2_dfsdm_enable(&mut self, enable: bool) {
+        self.inner.set_break2_dfsdm_enable(enable);
+    }
+
+    /// Get DFSDM1_BREAK1 break input 2 enable state.
+    #[cfg(all(dfsdm, any(timer_v1, timer_v3)))]
+    pub fn get_break2_dfsdm_enable(&self) -> bool {
+        self.inner.get_break2_dfsdm_enable()
+    }
+
     /// Set Master Slave Mode
     pub fn set_master_mode(&mut self, mms: MasterMode) {
         self.inner.set_master_mode(mms);
@@ -468,6 +499,41 @@ impl<'d, T: AdvancedInstance4Channel> ComplementaryPwm<'d, T> {
     pub fn disable(&mut self, channel: Channel) {
         self.inner.enable_complementary_channel(channel, false);
         self.inner.enable_channel(channel, false);
+    }
+
+    /// Enable or disable the main output (`CCxE`) of the given channel on its own.
+    ///
+    /// The complementary output (`CCxNE`) is left exactly as it is, so a channel's
+    /// two outputs can be switched independently. While only one of the two is
+    /// enabled the hardware drives it straight from `OCxREF`, with no dead time
+    /// inserted, and the complementary output on its own is not inverted; the
+    /// output that is disabled is released by the timer, so its pin floats unless
+    /// `OSSR`/`OSSI` select an off-state level. Dead time is inserted again as soon
+    /// as both outputs of the channel are enabled.
+    ///
+    /// [`enable`](Self::enable) and [`disable`](Self::disable) keep switching both
+    /// outputs of a channel together.
+    pub fn set_main_output_enable(&mut self, channel: Channel, enable: bool) {
+        self.inner.enable_channel(channel, enable);
+    }
+
+    /// Enable or disable the complementary output (`CCxNE`) of the given channel on its own.
+    ///
+    /// The main output (`CCxE`) is left exactly as it is. See
+    /// [`set_main_output_enable`](Self::set_main_output_enable) for what the
+    /// hardware drives while only one output of a channel is enabled.
+    pub fn set_complementary_output_enable(&mut self, channel: Channel, enable: bool) {
+        self.inner.enable_complementary_channel(channel, enable);
+    }
+
+    /// Whether the main output (`CCxE`) of the given channel is enabled.
+    pub fn main_output_enabled(&self, channel: Channel) -> bool {
+        self.inner.get_channel_enable_state(channel)
+    }
+
+    /// Whether the complementary output (`CCxNE`) of the given channel is enabled.
+    pub fn complementary_output_enabled(&self, channel: Channel) -> bool {
+        self.inner.get_complementary_channel_enable_state(channel)
     }
 
     /// Set PWM frequency.
@@ -812,16 +878,16 @@ fn compute_dead_time_value(value: u16) -> (Ckd, u8) {
 
         let target = value / outdiv;
         let (these_bits, result) = match target {
-            0..127 | 127 => (target as u8, target),
-            128..254 | 254..256 => {
+            0..=127 => (target as u8, target),
+            128..256 => {
                 let tmp = div_round(value, outdiv * 2);
                 ((tmp as u8 - 64) | 0b100_00000, tmp * 2)
             }
-            256..504 | 504..508 => {
+            256..508 => {
                 let tmp = div_round(value, outdiv * 8);
                 ((tmp as u8 - 32) | 0b110_00000, tmp * 8)
             }
-            508..512 | 512..1008 => {
+            508..1008 => {
                 let tmp = div_round(value, outdiv * 16);
                 ((tmp as u8 - 32) | 0b111_00000, tmp * 16)
             }

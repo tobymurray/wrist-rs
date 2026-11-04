@@ -20,18 +20,11 @@ use crate::interrupt::typelevel::Interrupt;
 use crate::lptim::vals;
 #[cfg(not(time_driver_lptim4))]
 use crate::lptim::SealedInstance;
+use crate::rcc;
 #[cfg(not(time_driver_lptim4))]
 use crate::rcc::SealedRccPeripheral;
-use crate::{peripherals, rcc};
 
-#[cfg(time_driver_lptim1)]
-type T = peripherals::LPTIM1;
-#[cfg(time_driver_lptim2)]
-type T = peripherals::LPTIM2;
-#[cfg(time_driver_lptim3)]
-type T = peripherals::LPTIM3;
-#[cfg(time_driver_lptim4)]
-type T = peripherals::LPTIM4;
+type T = crate::_generated::TimeDriverPeripheral;
 
 #[cfg(not(time_driver_lptim4))]
 type Regs = Lptim;
@@ -471,7 +464,7 @@ fn write_compare(r: Regs, val: u16) {
             stats::compare_skipped();
             return;
         }
-        // wrist-rs: a stale CMPOK does not acknowledge this write; see WRIST-PATCHES.md.
+        // As on STM32WL, clear the stale CMPOK. wrist-rs: the wait is bounded; see WRIST-PATCHES.md.
         let write = || {
             r.icr().write(|w| w.set_cmpokcf(0, true));
             r.ccr(0).write(|w| w.set_ccr(val));
@@ -507,11 +500,11 @@ embassy_time_driver::time_driver_impl!(static DRIVER: RtcDriver = RtcDriver {
 impl RtcDriver {
     /// initialize the timer, but don't start it.  Used for chips like stm32wle5
     /// for low power where the timer config is lost in STOP2.
-    pub(crate) fn init_timer(&'static self, _cs: critical_section::CriticalSection) {
+    pub(crate) fn init_timer(&'static self, cs: critical_section::CriticalSection) {
         let r = regs_lptim();
 
         // we want this to increment the stop mode counter (some lp timer can't do STOP2)
-        rcc::enable_and_reset::<T>();
+        rcc::enable_and_reset_with_cs::<T>(cs);
 
         #[cfg(not(time_driver_lptim4))]
         let timer_freq = T::frequency();
@@ -653,29 +646,15 @@ impl RtcDriver {
             icr_write_raw(r, sr.0);
 
             // Overflow
-            // wrist-rs: an alarm already due once `next_period` has enabled it, whose flag
-            // the enable may have cleared (ES0553 2.12.3), is handled now.
-            let mut overdue = false;
             if sr.ue() {
                 self.next_period();
-                overdue = self.alarm.borrow(cs).timestamp.get() <= self.now();
-                #[cfg(any(stm32wba, stm32u5, stm32u3))]
-                if overdue {
-                    stats::overdue_at_overflow(ier & 1 == 0);
-                }
             }
 
-            if (sr.ccif(0) && ier_ccie(r, 0)) || overdue {
+            if sr.ccif(0) && ier_ccie(r, 0) {
                 #[cfg(any(stm32wba, stm32u5, stm32u3))]
                 {
-                    let mut context = 0;
-                    if sr.ue() {
-                        context |= stats::AT_OVERFLOW;
-                    }
-                    if ier & 1 == 0 {
-                        context |= stats::CCIE_CLEAR;
-                    }
                     let at = self.alarm.borrow(cs).timestamp.get();
+                    let context = if sr.ue() { stats::AT_OVERFLOW } else { 0 };
                     stats::handled(at, self.now(), r.ccr(0).read().ccr(), context);
                 }
                 self.trigger_alarm(cs);
@@ -695,11 +674,25 @@ impl RtcDriver {
             let alarm = self.alarm.borrow(cs);
             let at = alarm.timestamp.get();
 
-            // Arm now if it falls in this counter cycle (upstream fb82051b5). One a few ticks
-            // into the cycle may already have passed; `on_interrupt` handles it.
+            // Arm now if it falls in this counter cycle
             if at < t + 0x1_0000 {
+                #[cfg(any(stm32wba, stm32u5, stm32u3))]
+                let ccie_clear = !ier_ccie(r, 0);
                 // just enable it. `set_alarm` has already set the correct CCR val.
                 ier_set_ccie(r, 0, true);
+
+                // The overflow interrupt may run after an alarm a few ticks into the new cycle
+                // has already passed; the compare match was then missed. Fire it now.
+                // wrist-rs: so is one whose flag enabling `CCIE` cleared (ES0553 2.12.3).
+                if at <= self.now() {
+                    #[cfg(any(stm32wba, stm32u5, stm32u3))]
+                    {
+                        stats::overdue_at_overflow(ccie_clear);
+                        let context = stats::AT_OVERFLOW | if ccie_clear { stats::CCIE_CLEAR } else { 0 };
+                        stats::handled(at, self.now(), r.ccr(0).read().ccr(), context);
+                    }
+                    self.trigger_alarm(cs);
+                }
             }
         })
     }
@@ -734,10 +727,10 @@ impl RtcDriver {
         write_compare(r, timestamp as u16);
 
         // Enable it if it'll happen this counter cycle. Otherwise, `next_period` will enable it.
-        let this_cycle = timestamp < ((t >> 16) + 1) << 16;
-        ier_set_ccie(r, 0, this_cycle);
+        let next_overflow = ((t >> 16) + 1) << 16;
+        ier_set_ccie(r, 0, timestamp < next_overflow);
         #[cfg(any(stm32wba, stm32u5, stm32u3))]
-        stats::armed(!this_cycle);
+        stats::armed(timestamp >= next_overflow);
 
         // Reevaluate if the alarm timestamp is still in the future
         let t = self.now();
@@ -803,6 +796,9 @@ impl super::LPTimeDriver for RtcDriver {
 impl Driver for RtcDriver {
     fn now(&self) -> u64 {
         let r = regs_lptim();
+
+        // wrist-rs: the counter is read between two reads of the pending overflow and of
+        // `period`, and the sample is used only if neither changed; see WRIST-PATCHES.md.
         loop {
             let period = self.period.load(Ordering::Relaxed);
             compiler_fence(Ordering::Acquire);

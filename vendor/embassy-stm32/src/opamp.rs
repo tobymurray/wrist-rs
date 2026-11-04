@@ -580,7 +580,7 @@ pub trait Instance: SealedInstance + PeripheralType + 'static {}
 macro_rules! impl_opamp_external_output {
     ($inst:ident, $adc:ident, $ch:expr) => {
         foreach_adc!(
-            ($adc, $common_inst:ident, $adc_clock:ident) => {
+            ($adc, $common_inst:ident, $block:ident, $family:ident) => {
                 impl<'d> crate::adc::SealedAdcChannel<crate::peripherals::$adc>
                     for crate::opamp::OpAmpOutput<'d, crate::peripherals::$inst>
                 {
@@ -589,7 +589,7 @@ macro_rules! impl_opamp_external_output {
                     }
                 }
 
-                impl<'d> crate::adc::AdcChannel<crate::peripherals::$adc>
+                impl<'d> crate::adc::AdcChannel<'d, crate::peripherals::$adc>
                     for crate::opamp::OpAmpOutput<'d, crate::peripherals::$inst>
                 {
                 }
@@ -602,7 +602,7 @@ macro_rules! impl_opamp_external_output {
 macro_rules! impl_opamp_internal_output {
     ($inst:ident, $adc:ident, $ch:expr) => {
         foreach_adc!(
-            ($adc, $common_inst:ident, $adc_clock:ident) => {
+            ($adc, $common_inst:ident, $block:ident, $family:ident) => {
                 impl<'d> crate::adc::SealedAdcChannel<crate::peripherals::$adc>
                     for OpAmpInternalOutput<'d, crate::peripherals::$inst>
                 {
@@ -611,7 +611,7 @@ macro_rules! impl_opamp_internal_output {
                     }
                 }
 
-                impl<'d> crate::adc::AdcChannel<crate::peripherals::$adc>
+                impl<'d> crate::adc::AdcChannel<'d, crate::peripherals::$adc>
                     for OpAmpInternalOutput<'d, crate::peripherals::$inst>
                 {
                 }

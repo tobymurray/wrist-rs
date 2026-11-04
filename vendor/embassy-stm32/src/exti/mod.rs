@@ -7,7 +7,6 @@ use core::task::{Context, Poll};
 
 use embassy_hal_internal::PeripheralType;
 use embassy_sync::waitqueue::AtomicWaker;
-use futures_util::FutureExt;
 
 use crate::exti::low_level::read_pending;
 use crate::gpio::{AnyPin, ExtiPin, Flex, Input, Level, Pin as GpioPin, PinNumber, Pull};
@@ -112,8 +111,18 @@ impl<'d, Mode: PeriMode> ExtiInput<'d, Mode> {
     }
 
     /// Get the pin level.
-    pub fn get_level(&self) -> Level {
-        self.pin.get_level()
+    pub fn level(&self) -> Level {
+        self.pin.level()
+    }
+
+    /// Unsafely clone (duplicate) an ExtiInput.
+    pub const unsafe fn clone_unchecked(&self) -> Self {
+        Self {
+            pin: Input {
+                pin: self.pin.pin.clone_unchecked(),
+            },
+            _kind: PhantomData,
+        }
     }
 }
 
@@ -136,6 +145,24 @@ impl<'d> ExtiInput<'d, Async> {
         }
     }
 
+    #[cfg(spi)]
+    /// Create an EXTI input from a configured AF pin.
+    ///
+    /// The Binding must bind the Channel's IRQ to [InterruptHandler].
+    pub(crate) fn new_af<T: ExtiPin + GpioPin>(
+        pin: Peri<'d, T>,
+        _ch: Peri<'d, T::ExtiChannel>,
+        _irq: impl Binding<
+            <<T as ExtiPin>::ExtiChannel as Channel>::IRQ,
+            InterruptHandler<<<T as ExtiPin>::ExtiChannel as Channel>::IRQ>,
+        >,
+    ) -> Self {
+        Self {
+            pin: Input::from_flex(Flex::new(pin)),
+            _kind: PhantomData,
+        }
+    }
+
     /// Create an EXTI input from an existing [`Input`] pin.
     ///
     /// Useful when a pin was previously used as a plain [`Input`] and needs to
@@ -143,7 +170,7 @@ impl<'d> ExtiInput<'d, Async> {
     /// token. The pin retains its current pull configuration.
     ///
     /// The Binding must bind the Channel's IRQ to [InterruptHandler].
-    pub unsafe fn from_input<C: Channel>(
+    pub const unsafe fn from_input<C: Channel>(
         pin: Input<'d>,
         _ch: Peri<'d, C>,
         _irq: impl Binding<C::IRQ, InterruptHandler<C::IRQ>>,
@@ -165,7 +192,7 @@ impl<'d> ExtiInput<'d, Async> {
     /// before calling this.
     ///
     /// The Binding must bind the Channel's IRQ to [InterruptHandler].
-    pub unsafe fn from_flex<C: Channel>(
+    pub const unsafe fn from_flex<C: Channel>(
         pin: Flex<'d>,
         _ch: Peri<'d, C>,
         _irq: impl Binding<C::IRQ, InterruptHandler<C::IRQ>>,
@@ -209,7 +236,7 @@ impl<'d> ExtiInput<'d, Async> {
     ///
     /// If the pin is already high, it will wait for it to go low then back high.
     pub fn poll_for_rising_edge<'a>(&mut self, cx: &mut Context<'a>) {
-        let _ = ExtiInputFuture::new(&self.pin, TriggerEdge::Rising, false).poll_unpin(cx);
+        let _ = Pin::new(&mut ExtiInputFuture::new(&self.pin, TriggerEdge::Rising, false)).poll(cx);
     }
 
     /// Asynchronously wait until the pin sees a falling edge.
@@ -223,7 +250,7 @@ impl<'d> ExtiInput<'d, Async> {
     ///
     /// If the pin is already low, it will wait for it to go high then back low.
     pub fn poll_for_falling_edge<'a>(&mut self, cx: &mut Context<'a>) {
-        let _ = ExtiInputFuture::new(&self.pin, TriggerEdge::Falling, false).poll_unpin(cx);
+        let _ = Pin::new(&mut ExtiInputFuture::new(&self.pin, TriggerEdge::Falling, false)).poll(cx);
     }
 
     /// Asynchronously wait until the pin sees any edge (either rising or falling).
@@ -233,7 +260,7 @@ impl<'d> ExtiInput<'d, Async> {
 
     /// Asynchronously wait until the pin sees any edge (either rising or falling).
     pub fn poll_for_any_edge<'a>(&mut self, cx: &mut Context<'a>) {
-        let _ = ExtiInputFuture::new(&self.pin, TriggerEdge::Any, false).poll_unpin(cx);
+        let _ = Pin::new(&mut ExtiInputFuture::new(&self.pin, TriggerEdge::Any, false)).poll(cx);
     }
 }
 

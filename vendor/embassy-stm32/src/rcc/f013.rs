@@ -84,7 +84,7 @@ pub enum HrtimClockSource {
     PllClk,
 }
 
-/// Clocks configutation
+/// Clocks configuration
 #[non_exhaustive]
 #[derive(Clone, Copy)]
 pub struct Config {
@@ -183,6 +183,12 @@ pub(crate) unsafe fn init(config: Config) {
     // Use the HSI clock as system clock during the actual clock setup
     RCC.cfgr().modify(|w| w.set_sw(Sysclk::Hsi));
     while RCC.cfgr().read().sws() != Sysclk::Hsi {}
+
+    // PLL configuration cannot be changed while PLL is enabled.
+    if RCC.cr().read().pllrdy() {
+        RCC.cr().modify(|w| w.set_pllon(false));
+        while RCC.cr().read().pllrdy() {}
+    }
 
     // Configure HSI
     let hsi = match config.hsi {
@@ -334,7 +340,7 @@ pub(crate) unsafe fn init(config: Config) {
     #[cfg(stm32f1)]
     rcc_assert!(max::ADC.contains(&adc));
 
-    // Set latency based on HCLK frquency
+    // Set latency based on HCLK frequency
     #[cfg(stm32f0)]
     let latency = match hclk.0 {
         ..=24_000_000 => Latency::Ws0,

@@ -12,6 +12,7 @@ use crate::dma::word::Word;
 use crate::gpio::Pull;
 use crate::gpio::{AfType, Flex, OutputType, Speed};
 use crate::pac::timer::vals::Ccds;
+use crate::rcc::WakeGuard;
 use crate::time::Hertz;
 #[cfg(timer_v2)]
 use crate::timer::low_level::DitheringConfig;
@@ -80,7 +81,7 @@ impl<'d, T: GeneralInstance4Channel, C: TimerChannel, #[cfg(afio)] A> if_afio!(P
 pub struct SimplePwmChannel<'d, T: GeneralInstance4Channel> {
     timer: ManuallyDrop<Timer<'d, T>>,
     channel: Channel,
-    _pin: Option<Flex<'d>>,
+    pin: Option<Flex<'d>>,
 }
 
 // TODO: check for RMW races
@@ -137,7 +138,7 @@ impl<'d, T: GeneralInstance4Channel> SimplePwmChannel<'d, T> {
     pub fn set_duty_cycle_fraction(&mut self, num: u32, denom: u32) {
         assert!(denom != 0);
         assert!(num <= denom);
-        let duty = u32::from(num) * u32::from(self.max_duty_cycle()) / u32::from(denom);
+        let duty = num * self.max_duty_cycle() / denom;
 
         // This is safe because we know that `num <= denom`, so `duty <= self.max_duty_cycle()` (u16)
         #[allow(clippy::cast_possible_truncation)]
@@ -199,6 +200,7 @@ impl<'d, T: GeneralInstance4Channel> SimplePwmChannel<'d, T> {
             unsafe { self.timer.clone_unchecked() },
             self.channel,
             self.timer.setup_ring_buffer(tx_dma, irq, self.channel, dma_buf),
+            self.pin,
         )
     }
 }
@@ -222,6 +224,7 @@ pub struct SimplePwm<'d, T: GeneralInstance4Channel> {
     ch2: Option<Flex<'d>>,
     ch3: Option<Flex<'d>>,
     ch4: Option<Flex<'d>>,
+    _wake_guard: WakeGuard,
 }
 
 impl<'d, T: GeneralInstance4Channel> SimplePwm<'d, T> {
@@ -262,6 +265,7 @@ impl<'d, T: GeneralInstance4Channel> SimplePwm<'d, T> {
             ch2,
             ch3,
             ch4,
+            _wake_guard: T::RCC_INFO.wake_guard(),
         };
 
         this.inner.set_counting_mode(counting_mode);
@@ -291,7 +295,7 @@ impl<'d, T: GeneralInstance4Channel> SimplePwm<'d, T> {
         SimplePwmChannel {
             timer: unsafe { self.inner.clone_unchecked() },
             channel,
-            _pin: None,
+            pin: None,
         }
     }
 
@@ -347,7 +351,7 @@ impl<'d, T: GeneralInstance4Channel> SimplePwm<'d, T> {
         let ch = |channel, pin| SimplePwmChannel {
             timer: unsafe { timer.clone_unchecked() },
             channel,
-            _pin: pin,
+            pin,
         };
 
         SimplePwmChannels {
@@ -608,7 +612,7 @@ impl<'d, T: GeneralInstance4Channel> embedded_hal_02::Pwm for SimplePwm<'d, T> {
     }
 
     fn set_duty(&mut self, channel: Self::Channel, duty: Self::Duty) {
-        assert!(duty <= self.max_duty_cycle() as u32);
+        assert!(duty <= self.max_duty_cycle());
         self.inner.set_compare_value(channel, unwrap!(duty.try_into()))
     }
 
