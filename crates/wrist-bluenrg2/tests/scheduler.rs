@@ -70,12 +70,12 @@ fn refusals_beside_advertising_and_on_retiming() {
 }
 
 #[test]
-fn advertising_while_initiating_is_excluded() {
+fn initiating_excludes_advertising_and_another_initiation() {
     let a = Activities { initiating: Some(link(50.0, 50.0, 4)), ..Activities::IDLE };
     let r = Scheduler.admit(&a, &Change::Advertise(Some(adv(1592))));
     assert_eq!(r, Err(SchedKind::Excluded(Exclusion::NoAdvertiseWhileInitiating)));
     assert_eq!(native(r.unwrap_err()), 0x0C);
-    assert_eq!(Scheduler.admit(&a, &Change::Initiate(Some(link(50.0, 50.0, 4)))), Err(SchedKind::NoSlot));
+    assert_eq!(Scheduler.admit(&a, &Change::Initiate(Some(link(50.0, 50.0, 4)))), Err(SchedKind::Excluded(Exclusion::NoInitiateWhileInitiating)));
     assert_eq!([SchedKind::NoSlot, SchedKind::NewIntervalFailed, SchedKind::IntervalTooLarge, SchedKind::LengthFailed].map(native), [0x82, 0x84, 0x85, 0x86]);
 }
 
@@ -94,6 +94,14 @@ fn a_link_that_takes_the_period_leaves_advertising_no_room() {
     }
     let sized = connect(&Activities::IDLE, link(35.0, 35.0, 4)).unwrap();
     assert!(Scheduler.admit(&sized, &Change::Advertise(Some(adv(160)))).is_ok());
+}
+
+#[test]
+fn a_short_link_beside_a_long_one_rescales_it_by_hundreds() {
+    let slow = connect(&Activities::IDLE, link(4000.0, 4000.0, 2)).unwrap();
+    let r = Scheduler.admit(&slow, &Change::Initiate(Some(link(10.0, 10.0, 2))));
+    assert_eq!(r.map(|a| a.latency_scale), Ok(400));
+    assert_eq!(connect(&slow, link(10.0, 10.0, 2)).unwrap().central[0].map(|s| s.latency), Some(400));
 }
 
 #[test]

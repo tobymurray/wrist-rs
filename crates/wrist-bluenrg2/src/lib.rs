@@ -20,7 +20,7 @@ pub const CAPABILITIES: Capabilities = Capabilities {
     peer_param_requests: ParamAnswer::RejectOnly,
     gatt: GattLimits { services: 8, attributes: 68, mtu: 220 },
     op_deadline,
-    exclusions: &[Exclusion::NoAdvertiseWhileInitiating],
+    exclusions: &[Exclusion::NoAdvertiseWhileInitiating, Exclusion::NoInitiateWhileInitiating],
     encryption_quiet: Millis(1_500),
 };
 
@@ -104,7 +104,7 @@ impl Schedule for Scheduler {
         match *change {
             Change::Advertise(Some(p)) => {
                 if a.initiating.is_some() {
-                    return Err(SchedKind::Excluded(Exclusion::NoAdvertiseWhileInitiating));
+                    excluded(Exclusion::NoAdvertiseWhileInitiating)?;
                 }
                 let Some(base) = anchor(a).or_else(|| a.scanning.as_ref().map(scan_ns)) else { return Ok(Admitted::AS_ASKED) };
                 let period = adv_period(&p);
@@ -120,7 +120,10 @@ impl Schedule for Scheduler {
                 Ok(Admitted::AS_ASKED)
             }
             Change::Initiate(Some(p)) => {
-                if a.initiating.is_some() || !room_for_central(a) {
+                if a.initiating.is_some() {
+                    excluded(Exclusion::NoInitiateWhileInitiating)?;
+                }
+                if !room_for_central(a) {
                     return Err(SchedKind::NoSlot);
                 }
                 join(a, &p, None)
@@ -146,6 +149,13 @@ impl Schedule for Scheduler {
             }
         }
     }
+}
+
+fn excluded(e: Exclusion) -> Result<(), SchedKind> {
+    if CAPABILITIES.exclusions.contains(&e) {
+        return Err(SchedKind::Excluded(e));
+    }
+    Ok(())
 }
 
 fn room_for_central(a: &Activities) -> bool {
@@ -206,5 +216,5 @@ fn join(a: &Activities, p: &ConnParams, except: Option<usize>) -> Result<Admitte
         latency: u16::try_from(latency).map_err(|_| SchedKind::IntervalTooLarge)?,
         ce_len: Duration::from_u16(u16::try_from(granted / SLOT).unwrap_or(u16::MAX)),
     };
-    Ok(Admitted { slot: Some(slot), latency_scale: u8::try_from(scale).map_err(|_| SchedKind::NewIntervalFailed)? })
+    Ok(Admitted { slot: Some(slot), latency_scale: u16::try_from(scale).map_err(|_| SchedKind::NewIntervalFailed)? })
 }
