@@ -2,7 +2,7 @@
 //! other tests use, each cut and each byte changed, every status of the LE events, and
 //! generated packets.
 
-use bluenrg2::{parse, vendor, Event};
+use bluenrg2::{packet_len, parse, vendor, Address, Event};
 use proptest::prelude::*;
 
 /// The hand decoder, as it was.
@@ -94,9 +94,27 @@ mod hand {
     }
 }
 
-/// What [`parse`] must give: the hand decoder's event.
+/// What [`parse`] must give: the hand decoder's event, except where the hand decoder took a
+/// packet the Core Specification's layout does not allow.
 fn expected(p: &[u8]) -> Event<'_> {
-    hand::parse(p)
+    let hand = hand::parse(p);
+    let whole = &p[..packet_len(p)];
+    let params = whole.get(3..).unwrap_or_default();
+    match hand {
+        // Encryption_Enabled above 0x02 is reserved (Core Vol 4 Part E §7.7.8), and Num_Reports
+        // starts an advertising report (Core Vol 4 Part E §7.7.65.2).
+        Event::EncryptionChange { enabled: 0x03.., .. } | Event::LeAdvertisingReport { data: [] } => Event::Malformed(whole),
+        // Supervision_Timeout ends a success (Core Vol 4 Part E §7.7.65.3).
+        Event::LeConnectionUpdateComplete { .. } if params.len() < 1 + 9 => Event::Malformed(whole),
+        // The interval and latency come only with a whole event, its Role and Central_Clock_Accuracy
+        // not reserved (Core Vol 4 Part E §7.7.65.1, §7.7.65.10).
+        Event::LeConnectionComplete { handle, central, peer, conn_interval: Some(interval) } => {
+            let (len, accuracy_at) = if params[0] == 0x01 { (1 + 18, 1 + 17) } else { (1 + 30, 1 + 29) };
+            let full = params.len() >= len && params[1 + 3] <= 1 && params[accuracy_at] <= 7;
+            Event::LeConnectionComplete { handle, central, peer, conn_interval: full.then_some(interval) }
+        }
+        e => e,
+    }
 }
 
 fn check(p: &[u8]) {
@@ -220,6 +238,29 @@ fn shortened(p: &[u8], n: usize) -> Vec<u8> {
     let mut q = p[..3 + n].to_vec();
     q[2] = u8::try_from(n).unwrap();
     q
+}
+
+#[test]
+fn where_the_hand_decoder_took_what_the_layout_does_not_allow() {
+    let peer = Address { kind: 0, bytes: [0x11, 0x22, 0x33, 0x44, 0x55, 0x66] };
+    let connection = le_event(0x01, &le_full(0x01));
+    let mut reserved_role = connection.clone();
+    reserved_role[7] = 0x02;
+    let mut reserved_accuracy = connection.clone();
+    reserved_accuracy[21] = 0x08;
+    for (p, central) in [(shortened(&connection, 17), false), (reserved_role, false), (reserved_accuracy, false)] {
+        assert_eq!(hand::parse(&p), Event::LeConnectionComplete { handle: 0x0801, central, peer, conn_interval: Some((24, 0)) });
+        assert_eq!(parse(&p), Event::LeConnectionComplete { handle: 0x0801, central, peer, conn_interval: None });
+    }
+    let encryption = hci_event(0x08, &[0x00, 0x01, 0x08, 0x03]);
+    assert_eq!(hand::parse(&encryption), Event::EncryptionChange { handle: 0x0801, status: 0, enabled: 3 });
+    assert_eq!(parse(&encryption), Event::Malformed(&encryption));
+    let update = shortened(&le_event(0x03, &le_full(0x03)), 8);
+    assert!(matches!(hand::parse(&update), Event::LeConnectionUpdateComplete { .. }));
+    assert_eq!(parse(&update), Event::Malformed(&update));
+    let reports = le_event(0x02, &[]);
+    assert_eq!(hand::parse(&reports), Event::LeAdvertisingReport { data: &[] });
+    assert_eq!(parse(&reports), Event::Malformed(&reports));
 }
 
 #[test]
