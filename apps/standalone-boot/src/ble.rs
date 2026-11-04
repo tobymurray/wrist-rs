@@ -466,6 +466,7 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
             passkey_for: None,
             confirm_for: None,
             rebond_for: None,
+            recount_bonds: false,
             nus: None,
             line: [0; 192],
             line_len: 0,
@@ -526,6 +527,7 @@ struct Link<'d> {
     passkey_for: Option<u16>,
     confirm_for: Option<(u16, Instant)>,
     rebond_for: Option<u16>,
+    recount_bonds: bool,
     /// The console service: service, RX and TX characteristic handles.
     nus: Option<(u16, u16, u16)>,
     line: [u8; 192],
@@ -629,6 +631,7 @@ impl Link<'_> {
             work: self.request_interval.is_some()
                 || self.finish_transfer
                 || self.rebond_for.is_some()
+                || self.recount_bonds
                 || self.passkey_for.is_some()
                 || self.readvertise,
             confirm_by: self.confirm_for.map(|(_, since)| tick(since + CONFIRM_TIMEOUT + one)),
@@ -771,6 +774,9 @@ impl Link<'_> {
         if let Some(h) = self.rebond_for.take() {
             let _ = self.command(ACI_GAP_ALLOW_REBOND, &h.to_le_bytes()).await;
             self.uart.write_line("[ble] the central lost its bond; allowing it to pair again");
+        }
+        if core::mem::take(&mut self.recount_bonds) {
+            self.list_bonds().await;
         }
         if let Some(h) = self.passkey_for.take() {
             self.answer_passkey(h).await;
@@ -1498,6 +1504,7 @@ impl Link<'_> {
                 clear_prompt();
                 if status == 0 {
                     self.uart.write_line("[ble] paired and bonded");
+                    self.recount_bonds = true;
                 } else {
                     self.interval_ask.pairing_failed();
                     self.uart.write_str("[ble] pairing failed: status ");
