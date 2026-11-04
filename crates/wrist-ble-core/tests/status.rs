@@ -48,6 +48,15 @@ fn phone_pairing_shows_the_value_and_the_time_left() {
 }
 
 #[test]
+fn phone_pairing_rejected_at_its_deadline_shows_no_time_left() {
+    let mut state = ready(t(0));
+    phone_up(&mut state, t(0));
+    state.phone = state.phone.step(t(1_000), phone::Event::Pairing(phone(), PairingStep::Numeric(123_456))).0;
+    state.phone = state.phone.step(t(61_000), phone::Event::Tick).0;
+    assert_eq!(status(&state, t(62_000)).phone, PhoneStatus::Pairing { value: 123_456, left: Millis(0) });
+}
+
+#[test]
 fn phone_connected_only_when_encrypted() {
     let mut state = ready(t(0));
     phone_up(&mut state, t(0));
