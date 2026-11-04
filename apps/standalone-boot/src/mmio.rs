@@ -50,6 +50,7 @@ pub const RCC_CFGR1: u32 = RCC_BASE + 0x01C;
 pub const RCC_CFGR2: u32 = RCC_BASE + 0x020;
 pub const RCC_PLL1CFGR: u32 = RCC_BASE + 0x028;
 pub const RCC_AHB1ENR: u32 = RCC_BASE + 0x088;
+pub const RCC_AHB1ENR_BKPSRAMEN: u32 = 1 << 28;
 pub const RCC_AHB2ENR1: u32 = RCC_BASE + 0x08C;
 pub const RCC_AHB2ENR2: u32 = RCC_BASE + 0x090;
 pub const RCC_AHB3ENR: u32 = RCC_BASE + 0x094;

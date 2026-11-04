@@ -9,12 +9,12 @@ use embassy_stm32::{peripherals, Peri};
 use wrist_board::{pins as net, Pin as Net};
 
 use crate::mmio::{
-    enable_clock, gpio_base, modify32, read32, write32, GPIO_MODER, GPIO_PUPDR, PWR_CR2, PWR_CR2_DC1RAM,
-    PWR_CR2_DMA2DRAM, PWR_CR2_PKARAM, PWR_CR2_SRAM2, PWR_CR2_SRAM3_1_TO_8, PWR_CR2_SRAM4, PWR_CR3,
-    PWR_CR3_REGSEL, PWR_CR4, PWR_CR4_SRAM3_9_TO_13, PWR_CR4_SRAM5_1_TO_12, PWR_SVMSR,
-    PWR_SVMSR_REGS, RCC_AHB2ENR1, RCC_AHB2ENR1_GPIOAEN, RCC_AHB2ENR1_GPIOBEN, RCC_AHB2ENR1_GPIOCEN,
-    RCC_AHB2ENR1_GPIODEN, RCC_AHB2ENR1_GPIOFEN, RCC_AHB2ENR1_GPIOGEN, RCC_AHB2ENR1_SDMMC1EN,
-    SDMMC1_BASE, SDMMC_POWER, SRAM1_BASE, SRAM_PAGE,
+    enable_clock, gpio_base, modify32, read32, write32, GPIO_MODER, GPIO_PUPDR, PWR_BDCR1, PWR_CR2,
+    PWR_CR2_DC1RAM, PWR_CR2_DMA2DRAM, PWR_CR2_PKARAM, PWR_CR2_SRAM2, PWR_CR2_SRAM3_1_TO_8, PWR_CR2_SRAM4,
+    PWR_CR3, PWR_CR3_REGSEL, PWR_CR4, PWR_CR4_SRAM3_9_TO_13, PWR_CR4_SRAM5_1_TO_12, PWR_SVMSR,
+    PWR_SVMSR_REGS, RCC_AHB1ENR, RCC_AHB1ENR_BKPSRAMEN, RCC_AHB2ENR1, RCC_AHB2ENR1_GPIOAEN,
+    RCC_AHB2ENR1_GPIOBEN, RCC_AHB2ENR1_GPIOCEN, RCC_AHB2ENR1_GPIODEN, RCC_AHB2ENR1_GPIOFEN,
+    RCC_AHB2ENR1_GPIOGEN, RCC_AHB2ENR1_SDMMC1EN, SDMMC1_BASE, SDMMC_POWER, SRAM1_BASE, SRAM_PAGE,
 };
 
 extern "C" {
@@ -69,6 +69,8 @@ static SENSOR_OUTCOME: [AtomicU8; 2] = [AtomicU8::new(SENSOR_LEFT_ALONE), Atomic
 pub fn park(pins: Pins, sensor_bus: Option<&mut I2c<'static, Blocking, Master>>, uart: Uart) {
     SDMMC_WAS_ON.store(unsafe { sdmmc_off() }, Ordering::Relaxed);
     unsafe {
+        // Handed over clocked; nothing here uses the backup SRAM.
+        modify32(RCC_AHB1ENR, RCC_AHB1ENR_BKPSRAMEN, 0);
         enable_clock(
             RCC_AHB2ENR1,
             RCC_AHB2ENR1_GPIOAEN
@@ -126,6 +128,7 @@ pub fn write_report(uart: Uart) {
     });
     uart.write_reg("     PWR_CR2 = ", unsafe { read32(PWR_CR2) });
     uart.write_reg("     PWR_CR4 = ", unsafe { read32(PWR_CR4) });
+    uart.write_reg("     PWR_BDCR1 = ", unsafe { read32(PWR_BDCR1) });
     for ((_, name), outcome) in SENSORS.into_iter().zip(&SENSOR_OUTCOME) {
         uart.write_str("     ");
         uart.write_str(name);
