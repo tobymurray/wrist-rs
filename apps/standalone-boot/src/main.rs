@@ -63,7 +63,7 @@ use crate::mmio::{
     RCC_APB3ENR, RCC_AHB2ENR1_GPIOAEN, RCC_AHB2ENR1_GPIOBEN, RCC_AHB2ENR1_GPIOCEN,
     RCC_AHB2ENR1_GPIODEN, RCC_AHB2ENR1_GPIOFEN, RCC_BDCR, RCC_BDCR_LSEBYP, RCC_BDCR_LSEON, RCC_BDCR_LSERDY,
     RCC_BDCR_LSESYSEN, RCC_BDCR_LSESYSRDY, RCC_BDCR_RTCEN, RCC_BDCR_RTCSEL_LSE, RCC_BDCR_RTCSEL_LSI,
-    RCC_BDCR_RTCSEL_MASK, RCC_CCIPR1, RCC_CFGR1, RCC_CFGR1_SWS_MASK, RCC_CFGR1_SWS_SHIFT, RCC_CFGR1_SW_MASK,
+    RCC_BDCR_RTCSEL_MASK, RCC_CCIPR1, RCC_CCIPR3, RCC_CFGR1, RCC_CFGR1_SWS_MASK, RCC_CFGR1_SWS_SHIFT, RCC_CFGR1_SW_MASK,
     RCC_CFGR2, RCC_CR, RCC_CR_HSEON, RCC_CR_HSERDY, RCC_CR_HSION, RCC_CR_MSISON, RCC_CR_MSISRDY, RCC_CR_PLL1ON,
     RCC_CSR, RCC_CSR_MSISSRANGE_SHIFT, RCC_CSR_RMVF, RCC_ICSCR1, RCC_ICSCR1_MSIRGSEL, RCC_ICSCR1_MSISRANGE_4,
     RCC_ICSCR1_MSISRANGE_MASK, RCC_ICSCR1_MSISRANGE_SHIFT,
@@ -505,7 +505,7 @@ pub(crate) fn rcc_config(usb: bool) -> rcc::Config {
     c.ls = ls_config_as_found();
     c.sys = rcc::Sysclk::Msis;
     // As the time driver chooses LPTIM4's.
-    c.mux.lptim1sel = if c.ls.lse.is_some() && unsafe { read32(RCC_BDCR) } & RCC_BDCR_LSERDY != 0 {
+    c.mux.lptim1sel = if unsafe { read32(RCC_BDCR) } & RCC_BDCR_LSERDY != 0 {
         rcc::mux::Lptimsel::Lse
     } else {
         rcc::mux::Lptimsel::Lsi
@@ -1378,6 +1378,7 @@ fn report_clocks(uart: Uart) {
     uart.write_reg("RCC_CFGR2   = ", unsafe { read32(RCC_CFGR2) });
     uart.write_reg("RCC_CSR     = ", csr);
     uart.write_reg("RCC_CCIPR1  = ", unsafe { read32(RCC_CCIPR1) });
+    uart.write_reg("RCC_CCIPR3  = ", unsafe { read32(RCC_CCIPR3) });
     uart.write_reg("FLASH_ACR   = ", unsafe { read32(FLASH_ACR) });
     uart.write_reg("FLASH_OPTR  = ", unsafe { read32(FLASH_OPTR) });
 

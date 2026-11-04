@@ -66,6 +66,7 @@ pub const RCC_APB2SMENR: u32 = RCC_BASE + 0x0CC;
 pub const RCC_APB3SMENR: u32 = RCC_BASE + 0x0D0;
 pub const RCC_SRDAMR: u32 = RCC_BASE + 0x0D8;
 pub const RCC_CCIPR1: u32 = RCC_BASE + 0x0E0;
+pub const RCC_CCIPR3: u32 = RCC_BASE + 0x0E8;
 pub const RCC_BDCR: u32 = RCC_BASE + 0x0F0;
 pub const RCC_CSR: u32 = RCC_BASE + 0x0F4;
 
