@@ -21,6 +21,8 @@ pub struct Capabilities {
     pub exclusions: &'static [Exclusion],
     /// No link-layer procedure on a link this soon after it connects unless it has encrypted.
     pub encryption_quiet: Millis,
+    /// From reset until the chip is up and configured, at the latest.
+    pub start_within: Millis,
 }
 
 /// A set of radio roles.

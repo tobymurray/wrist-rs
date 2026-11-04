@@ -10,6 +10,7 @@ description = "The Bluetooth subsystem's decisions without a radio: goals, the p
 wrist-ble = { path = "../wrist-ble" }
 
 [dev-dependencies]
+wrist-bluenrg2 = { path = "../wrist-bluenrg2" }
 proptest = { version = "1.11.0", default-features = false, features = ["std"] }
 
 [lints.clippy]
