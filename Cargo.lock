@@ -1485,6 +1485,7 @@ dependencies = [
 name = "wrist-bluenrg2"
 version = "0.0.0"
 dependencies = [
+ "bluenrg2",
  "wrist-ble",
 ]
 
