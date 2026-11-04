@@ -69,6 +69,23 @@ fn phone_answer_is_passed_on_once() {
 }
 
 #[test]
+fn phone_pairing_with_no_outcome_fails_after_the_security_managers_timeout() {
+    let (p, _) = actions(up(0), 1_000, phone::Event::Pairing(phone(), PairingStep::Numeric(42)));
+    let (p, _) = actions(p, 2_000, phone::Event::Answer(true));
+    assert_eq!(p.deadline(), Some(t(2_000) + phone::PAIRING_OUTCOME));
+    let (p, _) = actions(p, 31_999, phone::Event::Tick);
+    assert!(matches!(p, Phone::Up(l) if matches!(l.security, Security::Pairing { .. })));
+    let (p, a) = actions(p, 32_000, phone::Event::Tick);
+    assert_eq!(a, NONE);
+    assert!(matches!(p, Phone::Up(l) if l.security == Security::Unsecured));
+    assert!(p.may_ask_params(t(32_000)));
+    let (p, _) = actions(up(0), 1_000, phone::Event::Pairing(phone(), PairingStep::Numeric(42)));
+    let (p, _) = actions(p, 61_000, phone::Event::Tick);
+    let (p, _) = actions(p, 91_000, phone::Event::Tick);
+    assert!(matches!(p, Phone::Up(l) if l.security == Security::Unsecured));
+}
+
+#[test]
 fn phone_bond_lost_is_told_in_either_order() {
     let (p, a) = actions(up(0), 100, phone::Event::BondLost(phone()));
     assert_eq!(a, [Action::AllowRebond(phone())]);

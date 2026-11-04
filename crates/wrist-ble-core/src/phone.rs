@@ -13,6 +13,10 @@ pub const ASK_PARAMS_AFTER: Millis = Millis(1_500);
 /// A numeric comparison the user has not answered is rejected after this long.
 pub const NUMERIC_DEADLINE: Millis = Millis::secs(60);
 
+/// A pairing with no outcome this long after its comparison was answered or timed out has failed:
+/// the Security Manager's own timeout (Core Vol 3 Part H §3.4).
+pub const PAIRING_OUTCOME: Millis = Millis::secs(30);
+
 /// No central start this soon after the phone connects or its parameters change.
 pub const SETTLE: Millis = Millis::secs(3);
 
@@ -43,6 +47,7 @@ pub struct PhoneLink {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Security {
     Unsecured,
+    /// Until `deadline` the comparison waits for an answer; once answered, the outcome.
     Pairing { value: u32, deadline: Instant, answered: bool },
     Secure,
 }
@@ -128,7 +133,7 @@ impl Phone {
     pub fn deadline(&self) -> Option<Instant> {
         let Phone::Up(l) = self else { return None };
         let numeric = match l.security {
-            Security::Pairing { deadline, answered: false, .. } => Some(deadline),
+            Security::Pairing { deadline, .. } => Some(deadline),
             _ => None,
         };
         let params = match l.params {
@@ -199,17 +204,23 @@ impl PhoneLink {
             }
             Event::ParamsChanged(id) if id == link => self.params_at = now,
             Event::Answer(yes) => {
-                if let Security::Pairing { answered: ref mut a @ false, .. } = self.security {
+                if let Security::Pairing { ref mut deadline, answered: ref mut a @ false, .. } = self.security {
                     *a = true;
+                    *deadline = now + PAIRING_OUTCOME;
                     out.push(Action::ConfirmNumeric(link, yes));
                 }
             }
             Event::Tick => {
-                if let Security::Pairing { deadline, answered: ref mut a @ false, .. } = self.security {
-                    if now >= deadline {
-                        *a = true;
+                match self.security {
+                    Security::Pairing { deadline, answered: false, value } if now >= deadline => {
+                        self.security = Security::Pairing { value, deadline: now + PAIRING_OUTCOME, answered: true };
                         out.push(Action::ConfirmNumeric(link, false));
                     }
+                    Security::Pairing { deadline, answered: true, .. } if now >= deadline => {
+                        self.security = Security::Unsecured;
+                        self.params = Params::Open;
+                    }
+                    _ => {}
                 }
                 if self.ask_pair.is_some_and(|at| now >= at) {
                     self.ask_pair = None;
