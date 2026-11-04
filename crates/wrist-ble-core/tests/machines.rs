@@ -86,6 +86,15 @@ fn phone_pairing_with_no_outcome_fails_after_the_security_managers_timeout() {
 }
 
 #[test]
+fn phone_pairing_with_no_outcome_after_a_lost_bond_tells_it() {
+    let (p, _) = actions(up(0), 500, phone::Event::BondLost(phone()));
+    let (p, _) = actions(p, 1_000, phone::Event::Pairing(phone(), PairingStep::Numeric(42)));
+    let (p, _) = actions(p, 2_000, phone::Event::Answer(true));
+    let (_, a) = actions(p, 32_000, phone::Event::Tick);
+    assert_eq!(a, [Action::TellBondLost(phone())]);
+}
+
+#[test]
 fn phone_bond_lost_is_told_in_either_order() {
     let (p, a) = actions(up(0), 100, phone::Event::BondLost(phone()));
     assert_eq!(a, [Action::AllowRebond(phone())]);

@@ -115,6 +115,7 @@ fn phone_status(state: &State, now: Instant) -> PhoneStatus {
         Chip::Starting { since } => PhoneStatus::Unreachable { reason: Unreachable::Starting, since: now.since(since) },
         Chip::Ready(_) => match state.phone {
             Phone::Up(l) => match l.security {
+                Security::Pairing { value, answered: true, .. } => PhoneStatus::Pairing { value, left: Millis(0) },
                 Security::Pairing { value, deadline, .. } => PhoneStatus::Pairing { value, left: deadline.since(now) },
                 Security::Secure => PhoneStatus::Connected,
                 Security::Unsecured if now.since(l.since) > ASK_TO_PAIR_AFTER => PhoneStatus::Unsecured { since: now.since(l.since) },

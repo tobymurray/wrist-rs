@@ -189,13 +189,7 @@ impl PhoneLink {
                     }
                 }
                 PairingStep::Complete | PairingStep::PasskeyWanted => self.ask_pair = None,
-                PairingStep::Failed => {
-                    self.security = Security::Unsecured;
-                    self.ask_pair = None;
-                    self.params = Params::Open;
-                    self.pairing_failed = true;
-                    self.tell_bond_lost(out);
-                }
+                PairingStep::Failed => self.fail_pairing(out),
             },
             Event::BondLost(id) if id == link => {
                 self.bond_lost = true;
@@ -216,10 +210,7 @@ impl PhoneLink {
                         self.security = Security::Pairing { value, deadline: now + PAIRING_OUTCOME, answered: true };
                         out.push(Action::ConfirmNumeric(link, false));
                     }
-                    Security::Pairing { deadline, answered: true, .. } if now >= deadline => {
-                        self.security = Security::Unsecured;
-                        self.params = Params::Open;
-                    }
+                    Security::Pairing { deadline, answered: true, .. } if now >= deadline => self.fail_pairing(out),
                     _ => {}
                 }
                 if self.ask_pair.is_some_and(|at| now >= at) {
@@ -232,6 +223,14 @@ impl PhoneLink {
             }
             _ => {}
         }
+    }
+
+    fn fail_pairing(&mut self, out: &mut Actions) {
+        self.security = Security::Unsecured;
+        self.ask_pair = None;
+        self.params = Params::Open;
+        self.pairing_failed = true;
+        self.tell_bond_lost(out);
     }
 
     fn tell_bond_lost(&mut self, out: &mut Actions) {
