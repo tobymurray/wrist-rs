@@ -1474,6 +1474,7 @@ dependencies = [
 name = "wrist-ble-sim"
 version = "0.0.0"
 dependencies = [
+ "bluenrg2",
  "proptest",
  "stateright",
  "wrist-ble",

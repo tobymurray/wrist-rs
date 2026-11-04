@@ -40,6 +40,8 @@
 
 #[cfg(feature = "ble-probe")]
 mod probe;
+#[cfg(feature = "ble-trace")]
+mod trace;
 mod scan;
 
 use core::cell::RefCell;
@@ -1232,6 +1234,8 @@ impl Link<'_> {
     }
 
     async fn reset(&mut self) {
+        #[cfg(feature = "ble-trace")]
+        trace::packet(trace::Dir::Reset, &[]);
         self.cs.set_high();
         self.rst.set_low();
         Timer::after_millis(5).await;
@@ -1253,6 +1257,8 @@ impl Link<'_> {
     async fn command(&mut self, opcode: u16, params: &[u8]) -> Result<Reply, &'static str> {
         let mut packet = [0u8; MAX_COMMAND];
         let n = bluenrg2::command(opcode, params, &mut packet);
+        #[cfg(feature = "ble-trace")]
+        trace::packet(trace::Dir::ToChip, &packet[..n]);
         self.waiting_for = Some(opcode);
         self.reply = None;
         if !self.send(&packet[..n]).await {
@@ -1332,6 +1338,8 @@ impl Link<'_> {
 
     /// One packet from the chip: capture a reply, act on an event.
     fn handle(&mut self, p: &[u8]) {
+        #[cfg(feature = "ble-trace")]
+        trace::packet(trace::Dir::FromChip, p);
         match bluenrg2::parse(p) {
             Event::CommandComplete { cmd_opcode, status, return_param_bytes: params } => {
                 if self.waiting_for == Some(cmd_opcode) {

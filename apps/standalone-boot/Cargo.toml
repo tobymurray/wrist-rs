@@ -44,6 +44,8 @@ usb-log = ["dep:log", "embassy-usb/log"]
 ble = ["dep:bluenrg2", "dep:wrist-wake"]
 # `ble probe`: the BlueNRG-2's firmware, updater and anchor period on the console.
 ble-probe = ["ble"]
+# Every packet to and from the BlueNRG-2 on the console, for replaying through the core on a host.
+ble-trace = ["ble"]
 
 [[bin]]
 name = "standalone-boot"
