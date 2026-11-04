@@ -85,7 +85,7 @@ pub enum Stage {
     Stopped(StopReason),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
     Securing,
     Discovering,
@@ -93,7 +93,7 @@ pub enum Phase {
 }
 
 /// Where a link being dropped leads once it is down.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Then {
     Off,
     Reconnect,
@@ -101,7 +101,7 @@ pub enum Then {
     Stop(StopReason),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StopReason {
     NotFound,
     /// Connected since its last reading, but no reading came.
@@ -213,7 +213,7 @@ impl Peripheral {
                 if found {
                     self.stage = Stage::Linked { link, phase: Phase::Subscribing, quick, linked_before };
                 } else {
-                    self.missing(link);
+                    self.missing(now, link);
                 }
             }
             (Stage::Linked { link, phase: Phase::Subscribing, .. }, Event::Subscribed(ok)) => {
@@ -223,10 +223,13 @@ impl Peripheral {
                     self.rediscoveries = 0;
                     self.coverage.begin(now);
                 } else {
-                    self.missing(link);
+                    self.missing(now, link);
                 }
             }
-            (Stage::Linked { link, .. }, Event::ProcedureFailed) => self.drop_link(link, Then::Reconnect),
+            (Stage::Linked { link, .. }, Event::ProcedureFailed) => {
+                self.lost_since.get_or_insert(now);
+                self.drop_link(link, Then::Reconnect);
+            }
             (Stage::Live { since, .. }, Event::Reading(r)) => {
                 let previous = self.last.map_or(since, |(at, _)| at.max(since));
                 if ctx.profile.silence == Silence::Fault && now.since(previous) > ctx.profile.quiet {
@@ -323,7 +326,8 @@ impl Peripheral {
         self.seek(now, 0);
     }
 
-    fn missing(&mut self, link: ConnHandle) {
+    fn missing(&mut self, now: Instant, link: ConnHandle) {
+        self.lost_since.get_or_insert(now);
         self.rediscoveries = self.rediscoveries.saturating_add(1);
         let then = if self.rediscoveries > REDISCOVERIES { Then::Stop(StopReason::Incompatible) } else { Then::Rediscover };
         self.drop_link(link, then);
