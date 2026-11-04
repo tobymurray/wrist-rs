@@ -1,0 +1,38 @@
+name: Mutants
+# Every change the diff makes to the radio's model and the fake chip must fail a test when broken.
+on:
+  pull_request:
+    paths:
+      - crates/wrist-ble/**
+      - crates/wrist-bluenrg2/**
+      - crates/wrist-ble-sim/**
+      - .github/workflows/mutants.yml
+permissions:
+  contents: read
+jobs:
+  mutants:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install the pinned toolchain and cargo-mutants
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$(jq -r .stable release/toolchain.json)" --profile minimal
+          rustup default "$(jq -r .stable release/toolchain.json)"
+          cargo install cargo-mutants --locked --version 27.1.0
+      - name: Mutate the lines the pull request changes
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          git diff "$BASE"...HEAD > "$RUNNER_TEMP/diff"
+          cargo mutants --cargo-arg=--locked --in-diff "$RUNNER_TEMP/diff" -p wrist-ble -p wrist-bluenrg2 -p wrist-ble-sim --timeout 300 -o "$RUNNER_TEMP"
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: mutants
+          path: ${{ runner.temp }}/mutants.out
