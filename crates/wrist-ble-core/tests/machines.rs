@@ -1,7 +1,7 @@
 mod common;
 
 use common::*;
-use wrist_ble::{Activities, Admitted, Change, ConnParams, Duration, Exclusion, FailureKind, PairingStep, SchedKind, Schedule, Status};
+use wrist_ble::{Activities, Admitted, Change, ConnParams, Duration, Exclusion, FailureKind, Micros, PairingStep, SchedKind, Schedule, Status};
 use wrist_ble_core::chip::{self, Chip, ChipMachine, FaultCause};
 use wrist_ble_core::goals::Power;
 use wrist_ble_core::peripheral::{self as per, Event, Peripheral, Stage, StopReason, Then, GIVE_UP};
@@ -336,7 +336,7 @@ impl Schedule for Careless {
     }
 }
 
-const SLOT: wrist_ble::CentralSlot = wrist_ble::CentralSlot { interval: Duration::from_u16(40), latency: 1, ce_len: Duration::from_u16(2) };
+const SLOT: wrist_ble::CentralSlot = wrist_ble::CentralSlot { interval: Duration::from_u16(40), latency: 1, ce_len: Duration::from_u16(2), offset: Micros(0) };
 
 const CONNECT: ConnParams = ConnParams { interval_min: Duration::from_u16(40), interval_max: Duration::from_u16(40), latency: 0, timeout: Duration::from_u16(400), ce_len: Duration::from_u16(2) };
 
@@ -371,11 +371,11 @@ fn a_ninth_link_is_refused_not_dropped() {
 
 #[test]
 fn a_connection_takes_its_admitted_slot_and_rescales_the_others() {
-    let slot = wrist_ble::CentralSlot { interval: Duration::from_u16(400), latency: 1, ce_len: Duration::from_u16(2) };
+    let slot = wrist_ble::CentralSlot { interval: Duration::from_u16(400), latency: 1, ce_len: Duration::from_u16(2), offset: Micros(0) };
     let a = Activities::IDLE.with(&Change::Initiate(Some(CONNECT)), &Admitted::AS_ASKED).unwrap();
     let a = a.with(&Change::Connected, &Admitted { slot: Some(slot), latency_scale: 1 }).unwrap();
     assert_eq!((a.initiating, a.central[0]), (None, Some(slot)));
-    let fast = wrist_ble::CentralSlot { interval: Duration::from_u16(200), latency: 1, ce_len: Duration::from_u16(2) };
+    let fast = wrist_ble::CentralSlot { interval: Duration::from_u16(200), latency: 1, ce_len: Duration::from_u16(2), offset: Micros(0) };
     let a = a.with(&Change::Connected, &Admitted { slot: Some(fast), latency_scale: 2 }).unwrap();
     assert_eq!(a.central[..2], [Some(wrist_ble::CentralSlot { latency: 2, ..slot }), Some(fast)]);
 }

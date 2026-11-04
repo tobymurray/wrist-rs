@@ -97,6 +97,8 @@ pub struct CentralSlot {
     /// The link has an event once in this many periods of the time base.
     pub latency: u16,
     pub ce_len: Slots,
+    /// Where the slot starts in each period.
+    pub offset: Micros,
 }
 
 /// One step from one [`Activities`] to the next.

@@ -36,9 +36,71 @@ fn pm0257_figure_14_at_fixed_lengths() {
     let latencies: Vec<u16> = a.central.iter().flatten().map(|s| s.latency).collect();
     assert_eq!(latencies, [2, 4, 1]);
     assert_eq!(interval_ms(a.central[2].unwrap()), 100.0);
+    let offsets: Vec<u32> = a.central.iter().flatten().map(|s| s.offset.0).collect();
+    assert_eq!(offsets, [0, 21_500, 73_000]);
     // Slots of 20 and 50 ms with their guards leave 25.5 ms at offset 73: 26 ms does not fit.
     let b = connect(&Activities { central: [a.central[0], a.central[1], None, None, None, None, None, None], ..Activities::IDLE }, link(50.0, 150.0, 42));
     assert_eq!(b, Err(SchedKind::LengthFailed));
+}
+
+/// A closed link leaves a gap: a new slot goes in a gap that holds it, else after the last slot,
+/// never in their sum (PM0257 §4.2.2).
+#[test]
+fn a_slot_fits_a_gap_or_the_time_after_the_last() {
+    let mut a = Activities::IDLE;
+    for ce in [32, 80, 16] {
+        a = connect(&a, link(100.0, 100.0, ce)).unwrap();
+    }
+    let a = a.walk(&Scheduler, &[Change::Close { slot: 1 }]).unwrap();
+    assert_eq!(connect(&a, link(100.0, 100.0, 88)), Err(SchedKind::LengthFailed));
+    let gap = connect(&a, link(100.0, 100.0, 80)).unwrap();
+    assert_eq!(gap.central[1].map(|s| s.offset.0), Some(21_500));
+    let after = connect(&a, link(100.0, 100.0, 16)).unwrap();
+    assert_eq!(after.central[1].map(|s| s.offset.0), Some(21_500));
+    let tail = connect(&gap, link(100.0, 100.0, 16)).unwrap();
+    assert_eq!(tail.central[3].map(|s| s.offset.0), Some(84_500));
+}
+
+/// Slots are found by where they sit, not by their place in the list.
+#[test]
+fn a_slot_after_the_last_follows_the_latest_in_time() {
+    let mut a = Activities::IDLE;
+    for _ in 0..3 {
+        a = connect(&a, link(100.0, 100.0, 16)).unwrap();
+    }
+    let a = a.walk(&Scheduler, &[Change::Close { slot: 1 }]).unwrap();
+    let a = connect(&a, link(100.0, 100.0, 24)).unwrap();
+    assert_eq!(a.central[1].map(|s| s.offset.0), Some(34_500));
+    let a = connect(&a, link(100.0, 100.0, 24)).unwrap();
+    assert_eq!(a.central[3].map(|s| s.offset.0), Some(51_000));
+}
+
+#[test]
+fn a_retimed_link_may_keep_its_place() {
+    let a = connect(&Activities::IDLE, link(35.0, 35.0, 4)).unwrap();
+    let a = a.walk(&Scheduler, &[Change::Retime { slot: 0, params: link(35.0, 35.0, 8) }]).unwrap();
+    assert_eq!(a.central[0].map(|s| (s.offset.0, s.ce_len.as_u16())), Some((0, 8)));
+}
+
+/// Advertising's place in the period is not modelled, but its event still takes its time.
+#[test]
+fn a_link_beside_advertising_leaves_it_its_event() {
+    let a = Activities { advertising: Some(adv(160)), ..Activities::IDLE };
+    assert_eq!(connect(&a, link(105.0, 105.0, 140)), Err(SchedKind::LengthFailed));
+    assert!(connect(&a, link(105.0, 105.0, 139)).is_ok());
+}
+
+/// A shorter anchor period must still hold every slot already placed (PM0257 §4.2.2, case 3).
+#[test]
+fn a_shorter_anchor_holds_every_slot_already_placed() {
+    let mut a = Activities::IDLE;
+    for ce in [16, 160, 16] {
+        a = connect(&a, link(200.0, 200.0, ce)).unwrap();
+    }
+    let a = a.walk(&Scheduler, &[Change::Close { slot: 1 }]).unwrap();
+    assert_eq!(connect(&a, link(50.0, 100.0, 16)), Err(SchedKind::LengthFailed));
+    let a = a.walk(&Scheduler, &[Change::Close { slot: 2 }]).unwrap();
+    assert_eq!(anchor(&connect(&a, link(50.0, 100.0, 16)).unwrap()), Some(100 * MS));
 }
 
 #[test]
