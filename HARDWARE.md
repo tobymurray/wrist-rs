@@ -395,7 +395,7 @@ firmware image.
 | NVIC enables, pending bits and SysTick are inherited, and a SysTick is already pending, so the loader sets `PENDSTCLR` and `PENDSVCLR` before enabling interrupts | CONFIRMED by test |
 | Firmware update and factory reset live in the bootloader, which draws its own menu, so recovery needs no debugger, no UART and no working kernel | CONFIRMED by test with the kernel erased |
 | Factory reset returns to the firmware the watch shipped with, not the previous version, so every update since has to be installed again | CONFIRMED by test |
-| A long-press combination in the bootloader rolls the watch back to an earlier firmware version, with no host; `UNA BOOT` carries `UnaWatch-Kernel_1.0.2.gld`, the shipped image it restores | CONFIRMED by test with a working kernel; the file seen on the drive |
+| A long-press combination in the bootloader rolls the watch back to an earlier firmware version, with no host; `UNA BOOT` carries the shipped image it restores, which differs between watches: `UnaWatch-Kernel_1.0.2.gld` on one, `UnaWatch-Kernel_1.0.3.gld` (1,689,840 bytes, SHA-256 `30f60742a656054f487fc705cd14ff62921a930ba9f1f3af501929b57b992323`) on another | CONFIRMED by test with a working kernel; each file seen on its watch's drive; the format is in [UNA's image header](#una-image-header) |
 | The bootloader's recovery erases from `0x08060000` to the end of flash and nothing below, so [`crates/wrist-flash/src/commit.rs`](crates/wrist-flash/src/commit.rs) keeps its status in a blank page of the bootloader's partition | CONFIRMED |
 | An app on the stock kernel can write the FLASH control registers. A key write while the controller was mid-operation faulted, so `hw.rs` writes the keys only while `LOCK` is set | MEASURED (the fault); LIKELY that the busy controller, not a second unlock, caused it |
 | A write to `FLASH_NSCR` while `LOCK` is set is discarded with no flag and no fault, so `hw.rs` reads `NSCR` back after each command | CONFIRMED by test |
@@ -405,6 +405,35 @@ firmware image.
 | The installer is a utility app: its service starts when it is opened from the launcher, before its GUI. On kernel 1.4.0 the glances screen could also start an app of another type, depending on a flag its header carried; the pinned SDK's `app_merging.py` leaves that bit (0x20) clear, and its `Docs/service-lifecycle.md` (sections 3 and 10) says only images packed by an earlier SDK are affected. The service acts only once its GUI is up, and the recipe refuses a header with that bit or autostart | UNKNOWN on the watch: from the SDK's scripts and documentation, not yet tested |
 | A utility app's service runs privileged with the MPU and TrustZone off, as a glance's does, so it can write flash | UNKNOWN. Measured only for a glance (`module-probe`, stock 1.5.0: `CONTROL` = `0x6`, `MPU_CTRL` = 0, `TZEN` = 0); that a utility app's service is the same rests on the SDK linking and packing every type's service alike. No utility app has written flash here. The installer's dry run runs the isolation gate and a scratch-page self-test and offers the confirm only if both pass |
 | The stock 1.0.2 launcher shows two utility apps at most, while every glance is reachable from the carousel. How many it shows on 1.6.1 is not known, nor whether the Wrist-rs app appears beside others | CONFIRMED on 1.0.2 (2026-10-05: `FW Dump` registered by `App.Manager` but unreachable); UNKNOWN on 1.6.1, not in UNA's documentation or release notes |
+
+<a id="una-image-header"></a>
+### UNA's image header (`.gld` and `.ota`)
+
+A `.gld` (the shipped image on `UNA BOOT`) and an `.ota` (an update) share one format: a
+64-byte header, then the payload. Words are little-endian. Read from 14 files: the
+`UnaWatch-Kernel_1.0.3.gld` on one watch's `UNA BOOT`, and every kernel `.ota` UNA has
+published (1.4.0 to 1.6.2 with their release candidates, each matching its GitHub SHA-256).
+
+| Offset | Size | Field | Values seen | Status |
+|---|---|---|---|---|
+| `0x00` | 4 | Header format version | `1` in all 14 | LIKELY |
+| `0x04` | 4 | CRC-32 of the payload | matches in all 14 | CONFIRMED |
+| `0x08` | 4 | Payload length, file size − 64 | matches in all 14 | CONFIRMED |
+| `0x0C` | 4 | Unknown: different in every file, also between a release candidate and its release of the same size. Not a CRC-32 of the payload or header, nor a SHA-256 prefix | e.g. `0xA4980244` (1.0.3), `0xECA1AE9D` (1.6.2) | UNKNOWN |
+| `0x10` | 1 | Unknown | `1` in all 14 | UNKNOWN |
+| `0x11` | 1 | Image type: 2 shipped, 1 update | `2` in the `.gld`, `1` in all 13 `.ota` | LIKELY: one `.gld` seen |
+| `0x12` | 2 | Zero | `0` in all 14 | CONFIRMED |
+| `0x14` | 4 | Version: patch, minor, major, then a zero byte | `03 00 01 00` is 1.0.3 | CONFIRMED |
+| `0x18` | 24 | Version suffix, ASCII, zero-padded | `rc3` in 1.5.0-rc3; empty in releases | CONFIRMED |
+| `0x30` | 4 | Unknown | `3` in all 14 | UNKNOWN |
+| `0x34` | 8 | Reserved | zero in all 14 | CONFIRMED zero |
+| `0x3C` | 4 | CRC-32 of header bytes `0x00`–`0x3B` | matches in all 14 | CONFIRMED |
+
+The payload is encrypted: 8.0 bits of entropy per byte and no vector table. Every payload
+length is a multiple of 16 bytes, not of 32, which fits a 16-byte block cipher such as
+AES (LIKELY). Two files of the same size, a release candidate and its release, share only
+1 byte in 256 at the same offsets, as two unrelated ciphertexts would. The CRCs catch a
+damaged copy, not a forged one. A second `.gld`, such as 1.0.2, would confirm byte `0x11`.
 
 ## DMA channels the image uses
 
