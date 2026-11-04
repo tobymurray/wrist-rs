@@ -123,7 +123,6 @@ pub struct Admitted {
 }
 
 impl Admitted {
-    /// For a change that takes no slot.
     pub const AS_ASKED: Self = Self { slot: None, latency_scale: 1 };
 }
 
@@ -135,7 +134,7 @@ pub enum SchedKind {
     /// The connection event length does not fit beside the other slots.
     LengthFailed,
     Excluded(Exclusion),
-    /// Every link of that role is taken.
+    /// No slot for the link: none is free, or there is no such link.
     NoSlot,
 }
 
@@ -151,7 +150,8 @@ impl Activities {
     ///
     /// # Errors
     ///
-    /// [`SchedKind::NoSlot`] for a link the admission gave no slot, or one with nowhere to go.
+    /// [`SchedKind::NoSlot`] for a link the admission gave no slot, one with nowhere to go, or
+    /// one that is not there.
     pub fn with(&self, change: &Change, admitted: &Admitted) -> Result<Self, SchedKind> {
         let mut next = *self;
         let scale = |next: &mut Self, except: Option<usize>| {
@@ -182,16 +182,15 @@ impl Activities {
                 next.central[i] = Some(granted);
             }
             Change::Close { slot } => {
-                if let Some(s) = next.central.get_mut(usize::from(slot)) {
-                    *s = None;
-                }
+                let s = next.central.get_mut(usize::from(slot)).filter(|s| s.is_some()).ok_or(SchedKind::NoSlot)?;
+                *s = None;
             }
             Change::PeripheralUp => {
                 // A connection ends advertising (PM0257 §4.2.3).
                 next.advertising = None;
                 next.peripheral = next.peripheral.saturating_add(1);
             }
-            Change::PeripheralDown => next.peripheral = next.peripheral.saturating_sub(1),
+            Change::PeripheralDown => next.peripheral = next.peripheral.checked_sub(1).ok_or(SchedKind::NoSlot)?,
         }
         Ok(next)
     }

@@ -371,17 +371,24 @@ fn a_ninth_link_is_refused_not_dropped() {
 
 #[test]
 fn a_connection_takes_its_admitted_slot_and_rescales_the_others() {
-    let slot = wrist_ble::CentralSlot { interval: Duration::from_u16(400), latency: 0, ce_len: Duration::from_u16(2) };
+    let slot = wrist_ble::CentralSlot { interval: Duration::from_u16(400), latency: 1, ce_len: Duration::from_u16(2) };
     let a = Activities::IDLE.with(&Change::Initiate(Some(CONNECT)), &Admitted::AS_ASKED).unwrap();
     let a = a.with(&Change::Connected, &Admitted { slot: Some(slot), latency_scale: 1 }).unwrap();
-    assert_eq!((a.initiating, a.centrals()), (None, 1));
-    let fast = wrist_ble::CentralSlot { interval: Duration::from_u16(200), latency: 0, ce_len: Duration::from_u16(2) };
-    let a = a.with(&Change::Connected, &Admitted { slot: Some(fast), latency_scale: 2 }).unwrap();
-    assert_eq!(a.central[0], Some(slot));
-    let busy = wrist_ble::CentralSlot { latency: 1, ..slot };
-    let a = Activities { central: [Some(busy), None, None, None, None, None, None, None], ..Activities::IDLE };
+    assert_eq!((a.initiating, a.central[0]), (None, Some(slot)));
+    let fast = wrist_ble::CentralSlot { interval: Duration::from_u16(200), latency: 1, ce_len: Duration::from_u16(2) };
     let a = a.with(&Change::Connected, &Admitted { slot: Some(fast), latency_scale: 2 }).unwrap();
     assert_eq!(a.central[..2], [Some(wrist_ble::CentralSlot { latency: 2, ..slot }), Some(fast)]);
+}
+
+#[test]
+fn closing_a_link_that_is_not_there_is_refused() {
+    let one = Activities { central: [Some(SLOT), None, None, None, None, None, None, None], peripheral: 1, ..Activities::IDLE };
+    let s = &NoAdvertiseWhileInitiating;
+    for slot in [1, 8] {
+        assert_eq!(one.walk(s, &[Change::Close { slot }]), Err((0, SchedKind::NoSlot)));
+    }
+    assert_eq!(one.walk(s, &[Change::Close { slot: 0 }, Change::PeripheralDown, Change::PeripheralDown]), Err((2, SchedKind::NoSlot)));
+    assert_eq!(one.walk(s, &[Change::Close { slot: 0 }, Change::PeripheralDown]), Ok(Activities::IDLE));
 }
 
 #[test]
