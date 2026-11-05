@@ -2,7 +2,7 @@
 //! the 217-byte console write, two events in one read, a read cut short.
 
 use bluenrg2::{
-    ad_name, ad_uuid128s, ad_uuid16s, att_mtu, characteristics, command, descriptors, gap_proc_complete, gatt_error,
+    ad_name, bonded_devices, parse_address, ad_uuid128s, ad_uuid16s, att_mtu, characteristics, command, descriptors, gap_proc_complete, gatt_error,
     header_sizes, notification, numeric_comparison, packet_len, packet_whole, pairing_complete, parse, read_value,
     reports, service_range, services, vendor, Address, AttributeModified, Characteristic, Event, L2capUpdateRequest,
     L2capUpdateResponse, Service, Uuid,
@@ -551,4 +551,24 @@ fn the_chip_says_why_it_started() {
     assert_eq!(updater, [0x02, 0x03, 0x04]);
     assert_eq!(boot_reason::describe(0x02), "the updater, by command");
     assert_eq!(boot_reason::describe(0x0A), "a reason unknown");
+}
+
+#[test]
+fn an_address_parses_into_the_chips_byte_order() {
+    assert_eq!(parse_address("AC:12:03:D7:FC:5C"), Some([0x5C, 0xFC, 0xD7, 0x03, 0x12, 0xAC]));
+    assert_eq!(parse_address(" ac-12-03-d7-fc-5c "), Some([0x5C, 0xFC, 0xD7, 0x03, 0x12, 0xAC]));
+    for bad in ["", "AC:12:03:D7:FC", "AC:12:03:D7:FC:5C:00", "AC:12:03:D7:FC:5", "AC:12:03:D7:FC:5G", "AC1203D7FC5C"] {
+        assert_eq!(parse_address(bad), None, "{bad:?}");
+    }
+}
+
+#[test]
+fn bonded_devices_reads_each_entry_and_no_more_than_the_reply_holds() {
+    // Two bonds: a static random identity and a public one, as the watch's reply gave them.
+    let reply = [2, 1, 0xFD, 0x81, 0x10, 0xCE, 0xD1, 0x80, 0, 0x5C, 0xFC, 0xD7, 0x03, 0x12, 0xAC];
+    let all: Vec<_> = bonded_devices(&reply).collect();
+    assert_eq!(all, vec![(1, [0xFD, 0x81, 0x10, 0xCE, 0xD1, 0x80]), (0, [0x5C, 0xFC, 0xD7, 0x03, 0x12, 0xAC])]);
+    // A count past the entries present stops at the last whole one.
+    assert_eq!(bonded_devices(&[5, 0, 1, 2, 3, 4, 5, 6, 0, 1]).count(), 1);
+    assert_eq!(bonded_devices(&[]).count(), 0);
 }

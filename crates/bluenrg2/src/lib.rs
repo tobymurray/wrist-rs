@@ -62,6 +62,10 @@ pub mod opcode {
     pub const ACI_GAP_START_CONNECTION_UPDATE: u16 = 0xFC9E;
     pub const ACI_GAP_GET_BONDED_DEVICES: u16 = 0xFCA3;
     pub const ACI_GAP_NUMERIC_COMPARISON_CONFIRM: u16 = 0xFCA5;
+    /// Removes one bonded device: its identity address type, then its address. PM0257 (the
+    /// v2.x stack) doesn't list it; ST's later stacks number it so. A stack without it answers
+    /// status 0x01, unknown command.
+    pub const ACI_GAP_REMOVE_BONDED_DEVICE: u16 = 0xFCAA;
     pub const ACI_GATT_INIT: u16 = 0xFD01;
     pub const ACI_GATT_ADD_SERVICE: u16 = 0xFD02;
     pub const ACI_GATT_ADD_CHAR: u16 = 0xFD04;
@@ -673,6 +677,34 @@ impl<'a> AttributeModified<'a> {
 pub fn numeric_comparison(params: &[u8]) -> Option<(u16, u32)> {
     let v = params.get(2..6)?;
     Some((connection_handle(params), u32::from_le_bytes([v[0], v[1], v[2], v[3]])))
+}
+
+/// The bonded devices in an `ACI_GAP_GET_BONDED_DEVICES` reply (its count, then each
+/// device's identity address type and address, least significant byte first); the count is
+/// clamped to the entries the reply holds.
+pub fn bonded_devices(params: &[u8]) -> impl Iterator<Item = (u8, [u8; 6])> + '_ {
+    let count = usize::from(params.first().copied().unwrap_or(0));
+    params.get(1..).unwrap_or(&[]).chunks_exact(7).take(count).map(|e| {
+        let mut addr = [0u8; 6];
+        addr.copy_from_slice(&e[1..7]);
+        (e[0], addr)
+    })
+}
+
+/// An address as people write it, `AC:12:03:D7:FC:5C` (colons or dashes, either case), into
+/// the chip's byte order, least significant first.
+#[must_use]
+pub fn parse_address(text: &str) -> Option<[u8; 6]> {
+    let mut out = [0u8; 6];
+    let mut parts = text.trim().split([':', '-']);
+    for i in (0..6).rev() {
+        let part = parts.next()?;
+        if part.len() != 2 {
+            return None;
+        }
+        out[i] = u8::from_str_radix(part, 16).ok()?;
+    }
+    parts.next().is_none().then_some(out)
 }
 
 /// `GAP_PAIRING_COMPLETE`: status (0 success) and reason.
