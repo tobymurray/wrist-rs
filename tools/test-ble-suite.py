@@ -110,7 +110,8 @@ def snap(build, ble=True):
 
 
 def suite_args(**kw):
-    base = dict(port=None, install=None, restore=None, image=None, btmon=False, name='UNA', scenarios=['console'], sessions=1)
+    base = dict(port=None, install=None, restore=None, image=None, btmon=False, name='UNA', scenarios=['console'], sessions=1,
+                restart_radio=False, profile=None)
     base.update(kw)
     return argparse.Namespace(**base)
 
@@ -554,6 +555,51 @@ def load(name):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+class Replayable(unittest.TestCase):
+    """--restart-radio, --profile and console.log's times, the form the replay reads."""
+
+    class Said:
+        def __init__(self, answers):
+            self.answers, self.sent = answers, []
+
+        async def ask(self, text, pattern, timeout=3):
+            self.sent.append(text)
+            return next((l for l in self.answers.get(text, []) if re.search(pattern, l)), None)
+
+    def prepare(self, usb, **flags):
+        a = argparse.Namespace(restart_radio=False, profile=None)
+        vars(a).update(flags)
+        result = {}
+        with mock.patch.object(suite.asyncio, 'sleep', mock.AsyncMock()):
+            problems = asyncio.run(suite.prepare(usb, a, result))
+        return problems, result
+
+    def test_nothing_asked_without_the_flags(self):
+        usb = self.Said({})
+        self.assertEqual(self.prepare(usb), ([], {}))
+        self.assertEqual(usb.sent, [])
+
+    def test_the_radio_restarted_then_the_profile_held(self):
+        usb = self.Said({'ble off': ['[ble] off'], 'ble on': ['[ble] on'],
+                         'ble': ['[ble] advertising as UNA, timing cable, address D9:5B:7A:EB:29:82'],
+                         'ble profile battery': ['[ble] timing: the battery\'s, whatever the power source']})
+        problems, result = self.prepare(usb, restart_radio=True, profile='battery')
+        self.assertEqual(problems, [])
+        self.assertEqual(usb.sent, ['ble off', 'ble on', 'ble', 'ble profile battery'])
+        self.assertEqual(result['profile'], 'battery')
+
+    def test_a_radio_that_stays_off_stops_the_run(self):
+        usb = self.Said({'ble': ['[ble] off, timing cable']})
+        problems, _ = self.prepare(usb, restart_radio=True)
+        self.assertEqual(len(problems), 1)
+        self.assertIn('did not come back', problems[0])
+
+    def test_console_times_are_seconds_since_the_start(self):
+        with mock.patch.object(suite, 'START', 1000.0):
+            self.assertEqual(suite.seconds(1012.3456), '   12.346')
+            self.assertRegex(suite.seconds(1000.0) + ' [trace] 5 e 04', r'^\s*\d+\.\d{3} ')
 
 
 @unittest.skipUnless(importlib.util.find_spec('dbus_fast'), 'hr-sim.py needs dbus-fast (Linux)')
