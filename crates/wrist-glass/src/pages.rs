@@ -190,6 +190,86 @@ pub fn compose_about(a: &About<'_>, locale: &Locale, faces: &Faces) -> (Glass, S
     (b.glass, b.short)
 }
 
+/// What the Bluetooth page shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Bluetooth {
+    pub radio: Radio,
+    pub prompt: Option<Prompt>,
+    /// The centrals the chip keeps keys for.
+    pub bonded: u8,
+}
+
+/// The radio, as the Bluetooth page names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Radio {
+    Off,
+    Starting,
+    /// Up, and not advertising.
+    On,
+    Discoverable,
+    Connected,
+    /// Connected, and the link encrypted.
+    Secure,
+    Failed,
+}
+
+/// Six digits the wearer is asked about while pairing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Prompt {
+    /// The central shows a number too: Select if they match.
+    Compare(u32),
+    /// The central asks for this number to be typed.
+    Passkey(u32),
+}
+
+const BT_STATE: i32 = 104;
+const BT_DIGITS: i32 = 150;
+const BT_HINT: i32 = 176;
+const BT_HINT_2: i32 = 198;
+const BT_STATE_IDLE: i32 = 117;
+const BT_BONDED: i32 = 148;
+const BT_SELECT: i32 = 177;
+
+/// The radio's state and what Select does; while pairing, the six digits and what to do with
+/// them instead.
+#[must_use]
+pub fn compose_bluetooth(bt: &Bluetooth, locale: &Locale, faces: &Faces) -> (Glass, Short) {
+    let mut b = Builder::new();
+    b.at(faces.words, TITLE, |l| locale.message(l, Msg::BluetoothTitle));
+    let state = match bt.radio {
+        Radio::Off => Msg::BluetoothOff,
+        Radio::Starting => Msg::BluetoothStarting,
+        Radio::On => Msg::BluetoothOn,
+        Radio::Discoverable => Msg::BluetoothDiscoverable,
+        Radio::Connected => Msg::BluetoothConnected,
+        Radio::Secure => Msg::BluetoothSecure,
+        Radio::Failed => Msg::BluetoothFailed,
+    };
+    match bt.prompt {
+        Some(Prompt::Compare(value) | Prompt::Passkey(value)) => {
+            b.at(faces.words, BT_STATE, |l| locale.message(l, state));
+            let mut digits = *b"000000";
+            for (i, d) in digits.iter_mut().rev().enumerate() {
+                *d = b'0' + u8::try_from(value / 10u32.pow(u32::try_from(i).unwrap_or(0)) % 10).unwrap_or(0);
+            }
+            b.at(faces.charge, BT_DIGITS, |l| l.push_verbatim(core::str::from_utf8(&digits).unwrap_or("")));
+            if matches!(bt.prompt, Some(Prompt::Compare(_))) {
+                b.at(faces.id, BT_HINT, |l| locale.message(l, Msg::BluetoothSelectMatches));
+                b.at(faces.id, BT_HINT_2, |l| locale.message(l, Msg::BluetoothHoldNoMatch));
+            } else {
+                b.at(faces.id, BT_HINT, |l| locale.message(l, Msg::BluetoothTypePasskey));
+            }
+        }
+        None => {
+            b.at(faces.words, BT_STATE_IDLE, |l| locale.message(l, state));
+            b.at(faces.words, BT_BONDED, |l| locale.message(l, Msg::BluetoothBonded { n: u32::from(bt.bonded) }));
+            let select = if matches!(bt.radio, Radio::Off | Radio::Failed) { Msg::BluetoothSelectOn } else { Msg::BluetoothSelectOff };
+            b.at(faces.words, BT_SELECT, |l| locale.message(l, select));
+        }
+    }
+    (b.glass, b.short)
+}
+
 fn push_upper(line: &mut Line, s: &str) -> Result<(), Overflow> {
     for c in s.chars() {
         let mut buf = [0u8; 4];

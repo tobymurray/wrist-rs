@@ -3,7 +3,7 @@
 use crate::{DatePiece, Locale, Piece, Plural, TimePiece};
 
 /// How many messages there are.
-pub const MESSAGES: usize = 15;
+pub const MESSAGES: usize = 29;
 
 /// Every message, in `l10n/en.ftl`'s order, with its arguments.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,6 +49,40 @@ pub enum Msg {
     AboutTitle,
     /// `wrist-rs`
     AboutProduct,
+    // The page's title, in capitals like the other pages'.
+    /// `BLUETOOTH`
+    BluetoothTitle,
+    // The radio: held off, starting, up but not advertising, advertising, a phone connected, that link encrypted, and the chip failed to start.
+    /// `off`
+    BluetoothOff,
+    /// `starting`
+    BluetoothStarting,
+    /// `on`
+    BluetoothOn,
+    /// `discoverable`
+    BluetoothDiscoverable,
+    /// `connected`
+    BluetoothConnected,
+    /// `secure link`
+    BluetoothSecure,
+    /// `failed`
+    BluetoothFailed,
+    // How many phones and computers the watch keeps pairing keys for.
+    /// `{$n} bonded`
+    BluetoothBonded { n: u32 },
+    // What Select does: switch the radio on, or off.
+    /// `select: turn on`
+    BluetoothSelectOn,
+    /// `select: turn off`
+    BluetoothSelectOff,
+    // During a numeric comparison, under the six digits: Select if the phone shows the same number, hold Select if it doesn't.
+    /// `select: it matches`
+    BluetoothSelectMatches,
+    /// `hold: no match`
+    BluetoothHoldNoMatch,
+    // During passkey entry, under the six digits: type them on the phone.
+    /// `type on the phone`
+    BluetoothTypePasskey,
 }
 
 impl Msg {
@@ -71,6 +105,20 @@ impl Msg {
             Self::BatteryInputUnknown => (12, [0]),
             Self::AboutTitle => (13, [0]),
             Self::AboutProduct => (14, [0]),
+            Self::BluetoothTitle => (15, [0]),
+            Self::BluetoothOff => (16, [0]),
+            Self::BluetoothStarting => (17, [0]),
+            Self::BluetoothOn => (18, [0]),
+            Self::BluetoothDiscoverable => (19, [0]),
+            Self::BluetoothConnected => (20, [0]),
+            Self::BluetoothSecure => (21, [0]),
+            Self::BluetoothFailed => (22, [0]),
+            Self::BluetoothBonded { n: a0 } => (23, [a0]),
+            Self::BluetoothSelectOn => (24, [0]),
+            Self::BluetoothSelectOff => (25, [0]),
+            Self::BluetoothSelectMatches => (26, [0]),
+            Self::BluetoothHoldNoMatch => (27, [0]),
+            Self::BluetoothTypePasskey => (28, [0]),
         }
     }
 }
@@ -117,6 +165,34 @@ pub static EN_GB: Locale = Locale {
         &[Piece::Text("ABOUT")],
         // about-product
         &[Piece::Text("wrist-rs")],
+        // bluetooth-title
+        &[Piece::Text("BLUETOOTH")],
+        // bluetooth-off
+        &[Piece::Text("off")],
+        // bluetooth-starting
+        &[Piece::Text("starting")],
+        // bluetooth-on
+        &[Piece::Text("on")],
+        // bluetooth-discoverable
+        &[Piece::Text("discoverable")],
+        // bluetooth-connected
+        &[Piece::Text("connected")],
+        // bluetooth-secure
+        &[Piece::Text("secure link")],
+        // bluetooth-failed
+        &[Piece::Text("failed")],
+        // bluetooth-bonded
+        &[Piece::Arg(0), Piece::Text(" bonded")],
+        // bluetooth-select-on
+        &[Piece::Text("select: turn on")],
+        // bluetooth-select-off
+        &[Piece::Text("select: turn off")],
+        // bluetooth-select-matches
+        &[Piece::Text("select: it matches")],
+        // bluetooth-hold-no-match
+        &[Piece::Text("hold: no match")],
+        // bluetooth-type-passkey
+        &[Piece::Text("type on the phone")],
     ],
     weekdays: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
     months: ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec"],

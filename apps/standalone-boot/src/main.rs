@@ -53,7 +53,7 @@ use wrist_glass::scene::Scene;
 use wrist_glass::text::Glass;
 use wrist_flash::vectors::{HANDOFF_POP, SRAM_END, SRAM_START};
 use wrist_board::{light, pins};
-use wrist_pages::{Button, Nav, Page, Press};
+use wrist_pages::{Action, Button, Nav, Page, Press};
 
 use crate::mmio::{
     enable_clock, gpio, modify32, read32, write32, DBGMCU_IDCODE, FLASH_ACR, FLASH_OPTR, GPIOC_BASE, GPIO_BSRR, GPIO_IDR, GPIO_MODER, GPIO_OSPEEDR,
@@ -693,8 +693,11 @@ pub fn inject_press(press: Press) -> bool {
     PRESS_IN.try_send(press).is_ok()
 }
 
+/// The image's pages: the Bluetooth page only with Bluetooth in it.
+const PAGES: &[Page] = if cfg!(feature = "ble") { &Page::ALL } else { &Page::WITHOUT_BLUETOOTH };
+
 /// Where the wearer is among the pages.
-static NAV: Mutex<CriticalSectionRawMutex, Cell<Nav>> = Mutex::new(Cell::new(Nav::new()));
+static NAV: Mutex<CriticalSectionRawMutex, Cell<Nav>> = Mutex::new(Cell::new(Nav::with(PAGES)));
 
 fn now_ms() -> u64 {
     Instant::now().as_millis()
@@ -702,7 +705,22 @@ fn now_ms() -> u64 {
 
 /// Back on the face at once, for the alarm's ring.
 pub fn to_face() {
-    NAV.lock(|n| n.set(Nav::new()));
+    NAV.lock(|n| n.set(Nav::with(PAGES)));
+}
+
+/// Bring `page` up, as a press to it would, if this image has it.
+pub fn show_page(page: Page) {
+    if NAV.lock(|n| {
+        let mut nav = n.get();
+        let moved = nav.show(page, now_ms());
+        n.set(nav);
+        moved
+    }) {
+        let uart = Uart::best_effort();
+        uart.write_str("[page] ");
+        uart.write_line(page.name());
+        wake_display();
+    }
 }
 
 /// The page to draw now, back on the face once a page's timeout has passed; and when that
@@ -842,12 +860,17 @@ fn on_press(uart: Uart, press: Press, injected: bool, light_until: &mut Option<I
         *light_until = Some(Instant::now() + LIT_FOR);
         uart.write_line(": face lit for 3 s");
     }
-    let (moved, page) = NAV.lock(|n| {
+    let (moved, page, action) = NAV.lock(|n| {
         let mut nav = n.get();
+        let action = wrist_pages::action(nav.page(), press, comparing());
         let moved = nav.press(press, now_ms());
         n.set(nav);
-        (moved, nav.page())
+        (moved, nav.page(), action)
     });
+    if let Some(action) = action {
+        act(action);
+        wake_display();
+    }
     if moved {
         uart.write_str("[page] ");
         uart.write_line(page.name());
@@ -927,8 +950,12 @@ async fn display(mut pwr_int: ExtiInput<'static, Async>) -> ! {
         // Asleep until the minute turns, unless USB, the input line or a request needs it sooner.
         let line_low = pwr_int.is_low();
         let mut due = Instant::now() + until_next_minute();
-        if let (_, Some(back_to_face)) = nav_now() {
+        if let (page, Some(back_to_face)) = nav_now() {
             due = due.min(back_to_face);
+            // The radio's state changes under the page without a press.
+            if page == Page::Bluetooth {
+                due = due.min(Instant::now() + Duration::from_secs(1));
+            }
         }
         if !power::on_battery() {
             due = due.min(next_reading);
@@ -968,6 +995,24 @@ fn apply_zone_change(uart: Uart) {
     }
 }
 
+/// A numeric comparison waits for the wearer's answer.
+fn comparing() -> bool {
+    #[cfg(feature = "ble")]
+    return ble::comparing();
+    #[cfg(not(feature = "ble"))]
+    false
+}
+
+fn act(action: Action) {
+    #[cfg(feature = "ble")]
+    match action {
+        Action::ToggleBluetooth => ble::toggle(),
+        Action::Compare(yes) => ble::answer(yes),
+    }
+    #[cfg(not(feature = "ble"))]
+    let _ = action;
+}
+
 /// The page, or the stress screen the console put in its place.
 fn compose_page(page: Page, soc_pct: Option<u8>, cell_mv: Option<u32>) -> (Glass, pages::Short) {
     if let Some((kind, step, _)) = glass::stress() {
@@ -985,6 +1030,10 @@ fn compose_page(page: Page, soc_pct: Option<u8>, cell_mv: Option<u32>) -> (Glass
             locale,
             pages::FACES,
         ),
+        #[cfg(feature = "ble")]
+        Page::Bluetooth => pages::compose_bluetooth(&ble::page(), locale, pages::FACES),
+        #[cfg(not(feature = "ble"))]
+        Page::Bluetooth => pages::compose(&glass::status(soc_pct), locale, pages::FACES),
         Page::About => pages::compose_about(
             &pages::About {
                 version: version::VERSION,

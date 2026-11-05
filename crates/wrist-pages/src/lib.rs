@@ -3,9 +3,10 @@
 //! Which page is on the glass, and where each press moves it.
 //!
 //! Pure state: the image hands it presses (from the buttons or the console's `press`) and the
-//! time, and draws [`Nav::page`]. From the face, Down and Up step through [`Page::ALL`]; on
-//! another page they keep stepping, Back returns to the face, and after [`TIMEOUT_MS`]
-//! without a press the face comes back by itself. Select and long presses move nothing yet.
+//! time, and draws [`Nav::page`]. From the face, Down and Up step through the image's pages (the
+//! Bluetooth page only in an image with Bluetooth); on another page they keep stepping, Back
+//! returns to the face, and after [`TIMEOUT_MS`] without a press the face comes back by itself.
+//! Select and long presses move nothing; on the Bluetooth page they are [`action`]s.
 //!
 //! Lighting the face is the image's, for every short press on every page, as before pages.
 //! Holds are not presses: any button held 3 s resets into the bootloader, and Select held
@@ -86,33 +87,46 @@ pub enum Page {
     Face,
     /// The charge, the cell's voltage and the input.
     Battery,
+    /// The radio, its pairing prompt, and the switch.
+    Bluetooth,
     /// The version and the build ID.
     About,
 }
 
 impl Page {
-    pub const ALL: [Self; 3] = [Self::Face, Self::Battery, Self::About];
+    pub const ALL: [Self; 4] = [Self::Face, Self::Battery, Self::Bluetooth, Self::About];
+    /// An image without Bluetooth's.
+    pub const WITHOUT_BLUETOOTH: [Self; 3] = [Self::Face, Self::Battery, Self::About];
 
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
             Self::Face => "face",
             Self::Battery => "battery",
+            Self::Bluetooth => "bluetooth",
             Self::About => "about",
         }
     }
+}
 
-    const fn position(self) -> usize {
-        match self {
-            Self::Face => 0,
-            Self::Battery => 1,
-            Self::About => 2,
-        }
-    }
+/// What a press on a page does beyond moving between pages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Action {
+    /// Turn the radio on, or off.
+    ToggleBluetooth,
+    /// Answer the numeric comparison waiting: the phone shows the same number, or not.
+    Compare(bool),
+}
 
-    /// `by` pages on, wrapping; `ALL.len() - 1` steps back one.
-    const fn step(self, by: usize) -> Self {
-        Self::ALL[(self.position() + by) % Self::ALL.len()]
+/// The action `press` takes on `page`, `comparing` while a numeric comparison waits for an
+/// answer: there Select says the numbers match and a long Select that they don't, and otherwise
+/// Select switches the radio.
+#[must_use]
+pub const fn action(page: Page, press: Press, comparing: bool) -> Option<Action> {
+    match (page, press.button, press.long, comparing) {
+        (Page::Bluetooth, Button::Select, long, true) => Some(Action::Compare(!long)),
+        (Page::Bluetooth, Button::Select, false, false) => Some(Action::ToggleBluetooth),
+        _ => None,
     }
 }
 
@@ -120,18 +134,32 @@ impl Page {
 pub const TIMEOUT_MS: u64 = 10_000;
 
 /// Where the wearer is.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Nav {
     page: Page,
     /// When the last press arrived, in the image's milliseconds.
     pressed_at_ms: u64,
+    /// The image's pages, in the order Down visits them, the face first.
+    pages: &'static [Page],
+}
+
+impl Default for Nav {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Nav {
-    /// On the face.
+    /// On the face, among the pages of an image without Bluetooth.
     #[must_use]
     pub const fn new() -> Self {
-        Self { page: Page::Face, pressed_at_ms: 0 }
+        Self::with(&Page::WITHOUT_BLUETOOTH)
+    }
+
+    /// On the face, among `pages`.
+    #[must_use]
+    pub const fn with(pages: &'static [Page]) -> Self {
+        Self { page: Page::Face, pressed_at_ms: 0, pages }
     }
 
     #[must_use]
@@ -141,16 +169,28 @@ impl Nav {
 
     /// The page `press` leads to from `page`.
     #[must_use]
-    pub const fn next(page: Page, press: Press) -> Page {
+    pub const fn next(&self, page: Page, press: Press) -> Page {
         if press.long {
             return page;
         }
-        match (page, press.button) {
-            (_, Button::Down) => page.step(1),
-            (_, Button::Up) => page.step(Page::ALL.len() - 1),
-            (_, Button::Back) => Page::Face,
-            (_, Button::Select) => page,
+        match press.button {
+            Button::Down => self.step(page, 1),
+            Button::Up => self.step(page, self.pages.len() - 1),
+            Button::Back => Page::Face,
+            Button::Select => page,
         }
+    }
+
+    /// `by` pages on from `page`, wrapping; the face for a page this image lacks.
+    const fn step(&self, page: Page, by: usize) -> Page {
+        let mut i = 0;
+        while i < self.pages.len() {
+            if self.pages[i] as u8 == page as u8 {
+                return self.pages[(i + by) % self.pages.len()];
+            }
+            i += 1;
+        }
+        Page::Face
     }
 
     /// Apply `press` at `now_ms`; true when the page changed. Every press restarts the
@@ -158,7 +198,19 @@ impl Nav {
     pub fn press(&mut self, press: Press, now_ms: u64) -> bool {
         self.pressed_at_ms = now_ms;
         let before = self.page;
-        self.page = Self::next(before, press);
+        self.page = self.next(before, press);
+        self.page != before
+    }
+
+    /// Bring up `page` as if pressed to at `now_ms`, if this image has it; true when the page
+    /// changed.
+    pub fn show(&mut self, page: Page, now_ms: u64) -> bool {
+        if !self.pages.contains(&page) {
+            return false;
+        }
+        self.pressed_at_ms = now_ms;
+        let before = self.page;
+        self.page = page;
         self.page != before
     }
 
@@ -209,46 +261,105 @@ mod tests {
     #[test]
     fn every_short_press_from_every_page() {
         use Button::{Back, Down, Select, Up};
-        use Page::{About, Battery, Face};
-        let table = [
-            (Face, Up, About),
-            (Face, Down, Battery),
-            (Face, Back, Face),
-            (Face, Select, Face),
-            (Battery, Up, Face),
-            (Battery, Down, About),
-            (Battery, Back, Face),
-            (Battery, Select, Battery),
-            (About, Up, Battery),
-            (About, Down, Face),
-            (About, Back, Face),
-            (About, Select, About),
-        ];
-        assert_eq!(table.len(), Page::ALL.len() * Button::ALL.len());
-        for (from, button, to) in table {
-            assert_eq!(Nav::next(from, short(button)), to, "{from:?} + {button:?}");
+        use Page::{About, Battery, Bluetooth, Face};
+        for (pages, table) in [
+            (
+                &Page::WITHOUT_BLUETOOTH[..],
+                &[
+                    (Face, Up, About),
+                    (Face, Down, Battery),
+                    (Battery, Up, Face),
+                    (Battery, Down, About),
+                    (About, Up, Battery),
+                    (About, Down, Face),
+                ][..],
+            ),
+            (
+                &Page::ALL[..],
+                &[
+                    (Face, Up, About),
+                    (Face, Down, Battery),
+                    (Battery, Up, Face),
+                    (Battery, Down, Bluetooth),
+                    (Bluetooth, Up, Battery),
+                    (Bluetooth, Down, About),
+                    (About, Up, Bluetooth),
+                    (About, Down, Face),
+                ][..],
+            ),
+        ] {
+            let nav = Nav { pages, ..Nav::new() };
+            assert_eq!(table.len(), pages.len() * 2);
+            for &(from, button, to) in table {
+                assert_eq!(nav.next(from, short(button)), to, "{from:?} + {button:?}");
+            }
+            for &from in pages {
+                assert_eq!(nav.next(from, short(Back)), Face);
+                assert_eq!(nav.next(from, short(Select)), from);
+            }
         }
     }
 
     #[test]
+    fn a_page_the_image_lacks_steps_to_the_face() {
+        let nav = Nav::new();
+        assert_eq!(nav.next(Page::Bluetooth, short(Button::Down)), Page::Face);
+        assert_eq!(nav.next(Page::Bluetooth, short(Button::Up)), Page::Face);
+    }
+
+    #[test]
     fn long_presses_move_nothing() {
+        let nav = Nav::with(&Page::ALL);
         for page in Page::ALL {
             for button in Button::ALL {
-                assert_eq!(Nav::next(page, Press { button, long: true }), page);
+                assert_eq!(nav.next(page, Press { button, long: true }), page);
             }
         }
     }
 
     #[test]
     fn down_visits_every_page_and_comes_home() {
-        let mut nav = Nav::new();
-        let mut seen = [false; Page::ALL.len()];
-        for t in 0..Page::ALL.len() as u64 {
-            seen[nav.page().position()] = true;
-            nav.press(short(Button::Down), t);
+        for pages in [&Page::WITHOUT_BLUETOOTH[..], &Page::ALL[..]] {
+            let mut nav = Nav::with(pages);
+            let mut seen = [false; Page::ALL.len()];
+            for t in 0..pages.len() as u64 {
+                seen[nav.page() as usize] = true;
+                nav.press(short(Button::Down), t);
+            }
+            assert_eq!(seen.iter().filter(|&&s| s).count(), pages.len());
+            assert_eq!(nav.page(), Page::Face);
         }
-        assert!(seen.iter().all(|&s| s));
-        assert_eq!(nav.page(), Page::Face);
+    }
+
+    #[test]
+    fn select_on_the_bluetooth_page_switches_the_radio_or_answers_the_comparison() {
+        let select = short(Button::Select);
+        let held = Press { button: Button::Select, long: true };
+        assert_eq!(action(Page::Bluetooth, select, false), Some(Action::ToggleBluetooth));
+        assert_eq!(action(Page::Bluetooth, held, false), None);
+        assert_eq!(action(Page::Bluetooth, select, true), Some(Action::Compare(true)));
+        assert_eq!(action(Page::Bluetooth, held, true), Some(Action::Compare(false)));
+        for page in [Page::Face, Page::Battery, Page::About] {
+            for comparing in [false, true] {
+                assert_eq!(action(page, select, comparing), None);
+                assert_eq!(action(page, held, comparing), None);
+            }
+        }
+        for button in [Button::Up, Button::Down, Button::Back] {
+            assert_eq!(action(Page::Bluetooth, short(button), true), None);
+        }
+    }
+
+    #[test]
+    fn a_page_shown_restarts_the_wait_and_one_the_image_lacks_is_not_shown() {
+        let mut nav = Nav::with(&Page::ALL);
+        assert!(nav.show(Page::Bluetooth, 2_000));
+        assert_eq!((nav.page(), nav.deadline_ms()), (Page::Bluetooth, Some(2_000 + TIMEOUT_MS)));
+        assert!(!nav.show(Page::Bluetooth, 3_000));
+        assert_eq!(nav.deadline_ms(), Some(3_000 + TIMEOUT_MS));
+        let mut without = Nav::new();
+        assert!(!without.show(Page::Bluetooth, 2_000));
+        assert_eq!((without.page(), without.deadline_ms()), (Page::Face, None));
     }
 
     #[test]

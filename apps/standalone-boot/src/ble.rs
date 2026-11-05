@@ -434,6 +434,43 @@ pub fn write_status(uart: Uart) {
     uart.write_line("");
 }
 
+/// What the Bluetooth page shows.
+pub fn page() -> wrist_glass::pages::Bluetooth {
+    use wrist_glass::pages::{Bluetooth, Prompt, Radio as Shown};
+    let radio = match Radio::from_u8(STATE.load(Ordering::Relaxed)) {
+        Radio::Off => Shown::Off,
+        Radio::Starting => Shown::Starting,
+        Radio::Idle => Shown::On,
+        Radio::Advertising => Shown::Discoverable,
+        Radio::Connected if ENCRYPTED.load(Ordering::Relaxed) => Shown::Secure,
+        Radio::Connected => Shown::Connected,
+        Radio::Failed => Shown::Failed,
+    };
+    let value = PROMPT_VALUE.load(Ordering::Relaxed);
+    let prompt = match PROMPT_KIND.load(Ordering::Relaxed) {
+        1 => Some(Prompt::Passkey(value)),
+        2 => Some(Prompt::Compare(value)),
+        _ => None,
+    };
+    Bluetooth { radio, prompt, bonded: BONDED.load(Ordering::Relaxed) }
+}
+
+/// A numeric comparison waits for an answer.
+pub fn comparing() -> bool {
+    PROMPT_KIND.load(Ordering::Relaxed) == 2
+}
+
+/// The radio off if it is on or starting, on otherwise; kept across resets, as `ble on|off` is.
+pub fn toggle() {
+    let off = matches!(Radio::from_u8(STATE.load(Ordering::Relaxed)), Radio::Off | Radio::Failed);
+    let _ = REQUESTS.try_send(if off { Request::On } else { Request::Off });
+}
+
+/// The wearer's answer to the numeric comparison waiting, as `ble yes|no`.
+pub fn answer(yes: bool) {
+    let _ = REQUESTS.try_send(if yes { Request::Yes } else { Request::No });
+}
+
 /// A command's reply: the status byte and the parameters after it.
 struct Reply {
     status: u8,
@@ -1283,6 +1320,7 @@ impl Link<'_> {
         };
         PROMPT_VALUE.store(key, Ordering::Relaxed);
         PROMPT_KIND.store(1, Ordering::Relaxed);
+        crate::show_page(wrist_pages::Page::Bluetooth);
         self.uart.write_str("[ble] pairing: type this passkey on the central: ");
         write_six_digits(self.uart, key);
         self.uart.write_line("");
@@ -1615,6 +1653,7 @@ impl Link<'_> {
                 PROMPT_VALUE.store(value, Ordering::Relaxed);
                 PROMPT_KIND.store(2, Ordering::Relaxed);
                 ANSWER.store(0, Ordering::Relaxed);
+                crate::show_page(wrist_pages::Page::Bluetooth);
                 self.confirm_for = Some((conn, Instant::now()));
                 self.uart.write_str("[ble] pairing: the central shows a number; if it is ");
                 write_six_digits(self.uart, value);
