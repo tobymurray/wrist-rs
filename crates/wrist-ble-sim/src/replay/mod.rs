@@ -333,9 +333,14 @@ pub fn replay(capture: &str) -> Report {
     r.report
 }
 
-/// The capture tool's host time, seconds with three decimals, in milliseconds.
+/// A host time in milliseconds: seconds with three decimals, as the capture tool writes, or a
+/// wall clock's `HH:MM:SS.mmm`, as the suite's console log does.
 fn host_ms(t: &str) -> Option<i64> {
-    let (s, ms) = t.split_once('.')?;
+    let (whole, ms) = t.split_once('.')?;
     (ms.len() == 3).then_some(())?;
-    Some(s.parse::<i64>().ok()? * 1_000 + ms.parse::<i64>().ok()?)
+    let mut seconds = 0;
+    for part in whole.split(':') {
+        seconds = seconds * 60 + part.parse::<i64>().ok()?;
+    }
+    Some(seconds * 1_000 + ms.parse::<i64>().ok()?)
 }

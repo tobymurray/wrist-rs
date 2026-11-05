@@ -27,6 +27,22 @@ fn the_core_acts_where_and_as_the_driver_did() {
 }
 
 #[test]
+fn a_capture_timed_by_the_wall_clock_replays_as_one_timed_in_seconds() {
+    let (name, capture) = &traces()[0];
+    let clock = capture
+        .lines()
+        .map(|l| {
+            let (t, rest) = l.split_once(' ').unwrap();
+            let (s, ms) = t.split_once('.').unwrap();
+            let s: u64 = s.parse::<u64>().unwrap() + 9 * 3_600 + 27 * 60;
+            format!("{:02}:{:02}:{:02}.{ms} {rest}", s / 3_600, s / 60 % 60, s % 60)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(replay(&clock).core_ops, replay(capture).core_ops, "{name}");
+}
+
+#[test]
 fn a_core_that_acts_alone_is_a_disagreement() {
     let (name, capture) = &traces()[0];
     let without_driver = capture.lines().filter(|l| !l.contains(" c ")).collect::<Vec<_>>().join("\n");
@@ -40,6 +56,8 @@ fn traces_hold_only_what_the_scrub_keeps() {
         for line in capture.lines() {
             let (_, text) = line.split_once(' ').unwrap();
             if text.starts_with("== ") || text.starts_with(">> usb ble ") {
+                let joined: String = text.chars().filter(|c| !matches!(c, ':' | '-' | '_')).collect();
+                assert!(!joined.split(|c: char| !c.is_ascii_hexdigit()).any(|w| w.len() >= 12), "{name}: an address in {line}");
                 continue;
             }
             let f: Vec<&str> = text.split(' ').collect();

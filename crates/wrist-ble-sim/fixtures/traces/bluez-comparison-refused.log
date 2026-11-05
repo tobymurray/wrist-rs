@@ -1,0 +1,27 @@
+0.001 == session start
+1.401 == radio restart
+1.401 >> usb ble off
+1.602 [trace] 352592 c 0181FC00
+4.408 >> usb ble on
+4.606 [trace] 355590 r
+6.608 [trace] 357709 e 04FF03010001
+6.608 [trace] 357737 c 0183FC1100A000A00001000409554E410000000000
+13.422 == B2 bluetoothctl remove (no bond expected)
+13.622 == host Pair() called (watch answer: no, host answer: yes)
+13.817 [trace] 364888 e 043E1301000108010000000000000018000000F40101
+13.823 == host bluez {'Connected': True}
+14.017 [trace] 364999 e 043E0B0701081B004801FB004808
+14.017 [trace] 365180 e 04FF080904010842A00100
+14.223 == host agent RequestConfirmation 106562
+14.223 >> usb ble no
+14.228 == host agent answers yes
+14.417 [trace] 365405 c 01A5FC03010800
+14.417 [trace] 365407 e 04FF0601040108020C
+14.417 [trace] 365408 c 0181FD0A01080C0018000000F401
+14.417 [trace] 365450 e 04FF06000801080000
+14.417 [trace] 365450 e 04050400010813
+14.417 [trace] 365450 c 0183FC1100A000A00001000409554E410000000000
+14.428 == host Pair() failed: org.bluez.Error.AuthenticationFailed: Authentication Failed
+14.428 == host after Pair: Connected=True; watching 40 s
+14.428 == host bluez {'Connected': False}
+54.447 == host done
