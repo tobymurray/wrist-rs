@@ -178,12 +178,11 @@ fn the_ring_is_on_the_glass() {
 
 #[test]
 fn the_stepwise_render_is_the_same_frame() {
-    let mut bg = vec![BLACK; W * H];
-    assert!(wrist_glass::pages::background(&mut bg));
     for (name, (glass, _)) in every_page() {
         let mut whole = vec![BLACK; W * H];
         assert!(render(&mut whole, &glass));
-        let mut steps = bg.clone();
+        let mut steps = vec![BLACK; W * H];
+        assert!(wrist_glass::pages::backdrop(&mut steps, glass.switch()));
         for i in 0..glass.len() {
             assert!(wrist_glass::pages::draw_line(&mut steps, &glass, i));
         }
@@ -191,7 +190,7 @@ fn the_stepwise_render_is_the_same_frame() {
         let mut strips = vec![0xA5; W * H];
         let scene = wrist_glass::scene::Scene::of(&glass);
         for x in (0..WI).step_by(9) {
-            assert!(wrist_glass::pages::repaint(&mut strips, &scene, None, x..x + 9));
+            assert!(wrist_glass::pages::repaint(&mut strips, &scene, None, x..x + 9, glass.switch()));
         }
         assert!(whole == strips, "{name}: the frame repainted in strips differs");
     }
@@ -331,12 +330,50 @@ fn the_bluetooth_page_shows_six_digits_with_leading_zeros() {
 }
 
 #[test]
-fn the_bluetooth_page_says_what_select_does() {
-    for (radio, says) in [(Radio::Off, "select: turn on"), (Radio::Failed, "select: turn on"), (Radio::Discoverable, "select: turn off")] {
+fn the_bluetooth_page_stands_its_switch_where_the_radio_is() {
+    use wrist_glass::switch::Switch;
+    for (radio, switch) in [
+        (Radio::Off, Switch::Off),
+        (Radio::Failed, Switch::Off),
+        (Radio::Starting, Switch::Moving),
+        (Radio::On, Switch::On),
+        (Radio::Discoverable, Switch::On),
+        (Radio::Connected, Switch::On),
+        (Radio::Secure, Switch::On),
+    ] {
         let (glass, _) = compose_bluetooth(&Bluetooth { radio, prompt: None, bonded: 2 }, &EN_GB, &ATKINSON);
-        assert_eq!(texts(&glass).last(), Some(&says), "{radio:?}");
+        assert_eq!(glass.switch(), Some(switch), "{radio:?}");
         assert!(texts(&glass).contains(&"2 bonded"));
     }
     let (glass, _) = compose_bluetooth(&Bluetooth { radio: Radio::Secure, prompt: Some(Prompt::Compare(1)), bonded: 2 }, &EN_GB, &ATKINSON);
-    assert_eq!(texts(&glass)[3..], ["select: it matches", "hold: no match"]);
+    assert_eq!(glass.switch(), None);
+    assert_eq!(texts(&glass)[3..], ["select: it matches", "back: no match"]);
+}
+
+#[test]
+fn no_text_runs_into_the_switch() {
+    for (name, (glass, _)) in every_page().into_iter().filter(|(_, (g, _))| g.switch().is_some()) {
+        for line in glass.lines() {
+            let ink = line.ink_rows();
+            assert!(ink.end <= wrist_glass::switch::ROWS.start || ink.start >= wrist_glass::switch::ROWS.end, "{name}: {ink:?}");
+        }
+    }
+}
+
+#[test]
+fn the_backdrop_painted_box_by_box_is_the_backdrop() {
+    use wrist_glass::switch::Switch;
+    for switch in [Switch::On, Switch::Off, Switch::Moving] {
+        let mut whole = vec![0x5A; W * H];
+        assert!(wrist_glass::pages::backdrop(&mut whole, Some(switch)));
+        for (bw, bh) in [(1, 1), (7, 30), (16, 240), (61, 13), (240, 1)] {
+            let mut boxes = vec![0xA5; W * H];
+            for y in (0..HI).step_by(bh) {
+                for x in (0..WI).step_by(bw) {
+                    wrist_glass::pages::backdrop_in(&mut boxes, Some(switch), y..y + bh as i32, x..x + bw as i32);
+                }
+            }
+            assert!(whole == boxes, "{switch:?} in boxes of {bw} by {bh}");
+        }
+    }
 }

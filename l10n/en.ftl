@@ -54,12 +54,9 @@ bluetooth-secure = secure link
 bluetooth-failed = failed
 # How many phones and computers the watch keeps pairing keys for.
 bluetooth-bonded = { $n } bonded
-# What Select does: switch the radio on, or off.
-bluetooth-select-on = select: turn on
-bluetooth-select-off = select: turn off
 # During a numeric comparison, under the six digits: Select if the phone shows the same
-# number, hold Select if it doesn't.
+# number, Back if it doesn't.
 bluetooth-select-matches = select: it matches
-bluetooth-hold-no-match = hold: no match
+bluetooth-back-no-match = back: no match
 # During passkey entry, under the six digits: type them on the phone.
 bluetooth-type-passkey = type on the phone

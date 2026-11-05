@@ -53,7 +53,7 @@ use wrist_glass::scene::Scene;
 use wrist_glass::text::Glass;
 use wrist_flash::vectors::{HANDOFF_POP, SRAM_END, SRAM_START};
 use wrist_board::{light, pins};
-use wrist_pages::{Action, Button, Nav, Page, Press};
+use wrist_pages::{Action, Button, Nav, Page, Pairing, Press};
 
 use crate::mmio::{
     enable_clock, gpio, modify32, read32, write32, DBGMCU_IDCODE, FLASH_ACR, FLASH_OPTR, GPIOC_BASE, GPIO_BSRR, GPIO_IDR, GPIO_MODER, GPIO_OSPEEDR,
@@ -862,7 +862,7 @@ fn on_press(uart: Uart, press: Press, injected: bool, light_until: &mut Option<I
     }
     let (moved, page, action) = NAV.lock(|n| {
         let mut nav = n.get();
-        let action = wrist_pages::action(nav.page(), press, comparing());
+        let action = wrist_pages::action(nav.page(), press, pairing());
         let moved = nav.press(press, now_ms());
         n.set(nav);
         (moved, nav.page(), action)
@@ -921,6 +921,10 @@ async fn display(mut pwr_int: ExtiInput<'static, Async>) -> ! {
             if let Some(bus) = pmic::BUS.lock().await.as_mut() {
                 power.service(bus).await;
             }
+        }
+        // A pairing waiting for the wearer keeps its page up.
+        if pairing().is_some() {
+            show_page(Page::Bluetooth);
         }
         let page = nav_now().0;
         let reading_due = if power::on_battery() { new_minute } else { Instant::now() >= next_reading };
@@ -995,12 +999,12 @@ fn apply_zone_change(uart: Uart) {
     }
 }
 
-/// A numeric comparison waits for the wearer's answer.
-fn comparing() -> bool {
+/// The pairing whose digits the Bluetooth page shows.
+fn pairing() -> Option<Pairing> {
     #[cfg(feature = "ble")]
-    return ble::comparing();
+    return ble::pairing();
     #[cfg(not(feature = "ble"))]
-    false
+    None
 }
 
 fn act(action: Action) {
@@ -1072,7 +1076,8 @@ async fn show(
         cost.layout.add(c);
         embassy_futures::yield_now().await;
     }
-    let before = drawn.is_some().then_some(&*shown);
+    // The switch is drawn under the text, so a frame whose switch moved is drawn whole.
+    let before = drawn.is_some_and(|d| d.switch() == composed.switch()).then_some(&*shown);
     let c = busy::cycles();
     let changed = scene.changed_columns(before);
     cost.changed.add(c);
@@ -1080,7 +1085,7 @@ async fn show(
     for columns in wrist_glass::text::strips(&changed, STRIP) {
         let t = Instant::now();
         let c = busy::cycles();
-        pages::repaint(fb, scene, before, columns);
+        pages::repaint(fb, scene, before, columns, composed.switch());
         cost.render.add(c);
         glass::note_max(&glass::MAX_RENDER_US, elapsed_us(t));
         embassy_futures::yield_now().await;

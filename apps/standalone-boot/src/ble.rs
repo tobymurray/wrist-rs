@@ -455,9 +455,13 @@ pub fn page() -> wrist_glass::pages::Bluetooth {
     Bluetooth { radio, prompt, bonded: BONDED.load(Ordering::Relaxed) }
 }
 
-/// A numeric comparison waits for an answer.
-pub fn comparing() -> bool {
-    PROMPT_KIND.load(Ordering::Relaxed) == 2
+/// The pairing whose digits the page shows.
+pub fn pairing() -> Option<wrist_pages::Pairing> {
+    match PROMPT_KIND.load(Ordering::Relaxed) {
+        1 => Some(wrist_pages::Pairing::Passkey),
+        2 => Some(wrist_pages::Pairing::Compare),
+        _ => None,
+    }
 }
 
 /// The radio off if it is on or starting, on otherwise; kept across resets, as `ble on|off` is.
@@ -573,6 +577,7 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
         MIRROR.store(false, Ordering::Relaxed);
         ENCRYPTED.store(false, Ordering::Relaxed);
         STATE.store(STATE_OFF, Ordering::Relaxed);
+        clear_prompt();
         crate::rtc::set_radio_wanted(false);
         uart.write_line("[ble] off: chip held in reset");
         on = false;
@@ -1321,6 +1326,7 @@ impl Link<'_> {
         PROMPT_VALUE.store(key, Ordering::Relaxed);
         PROMPT_KIND.store(1, Ordering::Relaxed);
         crate::show_page(wrist_pages::Page::Bluetooth);
+        crate::wake_display();
         self.uart.write_str("[ble] pairing: type this passkey on the central: ");
         write_six_digits(self.uart, key);
         self.uart.write_line("");
@@ -1654,6 +1660,7 @@ impl Link<'_> {
                 PROMPT_KIND.store(2, Ordering::Relaxed);
                 ANSWER.store(0, Ordering::Relaxed);
                 crate::show_page(wrist_pages::Page::Bluetooth);
+        crate::wake_display();
                 self.confirm_for = Some((conn, Instant::now()));
                 self.uart.write_str("[ble] pairing: the central shows a number; if it is ");
                 write_six_digits(self.uart, value);
@@ -1750,6 +1757,7 @@ fn clear_prompt() {
     PROMPT_KIND.store(0, Ordering::Relaxed);
     PROMPT_VALUE.store(0, Ordering::Relaxed);
     ANSWER.store(0, Ordering::Relaxed);
+    crate::wake_display();
 }
 
 /// A connection interval in 1.25 ms units as milliseconds, `48.75 ms`.

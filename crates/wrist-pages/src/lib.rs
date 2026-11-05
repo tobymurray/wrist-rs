@@ -118,14 +118,22 @@ pub enum Action {
     Compare(bool),
 }
 
-/// The action `press` takes on `page`, `comparing` while a numeric comparison waits for an
-/// answer: there Select says the numbers match and a long Select that they don't, and otherwise
-/// Select switches the radio.
+/// The six digits a pairing puts on the Bluetooth page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pairing {
+    Passkey,
+    Compare,
+}
+
+/// The action `press` takes on `page` while `pairing`: during a numeric comparison Select says
+/// the numbers match and Back that they don't, during passkey entry nothing does anything, and
+/// otherwise Select switches the radio. No hold answers: a long hold resets the watch.
 #[must_use]
-pub const fn action(page: Page, press: Press, comparing: bool) -> Option<Action> {
-    match (page, press.button, press.long, comparing) {
-        (Page::Bluetooth, Button::Select, long, true) => Some(Action::Compare(!long)),
-        (Page::Bluetooth, Button::Select, false, false) => Some(Action::ToggleBluetooth),
+pub const fn action(page: Page, press: Press, pairing: Option<Pairing>) -> Option<Action> {
+    match (page, press.button, press.long, pairing) {
+        (Page::Bluetooth, Button::Select, false, Some(Pairing::Compare)) => Some(Action::Compare(true)),
+        (Page::Bluetooth, Button::Back, false, Some(Pairing::Compare)) => Some(Action::Compare(false)),
+        (Page::Bluetooth, Button::Select, false, None) => Some(Action::ToggleBluetooth),
         _ => None,
     }
 }
@@ -335,19 +343,31 @@ mod tests {
     fn select_on_the_bluetooth_page_switches_the_radio_or_answers_the_comparison() {
         let select = short(Button::Select);
         let held = Press { button: Button::Select, long: true };
-        assert_eq!(action(Page::Bluetooth, select, false), Some(Action::ToggleBluetooth));
-        assert_eq!(action(Page::Bluetooth, held, false), None);
-        assert_eq!(action(Page::Bluetooth, select, true), Some(Action::Compare(true)));
-        assert_eq!(action(Page::Bluetooth, held, true), Some(Action::Compare(false)));
+        let compare = Some(Pairing::Compare);
+        assert_eq!(action(Page::Bluetooth, select, None), Some(Action::ToggleBluetooth));
+        assert_eq!(action(Page::Bluetooth, held, None), None);
+        assert_eq!(action(Page::Bluetooth, select, compare), Some(Action::Compare(true)));
+        assert_eq!(action(Page::Bluetooth, short(Button::Back), compare), Some(Action::Compare(false)));
+        assert_eq!(action(Page::Bluetooth, short(Button::Back), None), None);
+        for button in Button::ALL {
+            assert_eq!(action(Page::Bluetooth, Press { button, long: true }, compare), None);
+        }
         for page in [Page::Face, Page::Battery, Page::About] {
-            for comparing in [false, true] {
-                assert_eq!(action(page, select, comparing), None);
-                assert_eq!(action(page, held, comparing), None);
+            for pairing in [None, compare] {
+                for button in Button::ALL {
+                    assert_eq!(action(page, short(button), pairing), None);
+                }
+                assert_eq!(action(page, held, pairing), None);
             }
         }
-        for button in [Button::Up, Button::Down, Button::Back] {
-            assert_eq!(action(Page::Bluetooth, short(button), true), None);
+        for button in [Button::Up, Button::Down] {
+            assert_eq!(action(Page::Bluetooth, short(button), compare), None);
         }
+    }
+
+    #[test]
+    fn select_during_passkey_entry_leaves_the_radio_alone() {
+        assert_eq!(action(Page::Bluetooth, short(Button::Select), Some(Pairing::Passkey)), None);
     }
 
     #[test]

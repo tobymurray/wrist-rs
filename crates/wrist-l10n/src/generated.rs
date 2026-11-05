@@ -3,7 +3,7 @@
 use crate::{DatePiece, Locale, Piece, Plural, TimePiece};
 
 /// How many messages there are.
-pub const MESSAGES: usize = 29;
+pub const MESSAGES: usize = 27;
 
 /// Every message, in `l10n/en.ftl`'s order, with its arguments.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,16 +70,11 @@ pub enum Msg {
     // How many phones and computers the watch keeps pairing keys for.
     /// `{$n} bonded`
     BluetoothBonded { n: u32 },
-    // What Select does: switch the radio on, or off.
-    /// `select: turn on`
-    BluetoothSelectOn,
-    /// `select: turn off`
-    BluetoothSelectOff,
-    // During a numeric comparison, under the six digits: Select if the phone shows the same number, hold Select if it doesn't.
+    // During a numeric comparison, under the six digits: Select if the phone shows the same number, Back if it doesn't.
     /// `select: it matches`
     BluetoothSelectMatches,
-    /// `hold: no match`
-    BluetoothHoldNoMatch,
+    /// `back: no match`
+    BluetoothBackNoMatch,
     // During passkey entry, under the six digits: type them on the phone.
     /// `type on the phone`
     BluetoothTypePasskey,
@@ -114,11 +109,9 @@ impl Msg {
             Self::BluetoothSecure => (21, [0]),
             Self::BluetoothFailed => (22, [0]),
             Self::BluetoothBonded { n: a0 } => (23, [a0]),
-            Self::BluetoothSelectOn => (24, [0]),
-            Self::BluetoothSelectOff => (25, [0]),
-            Self::BluetoothSelectMatches => (26, [0]),
-            Self::BluetoothHoldNoMatch => (27, [0]),
-            Self::BluetoothTypePasskey => (28, [0]),
+            Self::BluetoothSelectMatches => (24, [0]),
+            Self::BluetoothBackNoMatch => (25, [0]),
+            Self::BluetoothTypePasskey => (26, [0]),
         }
     }
 }
@@ -183,14 +176,10 @@ pub static EN_GB: Locale = Locale {
         &[Piece::Text("failed")],
         // bluetooth-bonded
         &[Piece::Arg(0), Piece::Text(" bonded")],
-        // bluetooth-select-on
-        &[Piece::Text("select: turn on")],
-        // bluetooth-select-off
-        &[Piece::Text("select: turn off")],
         // bluetooth-select-matches
         &[Piece::Text("select: it matches")],
-        // bluetooth-hold-no-match
-        &[Piece::Text("hold: no match")],
+        // bluetooth-back-no-match
+        &[Piece::Text("back: no match")],
         // bluetooth-type-passkey
         &[Piece::Text("type on the phone")],
     ],
