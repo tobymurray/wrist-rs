@@ -1,0 +1,86 @@
+0.000 == session start
+1.401 == radio restart
+1.401 >> usb ble off
+1.402 [trace] 591902 c 0181FC00
+4.408 >> usb ble on
+4.606 [trace] 594908 r
+6.608 [trace] 597029 e 04FF03010001
+6.608 [trace] 597058 c 0183FC1100A000A00001000409554E410000000000
+116.669 == P1 phone B connect (nRF Connect, scanner CONNECT)
+117.934 [trace] 708251 e 043E1301000108010000000000000024000000F40100
+118.134 [trace] 708455 e 043E0B0701081B0048017B004804
+118.534 [trace] 708995 e 043E0A0300010806000000F401
+118.935 [trace] 709332 e 043E0A0300010824000000F401
+119.335 [trace] 709752 c 0181FD0A01080C0018000000F401
+119.535 [trace] 709850 e 04FF06000801080000
+119.735 [trace] 710165 e 043E0A0300010818000000F401
+122.939 [trace] 713252 c 018DFC020108
+122.939 [trace] 713299 e 04FF020404
+140.880 == P1 phone B: "Pair & connect" not tapped (nobody will answer the number)
+152.770 [trace] 743256 e 04FF06010401080100
+155.974 [trace] 746330 e 04050400010813
+155.974 [trace] 746330 c 0183FC1100A000A00001000409554E410000000000
+174.296 == P1 try 1 ended: "Pair & connect" was not tapped; the request went unanswered, the watch timed out
+178.498 == P1 try 2: phone B connect
+179.006 [trace] 769441 e 043E1301000208010000000000000024000000F40100
+179.206 [trace] 769654 e 043E0B0702081B0048017B004804
+179.807 [trace] 770194 e 043E0A0300020806000000F401
+180.207 [trace] 770516 e 043E0A0300020824000000F401
+180.607 [trace] 770941 c 0181FD0A02080C0018000000F401
+180.608 [trace] 771049 e 04FF06000802080000
+181.008 [trace] 771364 e 043E0A0300020818000000F401
+184.011 [trace] 774441 c 018DFC020208
+184.011 [trace] 774499 e 04FF020404
+191.304 == P1 phone B: tapped "Pair & connect"
+214.045 [trace] 804443 e 04FF06010402080100
+217.048 [trace] 807529 e 04050400020813
+217.048 [trace] 807529 c 0183FC1100A000A00001000409554E410000000000
+221.317 == P1 phone B: tapped the notification body "Tap to pair" (the action button did not respond)
+235.269 [trace] 825602 e 043E130100030801010000000000000F000000F40106
+235.269 [trace] 825760 e 04FF06010403080000
+235.269 [trace] 825761 e 04080400030801
+235.269 [trace] 825763 c 0181FD0A03080C0018000000F401
+235.470 [trace] 825817 e 04FF06000803080000
+235.470 [trace] 825929 e 043E0A0300030818000000F401
+241.527 == P1 try 2 ended like try 1: the notification never started pairing. Try 3: connect, then nRF Connect menu "Bond"
+262.537 == P1 try 3: phone B nRF "Bond" (createBond)
+309.964 == P1: the link at 235.269 is phone A (com.unawatch auto-reconnect, bonded since P5). Force-stop com.unawatch on phone A; watch drops the link
+313.766 [trace] 904065 c 0193FC03030813
+313.766 [trace] 904125 e 04050400030816
+313.766 [trace] 904125 c 0183FC1100A000A00001000409554E410000000000
+344.590 == P1 try 3 again (the first try 3 met phone A on the watch): phone B connect
+345.199 [trace] 935528 e 043E1301000408010000000000000024000000F40100
+345.400 [trace] 935747 e 043E0B0704081B0048017B004804
+345.800 [trace] 936287 e 043E0A0300040806000000F401
+346.200 [trace] 936617 e 043E0A0300040824000000F401
+346.601 [trace] 937029 c 0181FD0A04080C0018000000F401
+346.801 [trace] 937142 e 04FF06000804080000
+347.001 [trace] 937457 e 043E0A0300040818000000F401
+350.193 == P1 phone B: nRF "Bond" (createBond); nobody will answer the number
+350.205 [trace] 940529 c 018DFC020408
+350.205 [trace] 940577 e 04FF020404
+355.210 [trace] 945680 e 04050400040808
+355.210 [trace] 945680 c 0183FC1100A000A00001000409554E410000000000
+405.818 == P1: phone B stuck "bonding" with no link (supervision timeout at 355.210, reason 08). Restart phone B Bluetooth
+441.434 == P1 try 4: phone B Settings > Pair new device > UNA; nobody will answer the number
+441.502 [trace] 1031891 e 043E1301000508010000000000000024000000F40100
+441.702 [trace] 1032164 e 043E0B0705081B0048017B004804
+442.103 [trace] 1032525 e 04FF08090405085CAD0900
+464.244 == P1 phone B screen at check 1: 'Bluetooth pairing code' 'Pair with UNA?'
+472.137 [trace] 1062527 e 04FF06010405080100
+472.137 [trace] 1062527 c 0181FD0A05080C0018000000F401
+472.137 [trace] 1062628 e 04FF06000805080000
+472.538 [trace] 1062943 e 043E0A0300050818000000F401
+475.140 [trace] 1065614 e 04050400050813
+475.140 [trace] 1065614 c 0183FC1100A000A00001000409554E410000000000
+476.450 == P1 phone B screen at check 2: no pairing dialog
+488.656 == P1 phone B screen at check 3: no pairing dialog
+502.062 == P1 phone B screen at check 4: no pairing dialog
+514.667 == P1 phone B screen at check 5: no pairing dialog
+527.273 == P1 phone B screen at check 6: no pairing dialog
+540.079 == P1 phone B screen at check 7: no pairing dialog
+553.885 == P1 phone B screen at check 8: no pairing dialog
+565.291 == P1 phone B screen at check 9: no pairing dialog
+576.096 == P1 phone B screen at check 10: no pairing dialog
+586.901 == P1 phone B screen at check 11: no pairing dialog
+597.705 == P1 phone B screen at check 12: no pairing dialog
