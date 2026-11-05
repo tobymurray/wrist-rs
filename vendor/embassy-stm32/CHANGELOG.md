@@ -8,21 +8,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- next-header -->
 ## Unreleased - ReleaseDate
 
+VREFBUF:
+- feat: stm32/vrefbuf g0x1: enable the VREFBUF clock. On G0x1, including G0B1, it is `SYSCFGEN` in `RCC_APBENR2`, shared with SYSCFG and COMP (RM0444 5.4.16). Without it `VoltageReferenceBuffer::new` never sees `VRR` and waits forever.
+
 RCC:
 - fix: stm32/rcc g0: enable the flash prefetch after setting the latency; with 2 wait states at 64 MHz and prefetch off code ran 8-16% slower.
 - fix: stm32/rcc g0: keep the flash prefetch off on G0B0/G0B1/G0C1 while the flash runs dual-bank (ES0547 2.2.8, ES0548/ES0549 2.2.10, prefetch fails on branches across the banks); `rcc::Config::flash_prefetch = FlashPrefetch::IfCodeInOneBank` turns it on for an application whose code stays in one bank.
 - feat: stm32/rcc u5: backup SRAM
 
+LPTIM:
+- fix: stm32/lptim: a period whose tick count is at least 65536 no longer panics when rounding the divider up to a power of two still leaves the reload above 65535. The prescaler is the smallest of /1, /2, ..., /128 for which the reload fits in 16 bits. A period that does not fit even at /128 still panics.
+
 Time driver:
 - fix: stm32/time-driver-lptim: arm alarms that fall in the current counter cycle; they fired at the overflow, up to a quarter cycle late
 - fix: stm32/time-driver-lptim: on U5, U3 and WBA, clear the previous `CMPOK` before a compare write, as on WL, so the wait is for this write
 - fix: stm32/low-power, stm32/time-driver-lptim: compile with the `log` feature
+- fix: stm32/time-driver-lptim: the interrupt handler clears only the flags it read; it also cleared every enabled flag, so an overflow that arrived during the handler was lost and time fell back one counter period
+- fix: stm32/time-driver-lptim: on U5, U3 and WBA, wait for `DIEROK` after each `DIER` change; a `CCIE` write still in flight when entering Stop lost the alarm wakeup until the next overflow
+- fix: stm32/time-driver-lptim: `now()` retries if the update event flag changes while it reads the counter; a wrap between the two reads returned a time one counter period ahead, then time went backwards
 
 I2C:
 - fix: stm32/i2c v2: disable own-address recognition before changing an enabled OA1/OA2 address, addressing mode, or OA2 mask.
+- fix: stm32/i2c v2: a blocking controller transfer that times out (e.g. SCL held low by the target) now resets the peripheral (PE toggle, as for BERR/ARLO) instead of requesting STOP and abandoning the transfer. The abandoned transfer's NACKF/STOPF arrived later and the next call returned them after it had started its own transfer, which then ran unserved, so every later blocking transfer timed out until PE was toggled by hand.
+- fix: stm32/i2c v2: an async slave `respond_to_write` that received more than its buffer holds timed out while discarding the extra bytes, because nothing woke it for them, and could leave the last one in RXDR. It now wakes on every byte and reads a byte that arrived with the STOP.
+- fix: stm32/i2c v2: the async master and slave transfers of a driver from `I2c::new_no_dma` panicked on `Option::unwrap()` for its missing DMA channel whenever they moved data. They now move each byte on the TXIS/RXNE interrupt. v1 still panics.
 
 USART:
 - fix: stm32/usart: `BufferedUartTx::flush` could return before the last bytes left the UART when a write wrapped around the end of the TX buffer. The TC interrupt now reports done only when the TX buffer is empty, and every write pends the interrupt.
+- fix: stm32/usart v3/v4: a DMA `UartRx::read` or `read_until_idle` no longer clears TC along with its own flags, so a `UartTx::flush` running alongside it no longer hangs after the transmission completes.
+- fix: stm32/usart: a DMA `UartRx::read` or `read_until_idle` no longer drops a byte received before it started: it takes the bytes already waiting (the RX FIFO's on v3/v4) into the front of its buffer and DMAs the rest, and `read_until_idle` returns them at once when their frame already ended. On v3/v4 it also no longer reads RDR while its DMA runs, which could take a byte from the DMA.
 
 SPI:
 - fix: stm32/spi: async slave `transfer`, `transfer_in_place` and `read` with an EXTI channel on NSS return when the master deselects, like `write`. Returning as soon as the buffers were full left that transaction's deselect edge to the next call, which then ended at once with nothing received, and the slave stayed one transaction behind.
@@ -59,7 +73,7 @@ Flash:
 - fix: the STM32WL CM0+ core uses the `C2CR`/`C2SR` registers.
 - fix: the L4+ dual-bank check reads `DBANK` or `DB1M` depending on the flash size.
 - fix: G0 with swapped banks erases the requested bank.
-- fix: the caches are disabled during program and erase operations and flushed afterwards: the `FLASH_ACR` caches (F2/F4, L4, G0/G4, C0, U0, WB, WL), the F7 ART, the ICACHE (L5, U5, U3, WBA, H5, C5) and the Cortex-M7 caches (F7, H7).
+- fix: the caches are flushed after program and erase operations: the `FLASH_ACR` caches (F2/F4, L4, G0/G4, C0, U0, WB, WL), the F7 ART, the ICACHE (L5, U5, U3, WBA, H5, C5) and the Cortex-M7 caches (F7, H7). The `FLASH_ACR` data cache, the F7 ART and the ICACHE are also disabled while the operation runs.
 - fix: async operations prevent the low-power executor from entering Stop mode.
 
 Low power:
@@ -155,6 +169,8 @@ ADC:
 - fix: stm32/adc: account for the fixed /2 in front of the H7 ADC1/ADC2/ADC3 converter in the automatic prescaler, `clock()`, the maximum-clock check and `BOOST`, and set the single `BOOST` bit of revision Y H742/H743/H750/H753 above 20 MHz.
 
 RNG:
+- fix: stm32/rng h7: recover from a seed error as RM0433 34.3.7 says: clear SEIS, discard 12 words, check SEIS. A reset discarded only one word, so the next words could be ones generated before or during the error.
+- fix: stm32/rng g4, wb: use that same seed-error recovery. RM0440 and the WB manuals (RM0434, RM0471, RM0473, RM0478) specify the same clear-SEIS, discard-12-words sequence.
 - feat: stm32/rng: add configurable initialization policy (`RngConfig`) with `new_with_config` and health-test profile control
 - change: stm32/rng: `Rng` implements the `rand_core` 0.10 traits instead of the 0.6 and 0.9 ones.
 
@@ -171,6 +187,11 @@ Timer:
 - feat: stm32/timer: add `low_level::Timer::get_counter()` to read the counter register as `T::Word`
 - feat: stm32/timer/complementary_pwm: add `set_main_output_enable`, `set_complementary_output_enable`, `main_output_enabled` and `complementary_output_enabled` to switch and read a channel's `CCxE` and `CCxNE` independently; `enable`/`disable` still switch both. `low_level::Timer::get_complementary_channel_enable_state` reads `CCxNE`.
 - fix: stm32/timer/input_capture: `receive_waveform` forced configuration of edges and source selection
+- feat: stm32/timer: add `low_level::Timer::set_update_request_source()`, `get_update_interrupt()` and `clear_trigger_interrupt()`
+- fix: stm32/timer/pwm_input: Fix `get_period_ticks`, `get_width_ticks` and `get_duty_cycle` returning the stale value after the input signal stopped. `get_period_ticks`, `get_width_ticks` and `get_duty_cycle` now return `Option`. Returns `None` if no edge has been captured for maximum ticks. (breaking change)
+
+LPTIM:
+- fix: stm32/lptim: `Timer::set_frequency` wrote `CFGR` and `ARR` in one call, but the RM requires `CFGR` to be written only while the timer is disabled and `ARR` only while it is enabled, so one write was always out of spec. It is replaced by `set_prescaler` (call while disabled) and `set_period` (call while enabled) (breaking change). `Pwm::new` now follows this order; `Pwm::set_frequency` briefly disables and restarts the timer.
 
 QEI:
 - fix: stm32/qei: `count()`, `reset()`, and `auto_reload` always used the 16-bit register view, so on 32-bit timers `reset()` only cleared the lower 16 bits of the counter (leaving the upper bits stale) and `auto_reload`/`count()` were truncated to `u16`; `Config`/`AdvancedConfig` are now generic over the timer instance and `auto_reload` uses `T::Word`, while `count()` returns `u32` so 32-bit timers work correctly across their full range (breaking change)
@@ -203,6 +224,7 @@ RCC:
 
 SPI:
 - change: stm32/spi: `Config::frequency` is the highest SCK frequency. The driver selects the fastest SCK that does not exceed it, for the constructors and `set_config` alike; it used to round to the nearest divider (up to 50% above the request) with a special case at the /32 to /64 boundary. A request at or above half the kernel clock now gets half the kernel clock instead of `FrequencyTooHigh` (above the kernel clock) or a panic in the constructors. A request below the kernel clock / 256 returns the new `ConfigError::FrequencyTooLow` from `set_config`, which then leaves the driver unchanged, and panics in the constructors; it used to run at the kernel clock / 256, above the request.
+- fix: stm32/spi: a slave no longer rejects a `frequency` below the kernel clock / 256. Its constructors panicked and `set_config` returned `FrequencyTooLow`, although the master's SCK clocks a slave and it never uses the divider. A slave takes any frequency; below the kernel clock / 256 it gets /256, as before.
 - fix: stm32/spi v2/v3: async `write`, `read` and `transfer` no longer clear SPE at the start of every operation, matching the blocking paths. Clearing SPE released SCK between the operations of one `SpiDevice` transaction (CS asserted); with SCK pulled high, a mode-0 device saw an extra clock edge and misframed the transfer.
 - change default NSS configuration from active-high to active-low
 - change: sdmmc: removed the deprecated `sdmmc::sd` module (`StorageDevice`, `Card`, `Emmc`, `DataBlock`, `CmdBlock`). Use the `sdio` crate's `BlockDevice` with `Sdmmc` instead.
@@ -250,6 +272,7 @@ DAC:
 - feat: stm32/dac: add HRTIM DAC triggers
 - feat: stm32/dac: type-erase DAC
 - feat: stm32/dac: add trigger trait impl
+- feat: stm32/dac: add DAC v9 (STM32C5) support. DMA, triggered output, and ring-buffered output have not been hardware tested.
 
 OPAMP:
 - feat: stm32/opamp: allow VINM0 as bias input

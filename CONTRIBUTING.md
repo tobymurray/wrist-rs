@@ -42,7 +42,7 @@ changes and `actionlint` when a workflow does.
 | [`apps/image-installer`](apps/image-installer) | The stock-firmware app that installs both the first time |
 | `crates/` | Host-tested logic |
 | [`l10n/`](l10n) | Every word the face's pages show, and the locales they carry |
-| `vendor/` | Embassy's STM32 HAL and USB driver, with our patches |
+| `vendor/` | Embassy's STM32 HAL, with our patches |
 | `tools/` | Host tools, and the release recipe with its tests |
 | `release/` | The release zip's documents, and the gate before a release |
 | `site/` | The download page |
