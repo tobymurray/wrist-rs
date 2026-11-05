@@ -258,7 +258,7 @@ class Usb:
         if self.s is None:
             raise RuntimeError('the watch\'s USB console is gone')
         with self.lock:
-            self._note(f'>> {text}')
+            self._note(f'>> usb {text}')
             wrist_port.write_command(self.s, text)
 
     async def wait(self, pattern, mark, timeout):

@@ -517,6 +517,24 @@ class Judgements(unittest.TestCase):
             self.assertFalse(usb.thread.is_alive())
         self.assertEqual([p.closed for p in opened], [True])
 
+    def test_commands_are_logged_as_the_replay_reads_them(self):
+        class Port:
+            def read(self, n):
+                time.sleep(0.01)
+                return b''
+
+            def close(self):
+                pass
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(suite.wrist_port, 'find', return_value='/dev/watch'), \
+                mock.patch.object(suite.serial, 'Serial', lambda *a, **kw: Port()), \
+                mock.patch.object(suite.wrist_port, 'settle', lambda s: s), \
+                mock.patch.object(suite.wrist_port, 'write_command'):
+            usb = suite.Usb(None, Path(d) / 'console.log')
+            usb.send('ble profile battery')
+            usb.close()
+            logged = (Path(d) / 'console.log').read_text().splitlines()
+        self.assertIn('>> usb ble profile battery', [line.split(None, 1)[1] for line in logged], logged)
+
 
 def load(name):
     spec = importlib.util.spec_from_file_location(name.replace('-', '_'), Path(__file__).with_name(f'{name}.py'))
