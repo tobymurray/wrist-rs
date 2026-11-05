@@ -29,22 +29,6 @@ fn the_core_acts_where_and_as_the_driver_did() {
 }
 
 #[test]
-fn a_capture_timed_by_the_wall_clock_replays_as_one_timed_in_seconds() {
-    let (name, capture) = &traces()[0];
-    let clock = capture
-        .lines()
-        .map(|l| {
-            let (t, rest) = l.split_once(' ').unwrap();
-            let (s, ms) = t.split_once('.').unwrap();
-            let s: u64 = s.parse::<u64>().unwrap() + 9 * 3_600 + 27 * 60;
-            format!("{:02}:{:02}:{:02}.{ms} {rest}", s / 3_600, s / 60 % 60, s % 60)
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert_eq!(replay(&clock).core_ops, replay(capture).core_ops, "{name}");
-}
-
-#[test]
 fn a_core_that_acts_alone_is_a_disagreement() {
     let (name, capture) = &traces()[0];
     let without_driver = capture.lines().filter(|l| !l.contains(" c ")).collect::<Vec<_>>().join("\n");
@@ -244,4 +228,28 @@ fn the_rebond_a_lost_bond_needs_goes_out_past_the_security_request() {
     let core = r.core_ops.iter().find(|(_, op)| op.kind() == OpKind::AllowRebond).expect("the core never allowed the rebond").0;
     let driver = r.driver_ops.iter().find(|(_, d)| *d == DriverOp::Other(OpKind::AllowRebond)).expect("the driver never did").0;
     assert!(core.abs_diff(driver) <= 5, "core {core}, driver {driver}");
+}
+
+/// The suite's earlier console logs stamp the wall clock (`09:27:15.970`); the replay reads them
+/// as it reads the capture tools' seconds.
+#[test]
+fn wall_clock_stamps_replay_as_seconds_do() {
+    for (name, capture) in traces() {
+        let restamped: String = capture
+            .lines()
+            .map(|line| match line.trim_start().split_once(' ') {
+                Some((t, rest)) if t.contains('.') && t.split('.').next().is_some_and(|s| s.parse::<u64>().is_ok()) => {
+                    let (s, ms) = t.split_once('.').unwrap();
+                    let s = 9 * 3600 + 27 * 60 + s.parse::<u64>().unwrap();
+                    format!("{:02}:{:02}:{:02}.{ms} {rest}\n", s / 3600, s / 60 % 60, s % 60)
+                }
+                _ => format!("{line}\n"),
+            })
+            .collect();
+        assert_ne!(restamped, capture, "{name}: nothing restamped");
+        let (a, b) = (replay(&capture), replay(&restamped));
+        assert_eq!(format!("{:?}", a.core_ops), format!("{:?}", b.core_ops), "{name}");
+        assert_eq!(format!("{:?}", a.driver_ops), format!("{:?}", b.driver_ops), "{name}");
+        assert_eq!(a.disagreements(), b.disagreements(), "{name}");
+    }
 }

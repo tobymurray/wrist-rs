@@ -420,14 +420,22 @@ pub fn replay(capture: &str) -> Report {
     r.report
 }
 
-/// A host time in milliseconds: seconds with three decimals, as the capture tool writes, or a
-/// wall clock's `HH:MM:SS.mmm`, as the suite's console log does.
+/// A line's host time in milliseconds: the capture tools' seconds with three decimals, or the
+/// regression suite's earlier wall clock, `HH:MM:SS.mmm` (from midnight; only the differences
+/// matter, since every trace line sets the watch's clock against it again).
 fn host_ms(t: &str) -> Option<i64> {
-    let (whole, ms) = t.split_once('.')?;
-    (ms.len() == 3).then_some(())?;
-    let mut seconds = 0;
-    for part in whole.split(':') {
-        seconds = seconds * 60 + part.parse::<i64>().ok()?;
+    let (s, ms) = t.split_once('.')?;
+    (ms.len() == 3 && ms.bytes().all(|b| b.is_ascii_digit())).then_some(())?;
+    let mut seconds = 0i64;
+    let mut fields = 0;
+    for field in s.split(':') {
+        fields += 1;
+        let ok = !field.is_empty() && field.bytes().all(|b| b.is_ascii_digit()) && (fields == 1 || field.len() == 2);
+        if !ok || fields > 3 {
+            return None;
+        }
+        seconds = seconds * 60 + field.parse::<i64>().ok()?;
     }
+    (fields == 1 || fields == 3).then_some(())?;
     Some(seconds * 1_000 + ms.parse::<i64>().ok()?)
 }
