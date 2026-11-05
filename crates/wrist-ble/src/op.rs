@@ -14,7 +14,9 @@ pub enum Op {
     Connect(PeerAddr, ConnParams),
     CancelConnect,
     Disconnect(ConnHandle, DisconnectReason),
-    /// As the central, a link-layer update; as the peripheral, a request to the central.
+    /// As the central, a link-layer update; as the peripheral, a request to the central, ended by
+    /// its answer: [`crate::RadioEvent::Done`] for an acceptance, which a central that changes
+    /// nothing follows with no update.
     UpdateParams(ConnHandle, ConnParams),
     /// As the central, accept or refuse a peer's [`crate::RadioEvent::PeerParamRequest`].
     AnswerParamRequest(ConnHandle, bool),
@@ -99,8 +101,9 @@ impl Op {
 
 impl OpKind {
     /// Kinds whose success is the typed event rather than `Done`: `Connect` ends in
-    /// `LinkUp`, `Disconnect` in `LinkDown`, `UpdateParams` in `Params`, `RequestSecurity` in
-    /// `Encryption` or a pairing step; a failure of any of them is still `Done` with an error.
+    /// `LinkUp`, `Disconnect` in `LinkDown`, `UpdateParams` in `Params` (or, as the peripheral, in
+    /// the central's answer, [`Op::UpdateParams`]), `RequestSecurity` in `Encryption` or a pairing
+    /// step; a failure of any of them is still `Done` with an error.
     #[must_use]
     pub const fn ends_with_event(self) -> bool {
         matches!(self, OpKind::Connect | OpKind::Disconnect | OpKind::UpdateParams | OpKind::RequestSecurity)

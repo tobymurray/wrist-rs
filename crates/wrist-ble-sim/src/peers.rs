@@ -7,7 +7,8 @@ use wrist_ble::{AddrKind, BdAddr, BluetoothUuid, Interval, Millis, ParamRange, P
 pub enum Os {
     /// macOS: a bonded Mac encrypts soon after connecting.
     Mac,
-    /// Android: re-times its own link after connecting, and encrypts as `BlueZ` does.
+    /// Android: connects at 45 ms, unbonded runs 7.5 ms for a third of a second and goes back,
+    /// and encrypts as `BlueZ` does.
     Android,
     /// `BlueZ`: reads the features before encrypting (`fixtures/bluez-reconnects.txt`).
     Linux,

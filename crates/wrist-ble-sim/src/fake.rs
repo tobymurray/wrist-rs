@@ -95,6 +95,8 @@ enum Do {
     EncryptDone(ConnHandle),
     Mtu(ConnHandle),
     ConsoleOn(ConnHandle),
+    /// A short run at 7.5 ms, then back to the interval the link had.
+    PeerBurst(ConnHandle),
     PeerUpdate(ConnHandle, u16),
     PeerUpdateApplied(ConnHandle, u16),
     UpdateApplied(ConnHandle, LinkParams, OpId),
@@ -829,6 +831,16 @@ impl Fake {
                     self.emit(RadioEvent::ServerSubscribe { link: l, attr: CONSOLE, cccd: Cccd::Notify });
                 }
             }
+            Do::PeerBurst(l) => {
+                let Some(link) = self.link(l) else { return };
+                let had = link.params.interval.as_u16();
+                let events = u32::try_from(INSTANT_EVENTS).unwrap_or(6);
+                let fast = interval_ms(link.params) * events;
+                let back = interval_ms(LinkParams { interval: Duration::from_u16(6), ..link.params }) * events;
+                self.after(ms(0), Do::PeerUpdate(l, 6));
+                // Back 300 to 340 ms after 7.5 ms takes hold.
+                self.later(fast + 300 - back, fast + 340 - back, Do::PeerUpdate(l, had));
+            }
             Do::PeerUpdate(l, units) => {
                 let now = self.now;
                 let Some(link) = self.link_mut(l) else { return };
@@ -916,7 +928,7 @@ impl Fake {
             return;
         }
         let units = match p.phone.os {
-            Os::Android => 6,
+            Os::Android => 36,
             Os::Mac => 12,
             Os::Linux => 24,
         };
@@ -934,10 +946,10 @@ impl Fake {
             Keys::PhoneLost => self.later(50, 100, Do::PairRequest(h)),
             Keys::None => {}
         }
-        if p.phone.os == Os::Android {
-            for (at, units) in [(750, 6), (1_100, 6), (1_900, 36)] {
-                self.after(ms(at), Do::PeerUpdate(h, units));
-            }
+        if p.phone.os == Os::Android && p.phone.keys != Keys::Bonded {
+            // 7.5 ms takes hold 750 to 1000 ms after connecting.
+            let lead = interval_ms(params) * u32::try_from(INSTANT_EVENTS).unwrap_or(6);
+            self.later(750 - lead, 1_000 - lead, Do::PeerBurst(h));
         }
     }
 

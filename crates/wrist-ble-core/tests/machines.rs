@@ -51,10 +51,11 @@ fn phone_parameters_wait_out_a_pairing() {
 #[test]
 fn phone_numeric_comparison_is_rejected_at_its_deadline() {
     let (p, _) = actions(up(0), 1_000, phone::Event::Pairing(phone(), PairingStep::Numeric(42)));
-    assert_eq!(p.deadline(), Some(t(61_000)));
-    let (p, a) = actions(p, 61_000, phone::Event::Tick);
+    let deadline = 1_000 + u64::from(phone::NUMERIC_DEADLINE.0);
+    assert_eq!(p.deadline(), Some(t(deadline)));
+    let (p, a) = actions(p, deadline, phone::Event::Tick);
     assert_eq!(a, [Action::ConfirmNumeric(phone(), false)]);
-    assert_eq!(actions(p, 61_500, phone::Event::Answer(true)).1, NONE);
+    assert_eq!(actions(p, deadline + 500, phone::Event::Answer(true)).1, NONE);
 }
 
 #[test]
@@ -80,8 +81,9 @@ fn phone_pairing_with_no_outcome_fails_after_the_security_managers_timeout() {
     assert!(matches!(p, Phone::Up(l) if l.security == Security::Unsecured));
     assert!(p.may_ask_params(t(32_000)));
     let (p, _) = actions(up(0), 1_000, phone::Event::Pairing(phone(), PairingStep::Numeric(42)));
-    let (p, _) = actions(p, 61_000, phone::Event::Tick);
-    let (p, _) = actions(p, 91_000, phone::Event::Tick);
+    let deadline = 1_000 + u64::from(phone::NUMERIC_DEADLINE.0);
+    let (p, _) = actions(p, deadline, phone::Event::Tick);
+    let (p, _) = actions(p, deadline + u64::from(phone::PAIRING_OUTCOME.0), phone::Event::Tick);
     assert!(matches!(p, Phone::Up(l) if l.security == Security::Unsecured));
 }
 

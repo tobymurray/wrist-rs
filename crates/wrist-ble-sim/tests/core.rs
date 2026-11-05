@@ -335,3 +335,20 @@ fn a_refusal_before_the_chip_resets_is_forgotten_with_it() {
     let out = core.step(Instant(10), Input::Submitted(Err(refused)));
     assert_eq!((out.op, out.chip), (second, None));
 }
+
+/// `BlueZ` accepts a request that changes nothing and sends no update (`fixtures/traces/bluez-*.log`).
+#[test]
+fn a_centrals_acceptance_ends_the_request_though_nothing_changes() {
+    let mut h = Harness::new(Goals { radio_on: true, ..Goals::OFF });
+    let link = ConnHandle::new(0x801);
+    phone_up(&mut h, 0, link);
+    h.at(1_500, Input::Tick);
+    assert!(matches!(h.ops.last(), Some(Op::UpdateParams(..))), "{:?}", h.ops);
+    let asked = h.next_id - 1;
+    h.at(1_800, done(asked));
+    while h.now < Instant(6_000) {
+        let next = h.next().unwrap();
+        h.at(next.0, Input::Tick);
+    }
+    assert!(h.ops.iter().any(|op| matches!(op, Op::RequestSecurity(l) if *l == link)), "{:?}", h.ops);
+}
