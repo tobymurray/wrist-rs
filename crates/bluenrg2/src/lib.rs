@@ -684,7 +684,7 @@ pub fn numeric_comparison(params: &[u8]) -> Option<(u16, u32)> {
 /// clamped to the entries the reply holds.
 pub fn bonded_devices(params: &[u8]) -> impl Iterator<Item = (u8, [u8; 6])> + '_ {
     let count = usize::from(params.first().copied().unwrap_or(0));
-    params.get(1..).unwrap_or(&[]).chunks_exact(7).take(count).map(|e| {
+    params.get(1..).unwrap_or(&[]).as_chunks::<7>().0.iter().take(count).map(|e| {
         let mut addr = [0u8; 6];
         addr.copy_from_slice(&e[1..7]);
         (e[0], addr)
