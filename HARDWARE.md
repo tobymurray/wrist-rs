@@ -557,7 +557,9 @@ LPTIM4 is the time driver, counting the 32768 Hz LSE in bypass, with the backup 
 as the bootloader configured it; it runs and wakes the core in Stop2 (MEASURED). A U5
 compare write needs a fresh `CMPOK` acknowledgement, not a stale flag, and the counter
 snapshot has to account for an overflow not yet serviced; without both, a timer can stall
-for a whole 2 s period ([`vendor/embassy-stm32/WRIST-PATCHES.md`](vendor/embassy-stm32/WRIST-PATCHES.md)). The acknowledgement takes
+for a whole 2 s period (both upstream now, [#7343](https://github.com/embassy-rs/embassy/pull/7343)
+and [#7408](https://github.com/embassy-rs/embassy/pull/7408);
+[`vendor/embassy-stm32/WRIST-PATCHES.md`](vendor/embassy-stm32/WRIST-PATCHES.md)). The acknowledgement takes
 a few counter clocks, which the driver waits out with interrupts masked: through the /32
 prescaler (1,024 Hz) each wait takes about 3 ms and stalls the executor for up to 22 ms
 (MEASURED), so the counter runs undivided and its overflow wakes the core every 2 s.
