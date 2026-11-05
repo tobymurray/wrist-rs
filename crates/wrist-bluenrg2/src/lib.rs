@@ -3,6 +3,7 @@
 //! The BlueNRG-2 as the Bluetooth core sees it: what it can do, the link-layer scheduler ST
 //! documents in PM0257 Rev 4 §4, and the codes it refuses with.
 
+pub mod commands;
 pub mod events;
 
 use wrist_ble::{

@@ -1,0 +1,116 @@
+//! The core's operations as BlueNRG-2 commands, held to the commands the watch's driver sent in
+//! every capture (`crates/wrist-ble-sim/fixtures/traces`).
+
+use std::collections::BTreeMap;
+use std::path::Path;
+
+use wrist_ble::{AdvParams, ConnHandle, ConnParams, DisconnectReason, Interval, LeConnRole, Op, Slots, Timeout};
+use wrist_bluenrg2::commands::command;
+
+const NAME: &[u8] = b"UNA";
+
+fn u16_at(p: &[u8], i: usize) -> u16 {
+    u16::from_le_bytes([p[i], p[i + 1]])
+}
+
+/// The operation a driver command carries out, read from its parameters; `None` for one the core
+/// does not ask for (a scan, which the console starts).
+fn op_of(opcode: u16, p: &[u8]) -> Option<Op> {
+    let link = || ConnHandle::new(u16_at(p, 0));
+    Some(match opcode {
+        0xFC83 => {
+            assert_eq!(&p[9..9 + NAME.len()], NAME);
+            Op::Advertise(Some(AdvParams {
+                interval_min: Slots::from_u16(u16_at(p, 1)),
+                interval_max: Slots::from_u16(u16_at(p, 3)),
+                connectable: true,
+            }))
+        }
+        0xFC81 => Op::Advertise(None),
+        0xFD81 => Op::UpdateParams(
+            link(),
+            ConnParams {
+                interval_min: Interval::from_u16(u16_at(p, 2)),
+                interval_max: Interval::from_u16(u16_at(p, 4)),
+                latency: u16_at(p, 6),
+                timeout: Timeout::from_u16(u16_at(p, 8)),
+                ce_len: Slots::from_u16(0),
+            },
+        ),
+        0xFC8D => Op::RequestSecurity(link()),
+        0xFC95 => Op::AllowRebond(link()),
+        0xFCA5 => Op::ConfirmNumeric(link(), p[2] != 0),
+        0xFC88 => Op::Passkey(link(), u32::from_le_bytes([p[2], p[3], p[4], p[5]])),
+        0xFC93 => {
+            assert_eq!(p[2], 0x13, "the driver only ever hangs up as the user");
+            Op::Disconnect(link(), DisconnectReason::RemoteUserTerminatedConn)
+        }
+        0xFC97 | 0xFC9D => return None,
+        _ => panic!("a command the fixture tool does not keep: {opcode:04X}"),
+    })
+}
+
+#[test]
+fn every_command_the_driver_sent_is_what_its_operation_encodes_to() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../wrist-ble-sim/fixtures/traces");
+    let mut checked: BTreeMap<u16, usize> = BTreeMap::new();
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        for line in std::fs::read_to_string(&path).unwrap().lines() {
+            let f: Vec<&str> = line.split(' ').collect();
+            if f.get(3) != Some(&"c") {
+                continue;
+            }
+            let packet: Vec<u8> = (0..f[4].len() / 2).map(|i| u8::from_str_radix(&f[4][2 * i..2 * i + 2], 16).unwrap()).collect();
+            let (opcode, params) = (u16_at(&packet, 1), &packet[4..]);
+            assert_eq!(usize::from(packet[3]), params.len(), "{}: {line}", path.display());
+            let Some(op) = op_of(opcode, params) else { continue };
+            let c = command(&op, NAME, |_| Some(LeConnRole::Peripheral)).unwrap_or_else(|| panic!("{}: nothing for {op:?}", path.display()));
+            assert_eq!((c.opcode, c.params()), (opcode, params), "{}: {op:?}", path.display());
+            *checked.entry(opcode).or_default() += 1;
+        }
+    }
+    let kinds: Vec<u16> = checked.keys().copied().collect();
+    assert_eq!(kinds, [0xFC81, 0xFC83, 0xFC8D, 0xFC93, 0xFC95, 0xFCA5, 0xFD81], "{checked:?}");
+}
+
+#[test]
+fn advertising_gives_its_interval_min_then_max() {
+    let range = AdvParams { interval_min: Slots::from_u16(160), interval_max: Slots::from_u16(1636), connectable: true };
+    let c = command(&Op::Advertise(Some(range)), NAME, |_| Some(LeConnRole::Peripheral)).unwrap();
+    assert_eq!(c.params()[..5], [0x00, 0xA0, 0x00, 0x64, 0x06]);
+}
+
+#[test]
+fn a_passkey_is_the_link_then_the_key() {
+    let c = command(&Op::Passkey(ConnHandle::new(0x0801), 123_456), NAME, |_| Some(LeConnRole::Peripheral)).unwrap();
+    assert_eq!((c.opcode, c.params()), (0xFC88, &[0x01, 0x08, 0x40, 0xE2, 0x01, 0x00][..]));
+}
+
+#[test]
+fn a_disconnect_says_why() {
+    let c = command(&Op::Disconnect(ConnHandle::new(0x0801), DisconnectReason::AuthenticationFailure), NAME, |_| Some(LeConnRole::Peripheral)).unwrap();
+    assert_eq!(c.params(), [0x01, 0x08, 0x05]);
+}
+
+#[test]
+fn what_no_command_here_carries_out_is_none() {
+    let link = ConnHandle::new(0x0801);
+    let params = ConnParams {
+        interval_min: Interval::from_u16(12),
+        interval_max: Interval::from_u16(24),
+        latency: 0,
+        timeout: Timeout::from_u16(500),
+        ce_len: Slots::from_u16(0),
+    };
+    let quiet = AdvParams { interval_min: Slots::from_u16(160), interval_max: Slots::from_u16(160), connectable: false };
+    assert_eq!(command(&Op::Advertise(Some(quiet)), NAME, |_| Some(LeConnRole::Peripheral)), None);
+    assert_eq!(command(&Op::UpdateParams(link, params), NAME, |_| Some(LeConnRole::Central)), None);
+    assert_eq!(command(&Op::UpdateParams(link, params), NAME, |_| None), None);
+    assert_eq!(command(&Op::Scan(None), NAME, |_| Some(LeConnRole::Peripheral)), None);
+    let long = [b'x'; 32];
+    let open = AdvParams { connectable: true, ..quiet };
+    assert_eq!(command(&Op::Advertise(Some(open)), &long, |_| Some(LeConnRole::Peripheral)), None);
+    assert!(command(&Op::Advertise(Some(open)), &long[..18], |_| Some(LeConnRole::Peripheral)).is_some());
+    assert_eq!(command(&Op::Advertise(Some(open)), &long[..19], |_| Some(LeConnRole::Peripheral)), None);
+}
