@@ -269,8 +269,8 @@ fn a_new_phone_pairs_by_numeric_comparison() {
 /// a bonded one leaves it (`fixtures/traces/android14-*.log`).
 #[test]
 fn an_unbonded_android_phone_runs_fast_a_moment_and_goes_back() {
-    let intervals = |keys| {
-        let mut f = ready(7);
+    let intervals = |seed, keys| {
+        let mut f = ready(seed);
         f.submit(Op::Advertise(Some(ADV_100))).unwrap();
         f.phone_arrives(Phone { keys, ..Phone::new(Os::Android, 4) });
         let events = run(&mut f, 4_000);
@@ -284,10 +284,18 @@ fn an_unbonded_android_phone_runs_fast_a_moment_and_goes_back() {
             .collect();
         changes
     };
-    let unbonded = intervals(Keys::None);
-    assert_eq!(unbonded.iter().map(|&(_, iv)| iv).collect::<Vec<_>>(), [6, 36], "{unbonded:?}");
-    assert!((750..=1_000).contains(&unbonded[0].0) && (300..=340).contains(&(unbonded[1].0 - unbonded[0].0)), "{unbonded:?}");
-    assert_eq!(intervals(Keys::Bonded), []);
+    let (mut fast, mut back) = (Vec::new(), Vec::new());
+    for seed in 0..16 {
+        let unbonded = intervals(seed, Keys::None);
+        assert_eq!(unbonded.iter().map(|&(_, iv)| iv).collect::<Vec<_>>(), [6, 36], "{unbonded:?}");
+        fast.push(unbonded[0].0);
+        back.push(unbonded[1].0 - unbonded[0].0);
+    }
+    // Anywhere in each window, not pinned to its start.
+    let spread = |v: &[u64]| v.iter().max().unwrap() - v.iter().min().unwrap();
+    assert!(fast.iter().all(|t| (750..=1_000).contains(t)) && spread(&fast) >= 125, "{fast:?}");
+    assert!(back.iter().all(|t| (300..=340).contains(t)) && spread(&back) >= 20, "{back:?}");
+    assert_eq!(intervals(7, Keys::Bonded), []);
 }
 
 #[test]
