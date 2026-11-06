@@ -29,7 +29,7 @@ pub fn share(bus: AsyncBus) {
 const PCA9420: u8 = wrist_board::i2c::PCA9420_PMIC;
 const MAX17262: u8 = wrist_board::i2c::MAX17262_GAUGE;
 
-/// `None` is a read that failed.
+/// `None` is a read that failed, or one a reading that isn't `full` skips.
 #[derive(Clone, Copy, Default)]
 pub struct Snapshot {
     pub dev_info: Option<u8>,

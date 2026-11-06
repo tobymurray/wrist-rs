@@ -44,7 +44,7 @@ Checked independently against the STM32U5A5 datasheet's alternate-function table
 
 | Net group | Pins | Peripheral | Status |
 |---|---|---|---|
-| `MAIN_SCL/SDA` | PB6, PB7 | I2C1 (AF4 per ST's GPIO database), which an I2C scan found hosting 0x36, 0x5A, 0x61; sheet 5 wires it to the PCA9420 `SCL`/`SDA` and the MAX17262 | CONFIRMED; run at 400 kHz, the MAX17262's maximum (its datasheet's `fSCL`; the PCA9420's is 1 MHz, datasheet Rev 4.2; the STUSB4500's not checked here, the pull-ups unknown). MEASURED: 61 readings in 10 min with no failed read |
+| `MAIN_SCL/SDA` | PB6, PB7 | I2C1 (AF4 per ST's GPIO database), which an I2C scan found hosting 0x36, 0x5A, 0x61; sheet 5 wires it to the PCA9420 `SCL`/`SDA` and the MAX17262 | CONFIRMED; run at 400 kHz, the maximum of the MAX17262, the STUSB4500 and the DRV2625 (each datasheet's `fSCL`; the PCA9420's is 1 MHz, datasheet Rev 4.2, and the view's N24S64B's 1 MHz; the pull-ups unknown). MEASURED: 124 readings over 30 min, through an unplug and a charge, with no failed read |
 | `SENSOR1_SCL/SDA` | PC0, PC1 | I2C3 | CONFIRMED; MEASURED: the Bluetooth module's EEPROM answers at 0x50 at 100 kHz |
 | `SENSOR2_SCL/SDA` | PD12, PD13 | I2C4, which hosts the BMI270 (0x68) and the BMM350 (0x14) | CONFIRMED; MEASURED: BMI270 chip id 0x24, BMM350 chip id 0x33. The image only resets both into suspend |
 | `SENSORBODY_SCL/SDA` | PB13, PB14 | I2C2 | CONFIRMED |
