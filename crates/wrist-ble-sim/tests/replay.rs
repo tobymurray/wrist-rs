@@ -1,5 +1,6 @@
 //! The watch's own driver, captured with `ble-trace`, replayed through the core.
 
+use std::fmt::Write as _;
 use std::path::Path;
 
 use wrist_ble::{AdvParams, ConnHandle, ConnParams, Interval, Op, Slots, Timeout};
@@ -140,6 +141,88 @@ fn advertising_on_one_side_alone_is_a_disagreement() {
 fn an_event_the_core_could_not_read_is_a_disagreement() {
     let r = Report { unknown_events: 1, ..Report::default() };
     assert_eq!(r.disagreements().len(), 1);
+}
+
+/// `first`, then `then` as if the watch had reset `gap_ms` after it: `then`'s host times carry
+/// on from `first`'s, and its chip's milliseconds are its own.
+fn after_a_reset(first: &str, between: &[&str], then: &str, gap_ms: u64) -> String {
+    let stamp = |ms: u64| format!("{}.{:03}", ms / 1_000, ms % 1_000);
+    let last = first.lines().filter_map(host_ms).max().unwrap();
+    let mut out = first.to_string();
+    for line in between {
+        let _ = writeln!(out, "{} {line}", stamp(last + 1));
+    }
+    for line in then.lines() {
+        let (_, rest) = line.trim_start().split_once(' ').unwrap();
+        let _ = writeln!(out, "{} {rest}", stamp(last + gap_ms + host_ms(line).unwrap()));
+    }
+    out
+}
+
+/// A fixture line's host time in milliseconds.
+fn host_ms(line: &str) -> Option<u64> {
+    let (s, ms) = line.trim_start().split_once(' ')?.0.split_once('.')?;
+    Some(s.parse::<u64>().ok()? * 1_000 + ms.parse::<u64>().ok()?)
+}
+
+/// (chip ms, host ms) of each trace line.
+fn clock(capture: &str) -> Vec<(u64, u64)> {
+    capture.lines().filter_map(|l| Some((l.split_whitespace().nth(2)?.parse().ok()?, host_ms(l)?))).collect()
+}
+
+/// A capture that ends forced to battery timing, which a reset puts back to auto, on the cable.
+fn on_battery() -> String {
+    let capture = fixture("bluez-battery.log");
+    let end = capture.find("86.648 >> usb ble profile cable").unwrap();
+    capture[..end].to_string()
+}
+
+/// A watch reset is a new epoch: the core starts again, with the goals the watch boots with, and
+/// the timeline carries on where the host's clock puts it.
+#[test]
+fn a_watch_reset_starts_the_core_again() {
+    let (first, then) = (on_battery(), fixture("mac-cable.log"));
+    let capture = after_a_reset(&first, &[], &then, 60_000);
+    let r = replay(&capture);
+    assert_eq!(r.disagreements(), Vec::<String>::new(), "{}", r.render(false));
+    assert_eq!(r.resets, 1);
+    assert!(r.timeline.windows(2).all(|w| w[0].at <= w[1].at), "the timeline ran back");
+    let (a, b) = (replay(&first), replay(&then));
+    assert_eq!(r.core_ops.len(), a.core_ops.len() + b.core_ops.len());
+    assert_eq!(r.driver_ops.len(), a.driver_ops.len() + b.driver_ops.len());
+    // `then` falls 60 s after `first`'s last line, as the host saw it.
+    let shift = r.driver_ops[a.driver_ops.len()].0 - b.driver_ops[0].0;
+    for (whole, alone) in r.driver_ops[a.driver_ops.len()..].iter().zip(&b.driver_ops) {
+        assert_eq!((whole.0 - shift, whole.1), *alone);
+    }
+    let (end, start) = (clock(&first)[clock(&first).len() - 1], clock(&then)[0]);
+    let expected = end.0 + 60_000 + start.1 - start.0;
+    assert!(shift.abs_diff(expected) <= 2, "shift {shift}, expected {expected}");
+}
+
+/// A heartbeat's uptime shows a reset that the chip's milliseconds alone would not: here the
+/// capture after it starts later than the one before it ended.
+#[test]
+fn a_heartbeat_that_went_back_is_a_reset() {
+    let (first, then) = (on_battery(), fixture("android14-pairing.log"));
+    assert!(clock(&then)[0].0 > clock(&first).iter().map(|c| c.0).max().unwrap());
+    let without = replay(&after_a_reset(&first, &[], &then, 60_000));
+    assert_eq!(without.resets, 0);
+    assert_ne!(without.disagreements(), Vec::<String>::new(), "battery timing kept, unnoticed");
+    for heartbeat in ["[hb] 17  uptime 18 s  buttons 0  dropped 0", "[usb] uptime 18 s"] {
+        let r = replay(&after_a_reset(&first, &[heartbeat], &then, 60_000));
+        assert_eq!(r.resets, 1, "{heartbeat}");
+        assert_eq!(r.disagreements(), Vec::<String>::new(), "{heartbeat}\n{}", r.render(false));
+    }
+}
+
+/// A heartbeat a moment behind the trace line before it is not a reset.
+#[test]
+fn a_heartbeat_behind_the_trace_by_its_rounding_is_not_a_reset() {
+    let capture = fixture("mac-cable.log");
+    let last = clock(&capture).iter().map(|c| c.0).max().unwrap();
+    let r = replay(&after_a_reset(&capture, &[&format!("[hb] 9  uptime {} s  buttons 0  dropped 0", last / 1_000)], "", 0));
+    assert_eq!(r.resets, 0);
 }
 
 fn fixture(name: &str) -> String {

@@ -50,6 +50,8 @@ pub struct Report {
     pub unknown_events: u32,
     /// Events the trace kept too little of to decode.
     pub cut_by_the_trace: u32,
+    /// Times the watch reset, each the start of a new epoch.
+    pub resets: u32,
     pub core_ops: Vec<(u64, Op)>,
     pub driver_ops: Vec<(u64, DriverOp)>,
 }
@@ -86,7 +88,7 @@ impl Report {
             let mark = if d == c { "" } else { "  <- differs" };
             let _ = writeln!(s, "{k:<20} {d:>6} {c:>5}{mark}");
         }
-        let _ = writeln!(s, "unknown events: {}, cut by the trace: {}", self.unknown_events, self.cut_by_the_trace);
+        let _ = writeln!(s, "unknown events: {}, cut by the trace: {}, watch resets: {}", self.unknown_events, self.cut_by_the_trace, self.resets);
         let d = self.disagreements();
         let _ = writeln!(s, "disagreements: {}", d.len());
         for line in d {
@@ -120,12 +122,23 @@ fn driver_op(packet: &[u8]) -> Option<(OpKind, &'static str)> {
     })
 }
 
+/// The goals the watch boots with: the radio on, the phone welcome, and `ble profile auto` on
+/// the console's cable, which is cable timing.
+fn boot_goals() -> Goals {
+    Goals { radio_on: true, phone: PhoneGoal { discoverable: true, pairing_open: true }, power: Power::Cable, ..Goals::OFF }
+}
+
 struct Replay<'a> {
     core: Core<'a>,
     translator: Translator,
     goals: Goals,
     now: Instant,
     next: Option<Instant>,
+    /// Where this epoch's milliseconds start on the timeline: 0 until the watch first resets,
+    /// then unknown until the epoch's first trace line.
+    base: Option<u64>,
+    /// The chip's last milliseconds in this epoch.
+    last_ms: Option<u64>,
     ids: u16,
     phone: Option<ConnHandle>,
     /// The core's parameter request on air, which the central's answer ends.
@@ -204,6 +217,36 @@ impl Replay<'_> {
         self.feed(Input::Goals(g));
     }
 
+    /// Whether the watch has reset since this epoch's last trace line: its milliseconds, or the
+    /// uptime a heartbeat or `uptime` reports, went backwards.
+    fn reset_seen(&self, traced: Option<u64>, uptime: Option<u64>) -> bool {
+        let Some(last) = self.last_ms else { return false };
+        match (traced, uptime) {
+            (Some(ms), _) => ms < last,
+            // Whole seconds, read a little after the line before was traced.
+            (None, Some(ms)) => ms + 2_000 < last,
+            (None, None) => false,
+        }
+    }
+
+    /// A new epoch from `at`: the core and its chip start again as at the start, with the goals
+    /// the watch boots with.
+    fn reset(&mut self, at: u64) {
+        self.now = Instant(self.now.0.max(at));
+        self.base = None;
+        self.last_ms = None;
+        self.core = Core::new(&CAPABILITIES, &Scheduler, &MENU);
+        self.translator = Translator::new(INFO);
+        self.goals = boot_goals();
+        self.next = None;
+        self.phone = None;
+        self.asked_update = None;
+        self.advertising = false;
+        self.report.resets += 1;
+        self.push(Who::Line, "-- the watch reset".into());
+        self.goals();
+    }
+
     fn line(&mut self, text: &str) {
         let text = text.trim();
         if let Some(rest) = text.strip_prefix("[trace] ") {
@@ -245,7 +288,8 @@ impl Replay<'_> {
             .map(|h| (0..h.len() / 2).filter_map(|i| u8::from_str_radix(&h[2 * i..2 * i + 2], 16).ok()).collect())
             .unwrap_or_default();
         let cut = rest.contains(" +");
-        self.advance(Instant(ms));
+        self.last_ms = Some(ms);
+        self.advance(Instant(self.base.unwrap_or_default() + ms));
         match dir {
             "r" => self.push(Who::Driver, "reset the chip".into()),
             "c" => {
@@ -308,16 +352,29 @@ impl Replay<'_> {
     }
 }
 
+/// The uptime a heartbeat (`[hb] <n>  uptime <s> s ...`) or `uptime` reports, in milliseconds.
+fn uptime_ms(text: &str) -> Option<u64> {
+    let text = text.trim();
+    if !(text.starts_with("[hb] ") || text.starts_with("[usb] uptime ")) {
+        return None;
+    }
+    let (_, rest) = text.split_once(" uptime ")?;
+    let (s, _) = rest.split_once(" s")?;
+    s.parse::<u64>().ok().map(|s| s * 1_000)
+}
+
 /// Replays lines of `<host seconds> <console line>`, as `tools/ble-trace-capture.py` writes them.
+/// A watch reset starts the core again, and the host's clock carries the timeline across it.
 #[must_use]
 pub fn replay(capture: &str) -> Report {
-    let goals = Goals { radio_on: true, phone: PhoneGoal { discoverable: true, pairing_open: true }, power: Power::Cable, ..Goals::OFF };
     let mut r = Replay {
         core: Core::new(&CAPABILITIES, &Scheduler, &MENU),
         translator: Translator::new(INFO),
-        goals,
+        goals: boot_goals(),
         now: Instant(0),
         next: None,
+        base: Some(0),
+        last_ms: None,
         ids: 0,
         phone: None,
         asked_update: None,
@@ -333,9 +390,17 @@ pub fn replay(capture: &str) -> Report {
             None => (None, line),
         };
         let traced = text.trim().strip_prefix("[trace] ").and_then(|r| r.split_whitespace().next()).and_then(|m| m.parse::<u64>().ok());
+        // This line on the timeline by the host's clock, which runs on through a reset.
+        let by_host = host.zip(offset).and_then(|(h, o)| u64::try_from(h + o).ok()).map_or(r.now.0, |t| t.max(r.now.0));
+        if r.reset_seen(traced, uptime_ms(text)) {
+            r.reset(by_host);
+        }
+        if let (Some(ms), None) = (traced, r.base) {
+            r.base = Some(by_host.saturating_sub(ms));
+        }
         match (traced, host) {
             // The watch's clock against the host's, so a host line falls where it happened.
-            (Some(ms), Some(h)) => offset = i64::try_from(ms).ok().map(|ms| ms - h),
+            (Some(ms), Some(h)) => offset = i64::try_from(r.base.unwrap_or_default() + ms).ok().map(|ms| ms - h),
             (None, Some(h)) => {
                 if let Some(at) = offset.and_then(|o| u64::try_from(h + o).ok()) {
                     r.advance(Instant(at));
