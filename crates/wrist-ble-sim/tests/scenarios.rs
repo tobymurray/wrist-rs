@@ -160,6 +160,28 @@ fn a_chip_that_keeps_resetting_ends_in_a_fault() {
     assert!(s.line().contains("phone=fault(kept-resetting)"), "{}", s.line());
 }
 
+/// Linux check 8 (install 252): the chip restarted under an encrypted phone link, into its
+/// updater, and the watch stayed silent. Whatever the reason, the core starts it again, advertises,
+/// and the phone comes back encrypted; one restart, so no fault.
+#[test]
+fn a_chip_restart_under_a_live_link_is_recovered() {
+    for cause in [ResetCause::PowerOn, ResetCause::Watchdog, ResetCause::Brownout, ResetCause::Updater] {
+        for seed in 0..8 {
+            let mut s = Sim::started(seed, on(Power::Battery));
+            s.fake.phone_arrives(Phone::new(Os::Android, 1));
+            s.run_for(Millis::secs(30));
+            assert!(s.fake.phone_link().is_some_and(|(_, encrypted)| encrypted), "{cause:?} seed {seed}: {}", s.line());
+            s.fake.reboot(cause);
+            s.run_for(Millis::secs(2));
+            assert!(!s.line().contains("fault"), "{cause:?} seed {seed}: {}", s.line());
+            s.run_for(Millis::secs(30));
+            assert!(s.fake.phone_link().is_some_and(|(_, encrypted)| encrypted), "{cause:?} seed {seed}: {}", s.line());
+            assert_eq!(s.status().phone, PhoneStatus::Connected, "{cause:?} seed {seed}");
+            assert_eq!(s.core.counters.resets, 1, "{cause:?} seed {seed}");
+        }
+    }
+}
+
 /// The ready event after a reset was lost: the chip is started again at once, not left silent
 /// until the start's deadline.
 #[test]

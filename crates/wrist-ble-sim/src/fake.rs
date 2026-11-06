@@ -87,6 +87,8 @@ struct Link {
 #[derive(Clone, Copy, Debug)]
 enum Do {
     Ready,
+    /// A boot nobody asked for ends.
+    Rebooted(ResetCause),
     Done(OpId, Result<Outcome, Failure>),
     Deadline(OpId),
     Emit(RadioEvent),
@@ -138,6 +140,8 @@ enum Power {
     Ready,
     /// Reset by itself and waiting to be started again.
     Halted,
+    /// Restarting by itself, as after a watchdog reset: up again without a start.
+    Rebooting,
 }
 
 mod modelled {
@@ -337,6 +341,23 @@ impl Fake {
         self.power = Power::Halted;
         self.notes.push((self.now, Note::Reset));
         self.emit(RadioEvent::ChipReset(cause));
+    }
+
+    /// The chip restarts by itself, as the BlueNRG-2 does after a watchdog, lockup or brownout
+    /// reset or its updater's command: every link and operation is gone at once, unreported,
+    /// and once it has booted it says why, as the translator reports `ACI_BLUE_INITIALIZED`:
+    /// [`RadioEvent::Ready`] for a plain start, else [`RadioEvent::ChipReset`]. In its updater it
+    /// takes no operation until it is started.
+    pub fn reboot(&mut self, cause: ResetCause) {
+        if self.power == Power::Off {
+            return;
+        }
+        self.wipe();
+        self.lose = 0;
+        self.power = Power::Rebooting;
+        self.notes.push((self.now, Note::Reset));
+        let boot = self.rng.range(BOOT.0, BOOT.1);
+        self.after(ms(boot), Do::Rebooted(cause));
     }
 
     /// The next `n` events are lost; the chip says so in the place of each.
@@ -771,6 +792,12 @@ impl Fake {
                 if self.power == Power::Booting {
                     self.power = Power::Ready;
                     self.emit(RadioEvent::Ready(INFO));
+                }
+            }
+            Do::Rebooted(cause) => {
+                if self.power == Power::Rebooting {
+                    self.power = if cause == ResetCause::Updater { Power::Halted } else { Power::Ready };
+                    self.emit(if cause == ResetCause::PowerOn { RadioEvent::Ready(INFO) } else { RadioEvent::ChipReset(cause) });
                 }
             }
             Do::Done(id, r) => {
