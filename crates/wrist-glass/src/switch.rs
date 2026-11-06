@@ -19,19 +19,19 @@ pub enum Switch {
 /// A deep green, as a phone's switch is on: the white knob stays the brightest thing on it.
 const ON: Abgr2222 = Abgr2222::from_levels(0, 2, 1);
 
-const TRACK_W: i32 = 140;
-const TRACK_H: i32 = 64;
+const TRACK_W: i32 = 96;
+const TRACK_H: i32 = 54;
 const TRACK_X: i32 = 120 - TRACK_W / 2;
-const TRACK_Y: i32 = 84;
+const TRACK_Y: i32 = 116 - TRACK_H / 2;
 const STROKE: i32 = 3;
-const KNOB_RADIUS: i32 = 24;
-const KNOB_INSET: i32 = 8;
+const KNOB_INSET: i32 = TRACK_H / 8;
+const KNOB_RADIUS: i32 = TRACK_H / 2 - KNOB_INSET;
 
 /// The panel rows the switch can touch.
 pub const ROWS: Range<i32> = TRACK_Y..TRACK_Y + TRACK_H;
 
 /// A baseline for a line under the switch.
-pub const BELOW: i32 = TRACK_Y + TRACK_H + 34;
+pub const BELOW: i32 = 182;
 
 /// Draws `s` on `target`.
 pub fn draw<D: DrawTarget<Color = Abgr2222>>(target: &mut D, s: Switch) {
