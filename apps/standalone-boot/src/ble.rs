@@ -1336,8 +1336,7 @@ impl Link<'_> {
         }
     }
 
-    /// `ble forget <address>`: removes that one bond, with the address type the chip lists it
-    /// under, then lists the bonds left.
+    /// `ble forget <address>`, then the bonds left.
     async fn forget_one(&mut self, addr: [u8; 6]) {
         let Ok(r) = self.command(ACI_GAP_GET_BONDED_DEVICES, &[]).await else {
             return self.uart.write_line("[ble] forget: the bonded devices could not be read");

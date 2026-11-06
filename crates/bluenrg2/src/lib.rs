@@ -62,9 +62,7 @@ pub mod opcode {
     pub const ACI_GAP_START_CONNECTION_UPDATE: u16 = 0xFC9E;
     pub const ACI_GAP_GET_BONDED_DEVICES: u16 = 0xFCA3;
     pub const ACI_GAP_NUMERIC_COMPARISON_CONFIRM: u16 = 0xFCA5;
-    /// Removes one bonded device: its identity address type, then its address. PM0257 (the
-    /// v2.x stack) doesn't list it; ST's later stacks number it so. A stack without it answers
-    /// status 0x01, unknown command.
+    /// Removes one bonded device; PM0257 doesn't list it (HARDWARE.md).
     pub const ACI_GAP_REMOVE_BONDED_DEVICE: u16 = 0xFCAA;
     pub const ACI_GATT_INIT: u16 = 0xFD01;
     pub const ACI_GATT_ADD_SERVICE: u16 = 0xFD02;
@@ -679,9 +677,7 @@ pub fn numeric_comparison(params: &[u8]) -> Option<(u16, u32)> {
     Some((connection_handle(params), u32::from_le_bytes([v[0], v[1], v[2], v[3]])))
 }
 
-/// The bonded devices in an `ACI_GAP_GET_BONDED_DEVICES` reply (its count, then each
-/// device's identity address type and address, least significant byte first); the count is
-/// clamped to the entries the reply holds.
+/// The `(address type, address)` entries of an `ACI_GAP_GET_BONDED_DEVICES` reply, never past its end.
 pub fn bonded_devices(params: &[u8]) -> impl Iterator<Item = (u8, [u8; 6])> + '_ {
     let count = usize::from(params.first().copied().unwrap_or(0));
     params.get(1..).unwrap_or(&[]).as_chunks::<7>().0.iter().take(count).map(|e| {

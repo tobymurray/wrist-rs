@@ -230,8 +230,7 @@ fn the_rebond_a_lost_bond_needs_goes_out_past_the_security_request() {
     assert!(core.abs_diff(driver) <= 5, "core {core}, driver {driver}");
 }
 
-/// The suite's earlier console logs stamp the wall clock (`09:27:15.970`); the replay reads them
-/// as it reads the capture tools' seconds.
+/// A capture stamped by the wall clock replays as one stamped in seconds.
 #[test]
 fn wall_clock_stamps_replay_as_seconds_do() {
     for (name, capture) in traces() {

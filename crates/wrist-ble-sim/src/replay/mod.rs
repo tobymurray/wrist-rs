@@ -420,9 +420,7 @@ pub fn replay(capture: &str) -> Report {
     r.report
 }
 
-/// A line's host time in milliseconds: the capture tools' seconds with three decimals, or the
-/// regression suite's earlier wall clock, `HH:MM:SS.mmm` (from midnight; only the differences
-/// matter, since every trace line sets the watch's clock against it again).
+/// A line's host time in milliseconds, from seconds with three decimals or a wall clock's `HH:MM:SS.mmm`.
 fn host_ms(t: &str) -> Option<i64> {
     let (s, ms) = t.split_once('.')?;
     (ms.len() == 3 && ms.bytes().all(|b| b.is_ascii_digit())).then_some(())?;

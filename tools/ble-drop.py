@@ -6,10 +6,7 @@ host's Bluetooth with rfkill for some seconds, then unblock it. Linux; needs wri
     tools/ble-drop.py 10                               block for 10 s
     tools/ble-drop.py 10 --command-file cmd.txt        and mark both ends there (`== host ...`)
 
-This is a clean hang-up, not a lost link: on the block BlueZ sends HCI Disconnect (reason 0x15,
-power off) before the adapter goes down, and the watch logs `disconnected, reason 13`. A link
-lost out of range, which the watch only notices at its supervision timeout (reason 08), needs
-the adapter to vanish without a word, which this doesn't do.
+BlueZ disconnects before the adapter goes down, so this is a clean hang-up, not a link lost out of range.
 """
 import argparse
 import subprocess
