@@ -124,6 +124,11 @@ fn a_lost_bond_names_the_link_a_central_holds() {
     assert_eq!(event(&mut t, &lost), Some(RadioEvent::BondLost(link())), "another link going leaves the phone's");
     event(&mut t, &hci(0x05, &[0x00, 0x01, 0x08, 0x13]));
     assert_eq!(event(&mut t, &lost), None);
+    for reason in [0x01, 0x02] {
+        event(&mut t, &connection(0x01));
+        event(&mut t, &vendor(0x0001, &[reason]));
+        assert_eq!(event(&mut t, &lost), None, "a chip that started again (reason {reason}) holds no phone");
+    }
 }
 
 #[test]

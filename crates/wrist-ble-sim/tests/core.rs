@@ -336,6 +336,23 @@ fn a_refusal_before_the_chip_resets_is_forgotten_with_it() {
     assert_eq!((out.op, out.chip), (second, None));
 }
 
+/// The BlueNRG-2 announces a start it was not asked for with the same event as one it was (Linux
+/// check 8: the updater entered mid-link, then the chip silent).
+#[test]
+fn a_chip_starting_again_unasked_is_a_reset_that_takes_the_link() {
+    let mut h = Harness::new(Goals { radio_on: true, ..Goals::OFF });
+    let link = ConnHandle::new(0x801);
+    phone_up(&mut h, 1_000, link);
+    let out = h.at(2_000, Input::Radio(RadioEvent::Ready(INFO)));
+    assert_eq!(out.chip, Some(wrist_ble_core::chip::Action::Start));
+    assert_eq!(h.core.state.phone.link(), None);
+    assert_eq!(h.core.counters.resets, 1);
+    h.ops.clear();
+    h.at(2_500, Input::Started(Ok(INFO)));
+    h.at(3_000, Input::Tick);
+    assert!(matches!(h.ops.first(), Some(Op::Advertise(Some(_)))), "{:?}", h.ops);
+}
+
 /// `BlueZ` accepts a request that changes nothing and sends no update (`fixtures/traces/bluez-*.log`).
 #[test]
 fn a_centrals_acceptance_ends_the_request_though_nothing_changes() {
