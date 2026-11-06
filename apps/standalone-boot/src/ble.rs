@@ -107,7 +107,7 @@ const IRQ_LOW_TIMEOUT: Duration = Duration::from_millis(1000);
 const BOOT_TIMEOUT: Duration = Duration::from_millis(3000);
 const REPLY_TIMEOUT: Duration = Duration::from_millis(1000);
 /// How long a numeric comparison waits for `ble yes` before it is rejected.
-const CONFIRM_TIMEOUT: Duration = Duration::from_secs(60);
+const CONFIRM_TIMEOUT: Duration = Duration::from_millis(wrist_pages::PROMPT_MS);
 /// A transfer with no bytes for this long is abandoned, as over USB.
 const TRANSFER_IDLE: Duration = Duration::from_secs(5);
 /// One SPI read. The chip queues events back to back and announces them all in one count,
@@ -423,7 +423,7 @@ pub fn write_status(uart: Uart) {
             uart.write_hex8(LAST_PAIRING_REASON.load(Ordering::Relaxed));
         }
     }
-    let Some((pairing, value)) = PROMPT.lock(Cell::get).waiting() else { return uart.write_line("") };
+    let Some((pairing, value)) = waiting() else { return uart.write_line("") };
     uart.write_str(match pairing {
         Pairing::Passkey => "; TYPE this on the central: ",
         Pairing::Compare => "; COMPARE with the central's number, then `ble yes` or `ble no`: ",
@@ -444,7 +444,7 @@ pub fn page() -> wrist_glass::pages::Bluetooth {
         Radio::Connected => Shown::Connected,
         Radio::Failed => Shown::Failed,
     };
-    let prompt = PROMPT.lock(Cell::get).waiting().map(|(pairing, value)| match pairing {
+    let prompt = waiting().map(|(pairing, value)| match pairing {
         Pairing::Passkey => Digits::Passkey(value),
         Pairing::Compare => Digits::Compare(value),
     });
@@ -453,7 +453,11 @@ pub fn page() -> wrist_glass::pages::Bluetooth {
 
 /// The pairing whose digits the page shows.
 pub fn pairing() -> Option<Pairing> {
-    PROMPT.lock(Cell::get).waiting().map(|(pairing, _)| pairing)
+    waiting().map(|(pairing, _)| pairing)
+}
+
+fn waiting() -> Option<(Pairing, u32)> {
+    PROMPT.lock(Cell::get).waiting(Instant::now().as_millis())
 }
 
 /// The radio off if it is on or starting, on otherwise.
@@ -1327,7 +1331,15 @@ impl Link<'_> {
                 return;
             }
         };
-        PROMPT.lock(|p| p.set(Prompt::Waiting(Pairing::Passkey, key)));
+        let shown = PROMPT.lock(|p| {
+            let mut prompt = p.get();
+            let shown = prompt.passkey(key, Instant::now().as_millis());
+            p.set(prompt);
+            shown
+        });
+        if !shown {
+            return self.uart.write_line("[ble] passkey ready after its pairing ended; not given");
+        }
         crate::show_page(wrist_pages::Page::Bluetooth);
         crate::wake_display();
         self.uart.write_str("[ble] pairing: type this passkey on the central: ");
@@ -1654,12 +1666,13 @@ impl Link<'_> {
                 self.pair_ask.settled();
                 self.interval_ask.pairing();
                 self.passkey_for = Some(handle(rest));
+                PROMPT.lock(|p| p.set(Prompt::Asked));
             }
             vendor::GAP_NUMERIC_COMPARISON_VALUE if rest.len() >= 6 => {
                 self.pair_ask.settled();
                 self.interval_ask.pairing();
                 let (conn, value) = bluenrg2::numeric_comparison(rest).unwrap_or_default();
-                PROMPT.lock(|p| p.set(Prompt::Waiting(Pairing::Compare, value)));
+                PROMPT.lock(|p| p.set(Prompt::Waiting(Pairing::Compare, value, Instant::now().as_millis())));
                 crate::show_page(wrist_pages::Page::Bluetooth);
                 crate::wake_display();
                 self.confirm_for = Some((conn, Instant::now()));

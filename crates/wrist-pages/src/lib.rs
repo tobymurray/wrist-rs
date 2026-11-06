@@ -125,29 +125,44 @@ pub enum Pairing {
     Compare,
 }
 
+/// How long a pairing's digits wait for the wearer: past any pairing's own timeout.
+pub const PROMPT_MS: u64 = 60_000;
+
 /// A pairing's six digits, from the radio's prompt until the wearer answers or the pairing ends.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Prompt {
     #[default]
     None,
-    Waiting(Pairing, u32),
+    /// A passkey asked for, its digits yet to come.
+    Asked,
+    /// Since the image's millisecond given.
+    Waiting(Pairing, u32, u64),
     /// A comparison answered; the radio has yet to pass it on.
     Answered(bool),
 }
 
 impl Prompt {
-    /// The pairing still waiting for the wearer, and its digits.
+    /// The passkey's digits, if the pairing that asked for them has not ended since.
+    pub fn passkey(&mut self, value: u32, now_ms: u64) -> bool {
+        let asked = *self == Self::Asked;
+        if asked {
+            *self = Self::Waiting(Pairing::Passkey, value, now_ms);
+        }
+        asked
+    }
+
+    /// The pairing still waiting for the wearer at `now_ms`, and its digits.
     #[must_use]
-    pub const fn waiting(self) -> Option<(Pairing, u32)> {
+    pub const fn waiting(self, now_ms: u64) -> Option<(Pairing, u32)> {
         match self {
-            Self::Waiting(pairing, value) => Some((pairing, value)),
+            Self::Waiting(pairing, value, since) if now_ms < since.saturating_add(PROMPT_MS) => Some((pairing, value)),
             _ => None,
         }
     }
 
     /// Answer the comparison waiting; false when none is.
     pub fn answer(&mut self, yes: bool) -> bool {
-        let waiting = matches!(self, Self::Waiting(Pairing::Compare, _));
+        let waiting = matches!(self, Self::Waiting(Pairing::Compare, ..));
         if waiting {
             *self = Self::Answered(yes);
         }
@@ -403,17 +418,40 @@ mod tests {
 
     #[test]
     fn an_answered_comparison_waits_no_longer() {
-        let mut prompt = Prompt::Waiting(Pairing::Compare, 123_456);
-        assert_eq!(prompt.waiting(), Some((Pairing::Compare, 123_456)));
+        let mut prompt = Prompt::Waiting(Pairing::Compare, 123_456, 0);
+        assert_eq!(prompt.waiting(0), Some((Pairing::Compare, 123_456)));
         assert_eq!(prompt.answered(), None);
         assert!(prompt.answer(false));
-        assert_eq!((prompt.waiting(), prompt.answered()), (None, Some(false)));
+        assert_eq!((prompt.waiting(0), prompt.answered()), (None, Some(false)));
         assert!(!prompt.answer(true));
         assert_eq!(prompt.answered(), Some(false));
-        let mut passkey = Prompt::Waiting(Pairing::Passkey, 1);
+        let mut passkey = Prompt::Waiting(Pairing::Passkey, 1, 0);
         assert!(!passkey.answer(true));
-        assert_eq!(passkey.waiting(), Some((Pairing::Passkey, 1)));
+        assert_eq!(passkey.waiting(0), Some((Pairing::Passkey, 1)));
         assert!(!Prompt::None.answer(true));
+    }
+
+    #[test]
+    fn a_passkey_arriving_after_its_pairing_ended_is_not_shown() {
+        let mut prompt = Prompt::Asked;
+        assert_eq!(prompt.waiting(0), None);
+        assert!(prompt.passkey(42, 5));
+        assert_eq!(prompt.waiting(5), Some((Pairing::Passkey, 42)));
+        let mut ended = Prompt::None;
+        assert!(!ended.passkey(42, 5));
+        assert_eq!(ended, Prompt::None);
+        let mut compared = Prompt::Waiting(Pairing::Compare, 7, 0);
+        assert!(!compared.passkey(42, 5));
+        assert_eq!(compared.waiting(5), Some((Pairing::Compare, 7)));
+    }
+
+    #[test]
+    fn a_prompt_whose_end_never_came_stops_waiting() {
+        for pairing in [Pairing::Passkey, Pairing::Compare] {
+            let prompt = Prompt::Waiting(pairing, 1, 1_000);
+            assert_eq!(prompt.waiting(1_000 + PROMPT_MS - 1), Some((pairing, 1)));
+            assert_eq!(prompt.waiting(1_000 + PROMPT_MS), None);
+        }
     }
 
     #[test]
