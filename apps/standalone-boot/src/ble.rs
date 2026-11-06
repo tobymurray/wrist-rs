@@ -49,7 +49,7 @@ mod probe;
 mod trace;
 mod scan;
 
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU8, Ordering};
 
 use embassy_futures::select::{select, select4, Either4};
@@ -79,6 +79,7 @@ use bluenrg2::{
     L2capUpdateResponse, ADV_IND, ATT_HEADER_LEN, MAX_COMMAND, MIN_ENC_KEY_SIZE, NO_FILTER, PRIMARY_SERVICE,
     PRIVACY_DISABLED, VARIABLE_LENGTH,
 };
+use wrist_pages::{Pairing, Prompt};
 use wrist_wake::ble::restart::{Boot, Restarts};
 use wrist_wake::ble::{timing, IntervalAsk, Lines, Outbox, PairAsk, Power, Radio, Scan, Sink, Timing};
 
@@ -227,11 +228,7 @@ static BONDED_READ: AtomicBool = AtomicBool::new(false);
 /// Last pairing outcome: 0 none, else 1 + status (so 1 is success).
 static LAST_PAIRING: AtomicU8 = AtomicU8::new(0);
 static LAST_PAIRING_REASON: AtomicU8 = AtomicU8::new(0);
-/// The pairing number waiting: kind 0 none, 1 passkey to type, 2 comparison to confirm.
-static PROMPT_VALUE: AtomicU32 = AtomicU32::new(0);
-static PROMPT_KIND: AtomicU8 = AtomicU8::new(0);
-/// The answer to a comparison: 0 none, 1 yes, 2 no.
-static ANSWER: AtomicU8 = AtomicU8::new(0);
+static PROMPT: Mutex<CriticalSectionRawMutex, Cell<Prompt>> = Mutex::new(Cell::new(Prompt::None));
 /// The address written into the chip, little-endian as the chip holds it.
 static ADDRESS: [AtomicU8; 6] = [const { AtomicU8::new(0) }; 6];
 /// `ble profile`: 0 follows the power source, 1 always the cable's, 2 always the battery's.
@@ -426,18 +423,18 @@ pub fn write_status(uart: Uart) {
             uart.write_hex8(LAST_PAIRING_REASON.load(Ordering::Relaxed));
         }
     }
-    match PROMPT_KIND.load(Ordering::Relaxed) {
-        1 => uart.write_str("; TYPE this on the central: "),
-        2 => uart.write_str("; COMPARE with the central's number, then `ble yes` or `ble no`: "),
-        _ => return uart.write_line(""),
-    }
-    write_six_digits(uart, PROMPT_VALUE.load(Ordering::Relaxed));
+    let Some((pairing, value)) = PROMPT.lock(Cell::get).waiting() else { return uart.write_line("") };
+    uart.write_str(match pairing {
+        Pairing::Passkey => "; TYPE this on the central: ",
+        Pairing::Compare => "; COMPARE with the central's number, then `ble yes` or `ble no`: ",
+    });
+    write_six_digits(uart, value);
     uart.write_line("");
 }
 
 /// What the Bluetooth page shows.
 pub fn page() -> wrist_glass::pages::Bluetooth {
-    use wrist_glass::pages::{Bluetooth, Prompt, Radio as Shown};
+    use wrist_glass::pages::{Bluetooth, Prompt as Digits, Radio as Shown};
     let radio = match Radio::from_u8(STATE.load(Ordering::Relaxed)) {
         Radio::Off => Shown::Off,
         Radio::Starting => Shown::Starting,
@@ -447,22 +444,16 @@ pub fn page() -> wrist_glass::pages::Bluetooth {
         Radio::Connected => Shown::Connected,
         Radio::Failed => Shown::Failed,
     };
-    let value = PROMPT_VALUE.load(Ordering::Relaxed);
-    let prompt = match PROMPT_KIND.load(Ordering::Relaxed) {
-        1 => Some(Prompt::Passkey(value)),
-        2 => Some(Prompt::Compare(value)),
-        _ => None,
-    };
+    let prompt = PROMPT.lock(Cell::get).waiting().map(|(pairing, value)| match pairing {
+        Pairing::Passkey => Digits::Passkey(value),
+        Pairing::Compare => Digits::Compare(value),
+    });
     Bluetooth { radio, prompt, bonded: BONDED_READ.load(Ordering::Relaxed).then(|| BONDED.load(Ordering::Relaxed)) }
 }
 
 /// The pairing whose digits the page shows.
-pub fn pairing() -> Option<wrist_pages::Pairing> {
-    match PROMPT_KIND.load(Ordering::Relaxed) {
-        1 => Some(wrist_pages::Pairing::Passkey),
-        2 => Some(wrist_pages::Pairing::Compare),
-        _ => None,
-    }
+pub fn pairing() -> Option<Pairing> {
+    PROMPT.lock(Cell::get).waiting().map(|(pairing, _)| pairing)
 }
 
 /// The radio off if it is on or starting, on otherwise.
@@ -471,9 +462,20 @@ pub fn toggle() {
     let _ = REQUESTS.try_send(if off { Request::On } else { Request::Off });
 }
 
-/// The wearer's answer to the numeric comparison waiting, as `ble yes|no`.
+/// The wearer's answer to the numeric comparison waiting, as `ble yes|no`, taken at once.
 pub fn answer(yes: bool) {
-    let _ = REQUESTS.try_send(if yes { Request::Yes } else { Request::No });
+    if answer_prompt(yes) {
+        let _ = REQUESTS.try_send(if yes { Request::Yes } else { Request::No });
+    }
+}
+
+fn answer_prompt(yes: bool) -> bool {
+    PROMPT.lock(|p| {
+        let mut prompt = p.get();
+        let answered = prompt.answer(yes);
+        p.set(prompt);
+        answered
+    })
 }
 
 /// A command's reply: the status byte and the parameters after it.
@@ -748,7 +750,7 @@ impl Link<'_> {
                 if self.confirm_for.is_none() {
                     return self.uart.write_line("[ble] no comparison is waiting");
                 }
-                ANSWER.store(if req == Request::Yes { 1 } else { 2 }, Ordering::Relaxed);
+                answer_prompt(req == Request::Yes);
             }
             Request::Bonds => self.list_bonds().await,
             Request::Forget => {
@@ -875,11 +877,11 @@ impl Link<'_> {
             self.answer_passkey(h).await;
         }
         if let Some((h, since)) = self.confirm_for {
-            let answer = ANSWER.load(Ordering::Relaxed);
+            let answer = PROMPT.lock(Cell::get).answered();
             let timed_out = since.elapsed() > CONFIRM_TIMEOUT;
-            if answer != 0 || timed_out {
+            if answer.is_some() || timed_out {
                 self.confirm_for = None;
-                let yes = answer == 1;
+                let yes = answer == Some(true);
                 let hb = h.to_le_bytes();
                 let _ = self.command(ACI_GAP_NUMERIC_COMPARISON_CONFIRM, &[hb[0], hb[1], u8::from(yes)]).await;
                 self.uart.write_line(if yes {
@@ -1325,8 +1327,7 @@ impl Link<'_> {
                 return;
             }
         };
-        PROMPT_VALUE.store(key, Ordering::Relaxed);
-        PROMPT_KIND.store(1, Ordering::Relaxed);
+        PROMPT.lock(|p| p.set(Prompt::Waiting(Pairing::Passkey, key)));
         crate::show_page(wrist_pages::Page::Bluetooth);
         crate::wake_display();
         self.uart.write_str("[ble] pairing: type this passkey on the central: ");
@@ -1658,11 +1659,9 @@ impl Link<'_> {
                 self.pair_ask.settled();
                 self.interval_ask.pairing();
                 let (conn, value) = bluenrg2::numeric_comparison(rest).unwrap_or_default();
-                PROMPT_VALUE.store(value, Ordering::Relaxed);
-                PROMPT_KIND.store(2, Ordering::Relaxed);
-                ANSWER.store(0, Ordering::Relaxed);
+                PROMPT.lock(|p| p.set(Prompt::Waiting(Pairing::Compare, value)));
                 crate::show_page(wrist_pages::Page::Bluetooth);
-        crate::wake_display();
+                crate::wake_display();
                 self.confirm_for = Some((conn, Instant::now()));
                 self.uart.write_str("[ble] pairing: the central shows a number; if it is ");
                 write_six_digits(self.uart, value);
@@ -1756,9 +1755,7 @@ impl Link<'_> {
 }
 
 fn clear_prompt() {
-    PROMPT_KIND.store(0, Ordering::Relaxed);
-    PROMPT_VALUE.store(0, Ordering::Relaxed);
-    ANSWER.store(0, Ordering::Relaxed);
+    PROMPT.lock(|p| p.set(Prompt::None));
     crate::wake_display();
 }
 

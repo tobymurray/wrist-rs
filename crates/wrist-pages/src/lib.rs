@@ -125,6 +125,44 @@ pub enum Pairing {
     Compare,
 }
 
+/// A pairing's six digits, from the radio's prompt until the wearer answers or the pairing ends.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Prompt {
+    #[default]
+    None,
+    Waiting(Pairing, u32),
+    /// A comparison answered; the radio has yet to pass it on.
+    Answered(bool),
+}
+
+impl Prompt {
+    /// The pairing still waiting for the wearer, and its digits.
+    #[must_use]
+    pub const fn waiting(self) -> Option<(Pairing, u32)> {
+        match self {
+            Self::Waiting(pairing, value) => Some((pairing, value)),
+            _ => None,
+        }
+    }
+
+    /// Answer the comparison waiting; false when none is.
+    pub fn answer(&mut self, yes: bool) -> bool {
+        let waiting = matches!(self, Self::Waiting(Pairing::Compare, _));
+        if waiting {
+            *self = Self::Answered(yes);
+        }
+        waiting
+    }
+
+    #[must_use]
+    pub const fn answered(self) -> Option<bool> {
+        match self {
+            Self::Answered(yes) => Some(yes),
+            _ => None,
+        }
+    }
+}
+
 /// The action `press` takes on `page` while `pairing`, if any.
 #[must_use]
 pub const fn action(page: Page, press: Press, pairing: Option<Pairing>) -> Option<Action> {
@@ -361,6 +399,21 @@ mod tests {
         for button in [Button::Up, Button::Down] {
             assert_eq!(action(Page::Bluetooth, short(button), compare), None);
         }
+    }
+
+    #[test]
+    fn an_answered_comparison_waits_no_longer() {
+        let mut prompt = Prompt::Waiting(Pairing::Compare, 123_456);
+        assert_eq!(prompt.waiting(), Some((Pairing::Compare, 123_456)));
+        assert_eq!(prompt.answered(), None);
+        assert!(prompt.answer(false));
+        assert_eq!((prompt.waiting(), prompt.answered()), (None, Some(false)));
+        assert!(!prompt.answer(true));
+        assert_eq!(prompt.answered(), Some(false));
+        let mut passkey = Prompt::Waiting(Pairing::Passkey, 1);
+        assert!(!passkey.answer(true));
+        assert_eq!(passkey.waiting(), Some((Pairing::Passkey, 1)));
+        assert!(!Prompt::None.answer(true));
     }
 
     #[test]
