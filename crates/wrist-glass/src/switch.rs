@@ -4,7 +4,7 @@
 use core::ops::Range;
 
 use embedded_graphics::prelude::*;
-use embedded_graphics::primitives::{Circle, CornerRadii, PrimitiveStyle, PrimitiveStyleBuilder, Rectangle, RoundedRectangle};
+use embedded_graphics::primitives::{Circle, CornerRadii, PrimitiveStyle, Rectangle, RoundedRectangle};
 use inscribed_disc::Abgr2222;
 
 /// Which way the switch stands.
@@ -23,7 +23,7 @@ const TRACK_W: i32 = 140;
 const TRACK_H: i32 = 64;
 const TRACK_X: i32 = 120 - TRACK_W / 2;
 const TRACK_Y: i32 = 84;
-const STROKE: u32 = 3;
+const STROKE: i32 = 3;
 const KNOB_RADIUS: i32 = 24;
 const KNOB_INSET: i32 = 8;
 
@@ -40,13 +40,16 @@ pub fn draw<D: DrawTarget<Color = Abgr2222>>(target: &mut D, s: Switch) {
         Switch::Off => (Abgr2222::GREY, TRACK_X + KNOB_INSET + KNOB_RADIUS),
         Switch::Moving => (Abgr2222::AMBER, TRACK_X + TRACK_W / 2),
     };
-    let style = PrimitiveStyleBuilder::new().fill_color(track).stroke_color(Abgr2222::WHITE).stroke_width(STROKE).build();
-    let _ = RoundedRectangle::new(
-        Rectangle::new(Point::new(TRACK_X, TRACK_Y), Size::new(TRACK_W.unsigned_abs(), TRACK_H.unsigned_abs())),
-        CornerRadii::new(Size::new((TRACK_H / 2).unsigned_abs(), (TRACK_H / 2).unsigned_abs())),
-    )
-    .into_styled(style)
-    .draw(target);
+    // Filled rather than stroked: embedded-graphics strokes the ends wider than the sides.
+    for (inset, colour) in [(0, Abgr2222::WHITE), (STROKE, track)] {
+        let (w, h) = (TRACK_W - 2 * inset, TRACK_H - 2 * inset);
+        let _ = RoundedRectangle::new(
+            Rectangle::new(Point::new(TRACK_X + inset, TRACK_Y + inset), Size::new(w.unsigned_abs(), h.unsigned_abs())),
+            CornerRadii::new(Size::new((h / 2).unsigned_abs(), (h / 2).unsigned_abs())),
+        )
+        .into_styled(PrimitiveStyle::with_fill(colour))
+        .draw(target);
+    }
     let _ = Circle::new(Point::new(knob_cx - KNOB_RADIUS, TRACK_Y + TRACK_H / 2 - KNOB_RADIUS), (2 * KNOB_RADIUS).unsigned_abs())
         .into_styled(PrimitiveStyle::with_fill(Abgr2222::WHITE))
         .draw(target);
