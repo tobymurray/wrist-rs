@@ -29,7 +29,7 @@ pub fn share(bus: AsyncBus) {
 const PCA9420: u8 = wrist_board::i2c::PCA9420_PMIC;
 const MAX17262: u8 = wrist_board::i2c::MAX17262_GAUGE;
 
-/// `None` is a read that failed.
+/// `None` is a read that failed, or one a reading that isn't `full` skips.
 #[derive(Clone, Copy, Default)]
 pub struct Snapshot {
     pub dev_info: Option<u8>,
@@ -53,33 +53,36 @@ pub struct Snapshot {
     pub full_cap_raw: Option<u16>,
     pub design_cap_raw: Option<u16>,
     pub gauge_status: Option<u16>,
+    /// Every register read, not only the reading's.
+    pub full: bool,
 }
 
-/// (chip, register, two bytes wide), in [`Snapshot`]'s order.
-const READS: [(u8, u8, bool); 20] = [
-    (PCA9420, pca9420::DEV_INFO, false),
-    (PCA9420, pca9420::TOP_CNTL0, false),
-    (PCA9420, pca9420::TOP_CNTL1, false),
-    (PCA9420, pca9420::TOP_CNTL2, false),
-    (PCA9420, pca9420::TOP_CNTL3, false),
-    (PCA9420, pca9420::CHG_STATUS_0, false),
-    (PCA9420, pca9420::CHG_STATUS_1, false),
-    (PCA9420, pca9420::REG_STATUS, false),
-    (PCA9420, pca9420::RESET_MONITOR, false),
-    (MAX17262, max17262::VCELL, true),
-    (MAX17262, max17262::REP_SOC, true),
-    (MAX17262, max17262::TEMP, true),
-    (MAX17262, max17262::CURRENT, true),
-    (MAX17262, max17262::AVG_CURRENT, true),
-    (MAX17262, max17262::TTE, true),
-    (MAX17262, max17262::STATUS2, true),
-    (MAX17262, max17262::HIB_CFG, true),
-    (MAX17262, max17262::FULL_CAP_REP, true),
-    (MAX17262, max17262::DESIGN_CAP, true),
-    (MAX17262, max17262::STATUS, true),
+/// (chip, register, two bytes wide, read with every reading), in [`Snapshot`]'s order; the rest
+/// only with the full report.
+const READS: [(u8, u8, bool, bool); 20] = [
+    (PCA9420, pca9420::DEV_INFO, false, false),
+    (PCA9420, pca9420::TOP_CNTL0, false, false),
+    (PCA9420, pca9420::TOP_CNTL1, false, false),
+    (PCA9420, pca9420::TOP_CNTL2, false, false),
+    (PCA9420, pca9420::TOP_CNTL3, false, false),
+    (PCA9420, pca9420::CHG_STATUS_0, false, true),
+    (PCA9420, pca9420::CHG_STATUS_1, false, true),
+    (PCA9420, pca9420::REG_STATUS, false, true),
+    (PCA9420, pca9420::RESET_MONITOR, false, false),
+    (MAX17262, max17262::VCELL, true, true),
+    (MAX17262, max17262::REP_SOC, true, true),
+    (MAX17262, max17262::TEMP, true, true),
+    (MAX17262, max17262::CURRENT, true, true),
+    (MAX17262, max17262::AVG_CURRENT, true, true),
+    (MAX17262, max17262::TTE, true, true),
+    (MAX17262, max17262::STATUS2, true, true),
+    (MAX17262, max17262::HIB_CFG, true, false),
+    (MAX17262, max17262::FULL_CAP_REP, true, false),
+    (MAX17262, max17262::DESIGN_CAP, true, false),
+    (MAX17262, max17262::STATUS, true, true),
 ];
 
-fn assemble(v: &[Option<u16>; READS.len()]) -> Snapshot {
+fn assemble(v: &[Option<u16>; READS.len()], full: bool) -> Snapshot {
     let b = |i: usize| v[i].and_then(|x| u8::try_from(x).ok());
     Snapshot {
         dev_info: b(0),
@@ -102,6 +105,7 @@ fn assemble(v: &[Option<u16>; READS.len()]) -> Snapshot {
         full_cap_raw: v[17],
         design_cap_raw: v[18],
         gauge_status: v[19],
+        full,
     }
 }
 
@@ -115,28 +119,42 @@ fn value(b: [u8; 2], wide: bool) -> u16 {
 
 pub fn snapshot_blocking(bus: &mut AsyncBus) -> Snapshot {
     let mut v = [None; READS.len()];
-    for (slot, &(addr, reg, wide)) in v.iter_mut().zip(READS.iter()) {
+    for (slot, &(addr, reg, wide, _)) in v.iter_mut().zip(READS.iter()) {
         let mut b = [0u8; 2];
         let n = if wide { 2 } else { 1 };
         *slot = bus.blocking_write_read(addr, &[reg], &mut b[..n]).ok().map(|()| value(b, wide));
     }
-    assemble(&v)
+    assemble(&v, true)
 }
 
-pub async fn snapshot(bus: &mut AsyncBus) -> Snapshot {
+pub async fn snapshot(bus: &mut AsyncBus, full: bool) -> Snapshot {
     let mut v = [None; READS.len()];
-    for (slot, &(addr, reg, wide)) in v.iter_mut().zip(READS.iter()) {
+    for (slot, &(addr, reg, wide, every)) in v.iter_mut().zip(READS.iter()) {
+        if !full && !every {
+            continue;
+        }
         let mut b = [0u8; 2];
         let n = if wide { 2 } else { 1 };
         let r: Result<(), Error> = bus.write_read(addr, &[reg], &mut b[..n]).await;
         *slot = r.ok().map(|()| value(b, wide));
     }
-    assemble(&v)
+    assemble(&v, full)
 }
 
 fn hex_or_dashes(uart: &mut Lines, v: Option<u8>) {
     match v {
         Some(b) => uart.write_hex8(b),
+        None => uart.write_str("--"),
+    }
+}
+
+fn write_hex16(uart: &mut Lines, v: Option<u16>) {
+    match v {
+        Some(c) => {
+            let [hi, lo] = c.to_be_bytes();
+            uart.write_hex8(hi);
+            uart.write_hex8(lo);
+        }
         None => uart.write_str("--"),
     }
 }
@@ -224,17 +242,13 @@ pub fn write_summary(uart: &mut Lines, s: &Snapshot) {
         Some(_) => "active",
         None => "--",
     });
-    for (label, raw) in [(", Status2 ", s.status2), (", HibCfg ", s.hib_cfg)] {
-        uart.write_str(label);
-        match raw {
-            Some(c) => {
-                let [hi, lo] = c.to_be_bytes();
-                uart.write_hex8(hi);
-                uart.write_hex8(lo);
-            }
-            None => uart.write_str("--"),
-        }
+    uart.write_str(", Status2 ");
+    write_hex16(uart, s.status2);
+    if !s.full {
+        return uart.write_line("");
     }
+    uart.write_str(", HibCfg ");
+    write_hex16(uart, s.hib_cfg);
     for (label, raw) in [(", full ", s.full_cap_raw), (" of ", s.design_cap_raw)] {
         uart.write_str(label);
         match raw {
