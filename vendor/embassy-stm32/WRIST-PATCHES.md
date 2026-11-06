@@ -9,7 +9,7 @@ revision. Remove this copy once upstream has all of these, or equivalents:
 - **LPTIM4 time driver (U5).** Upstream's `time-driver-lptim4` does not build on U5, whose
   LPTIM4 has the basic register block, which `SealedInstance::regs` does not cover; the
   driver uses `pac::LPTIM4` directly. It selects the LSE for LPTIM3/4 itself
-  (`CCIPR3.LPTIM34SEL`), which the RCC configuration has no field for, or the LSI when the
+  (`CCIPR3.LPTIM34SEL`), which the app's RCC configuration must name too, or the LSI when the
   LSE is not ready, counting its 32 kHz as 32768 Hz (2.3 % slow), and enables LPTIM4 in
   Stop (`SRDAMR`, `APB3SMENR`). `rcc::init_rcc` leaves its clock alone.
 - **LPTIM compare (U5).** As upstream, `CMPOK` is cleared before `CCR` is written; here the

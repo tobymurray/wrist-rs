@@ -504,12 +504,13 @@ pub(crate) fn rcc_config(usb: bool) -> rcc::Config {
     c.hsi48 = None;
     c.ls = ls_config_as_found();
     c.sys = rcc::Sysclk::Msis;
-    // As the time driver chooses LPTIM4's.
+    // As the time driver chooses LPTIM4's; every Stop exit writes these muxes again.
     c.mux.lptim1sel = if unsafe { read32(RCC_BDCR) } & RCC_BDCR_LSERDY != 0 {
         rcc::mux::Lptimsel::Lse
     } else {
         rcc::mux::Lptimsel::Lsi
     };
+    c.mux.lptim34sel = c.mux.lptim1sel;
     if usb {
         c.hse = Some(rcc::Hse {
             freq: Hertz::mhz(16),
