@@ -96,6 +96,12 @@ impl Report {
     }
 }
 
+/// The chip's report that the central accepted the watch's parameter request.
+fn accepted_update(packet: &[u8]) -> bool {
+    matches!(bluenrg2::parse(packet), bluenrg2::Event::Vendor { code: bluenrg2::vendor::L2CAP_CONNECTION_UPDATE_RESP, params }
+        if bluenrg2::L2capUpdateResponse::decode(params).is_some_and(|r| r.accepted()))
+}
+
 /// The driver's command as the operation it carries out, for the commands that are one.
 fn driver_op(packet: &[u8]) -> Option<(OpKind, &'static str)> {
     let code = u16::from_le_bytes([*packet.get(1)?, *packet.get(2)?]);
@@ -122,6 +128,8 @@ struct Replay<'a> {
     next: Option<Instant>,
     ids: u16,
     phone: Option<ConnHandle>,
+    /// The core's parameter request on air, which the central's answer ends.
+    asked_update: Option<OpId>,
     advertising: bool,
     last_status: String,
     report: Report,
@@ -162,6 +170,9 @@ impl Replay<'_> {
             self.report.tally.entry(format!("{:?}", op.kind())).or_default().1 += 1;
             self.ids = self.ids.wrapping_add(1);
             let id = OpId(self.ids);
+            if op.kind() == OpKind::UpdateParams {
+                self.asked_update = Some(id);
+            }
             self.feed(Input::Submitted(Ok(id)));
             if !op.kind().ends_with_event() {
                 self.feed(Input::Radio(RadioEvent::Done(id, Ok(Outcome::Done))));
@@ -268,6 +279,11 @@ impl Replay<'_> {
                     self.report.cut_by_the_trace += 1;
                     return;
                 }
+                if accepted_update(&bytes) {
+                    if let Some(id) = self.asked_update.take() {
+                        self.feed(Input::Radio(RadioEvent::Done(id, Ok(Outcome::Done))));
+                    }
+                }
                 if let Some(e) = self.translator.event(&bytes) {
                     match e {
                         RadioEvent::LinkUp { link, role: LeConnRole::Peripheral, .. } => {
@@ -299,6 +315,7 @@ pub fn replay(capture: &str) -> Report {
         next: None,
         ids: 0,
         phone: None,
+        asked_update: None,
         advertising: false,
         last_status: String::new(),
         report: Report::default(),

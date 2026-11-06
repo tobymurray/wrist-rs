@@ -10,8 +10,10 @@ pub const ASK_TO_PAIR_AFTER: Millis = Millis::secs(5);
 /// connect, where it ended a bonded macOS central's link (HARDWARE.md).
 pub const ASK_PARAMS_AFTER: Millis = Millis(1_500);
 
-/// A numeric comparison the user has not answered is rejected after this long.
-pub const NUMERIC_DEADLINE: Millis = Millis::secs(60);
+/// A numeric comparison the user has not answered is rejected after this long: the Security
+/// Manager's own timeout (Core Vol 3 Part H §3.4), which ends it on the chip and on every central
+/// measured (HARDWARE.md).
+pub const NUMERIC_DEADLINE: Millis = Millis::secs(30);
 
 /// A pairing with no outcome this long after its comparison was answered or timed out has failed:
 /// the Security Manager's own timeout (Core Vol 3 Part H §3.4).

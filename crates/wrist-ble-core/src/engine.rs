@@ -423,8 +423,10 @@ impl<'a> Core<'a> {
         match r {
             Ok(id) => {
                 self.last_refused = None;
-                let deadline = now + (self.caps.op_deadline)(op.kind());
-                self.pending = Some(Pending { id, op, deadline });
+                if self.pending.is_none() {
+                    let deadline = now + (self.caps.op_deadline)(op.kind());
+                    self.pending = Some(Pending { id, op, deadline });
+                }
             }
             Err(f) => {
                 self.counters.refused += 1;
@@ -560,7 +562,12 @@ impl<'a> Core<'a> {
             (true, since) => since,
             (false, _) => None,
         };
-        if self.asked.is_some() || self.pending.is_some() || !matches!(self.state.chip.state, Chip::Ready(_)) {
+        if self.asked.is_some() || !matches!(self.state.chip.state, Chip::Ready(_)) {
+            return;
+        }
+        // An answer to the chip's own procedure goes out past an operation on air, which may be
+        // waiting for it: a security request waits on the rebond a lost bond needs.
+        if self.pending.is_some() && !self.queue[0].is_some_and(|op| answers(op.kind())) {
             return;
         }
         if let Some(op) = self.next_op(now) {
@@ -665,4 +672,9 @@ fn change_of(op: &Op) -> Option<Change> {
         Op::Connect(_, p) => Some(Change::Initiate(Some(p))),
         _ => None,
     }
+}
+
+/// Operations that answer a procedure the chip or a peer started, rather than start one.
+const fn answers(kind: OpKind) -> bool {
+    matches!(kind, OpKind::AllowRebond | OpKind::ConfirmNumeric | OpKind::Passkey | OpKind::AnswerParamRequest)
 }

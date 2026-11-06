@@ -265,26 +265,47 @@ fn a_new_phone_pairs_by_numeric_comparison() {
     assert_eq!(shown, ["paired", "encrypted", "mtu", "subscribed"]);
 }
 
-/// Android re-times its own link after connecting.
+/// An unbonded Android runs its link at 7.5 ms for a third of a second, then goes back to 45 ms;
+/// a bonded one leaves it (`fixtures/traces/android14-*.log`).
 #[test]
-fn an_android_phone_retimes_its_own_link() {
-    let mut f = ready(7);
-    f.submit(Op::Advertise(Some(ADV_100))).unwrap();
-    f.phone_arrives(Phone::new(Os::Android, 4));
-    let events = run(&mut f, 4_000);
-    let (up, _) = link_up(&events);
-    let at: Vec<u64> = events.iter().filter(|(_, e)| matches!(e, RadioEvent::Params { .. })).map(|(t, _)| t.since(up).0.into()).collect();
-    assert_eq!(at.len(), 3);
-    assert!(at[2] > 1_900 && at[2] < 2_200, "{at:?}");
+fn an_unbonded_android_phone_runs_fast_a_moment_and_goes_back() {
+    let intervals = |seed, keys| {
+        let mut f = ready(seed);
+        f.submit(Op::Advertise(Some(ADV_100))).unwrap();
+        f.phone_arrives(Phone { keys, ..Phone::new(Os::Android, 4) });
+        let events = run(&mut f, 4_000);
+        let (up, _) = link_up(&events);
+        let changes: Vec<(u64, u16)> = events
+            .iter()
+            .filter_map(|(t, e)| match e {
+                RadioEvent::Params { result: Ok(p), .. } => Some((t.since(up).0.into(), p.interval.as_u16())),
+                _ => None,
+            })
+            .collect();
+        changes
+    };
+    let (mut fast, mut back) = (Vec::new(), Vec::new());
+    for seed in 0..16 {
+        let unbonded = intervals(seed, Keys::None);
+        assert_eq!(unbonded.iter().map(|&(_, iv)| iv).collect::<Vec<_>>(), [6, 36], "{unbonded:?}");
+        fast.push(unbonded[0].0);
+        back.push(unbonded[1].0 - unbonded[0].0);
+    }
+    // Anywhere in each window, not pinned to its start.
+    let spread = |v: &[u64]| v.iter().max().unwrap() - v.iter().min().unwrap();
+    assert!(fast.iter().all(|t| (750..=1_000).contains(t)) && spread(&fast) >= 125, "{fast:?}");
+    assert!(back.iter().all(|t| (300..=340).contains(t)) && spread(&back) >= 20, "{back:?}");
+    assert_eq!(intervals(7, Keys::Bonded), []);
 }
 
 #[test]
 fn a_central_start_on_a_pending_update_loses_the_phone() {
     let mut f = ready(8);
     f.submit(Op::Advertise(Some(ADV_100))).unwrap();
-    f.phone_arrives(Phone::new(Os::Android, 4));
+    f.phone_arrives(Phone { keys: Keys::None, ..Phone::new(Os::Android, 4) });
     let (up, link) = until(&mut f, |e| if let RadioEvent::LinkUp { link, .. } = e { Some(*link) } else { None });
-    run(&mut f, (up + Millis(770)).0);
+    // Inside the unbonded phone's own update, whenever in its window it starts.
+    run(&mut f, (up + Millis(740)).0);
     f.sensor_on(Sensor::strap(1));
     f.submit(Op::Connect(Sensor::strap(1).addr, conn(40))).unwrap();
     let events = run(&mut f, 12_000);

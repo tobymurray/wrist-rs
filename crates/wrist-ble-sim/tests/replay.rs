@@ -3,7 +3,8 @@
 use std::path::Path;
 
 use wrist_ble::{AdvParams, ConnHandle, ConnParams, Interval, Op, Slots, Timeout};
-use wrist_ble_sim::replay::{replay, DriverOp, Report};
+use wrist_ble::OpKind;
+use wrist_ble_sim::replay::{replay, DriverOp, Report, Who};
 
 fn traces() -> Vec<(String, String)> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/traces");
@@ -139,4 +140,25 @@ fn advertising_on_one_side_alone_is_a_disagreement() {
 fn an_event_the_core_could_not_read_is_a_disagreement() {
     let r = Report { unknown_events: 1, ..Report::default() };
     assert_eq!(r.disagreements().len(), 1);
+}
+
+fn fixture(name: &str) -> String {
+    std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/traces").join(name)).unwrap()
+}
+
+/// The chip and every central measured end an unanswered comparison 30 s after it shows.
+#[test]
+fn the_comparison_counts_down_from_the_security_managers_timeout() {
+    let r = replay(&fixture("bluez-comparison-unanswered.log"));
+    let shown = r.timeline.iter().find(|e| e.who == Who::Status && e.what.starts_with("pairing(")).expect("no comparison shown");
+    assert!(shown.what.ends_with(",30s)"), "{}", shown.what);
+}
+
+/// A security request waits on the rebond a lost bond needs, so the rebond cannot wait on it.
+#[test]
+fn the_rebond_a_lost_bond_needs_goes_out_past_the_security_request() {
+    let r = replay(&fixture("android17-bond-not-recognised.log"));
+    let core = r.core_ops.iter().find(|(_, op)| op.kind() == OpKind::AllowRebond).expect("the core never allowed the rebond").0;
+    let driver = r.driver_ops.iter().find(|(_, d)| *d == DriverOp::Other(OpKind::AllowRebond)).expect("the driver never did").0;
+    assert!(core.abs_diff(driver) <= 5, "core {core}, driver {driver}");
 }

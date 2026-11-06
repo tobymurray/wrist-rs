@@ -43,8 +43,8 @@ fn phone_pairing_shows_the_value_and_the_time_left() {
     phone_up(&mut state, t(0));
     state.phone = state.phone.step(t(1_000), phone::Event::Pairing(phone(), PairingStep::Numeric(123_456))).0;
     let now = t(19_000);
-    assert_eq!(status(&state, now).phone, PhoneStatus::Pairing { value: 123_456, left: Millis::secs(42) });
-    assert_eq!(phone_token(&state, now), "pairing(123456,42s)");
+    assert_eq!(status(&state, now).phone, PhoneStatus::Pairing { value: 123_456, left: Millis::secs(12) });
+    assert_eq!(phone_token(&state, now), "pairing(123456,12s)");
 }
 
 #[test]
@@ -52,8 +52,8 @@ fn phone_pairing_rejected_at_its_deadline_shows_no_time_left() {
     let mut state = ready(t(0));
     phone_up(&mut state, t(0));
     state.phone = state.phone.step(t(1_000), phone::Event::Pairing(phone(), PairingStep::Numeric(123_456))).0;
-    state.phone = state.phone.step(t(61_000), phone::Event::Tick).0;
-    assert_eq!(status(&state, t(62_000)).phone, PhoneStatus::Pairing { value: 123_456, left: Millis(0) });
+    state.phone = state.phone.step(t(31_000), phone::Event::Tick).0;
+    assert_eq!(status(&state, t(32_000)).phone, PhoneStatus::Pairing { value: 123_456, left: Millis(0) });
 }
 
 #[test]
