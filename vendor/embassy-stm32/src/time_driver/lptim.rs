@@ -508,8 +508,8 @@ impl RtcDriver {
 
         #[cfg(not(time_driver_lptim4))]
         let timer_freq = T::frequency();
-        // wrist-rs: the chip data does not model LPTIM34SEL, so LPTIM4 is put on the LSE here,
-        // or on the LSI when the LSE is not running, its 32 kHz counted as 32768 Hz.
+        // wrist-rs: LPTIM4 is put on the LSE here, or on the LSI when the LSE is not running, its
+        // 32 kHz counted as 32768 Hz; the app's RCC configuration must choose the same.
         #[cfg(time_driver_lptim4)]
         let timer_freq = {
             use crate::pac::rcc::vals::Lptimsel;
