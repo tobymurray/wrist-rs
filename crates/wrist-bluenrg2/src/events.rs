@@ -65,15 +65,18 @@ impl Translator {
         let link = || ConnHandle::new(bluenrg2::connection_handle(params));
         Some(match code {
             // The reason codes of `aci_blue_initialized_event` (ST's bluenrg1_events.h); 2 to 4 are
-            // the updater.
-            vendor::BLUE_INITIALIZED => match params.first() {
-                Some(1) => RadioEvent::Ready(self.info),
-                Some(5) => RadioEvent::ChipReset(ResetCause::Watchdog),
-                Some(6) => RadioEvent::ChipReset(ResetCause::Lockup),
-                Some(7) => RadioEvent::ChipReset(ResetCause::Brownout),
-                Some(8) => RadioEvent::ChipReset(ResetCause::Crash),
-                _ => RadioEvent::ChipReset(ResetCause::Other),
-            },
+            // the updater. Whatever the reason, the chip's links are gone.
+            vendor::BLUE_INITIALIZED => {
+                self.phone = None;
+                match params.first() {
+                    Some(1) => RadioEvent::Ready(self.info),
+                    Some(5) => RadioEvent::ChipReset(ResetCause::Watchdog),
+                    Some(6) => RadioEvent::ChipReset(ResetCause::Lockup),
+                    Some(7) => RadioEvent::ChipReset(ResetCause::Brownout),
+                    Some(8) => RadioEvent::ChipReset(ResetCause::Crash),
+                    _ => RadioEvent::ChipReset(ResetCause::Other),
+                }
+            }
             vendor::HAL_EVENTS_LOST => RadioEvent::EventsLost,
             vendor::GAP_NUMERIC_COMPARISON_VALUE => {
                 let (conn, value) = bluenrg2::numeric_comparison(params)?;

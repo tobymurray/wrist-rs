@@ -2,7 +2,7 @@
 
 use wrist_ble::{
     Activities, Capabilities, Change, ChipInfo, ConnHandle, ConnParams, DisconnectReason, Failure, FailureKind, Fault, Instant, LeConnRole,
-    LinkParams, Millis, Op, OpId, OpKind, RadioEvent, Schedule, Snapshot, Status,
+    LinkParams, Millis, Op, OpId, OpKind, RadioEvent, ResetCause, Schedule, Snapshot, Status,
 };
 
 use crate::chip::{self, Chip};
@@ -168,7 +168,7 @@ impl<'a> Core<'a> {
             Input::Radio(e) => self.event(now, e, &mut out),
             Input::Goals(g) => self.set_goals(now, g, &mut out),
             Input::Submitted(r) => self.submitted(now, r, &mut out),
-            Input::Started(Ok(info)) => self.ready(now, info),
+            Input::Started(Ok(info)) => self.ready(now, info, &mut out),
             Input::Started(Err(_)) => self.chip(now, chip::Event::StartFailed, &mut out),
             Input::Snapshot(r) => self.resync(now, r),
             Input::Answer(yes) => self.phone(now, phone::Event::Answer(yes), &mut out),
@@ -242,14 +242,18 @@ impl<'a> Core<'a> {
         }
     }
 
-    fn ready(&mut self, now: Instant, info: ChipInfo) {
-        if !matches!(self.state.chip.state, Chip::Starting { .. }) {
-            return;
+    fn ready(&mut self, now: Instant, info: ChipInfo, out: &mut Outputs) {
+        match self.state.chip.state {
+            Chip::Starting { .. } => {
+                self.state.chip = self.state.chip.step(self.caps, now, chip::Event::Ready(info)).0;
+                self.forget_radio(now);
+                self.state.phone = self.state.phone.step(now, phone::Event::RadioOn).0;
+                self.settled_since = now;
+            }
+            // Started again unasked, without its links or its configuration.
+            Chip::Ready(_) => self.event(now, RadioEvent::ChipReset(ResetCause::PowerOn), out),
+            Chip::Off | Chip::Fault { .. } => {}
         }
-        self.state.chip = self.state.chip.step(self.caps, now, chip::Event::Ready(info)).0;
-        self.forget_radio(now);
-        self.state.phone = self.state.phone.step(now, phone::Event::RadioOn).0;
-        self.settled_since = now;
     }
 
     /// Every link, operation and refusal goes with the chip.
@@ -295,7 +299,7 @@ impl<'a> Core<'a> {
 
     fn event(&mut self, now: Instant, e: RadioEvent, out: &mut Outputs) {
         match e {
-            RadioEvent::Ready(info) => self.ready(now, info),
+            RadioEvent::Ready(info) => self.ready(now, info, out),
             RadioEvent::ChipReset(cause) => {
                 self.chip(now, chip::Event::Reset(cause), out);
                 self.forget_radio(now);
