@@ -315,7 +315,10 @@ class BleakPhone:
 
     async def connect(self):
         if self.device is None:
-            self.device = await wrist_ble.find(self.name)
+            try:
+                self.device = await wrist_ble.find(self.name)
+            except Exception as e:  # the adapter itself gone (its Bluetooth off): a failed cycle, not the run's end
+                print(f'-- find: {e!r}', flush=True)
             if self.device is None:
                 return None
         con = wrist_ble.Console(echo=lambda text: None if text.startswith('[hb]') else print(f'   air: {text}', flush=True))
@@ -458,7 +461,11 @@ async def page(usb, probed=False):
 async def traffic(link, seconds):
     end = time.time() + seconds
     while True:
-        if not await link.command('ble', r'\[ble\] connected') or not await link.command('ping', r'\bpong\b'):
+        try:
+            if not await link.command('ble', r'\[ble\] connected') or not await link.command('ping', r'\bpong\b'):
+                return False
+        except Exception as e:  # the link lost under the command (the host's Bluetooth off): not answered
+            print(f'-- traffic: {e!r}', flush=True)
             return False
         if time.time() >= end:
             return True
@@ -517,7 +524,10 @@ async def soak(s, usb, phone, build, a):
             link = await phone.connect()
             answered = bool(link) and await traffic(link, a.hold)
             if link:
-                await link.close()
+                try:
+                    await link.close()
+                except Exception as e:
+                    print(f'-- close: {e!r}', flush=True)
             reason = await hang_up(usb, mark)
             ok = answered and reason == '13'
             print(f'  cycle {cycles}: {"ok" if ok else "FAILED"}, answered {answered}, reason {reason}', flush=True)

@@ -535,6 +535,19 @@ class Judgements(unittest.TestCase):
             logged = (Path(d) / 'console.log').read_text().splitlines()
         self.assertIn('>> usb ble profile battery', [line.split(None, 1)[1] for line in logged], logged)
 
+    def test_a_link_lost_mid_command_is_an_unanswered_cycle(self):
+        class Lost:
+            async def command(self, text, pattern, timeout=3):
+                raise RuntimeError('Service Discovery has not been performed yet')
+        with mock.patch('builtins.print'):
+            self.assertFalse(asyncio.run(suite.traffic(Lost(), 30)))
+
+    def test_no_adapter_is_a_failed_connect(self):
+        async def gone(name):
+            raise RuntimeError('No powered Bluetooth adapters found')
+        with mock.patch.object(suite.wrist_ble, 'find', gone), mock.patch('builtins.print'):
+            self.assertIsNone(asyncio.run(suite.BleakPhone('UNA').connect()))
+
 
 def load(name):
     spec = importlib.util.spec_from_file_location(name.replace('-', '_'), Path(__file__).with_name(f'{name}.py'))
