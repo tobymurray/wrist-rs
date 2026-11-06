@@ -154,8 +154,17 @@ impl Prompt {
     /// The pairing still waiting for the wearer at `now_ms`, and its digits.
     #[must_use]
     pub const fn waiting(self, now_ms: u64) -> Option<(Pairing, u32)> {
+        match (self, self.ends_ms(now_ms)) {
+            (Self::Waiting(pairing, value, _), Some(_)) => Some((pairing, value)),
+            _ => None,
+        }
+    }
+
+    /// When the digits still waiting at `now_ms` stop.
+    #[must_use]
+    pub const fn ends_ms(self, now_ms: u64) -> Option<u64> {
         match self {
-            Self::Waiting(pairing, value, since) if now_ms < since.saturating_add(PROMPT_MS) => Some((pairing, value)),
+            Self::Waiting(_, _, since) if now_ms < since.saturating_add(PROMPT_MS) => Some(since.saturating_add(PROMPT_MS)),
             _ => None,
         }
     }
@@ -432,7 +441,7 @@ mod tests {
         assert_eq!(prompt.waiting(0), Some((Pairing::Compare, 123_456)));
         assert_eq!(prompt.answered(), None);
         assert!(prompt.answer(false));
-        assert_eq!((prompt.waiting(0), prompt.answered()), (None, Some(false)));
+        assert_eq!((prompt.waiting(0), prompt.answered(), prompt.ends_ms(0)), (None, Some(false), None));
         assert!(!prompt.answer(true));
         assert_eq!(prompt.answered(), Some(false));
         let mut passkey = Prompt::Waiting(Pairing::Passkey, 1, 0);
@@ -444,7 +453,7 @@ mod tests {
     #[test]
     fn a_passkey_arriving_after_its_pairing_ended_is_not_shown() {
         let mut prompt = Prompt::Asked;
-        assert_eq!(prompt.waiting(0), None);
+        assert_eq!((prompt.waiting(0), prompt.ends_ms(0)), (None, None));
         assert!(prompt.passkey(42, 5));
         assert_eq!(prompt.waiting(5), Some((Pairing::Passkey, 42)));
         let mut ended = Prompt::None;
@@ -461,6 +470,7 @@ mod tests {
             let prompt = Prompt::Waiting(pairing, 1, 1_000);
             assert_eq!(prompt.waiting(1_000 + PROMPT_MS - 1), Some((pairing, 1)));
             assert_eq!(prompt.waiting(1_000 + PROMPT_MS), None);
+            assert_eq!(prompt.ends_ms(1_000 + PROMPT_MS - 1), Some(1_000 + PROMPT_MS));
         }
     }
 

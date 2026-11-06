@@ -456,6 +456,11 @@ pub fn pairing() -> Option<Pairing> {
     waiting().map(|(pairing, _)| pairing)
 }
 
+/// When the page's digits stop waiting, if they are.
+pub fn pairing_ends() -> Option<Instant> {
+    PROMPT.lock(Cell::get).ends_ms(Instant::now().as_millis()).map(Instant::from_millis)
+}
+
 fn waiting() -> Option<(Pairing, u32)> {
     PROMPT.lock(Cell::get).waiting(Instant::now().as_millis())
 }

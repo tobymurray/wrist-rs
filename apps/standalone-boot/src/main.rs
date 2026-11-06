@@ -927,6 +927,8 @@ async fn display(mut pwr_int: ExtiInput<'static, Async>) -> ! {
                 power.service(bus).await;
             }
         }
+        // Before the frame, so digits drawn in it still get their wake.
+        let pairing_ends = pairing_ends();
         if let Some(held) = wrist_pages::held(pairing(), alarm::ringing()) {
             show_page(held);
         }
@@ -960,6 +962,9 @@ async fn display(mut pwr_int: ExtiInput<'static, Async>) -> ! {
         let mut due = Instant::now() + until_next_minute();
         if let (_, Some(back_to_face)) = nav_now() {
             due = due.min(back_to_face);
+        }
+        if let Some(ends) = pairing_ends {
+            due = due.min(ends);
         }
         if !power::on_battery() {
             due = due.min(next_reading);
@@ -1003,6 +1008,13 @@ fn apply_zone_change(uart: Uart) {
 fn pairing() -> Option<Pairing> {
     #[cfg(feature = "ble")]
     return ble::pairing();
+    #[cfg(not(feature = "ble"))]
+    None
+}
+
+fn pairing_ends() -> Option<Instant> {
+    #[cfg(feature = "ble")]
+    return ble::pairing_ends();
     #[cfg(not(feature = "ble"))]
     None
 }
