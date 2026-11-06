@@ -1340,7 +1340,6 @@ impl Link<'_> {
         if !shown {
             return self.uart.write_line("[ble] passkey ready after its pairing ended; not given");
         }
-        crate::show_page(wrist_pages::Page::Bluetooth);
         crate::wake_display();
         self.uart.write_str("[ble] pairing: type this passkey on the central: ");
         write_six_digits(self.uart, key);
@@ -1673,7 +1672,6 @@ impl Link<'_> {
                 self.interval_ask.pairing();
                 let (conn, value) = bluenrg2::numeric_comparison(rest).unwrap_or_default();
                 PROMPT.lock(|p| p.set(Prompt::Waiting(Pairing::Compare, value, Instant::now().as_millis())));
-                crate::show_page(wrist_pages::Page::Bluetooth);
                 crate::wake_display();
                 self.confirm_for = Some((conn, Instant::now()));
                 self.uart.write_str("[ble] pairing: the central shows a number; if it is ");

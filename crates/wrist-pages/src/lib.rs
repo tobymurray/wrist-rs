@@ -189,6 +189,16 @@ pub const fn action(page: Page, press: Press, pairing: Option<Pairing>) -> Optio
     }
 }
 
+/// The page a waiting `pairing` holds up: none while an alarm rings, so the ring's face is seen
+/// and the first press stops it.
+#[must_use]
+pub const fn held(pairing: Option<Pairing>, ringing: bool) -> Option<Page> {
+    match (pairing, ringing) {
+        (Some(_), false) => Some(Page::Bluetooth),
+        _ => None,
+    }
+}
+
 /// How long a page other than the face stays without a press.
 pub const TIMEOUT_MS: u64 = 10_000;
 
@@ -457,6 +467,16 @@ mod tests {
     #[test]
     fn select_during_passkey_entry_leaves_the_radio_alone() {
         assert_eq!(action(Page::Bluetooth, short(Button::Select), Some(Pairing::Passkey)), None);
+    }
+
+    #[test]
+    fn a_ring_is_seen_before_a_pairing() {
+        for pairing in [Pairing::Passkey, Pairing::Compare] {
+            assert_eq!(held(Some(pairing), false), Some(Page::Bluetooth));
+            assert_eq!(held(Some(pairing), true), None);
+        }
+        assert_eq!(held(None, false), None);
+        assert_eq!(held(None, true), None);
     }
 
     #[test]

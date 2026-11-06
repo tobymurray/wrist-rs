@@ -708,7 +708,7 @@ pub fn to_face() {
 }
 
 /// Bring `page` up, as a press to it would, if this image has it.
-pub fn show_page(page: Page) {
+fn show_page(page: Page) {
     if NAV.lock(|n| {
         let mut nav = n.get();
         let moved = nav.show(page, now_ms());
@@ -718,7 +718,6 @@ pub fn show_page(page: Page) {
         let uart = Uart::best_effort();
         uart.write_str("[page] ");
         uart.write_line(page.name());
-        wake_display();
     }
 }
 
@@ -921,9 +920,8 @@ async fn display(mut pwr_int: ExtiInput<'static, Async>) -> ! {
                 power.service(bus).await;
             }
         }
-        // A pairing waiting for the wearer keeps its page up.
-        if pairing().is_some() {
-            show_page(Page::Bluetooth);
+        if let Some(held) = wrist_pages::held(pairing(), alarm::ringing()) {
+            show_page(held);
         }
         let page = nav_now().0;
         let reading_due = if power::on_battery() { new_minute } else { Instant::now() >= next_reading };
