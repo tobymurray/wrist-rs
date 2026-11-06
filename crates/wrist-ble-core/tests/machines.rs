@@ -2,7 +2,7 @@ mod common;
 
 use common::*;
 use wrist_ble::{Activities, Admitted, Change, ConnParams, Duration, Exclusion, FailureKind, Micros, Millis, PairingStep, SchedKind, Schedule, Status};
-use wrist_ble_core::chip::{self, Chip, ChipMachine, FaultCause};
+use wrist_ble_core::chip::{self, Chip, ChipMachine, FaultCause, StartId};
 use wrist_ble_core::goals::Power;
 use wrist_ble_core::peripheral::{self as per, Event, Peripheral, Stage, StopReason, Then, GIVE_UP};
 use wrist_ble_core::phone::{self, Action, Phone, Security};
@@ -129,12 +129,17 @@ fn phone_ignores_another_link() {
     assert_eq!(p.step(t(200), phone::Event::LinkDown(phone())).0, Phone::Discoverable);
 }
 
+/// The `n`th start since the radio went on, each named by the next id.
+fn start(n: u64) -> chip::Action {
+    chip::Action::Start(StartId(u32::try_from(n).unwrap()))
+}
+
 #[test]
 fn chip_resets_within_its_budget_then_faults_and_starts_once_an_hour() {
     let mut c = ChipMachine::OFF.step(CAPS, t(0), chip::Event::RadioOn).0;
     for i in 0..chip::RESETS_PER_HOUR {
         let (next, a) = c.step(CAPS, t(i as u64), chip::Event::StartFailed);
-        assert_eq!(a, Some(chip::Action::Start));
+        assert_eq!(a, Some(start(i as u64 + 2)));
         c = next;
     }
     let (c, a) = c.step(CAPS, t(10), chip::Event::StartFailed);
@@ -143,7 +148,7 @@ fn chip_resets_within_its_budget_then_faults_and_starts_once_an_hour() {
     assert_eq!(c.step(CAPS, t(20), chip::Event::Tick).1, None);
     let retry = t(10) + chip::FAULT_RETRY;
     let (c, a) = c.step(CAPS, retry, chip::Event::Tick);
-    assert_eq!(a, Some(chip::Action::Start));
+    assert_eq!(a, Some(start(5)));
     let (failed, a) = c.step(CAPS, retry + Millis(1), chip::Event::StartFailed);
     assert_eq!(a, Some(chip::Action::Hold));
     assert_eq!(failed.state, Chip::Fault { cause: FaultCause::StartFailed, retry_at: retry + Millis(1) + chip::FAULT_RETRY });
@@ -157,14 +162,14 @@ fn chip_resets_within_its_budget_then_faults_and_starts_once_an_hour() {
     assert!(matches!(refused.state, Chip::Fault { cause: FaultCause::BaselineRefused, .. }));
     let reset = chip::Event::Reset(wrist_ble::ResetCause::Watchdog);
     assert_eq!(c.step(CAPS, retry + chip::RETRY_PROVEN - Millis(1), reset).1, Some(chip::Action::Hold));
-    assert_eq!(c.step(CAPS, retry + chip::RETRY_PROVEN, reset).1, Some(chip::Action::Start));
+    assert_eq!(c.step(CAPS, retry + chip::RETRY_PROVEN, reset).1, Some(start(6)));
 }
 
 #[test]
 fn chip_reset_by_itself_is_started_again() {
     let c = ready_chip(t(0));
     let (c, a) = c.step(CAPS, t(5), chip::Event::Reset(wrist_ble::ResetCause::Watchdog));
-    assert_eq!((c.state, a), (Chip::Starting { since: t(5) }, Some(chip::Action::Start)));
+    assert_eq!((c.state, a), (Chip::Starting { since: t(5) }, Some(start(2))));
 }
 
 #[test]
@@ -178,7 +183,7 @@ fn the_boot_of_a_start_the_core_asked_for_spends_no_budget() {
     c = c.step(CAPS, t(10), chip::Event::Ready(INFO)).0;
     for i in 1..=chip::RESETS_PER_HOUR as u64 {
         let (next, a) = c.step(CAPS, secs(i * 60), chip::Event::Reset(wrist_ble::ResetCause::PowerOn));
-        assert_eq!(a, Some(chip::Action::Start));
+        assert_eq!(a, Some(start(i + 1)));
         c = next.step(CAPS, secs(i * 60 + 1), chip::Event::Ready(INFO)).0;
     }
     assert_eq!(c.step(CAPS, secs(600), chip::Event::Reset(wrist_ble::ResetCause::PowerOn)).1, Some(chip::Action::Hold));
@@ -190,7 +195,7 @@ fn a_chip_that_never_comes_up_is_started_again() {
     assert_eq!(c.deadline(CAPS), Some(t(0) + CAPS.start_within));
     assert_eq!(c.step(CAPS, t(0) + CAPS.start_within - Millis(1), chip::Event::Tick).1, None);
     let (c, a) = c.step(CAPS, t(0) + CAPS.start_within, chip::Event::Tick);
-    assert_eq!((c.state, a), (Chip::Starting { since: t(0) + CAPS.start_within }, Some(chip::Action::Start)));
+    assert_eq!((c.state, a), (Chip::Starting { since: t(0) + CAPS.start_within }, Some(start(2))));
 }
 
 #[test]
@@ -198,7 +203,7 @@ fn a_chip_that_keeps_resetting_itself_faults() {
     let mut c = ready_chip(t(0));
     for i in 1..=chip::RESETS_PER_HOUR as u64 {
         let (next, a) = c.step(CAPS, secs(i * 60), chip::Event::Reset(wrist_ble::ResetCause::Watchdog));
-        assert_eq!(a, Some(chip::Action::Start));
+        assert_eq!(a, Some(start(i + 1)));
         c = next.step(CAPS, secs(i * 60 + 1), chip::Event::Ready(INFO)).0;
     }
     let (c, a) = c.step(CAPS, secs(600), chip::Event::Reset(wrist_ble::ResetCause::Lockup));

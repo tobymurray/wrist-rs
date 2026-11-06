@@ -146,7 +146,9 @@ pub trait Radio {
 
     fn schedule(&self) -> &dyn Schedule;
 
-    /// Reset, configure and register `server`.
+    /// Reset, configure and register `server`. The chip's own report that it is up, for this
+    /// start, is consumed here and answered as the return value, never passed on by
+    /// [`Radio::next`] as well: a [`RadioEvent::Ready`] means a boot nobody asked for.
     ///
     /// # Errors
     ///

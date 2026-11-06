@@ -5,7 +5,7 @@ use wrist_ble::{
     LinkParams, Millis, Op, OpId, OpKind, RadioEvent, ResetCause, Schedule, Snapshot, Status,
 };
 
-use crate::chip::{self, Chip};
+use crate::chip::{self, Chip, StartId};
 use crate::goals::{Goals, Power, MAX_PERIPHERALS};
 use crate::invariants::REACHABLE_GAP;
 use crate::peripheral::{self, Ctx, Peripheral, Stage, StopReason, Then};
@@ -19,8 +19,9 @@ pub enum Input {
     Goals(Goals),
     /// The radio's answer to the operation the last step asked for.
     Submitted(Result<OpId, Failure>),
-    /// The chip's bring-up, which the last step asked for, ended.
-    Started(Result<ChipInfo, Fault>),
+    /// The bring-up a step asked for with [`chip::Action::Start`] ended, the start named. An
+    /// answer to a start that is no longer the one in flight is ignored.
+    Started(StartId, Result<ChipInfo, Fault>),
     /// The snapshot the last step asked for.
     Snapshot(Result<Snapshot, Fault>),
     /// The user's answer to a numeric comparison.
@@ -47,7 +48,7 @@ pub enum Tell {
 pub struct Outputs {
     /// Submit this, and answer with [`Input::Submitted`].
     pub op: Option<Op>,
-    /// Bring the chip up (answer with [`Input::Started`]) or hold it in reset.
+    /// Bring the chip up (answer with [`Input::Started`], naming the start) or hold it in reset.
     pub chip: Option<chip::Action>,
     /// Take a snapshot, and answer with [`Input::Snapshot`].
     pub snapshot: bool,
@@ -168,8 +169,16 @@ impl<'a> Core<'a> {
             Input::Radio(e) => self.event(now, e, &mut out),
             Input::Goals(g) => self.set_goals(now, g, &mut out),
             Input::Submitted(r) => self.submitted(now, r, &mut out),
-            Input::Started(Ok(info)) => self.ready(now, info, &mut out),
-            Input::Started(Err(_)) => self.chip(now, chip::Event::StartFailed, &mut out),
+            Input::Started(id, r) if self.state.chip.starting() == Some(id) => match r {
+                Ok(info) => {
+                    self.state.chip = self.state.chip.step(self.caps, now, chip::Event::Ready(info)).0;
+                    self.forget_radio(now);
+                    self.state.phone = self.state.phone.step(now, phone::Event::RadioOn).0;
+                    self.settled_since = now;
+                }
+                Err(_) => self.chip(now, chip::Event::StartFailed, &mut out),
+            },
+            Input::Started(..) => {}
             Input::Snapshot(r) => self.resync(now, r),
             Input::Answer(yes) => self.phone(now, phone::Event::Answer(yes), &mut out),
             Input::Retry(i) => {
@@ -231,28 +240,18 @@ impl<'a> Core<'a> {
     }
 
     fn chip(&mut self, now: Instant, e: chip::Event, out: &mut Outputs) {
+        let was = self.state.chip.state;
         let (next, action) = self.state.chip.step(self.caps, now, e);
         self.state.chip = next;
         if let Some(a) = action {
-            if a == chip::Action::Start {
-                self.counters.resets += u32::from(matches!(e, chip::Event::Reset(_) | chip::Event::BaselineRefused | chip::Event::StartFailed));
+            // A start that cuts short a chip starting or up, whatever the event: a reset, a
+            // failure, a refusal, a missed deadline. Those the host asks for, and a fault's
+            // hourly retry, start a chip that was off or given up on.
+            if matches!(a, chip::Action::Start(_)) {
+                self.counters.resets += u32::from(matches!(was, Chip::Starting { .. } | Chip::Ready(_)));
             }
             self.forget_radio(now);
             out.chip = Some(a);
-        }
-    }
-
-    fn ready(&mut self, now: Instant, info: ChipInfo, out: &mut Outputs) {
-        match self.state.chip.state {
-            Chip::Starting { .. } => {
-                self.state.chip = self.state.chip.step(self.caps, now, chip::Event::Ready(info)).0;
-                self.forget_radio(now);
-                self.state.phone = self.state.phone.step(now, phone::Event::RadioOn).0;
-                self.settled_since = now;
-            }
-            // Started again unasked, without its links or its configuration.
-            Chip::Ready(_) => self.event(now, RadioEvent::ChipReset(ResetCause::PowerOn), out),
-            Chip::Off | Chip::Fault { .. } => {}
         }
     }
 
@@ -299,7 +298,9 @@ impl<'a> Core<'a> {
 
     fn event(&mut self, now: Instant, e: RadioEvent, out: &mut Outputs) {
         match e {
-            RadioEvent::Ready(info) => self.ready(now, info, out),
+            // Up without a start, so without its links or its configuration: a reset. While a
+            // start is in flight its own answer says how it went.
+            RadioEvent::Ready(_) => self.event(now, RadioEvent::ChipReset(ResetCause::PowerOn), out),
             RadioEvent::ChipReset(cause) => {
                 self.chip(now, chip::Event::Reset(cause), out);
                 self.forget_radio(now);

@@ -3,7 +3,7 @@
 use std::collections::VecDeque;
 
 use wrist_ble::{Instant, Millis, RadioEvent};
-use wrist_ble_core::chip::Action;
+use wrist_ble_core::chip::{Action, StartId};
 use wrist_ble_core::engine::{Core, Input, Outputs, Tell};
 use wrist_ble_core::goals::{Goals, Power};
 use wrist_ble_core::status::{status, Status};
@@ -27,6 +27,9 @@ pub struct Sim {
     pub checks: Checks,
     /// Everything the core said beyond the status.
     pub tells: Vec<(Instant, Tell)>,
+    /// The start the fake is booting for: its ready answers the start, as a driver's
+    /// `Radio::start` returns it, and any other is a boot nobody asked for.
+    starting: Option<StartId>,
     next: Option<Instant>,
     spins: (Instant, u32),
     trace: VecDeque<String>,
@@ -48,6 +51,7 @@ impl Sim {
             fake: Fake::new(seed),
             checks: Checks::default(),
             tells: Vec::new(),
+            starting: None,
             next: None,
             spins: (Instant(0), 0),
             trace: VecDeque::new(),
@@ -106,10 +110,16 @@ impl Sim {
                 (_, Some(f)) => match self.fake.advance(f) {
                     Some((at, e)) => {
                         self.now = self.now.max(at);
-                        if matches!(e, RadioEvent::LinkUp { .. } | RadioEvent::LinkDown { .. } | RadioEvent::ChipReset(_) | RadioEvent::EventsLost) {
+                        if matches!(e, RadioEvent::LinkUp { .. } | RadioEvent::LinkDown { .. } | RadioEvent::ChipReset(_) | RadioEvent::Ready(_) | RadioEvent::EventsLost) {
                             self.checks.disturbed(self.now);
                         }
-                        self.feed(Input::Radio(e));
+                        match (e, self.starting.take()) {
+                            (RadioEvent::Ready(info), Some(id)) => self.feed(Input::Started(id, Ok(info))),
+                            (e, starting) => {
+                                self.starting = starting;
+                                self.feed(Input::Radio(e));
+                            }
+                        }
                     }
                     None => self.now = self.now.max(f),
                 },
@@ -143,8 +153,14 @@ impl Sim {
     fn act(&mut self, out: &Outputs) {
         self.tells.extend(out.tell.iter().flatten().map(|&t| (self.now, t)));
         match out.chip {
-            Some(Action::Start) => self.fake.start(),
-            Some(Action::Hold) => self.fake.stop(),
+            Some(Action::Start(id)) => {
+                self.starting = Some(id);
+                self.fake.start();
+            }
+            Some(Action::Hold) => {
+                self.starting = None;
+                self.fake.stop();
+            }
             None => {}
         }
         if let Some(op) = out.op {

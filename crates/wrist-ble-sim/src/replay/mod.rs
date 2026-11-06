@@ -295,7 +295,12 @@ impl Replay<'_> {
                         _ => {}
                     }
                     self.push(Who::Event, format!("{e:?}"));
-                    self.feed(Input::Radio(e));
+                    // The driver's reset ends in the chip's ready, which answers the core's start
+                    // as `Radio::start` would.
+                    match (e, self.core.state.chip.starting()) {
+                        (RadioEvent::Ready(info), Some(id)) => self.feed(Input::Started(id, Ok(info))),
+                        _ => self.feed(Input::Radio(e)),
+                    }
                 }
             }
             _ => {}

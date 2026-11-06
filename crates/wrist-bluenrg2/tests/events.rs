@@ -145,7 +145,9 @@ fn the_chip_starting_is_ready_and_any_other_reset_is_named() {
         (0x06, ResetCause::Lockup),
         (0x07, ResetCause::Brownout),
         (0x08, ResetCause::Crash),
-        (0x02, ResetCause::Other),
+        (0x02, ResetCause::Updater),
+        (0x03, ResetCause::Updater),
+        (0x04, ResetCause::Updater),
         (0x09, ResetCause::Other),
     ] {
         assert_eq!(one(&vendor(0x0001, &[reason])), Some(RadioEvent::ChipReset(cause)), "reason {reason}");

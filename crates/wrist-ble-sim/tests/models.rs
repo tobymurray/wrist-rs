@@ -374,11 +374,11 @@ impl Model for Chips {
         n.chip = c;
         let unasked = matches!(e, chip::Event::Reset(_) | chip::Event::StartFailed | chip::Event::BaselineRefused)
             || (e == chip::Event::Tick && matches!(s.chip.state, Chip::Starting { .. }));
-        if unasked && action == Some(chip::Action::Start) {
+        if unasked && matches!(action, Some(chip::Action::Start(_))) {
             n.starts.rotate_right(1);
             n.starts[0] = Some(n.now);
         }
-        if action == Some(chip::Action::Start) && matches!(s.chip.state, Chip::Fault { .. }) {
+        if matches!(action, Some(chip::Action::Start(_))) && matches!(s.chip.state, Chip::Fault { .. }) {
             n.retried = Some(n.now);
         }
         if matches!((s.chip.state, e), (Chip::Starting { .. }, chip::Event::Reset(_))) && (n.chip != s.chip || action.is_some()) {
