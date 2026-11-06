@@ -14,6 +14,8 @@ pub fn earliest<I: IntoIterator<Item = Option<u64>>>(deadlines: I) -> Option<u64
 
 /// The BLE task (`apps/standalone-boot/src/ble.rs`): its deadlines, timing and decisions.
 pub mod ble {
+    pub mod restart;
+
     use super::earliest;
 
     /// A firmware image arriving over the console's RX characteristic.
