@@ -514,7 +514,7 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
                 #[cfg(feature = "ble-probe")]
                 Request::Probe | Request::Restart(_) => uart.write_line("[ble] off; `ble on` starts it"),
                 Request::Off => {
-                    STATE.store(STATE_OFF, Ordering::Relaxed);
+                    set_state(STATE_OFF);
                     crate::rtc::set_radio_wanted(false);
                     uart.write_line("[ble] already off");
                 }
@@ -572,7 +572,7 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
         };
         // A start, or a restart's recovery, that failed.
         if !(link.start().await && link.serve(&mut changes).await) {
-            STATE.store(STATE_FAILED, Ordering::Relaxed);
+            set_state(STATE_FAILED);
             link.rst.set_low();
             uart.write_line("[ble] start failed: chip held in reset; `ble on` retries");
             on = false;
@@ -582,8 +582,8 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
         link.rst.set_low();
         drop(link);
         MIRROR.store(false, Ordering::Relaxed);
-        ENCRYPTED.store(false, Ordering::Relaxed);
-        STATE.store(STATE_OFF, Ordering::Relaxed);
+        set_encrypted(false);
+        set_state(STATE_OFF);
         clear_prompt();
         crate::rtc::set_radio_wanted(false);
         uart.write_line("[ble] off: chip held in reset");
@@ -760,6 +760,7 @@ impl Link<'_> {
             Request::Forget => {
                 if self.command(ACI_GAP_CLEAR_SECURITY_DB, &[]).await.is_ok() {
                     BONDED.store(0, Ordering::Relaxed);
+                    redraw();
                     self.uart.write_line("[ble] bond database cleared; forget the watch on the central too");
                 }
             }
@@ -944,7 +945,7 @@ impl Link<'_> {
     /// Reset, address, TX power, event mask, GATT, GAP, name, IO capability, security
     /// requirements, advertise: ST's sample order.
     async fn bring_up(&mut self) {
-        STATE.store(STATE_STARTING, Ordering::Relaxed);
+        set_state(STATE_STARTING);
         clear_prompt();
         self.reset().await;
         if self.boot == Some(Boot::InUpdater) {
@@ -1251,7 +1252,7 @@ impl Link<'_> {
     }
 
     fn fail(&mut self, step: &str) {
-        STATE.store(STATE_FAILED, Ordering::Relaxed);
+        set_state(STATE_FAILED);
         self.uart.write_str("[ble] start failed at ");
         self.uart.write_line(step);
     }
@@ -1274,7 +1275,7 @@ impl Link<'_> {
         p[n..n + 5].copy_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00]);
         match self.command(ACI_GAP_SET_DISCOVERABLE, &p[..n + 5]).await {
             Ok(r) if r.status == 0 => {
-                STATE.store(STATE_ADVERTISING, Ordering::Relaxed);
+                set_state(STATE_ADVERTISING);
                 self.advertised = Some(want);
                 self.uart.write_str("[ble] advertising as UNA every ");
                 self.uart.write_u32(u32::from(want.advertise) * 625 / 1000);
@@ -1283,7 +1284,7 @@ impl Link<'_> {
             Ok(r) => {
                 // Refused while a scan runs: it resumes when the scan ends.
                 if self.scanner.advertising_refused() {
-                    STATE.store(STATE_IDLE, Ordering::Relaxed);
+                    set_state(STATE_IDLE);
                 }
                 self.uart.write_str("[ble] advertising refused, status ");
                 self.uart.write_hex8(r.status);
@@ -1301,6 +1302,7 @@ impl Link<'_> {
             if r.len >= 1 {
                 BONDED.store(r.params[0], Ordering::Relaxed);
                 BONDED_READ.store(true, Ordering::Relaxed);
+                redraw();
                 self.uart.write_str("[ble] bonded devices: ");
                 self.uart.write_u32(u32::from(r.params[0]));
                 for i in 0..usize::from(r.params[0]).min(4) {
@@ -1487,8 +1489,8 @@ impl Link<'_> {
                     INTERVAL.store(iv, Ordering::Relaxed);
                     LATENCY.store(lat, Ordering::Relaxed);
                 }
-                STATE.store(STATE_CONNECTED, Ordering::Relaxed);
-                ENCRYPTED.store(false, Ordering::Relaxed);
+                set_state(STATE_CONNECTED);
+                set_encrypted(false);
                 self.subscribed = false;
                 self.set_mirror();
                 self.outbox = Outbox::default();
@@ -1519,7 +1521,7 @@ impl Link<'_> {
                 if status != 0 {
                     DISCONNECT_FAILURES.fetch_add(1, Ordering::Relaxed);
                 }
-                STATE.store(STATE_IDLE, Ordering::Relaxed);
+                set_state(STATE_IDLE);
                 self.link_gone();
                 self.uart.write_str("[ble] disconnected, reason ");
                 self.uart.write_hex8(reason);
@@ -1531,7 +1533,7 @@ impl Link<'_> {
                     ENCRYPTION_FAILURES.fetch_add(1, Ordering::Relaxed);
                 }
                 let on = enabled != 0;
-                ENCRYPTED.store(on, Ordering::Relaxed);
+                set_encrypted(on);
                 if on {
                     self.pair_ask.settled();
                     self.interval_ask.encrypted();
@@ -1559,7 +1561,7 @@ impl Link<'_> {
     /// pending asks and any transfer with it.
     fn link_gone(&mut self) {
         CONN_HANDLE.store(0, Ordering::Relaxed);
-        ENCRYPTED.store(false, Ordering::Relaxed);
+        set_encrypted(false);
         self.subscribed = false;
         self.set_mirror();
         self.confirm_for = None;
@@ -1589,7 +1591,7 @@ impl Link<'_> {
         self.uart.write_line(if boot_reason::updater(reason) { "); resetting it out of the updater" } else { "); resetting it" });
         RESTARTS.fetch_add(1, Ordering::Relaxed);
         LAST_RESTART.store(reason, Ordering::Relaxed);
-        STATE.store(STATE_STARTING, Ordering::Relaxed);
+        set_state(STATE_STARTING);
         self.link_gone();
         clear_out(self.outbox.discard());
         self.outbox = Outbox::default();
@@ -1763,6 +1765,23 @@ impl Link<'_> {
         }
         false
     }
+}
+
+fn set_state(state: u8) {
+    if STATE.swap(state, Ordering::Relaxed) != state {
+        redraw();
+    }
+}
+
+fn set_encrypted(on: bool) {
+    if ENCRYPTED.swap(on, Ordering::Relaxed) != on {
+        redraw();
+    }
+}
+
+/// The page redrawn, if up, for a change it shows.
+fn redraw() {
+    crate::redraw(wrist_pages::Page::Bluetooth);
 }
 
 fn clear_prompt() {

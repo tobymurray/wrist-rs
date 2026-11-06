@@ -721,6 +721,13 @@ fn show_page(page: Page) {
     }
 }
 
+/// A redraw, if `page` is up.
+pub fn redraw(page: Page) {
+    if NAV.lock(|n| n.get().page()) == page {
+        wake_display();
+    }
+}
+
 /// The page to draw now, back on the face once a page's timeout has passed; and when that
 /// timeout falls, if a page other than the face is up.
 pub fn nav_now() -> (Page, Option<Instant>) {
@@ -951,12 +958,8 @@ async fn display(mut pwr_int: ExtiInput<'static, Async>) -> ! {
         // Asleep until the minute turns, unless USB, the input line or a request needs it sooner.
         let line_low = pwr_int.is_low();
         let mut due = Instant::now() + until_next_minute();
-        if let (page, Some(back_to_face)) = nav_now() {
+        if let (_, Some(back_to_face)) = nav_now() {
             due = due.min(back_to_face);
-            // The radio's state changes under the page without a press.
-            if page == Page::Bluetooth {
-                due = due.min(Instant::now() + Duration::from_secs(1));
-            }
         }
         if !power::on_battery() {
             due = due.min(next_reading);
