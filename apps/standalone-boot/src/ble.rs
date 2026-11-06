@@ -223,6 +223,7 @@ static UNKNOWN: AtomicU32 = AtomicU32::new(0);
 static RESTARTS: AtomicU32 = AtomicU32::new(0);
 static LAST_RESTART: AtomicU8 = AtomicU8::new(0);
 static BONDED: AtomicU8 = AtomicU8::new(0);
+static BONDED_READ: AtomicBool = AtomicBool::new(false);
 /// Last pairing outcome: 0 none, else 1 + status (so 1 is success).
 static LAST_PAIRING: AtomicU8 = AtomicU8::new(0);
 static LAST_PAIRING_REASON: AtomicU8 = AtomicU8::new(0);
@@ -452,7 +453,7 @@ pub fn page() -> wrist_glass::pages::Bluetooth {
         2 => Some(Prompt::Compare(value)),
         _ => None,
     };
-    Bluetooth { radio, prompt, bonded: BONDED.load(Ordering::Relaxed) }
+    Bluetooth { radio, prompt, bonded: BONDED_READ.load(Ordering::Relaxed).then(|| BONDED.load(Ordering::Relaxed)) }
 }
 
 /// The pairing whose digits the page shows.
@@ -1293,6 +1294,7 @@ impl Link<'_> {
         if let Ok(r) = self.command(ACI_GAP_GET_BONDED_DEVICES, &[]).await {
             if r.len >= 1 {
                 BONDED.store(r.params[0], Ordering::Relaxed);
+                BONDED_READ.store(true, Ordering::Relaxed);
                 self.uart.write_str("[ble] bonded devices: ");
                 self.uart.write_u32(u32::from(r.params[0]));
                 for i in 0..usize::from(r.params[0]).min(4) {

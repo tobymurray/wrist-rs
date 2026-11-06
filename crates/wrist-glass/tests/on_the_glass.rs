@@ -97,7 +97,7 @@ fn pages(faces: &Faces) -> Vec<(String, (Glass, Short))> {
     let radios = [Radio::Off, Radio::Starting, Radio::On, Radio::Discoverable, Radio::Connected, Radio::Secure, Radio::Failed];
     for radio in radios {
         for (name, prompt) in [("idle", None), ("compare", Some(Prompt::Compare(888_888))), ("passkey", Some(Prompt::Passkey(0)))] {
-            let bt = Bluetooth { radio, prompt, bonded: u8::MAX };
+            let bt = Bluetooth { radio, prompt, bonded: Some(u8::MAX) };
             all.push((format!("bluetooth-{radio:?}-{name}"), compose_bluetooth(&bt, &EN_GB, faces)));
         }
     }
@@ -324,7 +324,7 @@ fn previews() {
 #[test]
 fn the_bluetooth_page_shows_six_digits_with_leading_zeros() {
     for prompt in [Prompt::Compare(42), Prompt::Passkey(42)] {
-        let (glass, _) = compose_bluetooth(&Bluetooth { radio: Radio::Connected, prompt: Some(prompt), bonded: 1 }, &EN_GB, &ATKINSON);
+        let (glass, _) = compose_bluetooth(&Bluetooth { radio: Radio::Connected, prompt: Some(prompt), bonded: Some(1) }, &EN_GB, &ATKINSON);
         assert!(texts(&glass).contains(&"000042"), "{:?}", texts(&glass));
     }
 }
@@ -341,13 +341,15 @@ fn the_bluetooth_page_stands_its_switch_where_the_radio_is() {
         (Radio::Connected, Switch::On),
         (Radio::Secure, Switch::On),
     ] {
-        let (glass, _) = compose_bluetooth(&Bluetooth { radio, prompt: None, bonded: 2 }, &EN_GB, &ATKINSON);
+        let (glass, _) = compose_bluetooth(&Bluetooth { radio, prompt: None, bonded: Some(2) }, &EN_GB, &ATKINSON);
         assert_eq!(glass.switch(), Some(switch), "{radio:?}");
         assert!(texts(&glass).contains(&"2 bonded"));
     }
-    let (glass, _) = compose_bluetooth(&Bluetooth { radio: Radio::Secure, prompt: Some(Prompt::Compare(1)), bonded: 2 }, &EN_GB, &ATKINSON);
+    let (glass, _) = compose_bluetooth(&Bluetooth { radio: Radio::Secure, prompt: Some(Prompt::Compare(1)), bonded: Some(2) }, &EN_GB, &ATKINSON);
     assert_eq!(glass.switch(), None);
     assert_eq!(texts(&glass)[3..], ["select: it matches", "back: no match"]);
+    let (glass, _) = compose_bluetooth(&Bluetooth { radio: Radio::Off, prompt: None, bonded: None }, &EN_GB, &ATKINSON);
+    assert!(!texts(&glass).iter().any(|t| t.contains("bonded")), "{:?}", texts(&glass));
 }
 
 #[test]

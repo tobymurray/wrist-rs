@@ -199,8 +199,8 @@ pub fn compose_about(a: &About<'_>, locale: &Locale, faces: &Faces) -> (Glass, S
 pub struct Bluetooth {
     pub radio: Radio,
     pub prompt: Option<Prompt>,
-    /// The centrals the chip keeps keys for.
-    pub bonded: u8,
+    /// The centrals the chip keeps keys for, if read.
+    pub bonded: Option<u8>,
 }
 
 /// The radio, as the Bluetooth page names it.
@@ -271,7 +271,9 @@ pub fn compose_bluetooth(bt: &Bluetooth, locale: &Locale, faces: &Faces) -> (Gla
             });
             b.at(faces.words, BT_TITLE, |l| locale.message(l, Msg::BluetoothTitle));
             b.at(faces.words, crate::switch::BELOW, |l| locale.message(l, state));
-            b.at(faces.id, BT_BONDED, |l| locale.message(l, Msg::BluetoothBonded { n: u32::from(bt.bonded) }));
+            if let Some(n) = bt.bonded {
+                b.at(faces.id, BT_BONDED, |l| locale.message(l, Msg::BluetoothBonded { n: u32::from(n) }));
+            }
         }
     }
     (b.glass, b.short)

@@ -55,7 +55,7 @@ fn main() {
                 Some(("passkey", v)) => Prompt::Passkey(v.parse().expect("six digits")),
                 _ => panic!("compare:NNNNNN or passkey:NNNNNN"),
             });
-            compose_bluetooth(&Bluetooth { radio, prompt, bonded: bonded.parse().expect("a count") }, &EN_GB, FACES)
+            compose_bluetooth(&Bluetooth { radio, prompt, bonded: arg(bonded).map(|n| n.parse().expect("a count")) }, &EN_GB, FACES)
         }
         [time, date, soc, _] | [time, date, soc, _, _] => {
             let nums = |s: &str, sep| -> Vec<u16> { s.split(sep).map(|n| n.parse().expect("a number")).collect() };
