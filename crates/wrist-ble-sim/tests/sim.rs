@@ -88,8 +88,8 @@ fn a_failing_run_names_the_check_and_shows_the_recent_trace() {
     let e = catch_unwind(AssertUnwindSafe(|| s.run_for(Millis::secs(5)))).unwrap_err();
     let e = e.downcast_ref::<String>().unwrap();
     assert!(e.starts_with("seed 1: reachable: a gap"), "{e}");
-    assert!(e.lines().any(|l| l.starts_with("        0 Goals(") && l.ends_with("-> Start ")), "{e}");
-    assert!(e.lines().any(|l| l.contains("Radio(Ready(") && l.contains("-> Advertise(Some(")), "{e}");
+    assert!(e.lines().any(|l| l.starts_with("        0 Goals(") && l.ends_with("-> Start(StartId(1)) ")), "{e}");
+    assert!(e.lines().any(|l| l.contains("Started(StartId(1), Ok(") && l.contains("-> Advertise(Some(")), "{e}");
 }
 
 #[test]
