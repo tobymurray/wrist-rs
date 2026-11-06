@@ -538,3 +538,17 @@ fn the_centrals_answer_to_a_parameter_request_decodes() {
     let Event::Vendor { params, .. } = parse(&short) else { panic!("{short:02X?}") };
     assert_eq!(L2capUpdateResponse::decode(params), None);
 }
+
+/// The updater-by-command start Linux check 8 met (install 252): `04 FF 03 01 00 02`.
+#[test]
+fn the_chip_says_why_it_started() {
+    use bluenrg2::{blue_initialized, boot_reason};
+    let p = [0x04, 0xFF, 0x03, 0x01, 0x00, 0x02];
+    let Event::Vendor { code, params } = parse(&p) else { panic!("{p:02X?}") };
+    assert_eq!((code, blue_initialized(params)), (vendor::BLUE_INITIALIZED, boot_reason::UPDATER_BY_COMMAND));
+    assert_eq!(blue_initialized(&[]), 0);
+    let updater: Vec<u8> = (0..=u8::MAX).filter(|&r| boot_reason::updater(r)).collect();
+    assert_eq!(updater, [0x02, 0x03, 0x04]);
+    assert_eq!(boot_reason::describe(0x02), "the updater, by command");
+    assert_eq!(boot_reason::describe(0x0A), "a reason unknown");
+}
