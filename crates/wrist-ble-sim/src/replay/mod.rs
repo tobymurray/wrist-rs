@@ -265,7 +265,7 @@ impl Replay<'_> {
                     self.goals.power = Power::Battery;
                     self.goals();
                 }
-                "ble profile cable" => {
+                "ble profile cable" | "ble profile auto" => {
                     self.goals.power = Power::Cable;
                     self.goals();
                 }

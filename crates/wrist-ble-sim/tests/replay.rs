@@ -252,3 +252,12 @@ fn wall_clock_stamps_replay_as_seconds_do() {
         assert_eq!(a.disagreements(), b.disagreements(), "{name}");
     }
 }
+
+/// On the console's cable, `ble profile auto` is cable timing.
+#[test]
+fn a_profile_put_back_to_auto_is_cable_timing() {
+    let capture = fixture("mac-battery.log");
+    let auto = capture.replace(">> usb ble profile cable\n", ">> usb ble profile auto\n");
+    assert_ne!(auto, capture);
+    assert_eq!(replay(&auto).disagreements(), Vec::<String>::new());
+}

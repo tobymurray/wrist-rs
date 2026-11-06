@@ -9,6 +9,7 @@ host's Bluetooth with rfkill for some seconds, then unblock it. Linux; needs wri
 BlueZ disconnects before the adapter goes down, so this is a clean hang-up, not a link lost out of range.
 """
 import argparse
+import signal
 import subprocess
 import sys
 import time
@@ -34,9 +35,11 @@ def main():
             with open(a.command_file, 'a') as f:
                 f.write(f'== host {text}\n')
 
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, lambda *_: sys.exit(1))
     rfkill('block')
-    mark(f'radio blocked for {a.seconds:g} s')
     try:
+        mark(f'radio blocked for {a.seconds:g} s')
         time.sleep(a.seconds)
     finally:
         rfkill('unblock')

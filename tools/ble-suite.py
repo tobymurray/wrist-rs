@@ -576,6 +576,8 @@ async def update(s, usb, phone, build, a):
     s.check(not [l for _, l in usb.since(mark) if 'revert' in l], 'the loader never reverted')
     s.check(await usb.ask('version', rf'build {re.escape(build)}(?: |$)', 10), f'the watch runs build {build} after it')
     s.check(await usb.ask('ble', r'\[ble\] (advertising as \S+|connected), ', 5), 'the radio is back on after the reset')
+    if a.profile:
+        s.check(await usb.ask(f'ble profile {a.profile}', r'\[ble\] timing', 5), f'`ble profile {a.profile}` held again')
 
 
 # -- pre-flight and install --
@@ -602,13 +604,22 @@ def crc_of(text):
     return m[1] if m else None
 
 
+async def say(usb, command, answer):
+    try:
+        await usb.ask(command, answer, 5)
+    except Exception as e:
+        print(f'-- `{command}` not sent: {e}', flush=True)
+
+
 async def prepare(usb, a, result):
     """--restart-radio and --profile, before the scenarios; the problems, if any."""
     if a.restart_radio:
         print('-- radio off and on, so the capture holds the chip\'s bring-up', flush=True)
+        result['radio_off'] = True
         await usb.ask('ble off', r'\[ble\]', 5)
         await asyncio.sleep(3)
-        await usb.ask('ble on', r'\[ble\]', 5)
+        if await usb.ask('ble on', r'\[ble\]', 5):
+            del result['radio_off']
         await asyncio.sleep(8)
         status = await usb.ask('ble', STATUS, 5)
         result['restarted_radio'] = status
@@ -768,8 +779,10 @@ async def run(a, out, result):
             if result['capture'] == 'failed':
                 print(f'-- btmon capture failed{f" (btmon exited {died} during the run)" if died is not None else ""}; '
                       'no count of connections that failed to establish', flush=True)
+        if result.pop('radio_off', False):
+            await say(usb, 'ble on', r'\[ble\]')
         if a.profile and 'profile' in result:
-            await usb.ask('ble profile auto', r'\[ble\] timing', 5)
+            await say(usb, 'ble profile auto', r'\[ble\] timing')
         if installed:
             ok, usb = await install(usb, a, a.restore, out)
             after = await snapshot(usb)
