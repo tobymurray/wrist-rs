@@ -464,7 +464,7 @@ pub fn pairing() -> Option<wrist_pages::Pairing> {
     }
 }
 
-/// The radio off if it is on or starting, on otherwise; kept across resets, as `ble on|off` is.
+/// The radio off if it is on or starting, on otherwise.
 pub fn toggle() {
     let off = matches!(Radio::from_u8(STATE.load(Ordering::Relaxed)), Radio::Off | Radio::Failed);
     let _ = REQUESTS.try_send(if off { Request::On } else { Request::Off });

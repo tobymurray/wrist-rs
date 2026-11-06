@@ -3,10 +3,10 @@
 //! Which page is on the glass, and where each press moves it.
 //!
 //! Pure state: the image hands it presses (from the buttons or the console's `press`) and the
-//! time, and draws [`Nav::page`]. From the face, Down and Up step through the image's pages (the
-//! Bluetooth page only in an image with Bluetooth); on another page they keep stepping, Back
-//! returns to the face, and after [`TIMEOUT_MS`] without a press the face comes back by itself.
-//! Select and long presses move nothing; on the Bluetooth page they are [`action`]s.
+//! time, and draws [`Nav::page`]. From the face, Down and Up step through the image's pages; on
+//! another page they keep stepping, Back returns to the face, and after [`TIMEOUT_MS`] without a
+//! press the face comes back by itself. Select and long presses move nothing; [`action`] says what
+//! a press does beyond moving.
 //!
 //! Lighting the face is the image's, for every short press on every page, as before pages.
 //! Holds are not presses: any button held 3 s resets into the bootloader, and Select held
@@ -125,9 +125,7 @@ pub enum Pairing {
     Compare,
 }
 
-/// The action `press` takes on `page` while `pairing`: during a numeric comparison Select says
-/// the numbers match and Back that they don't, during passkey entry nothing does anything, and
-/// otherwise Select switches the radio. No hold answers: a long hold resets the watch.
+/// The action `press` takes on `page` while `pairing`, if any.
 #[must_use]
 pub const fn action(page: Page, press: Press, pairing: Option<Pairing>) -> Option<Action> {
     match (page, press.button, press.long, pairing) {

@@ -12,7 +12,7 @@ use inscribed_disc::Abgr2222;
 pub enum Switch {
     On,
     Off,
-    /// Between the two, as while the radio starts: the knob in the middle, the track amber.
+    /// Between the two, the knob in the middle.
     Moving,
 }
 
@@ -40,7 +40,6 @@ pub fn draw<D: DrawTarget<Color = Abgr2222>>(target: &mut D, s: Switch) {
         Switch::Off => (Abgr2222::GREY, TRACK_X + KNOB_INSET + KNOB_RADIUS),
         Switch::Moving => (Abgr2222::AMBER, TRACK_X + TRACK_W / 2),
     };
-    // Filled rather than stroked: embedded-graphics strokes the ends wider than the sides.
     for (inset, colour) in [(0, Abgr2222::WHITE), (STROKE, track)] {
         let (w, h) = (TRACK_W - 2 * inset, TRACK_H - 2 * inset);
         let _ = RoundedRectangle::new(

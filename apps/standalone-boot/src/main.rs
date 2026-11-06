@@ -693,7 +693,6 @@ pub fn inject_press(press: Press) -> bool {
     PRESS_IN.try_send(press).is_ok()
 }
 
-/// The image's pages: the Bluetooth page only with Bluetooth in it.
 const PAGES: &[Page] = if cfg!(feature = "ble") { &Page::ALL } else { &Page::WITHOUT_BLUETOOTH };
 
 /// Where the wearer is among the pages.
