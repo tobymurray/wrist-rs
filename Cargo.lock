@@ -1480,6 +1480,7 @@ dependencies = [
  "wrist-ble",
  "wrist-ble-core",
  "wrist-bluenrg2",
+ "wrist-wake",
 ]
 
 [[package]]
