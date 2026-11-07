@@ -35,6 +35,8 @@ pub struct Status {
     pub ringing: bool,
     /// The alarm missed and not yet seen: its word in place of the date.
     pub missed: bool,
+    /// A central refused for a key the watch has lost: a notice in place of the alarm's time.
+    pub old_key: bool,
 }
 
 /// One typeface's font for each kind of line.
@@ -109,7 +111,9 @@ pub fn compose(status: &Status, locale: &Locale, faces: &Faces) -> (Glass, Short
         None => locale.message(l, Msg::FaceTimeUnset),
     });
     b.at(faces.words, FACE_BATT, |l| push_percent(l, locale, status.soc_pct));
-    if let Some(alarm) = status.alarm {
+    if status.old_key {
+        b.at(faces.id, FACE_ALARM, |l| locale.message(l, Msg::BluetoothOldKey));
+    } else if let Some(alarm) = status.alarm {
         b.at(faces.id, FACE_ALARM, |l| locale.time(l, alarm));
     }
     (b.glass, b.short)
@@ -201,6 +205,8 @@ pub struct Bluetooth {
     pub prompt: Option<Prompt>,
     /// The centrals the chip keeps keys for, if read.
     pub bonded: Option<u8>,
+    /// A central refused for a key the watch has lost: a notice in place of the count.
+    pub old_key: bool,
 }
 
 /// The radio, as the Bluetooth page names it.
@@ -271,7 +277,9 @@ pub fn compose_bluetooth(bt: &Bluetooth, locale: &Locale, faces: &Faces) -> (Gla
             });
             b.at(faces.words, BT_TITLE, |l| locale.message(l, Msg::BluetoothTitle));
             b.at(faces.words, crate::switch::BELOW, |l| locale.message(l, state));
-            if let Some(n) = bt.bonded {
+            if bt.old_key {
+                b.at(faces.id, BT_BONDED, |l| locale.message(l, Msg::BluetoothOldKey));
+            } else if let Some(n) = bt.bonded {
                 b.at(faces.id, BT_BONDED, |l| locale.message(l, Msg::BluetoothBonded { n: u32::from(n) }));
             }
         }

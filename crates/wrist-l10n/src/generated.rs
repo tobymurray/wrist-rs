@@ -3,7 +3,7 @@
 use crate::{DatePiece, Locale, Piece, Plural, TimePiece};
 
 /// How many messages there are.
-pub const MESSAGES: usize = 27;
+pub const MESSAGES: usize = 28;
 
 /// Every message, in `l10n/en.ftl`'s order, with its arguments.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,6 +78,9 @@ pub enum Msg {
     // During passkey entry, under the six digits: type them on the phone.
     /// `type on the phone`
     BluetoothTypePasskey,
+    // On the face and the Bluetooth page: a phone or computer was refused for a pairing key the watch no longer has; it must forget the watch and pair again.
+    /// `forget & pair`
+    BluetoothOldKey,
 }
 
 impl Msg {
@@ -112,6 +115,7 @@ impl Msg {
             Self::BluetoothSelectMatches => (24, [0]),
             Self::BluetoothBackNoMatch => (25, [0]),
             Self::BluetoothTypePasskey => (26, [0]),
+            Self::BluetoothOldKey => (27, [0]),
         }
     }
 }
@@ -182,6 +186,8 @@ pub static EN_GB: Locale = Locale {
         &[Piece::Text("back: no match")],
         // bluetooth-type-passkey
         &[Piece::Text("type on the phone")],
+        // bluetooth-old-key
+        &[Piece::Text("forget & pair")],
     ],
     weekdays: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
     months: ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec"],
