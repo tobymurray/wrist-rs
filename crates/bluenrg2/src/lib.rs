@@ -710,6 +710,9 @@ pub fn parse_address(text: &str) -> Option<[u8; 6]> {
     parts.next().is_none().then_some(out)
 }
 
+/// `GAP_PAIRING_COMPLETE`'s status for a central that encrypted with a key this side has lost.
+pub const PAIRING_LTK_MISSING: u8 = 0x03;
+
 /// `GAP_PAIRING_COMPLETE`: status (0 success) and reason.
 #[must_use]
 pub fn pairing_complete(params: &[u8]) -> Option<(u8, u8)> {

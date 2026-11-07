@@ -72,6 +72,7 @@ fn every_alarm_fits_the_face_below_the_widest_lines() {
                         alarm: Some(Clock { h, m, s: 0 }),
                         ringing,
                         missed,
+                        old_key: false,
                     };
                     let name = format!("{} {} alarm {h}:{m} ringing {ringing} missed {missed}", faces.name, l.tag);
                     whole(&name, compose(&status, l, faces));

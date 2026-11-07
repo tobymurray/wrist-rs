@@ -5,6 +5,7 @@
 //!     cargo run -p wrist-glass --example face -- battery 100 4405 usb battery.raw
 //!     cargo run -p wrist-glass --example face -- about 0.1.0 5784ec72019b about.raw
 //!     cargo run -p wrist-glass --example face -- bluetooth secure compare:042517 2 bt.raw
+//!     cargo run -p wrist-glass --example face -- bluetooth discoverable - old-key bt.raw
 //!     cargo run -p wrist-glass --example face -- stress churn 7 stress.raw
 //!
 //! `-` for any reading draws it unset.
@@ -55,7 +56,9 @@ fn main() {
                 Some(("passkey", v)) => Prompt::Passkey(v.parse().expect("six digits")),
                 _ => panic!("compare:NNNNNN or passkey:NNNNNN"),
             });
-            compose_bluetooth(&Bluetooth { radio, prompt, bonded: arg(bonded).map(|n| n.parse().expect("a count")) }, &EN_GB, FACES)
+            let old_key = bonded == "old-key";
+            let bonded = arg(bonded).filter(|_| !old_key).map(|n| n.parse().expect("a count"));
+            compose_bluetooth(&Bluetooth { radio, prompt, bonded, old_key }, &EN_GB, FACES)
         }
         [time, date, soc, _] | [time, date, soc, _, _] => {
             let nums = |s: &str, sep| -> Vec<u16> { s.split(sep).map(|n| n.parse().expect("a number")).collect() };
@@ -69,14 +72,15 @@ fn main() {
                 Date { year: d[0], month: byte(d[1]), day: byte(d[2]) }
             });
             let soc_pct = arg(soc).map(|s| s.parse().expect("a percentage"));
-            let alarm = args.get(3).filter(|_| args.len() == 5).and_then(|a| arg(a)).map(|t| {
+            let old_key = args.len() == 5 && args[3] == "old-key";
+            let alarm = args.get(3).filter(|_| args.len() == 5 && !old_key).and_then(|a| arg(a)).map(|t| {
                 let t = nums(t, ':');
                 Clock { h: byte(t[0]), m: byte(t[1]), s: 0 }
             });
-            compose(&Status { clock, date, soc_pct, alarm, ringing: false, missed: false }, &EN_GB, FACES)
+            compose(&Status { clock, date, soc_pct, alarm, ringing: false, missed: false, old_key }, &EN_GB, FACES)
         }
         _ => {
-            eprintln!("usage: face HH:MM YYYY-MM-DD PERCENT [ALARM-HH:MM] OUT.raw");
+            eprintln!("usage: face HH:MM YYYY-MM-DD PERCENT [ALARM-HH:MM|old-key] OUT.raw");
             eprintln!("       face battery PERCENT MV usb|cell OUT.raw");
             eprintln!("       face about VERSION BUILD OUT.raw   ('-' for unset)");
             eprintln!("       face stress KIND STEP OUT.raw");

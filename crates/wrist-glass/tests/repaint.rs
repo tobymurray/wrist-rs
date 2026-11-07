@@ -152,7 +152,7 @@ fn strips_cover_what_is_marked_and_nothing_else() {
 fn the_bluetooth_page_through_every_state_and_back() {
     let radios = [Radio::Off, Radio::Starting, Radio::On, Radio::Discoverable, Radio::Connected, Radio::Secure, Radio::Failed];
     for faces in FAMILIES {
-        let bt = |radio, prompt, bonded| compose_bluetooth(&Bluetooth { radio, prompt, bonded: Some(bonded) }, &EN_GB, faces).0;
+        let bt = |radio, prompt, bonded| compose_bluetooth(&Bluetooth { radio, prompt, bonded: Some(bonded), old_key: false }, &EN_GB, faces).0;
         let mut frames: Vec<_> = radios.iter().map(|&r| bt(r, None, 2)).collect();
         frames.extend(radios.iter().rev().map(|&r| bt(r, None, 3)));
         frames.push(bt(Radio::Connected, Some(Prompt::Compare(42_517)), 3));

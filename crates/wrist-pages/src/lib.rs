@@ -201,6 +201,31 @@ pub const fn action(page: Page, press: Press, pairing: Option<Pairing>) -> Optio
     }
 }
 
+/// The last central refused for a pairing key the watch no longer has, and how many times in a row.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OldKey(Option<([u8; 6], u32)>);
+
+impl OldKey {
+    pub const NONE: Self = Self(None);
+
+    pub fn refused(&mut self, address: [u8; 6]) {
+        let tries = match self.0 {
+            Some((a, n)) if a == address => n.saturating_add(1),
+            _ => 1,
+        };
+        self.0 = Some((address, tries));
+    }
+
+    pub fn clear(&mut self) {
+        self.0 = None;
+    }
+
+    #[must_use]
+    pub const fn central(self) -> Option<([u8; 6], u32)> {
+        self.0
+    }
+}
+
 /// The page a waiting `pairing` holds up: none while an alarm rings, so the ring's face is seen
 /// and the first press stops it.
 #[must_use]
@@ -322,6 +347,20 @@ mod tests {
 
     const fn short(button: Button) -> Press {
         Press { button, long: false }
+    }
+
+    #[test]
+    fn an_old_key_is_counted_per_central_until_a_pairing_or_the_radio_off() {
+        let (a, b) = ([1, 2, 3, 4, 5, 6], [6, 5, 4, 3, 2, 1]);
+        let mut old = OldKey::NONE;
+        assert_eq!(old.central(), None);
+        old.refused(a);
+        old.refused(a);
+        assert_eq!(old.central(), Some((a, 2)));
+        old.refused(b);
+        assert_eq!(old.central(), Some((b, 1)));
+        old.clear();
+        assert_eq!(old.central(), None);
     }
 
     #[test]
