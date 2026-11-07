@@ -152,3 +152,8 @@ fn the_invariants_hold_over_hours() {
         play(seed, &script);
     }
 }
+
+#[test]
+fn a_reboot_under_a_start_is_started_again_at_once() {
+    play(73_839_474_304_694_654, &[(0, Act::Reset), (0, Act::Reboot(ResetCause::Watchdog))]);
+}
