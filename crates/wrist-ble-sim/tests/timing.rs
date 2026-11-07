@@ -39,7 +39,8 @@ fn the_core_asks_the_phone_for_the_drivers_timing() {
         let mut core = Core::new(&CAPABILITIES, &Scheduler, &MENU);
         let mut ops = Vec::new();
         run(&mut core, &mut ops, 0, Input::Goals(Goals { radio_on: true, power, transfer, ..Goals::OFF }));
-        run(&mut core, &mut ops, 0, Input::Started(Ok(INFO)));
+        let start = core.state.chip.starting().expect("a start in flight");
+        run(&mut core, &mut ops, 0, Input::Started(start, Ok(INFO)));
         run(&mut core, &mut ops, 100, Input::Radio(RadioEvent::LinkUp { link, role: LeConnRole::Peripheral, peer, params }));
         run(&mut core, &mut ops, 2_000, Input::Tick);
         let asked = ops.iter().find_map(|op| match op {
@@ -61,7 +62,8 @@ fn the_core_advertises_on_a_cable_at_the_drivers_interval() {
         let mut core = Core::new(&CAPABILITIES, &Scheduler, &MENU);
         let mut ops = Vec::new();
         run(&mut core, &mut ops, 0, Input::Goals(Goals { radio_on: true, power: Power::Cable, transfer, ..Goals::OFF }));
-        run(&mut core, &mut ops, 0, Input::Started(Ok(INFO)));
+        let start = core.state.chip.starting().expect("a start in flight");
+        run(&mut core, &mut ops, 0, Input::Started(start, Ok(INFO)));
         let Some(Op::Advertise(Some(a))) = ops.first() else { panic!("{ops:?}") };
         let want = timing(wake::Power::Cable, transfer).advertise;
         assert_eq!((a.interval_min.as_u16(), a.interval_max.as_u16()), (want, want));
