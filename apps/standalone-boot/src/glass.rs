@@ -82,7 +82,15 @@ pub fn status(soc_pct: Option<u8>) -> Status {
         alarm: crate::alarm::shown().map(|a| Clock { h: a.hour(), m: a.minute(), s: 0 }),
         ringing: crate::alarm::ringing(),
         missed: crate::alarm::missed(),
+        old_key: old_key(),
     }
+}
+
+fn old_key() -> bool {
+    #[cfg(feature = "ble")]
+    return crate::ble::has_old_key();
+    #[cfg(not(feature = "ble"))]
+    false
 }
 
 pub fn shown(glass: &Glass) {
