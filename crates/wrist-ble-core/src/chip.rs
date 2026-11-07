@@ -98,6 +98,9 @@ impl ChipMachine {
             (Chip::Starting { .. }, Event::StartFailed) => Some(self.escalate(now, FaultCause::StartFailed)),
             (Chip::Starting { since }, Event::Tick) if now >= since + caps.start_within => Some(self.escalate(now, FaultCause::StartFailed)),
             (Chip::Ready(_), Event::BaselineRefused) => Some(self.escalate(now, FaultCause::BaselineRefused)),
+            // During a start a power-on reset is that start's own boot; any other cause is the chip
+            // restarting under it, which loses the start: begin again now, not at its deadline.
+            (Chip::Starting { .. }, Event::Reset(cause)) if cause != ResetCause::PowerOn => Some(self.escalate(now, FaultCause::KeptResetting)),
             (Chip::Ready(_), Event::Reset(_)) => Some(self.escalate(now, FaultCause::KeptResetting)),
             _ => None,
         };
