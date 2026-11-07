@@ -78,10 +78,10 @@ pub enum Msg {
     // During passkey entry, under the six digits: type them on the phone.
     /// `type on the phone`
     BluetoothTypePasskey,
-    // On the Bluetooth page: a phone or computer was refused for a pairing key the watch no longer has; it must forget the watch and pair again.
+    // On the Bluetooth page, for a phone or computer refused for a pairing key the watch no longer has.
     /// `forget & pair`
     BluetoothOldKey,
-    // On the face, for the same: the Bluetooth page says what to do.
+    // On the face, for the same.
     /// `see Bluetooth`
     BluetoothSeePage,
 }

@@ -436,7 +436,9 @@ pub fn write_status(uart: Uart) {
         uart.write_str(", ");
         uart.write_u32(n);
         uart.write_str(if n == 1 { " time" } else { " times" });
-        uart.write_str("; forget UNA on it, then pair again");
+        uart.write_str("; forget ");
+        uart.write_bytes(DEVICE_NAME);
+        uart.write_str(" on it, then pair again");
     }
     let Some((pairing, value)) = waiting() else { return uart.write_line("") };
     uart.write_str(match pairing {
@@ -467,7 +469,7 @@ pub fn page() -> wrist_glass::pages::Bluetooth {
     Bluetooth { radio, prompt, bonded: BONDED_READ.load(Ordering::Relaxed).then(|| BONDED.load(Ordering::Relaxed)), old_key }
 }
 
-/// A central refused for a key the watch has lost, until it pairs or the radio goes off.
+/// A central refused for a key the watch has lost.
 pub fn has_old_key() -> bool {
     OLD_KEY.lock(Cell::get).central().is_some()
 }

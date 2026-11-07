@@ -201,8 +201,7 @@ pub const fn action(page: Page, press: Press, pairing: Option<Pairing>) -> Optio
     }
 }
 
-/// A central refused for a pairing key the watch no longer has, as its link gave its address,
-/// and how many times in a row. It can't connect until it forgets the watch and pairs again.
+/// The last central refused for a pairing key the watch no longer has, and how many times in a row.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct OldKey(Option<([u8; 6], u32)>);
 
@@ -217,7 +216,6 @@ impl OldKey {
         self.0 = Some((address, tries));
     }
 
-    /// A pairing done, or the radio off.
     pub fn clear(&mut self) {
         self.0 = None;
     }
