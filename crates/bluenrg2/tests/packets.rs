@@ -576,6 +576,22 @@ fn only_another_bonds_identity_keeps_a_link_through_a_forget() {
 }
 
 #[test]
+fn a_pairing_is_bonded_only_when_the_bond_list_shows_it() {
+    use bluenrg2::{bond_kept, Address};
+    let mac = [1, 0xFD, 0x81, 0x10, 0xCE, 0xD1, 0x80];
+    let phone = [0, 0x5C, 0xFC, 0xD7, 0x03, 0x12, 0xAC];
+    let rpa = Address { kind: 1, bytes: [1, 2, 3, 4, 5, 0x4A] };
+    let one = [&[1u8][..], &phone].concat();
+    let two = [&[2u8][..], &phone, &mac].concat();
+    assert!(!bond_kept(&one, Some(1), rpa), "a pairing that kept no bond");
+    assert!(bond_kept(&two, Some(1), rpa), "a private address bonded under its identity");
+    assert!(!bond_kept(&two, Some(2), rpa), "a private address encrypting again proves nothing");
+    assert!(!bond_kept(&two, None, rpa));
+    assert!(bond_kept(&two, Some(2), Address { kind: 0, bytes: [0x5C, 0xFC, 0xD7, 0x03, 0x12, 0xAC] }));
+    assert!(!bond_kept(&one, Some(2), rpa), "one forgotten since");
+}
+
+#[test]
 fn bonded_devices_reads_each_entry_and_no_more_than_the_reply_holds() {
     // Two bonds: a static random identity and a public one, as the watch's reply gave them.
     let reply = [2, 1, 0xFD, 0x81, 0x10, 0xCE, 0xD1, 0x80, 0, 0x5C, 0xFC, 0xD7, 0x03, 0x12, 0xAC];

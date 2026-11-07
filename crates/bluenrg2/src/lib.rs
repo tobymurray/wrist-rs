@@ -687,11 +687,23 @@ pub fn bonded_devices(params: &[u8]) -> impl Iterator<Item = (u8, [u8; 6])> + '_
     })
 }
 
-/// Whether a link from `peer` is provably not `forgotten`'s: `peer` is the identity of another
-/// bond in a `GET_BONDED_DEVICES` reply. A private address proves nothing.
+/// Whether `peer` is a bond's identity in a `GET_BONDED_DEVICES` reply. A private address proves nothing.
+#[must_use]
+pub fn listed(params: &[u8], peer: Address) -> bool {
+    bonded_devices(params).any(|entry| entry == (peer.kind, peer.bytes))
+}
+
+/// Whether a link from `peer` is provably not `forgotten`'s: `peer` is the identity of another bond.
 #[must_use]
 pub fn another_bond(params: &[u8], forgotten: [u8; 6], peer: Address) -> bool {
-    bonded_devices(params).any(|(kind, addr)| addr != forgotten && (kind, addr) == (peer.kind, peer.bytes))
+    peer.bytes != forgotten && listed(params, peer)
+}
+
+/// Whether a pairing with `peer` provably kept a bond: the reply read after it lists `peer`, or
+/// holds more bonds than the `before` count read ahead of it.
+#[must_use]
+pub fn bond_kept(params: &[u8], before: Option<u8>, peer: Address) -> bool {
+    before.zip(params.first()).is_some_and(|(before, &now)| now > before) || listed(params, peer)
 }
 
 /// An address as people write it, `AC:12:03:D7:FC:5C` (colons or dashes, either case), into
