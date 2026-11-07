@@ -38,3 +38,25 @@ battery-input-unknown = input ?
 
 about-title = ABOUT
 about-product = { -product }
+
+## Bluetooth
+
+# The page's title, in capitals like the other pages'.
+bluetooth-title = BLUETOOTH
+# The radio: held off, starting, up but not advertising, advertising, a phone connected, that
+# link encrypted, and the chip failed to start.
+bluetooth-off = off
+bluetooth-starting = starting
+bluetooth-on = on
+bluetooth-discoverable = discoverable
+bluetooth-connected = connected
+bluetooth-secure = secure link
+bluetooth-failed = failed
+# How many phones and computers the watch keeps pairing keys for.
+bluetooth-bonded = { $n } bonded
+# During a numeric comparison, under the six digits: Select if the phone shows the same
+# number, Back if it doesn't.
+bluetooth-select-matches = select: it matches
+bluetooth-back-no-match = back: no match
+# During passkey entry, under the six digits: type them on the phone.
+bluetooth-type-passkey = type on the phone

@@ -1,8 +1,8 @@
 //! Repainting the columns that changed leaves the frame a full render draws, whatever was there.
 
 use wrist_glass::pages::{
-    compose, compose_about, compose_battery, render, repaint, About, Battery, Clock, Date, Faces, Status,
-    ATKINSON, BUILT_IN, EN_GB, POPPINS,
+    compose, compose_about, compose_battery, compose_bluetooth, render, repaint, About, Battery, Bluetooth, Clock, Date, Faces,
+    Prompt, Radio, Status, ATKINSON, BUILT_IN, EN_GB, POPPINS,
 };
 use wrist_glass::scene::Scene;
 use wrist_glass::stress::{compose_stress, Stress};
@@ -26,17 +26,18 @@ fn face(faces: &Faces, h: u8, m: u8, day: u8, soc_pct: Option<u8>) -> Glass {
 }
 
 /// `fb` repainted from `before` to `after`, a strip of at most `widest` columns at a time, with
-/// `after`'s scene laid over whatever `scene` held.
-fn step(fb: &mut [u8], scene: &mut Scene, before: Option<&Scene>, after: &Glass, widest: usize) {
+/// `after`'s scene laid over whatever `scene` held; whole, as the image does, when the switch moved.
+fn step(fb: &mut [u8], scene: &mut Scene, before: Option<(&Scene, &Glass)>, after: &Glass, widest: usize) {
     for i in 0..after.len() {
         scene.lay(after, i);
     }
     if after.is_empty() {
         *scene = Scene::new();
     }
+    let before = before.filter(|(_, g)| g.switch() == after.switch()).map(|(s, _)| s);
     let changed = scene.changed_columns(before);
     for columns in strips(&changed, widest) {
-        assert!(repaint(fb, scene, before, columns));
+        assert!(repaint(fb, scene, before, columns, after.switch()));
     }
 }
 
@@ -48,9 +49,11 @@ fn walk(what: &str, frames: &[Glass]) {
         assert!(fb == pixels(&frames[0]), "{what}: the first frame, strips of {widest}");
         for pair in frames.windows(2) {
             let before = scene.clone();
-            step(&mut fb, &mut scene, Some(&before), &pair[1], widest);
+            step(&mut fb, &mut scene, Some((&before, &pair[0])), &pair[1], widest);
             assert!(fb == pixels(&pair[1]), "{what}: {:?} -> {:?}, strips of {widest}", pair[0], pair[1]);
-            assert_eq!(scene.changed_columns(Some(&before)), pair[1].changed_columns(Some(&pair[0])));
+            if pair[0].switch() == pair[1].switch() {
+                assert_eq!(scene.changed_columns(Some(&before)), pair[1].changed_columns(Some(&pair[0])));
+            }
         }
     }
 }
@@ -142,5 +145,21 @@ fn strips_cover_what_is_marked_and_nothing_else() {
             }
             assert_eq!(covered, marked);
         }
+    }
+}
+
+#[test]
+fn the_bluetooth_page_through_every_state_and_back() {
+    let radios = [Radio::Off, Radio::Starting, Radio::On, Radio::Discoverable, Radio::Connected, Radio::Secure, Radio::Failed];
+    for faces in FAMILIES {
+        let bt = |radio, prompt, bonded| compose_bluetooth(&Bluetooth { radio, prompt, bonded: Some(bonded) }, &EN_GB, faces).0;
+        let mut frames: Vec<_> = radios.iter().map(|&r| bt(r, None, 2)).collect();
+        frames.extend(radios.iter().rev().map(|&r| bt(r, None, 3)));
+        frames.push(bt(Radio::Connected, Some(Prompt::Compare(42_517)), 3));
+        frames.push(bt(Radio::Secure, None, 4));
+        frames.push(bt(Radio::Connected, Some(Prompt::Passkey(913_004)), 4));
+        frames.push(bt(Radio::Off, None, 4));
+        frames.push(face(faces, 9, 41, 27, Some(87)));
+        walk(faces.name, &frames);
     }
 }

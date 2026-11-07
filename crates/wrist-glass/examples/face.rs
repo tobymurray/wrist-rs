@@ -4,11 +4,15 @@
 //!     cargo run -p wrist-glass --example face -- 09:11 2026-10-23 100 07:00 face.raw
 //!     cargo run -p wrist-glass --example face -- battery 100 4405 usb battery.raw
 //!     cargo run -p wrist-glass --example face -- about 0.1.0 5784ec72019b about.raw
+//!     cargo run -p wrist-glass --example face -- bluetooth secure compare:042517 2 bt.raw
 //!     cargo run -p wrist-glass --example face -- stress churn 7 stress.raw
 //!
 //! `-` for any reading draws it unset.
 
-use wrist_glass::pages::{compose, compose_about, compose_battery, render, About, Battery, Clock, Date, Status, EN_GB, FACES};
+use wrist_glass::pages::{
+    compose, compose_about, compose_battery, compose_bluetooth, render, About, Battery, Bluetooth, Clock, Date, Prompt, Radio, Status, EN_GB,
+    FACES,
+};
 use wrist_glass::stress::{compose_stress, Stress};
 use wrist_glass::{HEIGHT, WIDTH};
 
@@ -35,6 +39,24 @@ fn main() {
             FACES,
         ),
         [page, version, build, _] if page == "about" => compose_about(&About { version, build, crc: None }, &EN_GB, FACES),
+        [page, radio, prompt, bonded, _] if page == "bluetooth" => {
+            let radio = match radio.as_str() {
+                "off" => Radio::Off,
+                "starting" => Radio::Starting,
+                "on" => Radio::On,
+                "discoverable" => Radio::Discoverable,
+                "connected" => Radio::Connected,
+                "secure" => Radio::Secure,
+                "failed" => Radio::Failed,
+                _ => panic!("off, starting, on, discoverable, connected, secure or failed"),
+            };
+            let prompt = arg(prompt).map(|p| match p.split_once(':') {
+                Some(("compare", v)) => Prompt::Compare(v.parse().expect("six digits")),
+                Some(("passkey", v)) => Prompt::Passkey(v.parse().expect("six digits")),
+                _ => panic!("compare:NNNNNN or passkey:NNNNNN"),
+            });
+            compose_bluetooth(&Bluetooth { radio, prompt, bonded: arg(bonded).map(|n| n.parse().expect("a count")) }, &EN_GB, FACES)
+        }
         [time, date, soc, _] | [time, date, soc, _, _] => {
             let nums = |s: &str, sep| -> Vec<u16> { s.split(sep).map(|n| n.parse().expect("a number")).collect() };
             let byte = |n: u16| u8::try_from(n).expect("a field under 256");

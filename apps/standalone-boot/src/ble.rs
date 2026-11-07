@@ -49,7 +49,7 @@ mod probe;
 mod trace;
 mod scan;
 
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU8, Ordering};
 
 use embassy_futures::select::{select, select4, Either4};
@@ -79,6 +79,7 @@ use bluenrg2::{
     L2capUpdateResponse, ADV_IND, ATT_HEADER_LEN, MAX_COMMAND, MIN_ENC_KEY_SIZE, NO_FILTER, PRIMARY_SERVICE,
     PRIVACY_DISABLED, VARIABLE_LENGTH,
 };
+use wrist_pages::{Pairing, Prompt};
 use wrist_wake::ble::restart::{Boot, Restarts};
 use wrist_wake::ble::{timing, IntervalAsk, Lines, Outbox, PairAsk, Power, Radio, Scan, Sink, Timing};
 
@@ -105,8 +106,6 @@ const SLAVE_READY_TIMEOUT: Duration = Duration::from_millis(100);
 const IRQ_LOW_TIMEOUT: Duration = Duration::from_millis(1000);
 const BOOT_TIMEOUT: Duration = Duration::from_millis(3000);
 const REPLY_TIMEOUT: Duration = Duration::from_millis(1000);
-/// How long a numeric comparison waits for `ble yes` before it is rejected.
-const CONFIRM_TIMEOUT: Duration = Duration::from_secs(60);
 /// A transfer with no bytes for this long is abandoned, as over USB.
 const TRANSFER_IDLE: Duration = Duration::from_secs(5);
 /// One SPI read. The chip queues events back to back and announces them all in one count,
@@ -223,14 +222,11 @@ static UNKNOWN: AtomicU32 = AtomicU32::new(0);
 static RESTARTS: AtomicU32 = AtomicU32::new(0);
 static LAST_RESTART: AtomicU8 = AtomicU8::new(0);
 static BONDED: AtomicU8 = AtomicU8::new(0);
+static BONDED_READ: AtomicBool = AtomicBool::new(false);
 /// Last pairing outcome: 0 none, else 1 + status (so 1 is success).
 static LAST_PAIRING: AtomicU8 = AtomicU8::new(0);
 static LAST_PAIRING_REASON: AtomicU8 = AtomicU8::new(0);
-/// The pairing number waiting: kind 0 none, 1 passkey to type, 2 comparison to confirm.
-static PROMPT_VALUE: AtomicU32 = AtomicU32::new(0);
-static PROMPT_KIND: AtomicU8 = AtomicU8::new(0);
-/// The answer to a comparison: 0 none, 1 yes, 2 no.
-static ANSWER: AtomicU8 = AtomicU8::new(0);
+static PROMPT: Mutex<CriticalSectionRawMutex, Cell<Prompt>> = Mutex::new(Cell::new(Prompt::None));
 /// The address written into the chip, little-endian as the chip holds it.
 static ADDRESS: [AtomicU8; 6] = [const { AtomicU8::new(0) }; 6];
 /// `ble profile`: 0 follows the power source, 1 always the cable's, 2 always the battery's.
@@ -425,13 +421,68 @@ pub fn write_status(uart: Uart) {
             uart.write_hex8(LAST_PAIRING_REASON.load(Ordering::Relaxed));
         }
     }
-    match PROMPT_KIND.load(Ordering::Relaxed) {
-        1 => uart.write_str("; TYPE this on the central: "),
-        2 => uart.write_str("; COMPARE with the central's number, then `ble yes` or `ble no`: "),
-        _ => return uart.write_line(""),
-    }
-    write_six_digits(uart, PROMPT_VALUE.load(Ordering::Relaxed));
+    let Some((pairing, value)) = waiting() else { return uart.write_line("") };
+    uart.write_str(match pairing {
+        Pairing::Passkey => "; TYPE this on the central: ",
+        Pairing::Compare => "; COMPARE with the central's number, then `ble yes` or `ble no`: ",
+    });
+    write_six_digits(uart, value);
     uart.write_line("");
+}
+
+/// What the Bluetooth page shows.
+pub fn page() -> wrist_glass::pages::Bluetooth {
+    use wrist_glass::pages::{Bluetooth, Prompt as Digits, Radio as Shown};
+    let radio = match Radio::from_u8(STATE.load(Ordering::Relaxed)) {
+        Radio::Off => Shown::Off,
+        Radio::Starting => Shown::Starting,
+        Radio::Idle => Shown::On,
+        Radio::Advertising => Shown::Discoverable,
+        Radio::Connected if ENCRYPTED.load(Ordering::Relaxed) => Shown::Secure,
+        Radio::Connected => Shown::Connected,
+        Radio::Failed => Shown::Failed,
+    };
+    let prompt = waiting().map(|(pairing, value)| match pairing {
+        Pairing::Passkey => Digits::Passkey(value),
+        Pairing::Compare => Digits::Compare(value),
+    });
+    Bluetooth { radio, prompt, bonded: BONDED_READ.load(Ordering::Relaxed).then(|| BONDED.load(Ordering::Relaxed)) }
+}
+
+/// The pairing whose digits the page shows.
+pub fn pairing() -> Option<Pairing> {
+    waiting().map(|(pairing, _)| pairing)
+}
+
+/// When the page's digits stop waiting, if they are.
+pub fn pairing_ends() -> Option<Instant> {
+    PROMPT.lock(Cell::get).ends_ms(Instant::now().as_millis()).map(Instant::from_millis)
+}
+
+fn waiting() -> Option<(Pairing, u32)> {
+    PROMPT.lock(Cell::get).waiting(Instant::now().as_millis())
+}
+
+/// The radio off if it is on or starting, on otherwise.
+pub fn toggle() {
+    let off = matches!(Radio::from_u8(STATE.load(Ordering::Relaxed)), Radio::Off | Radio::Failed);
+    let _ = REQUESTS.try_send(if off { Request::On } else { Request::Off });
+}
+
+/// The wearer's answer to the numeric comparison waiting, as `ble yes|no`, taken at once.
+pub fn answer(yes: bool) {
+    if answer_prompt(yes) {
+        WAKE.signal(());
+    }
+}
+
+fn answer_prompt(yes: bool) -> bool {
+    PROMPT.lock(|p| {
+        let mut prompt = p.get();
+        let answered = prompt.answer(yes, Instant::now().as_millis());
+        p.set(prompt);
+        answered
+    })
 }
 
 /// A command's reply: the status byte and the parameters after it.
@@ -466,7 +517,7 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
                 #[cfg(feature = "ble-probe")]
                 Request::Probe | Request::Restart(_) => uart.write_line("[ble] off; `ble on` starts it"),
                 Request::Off => {
-                    STATE.store(STATE_OFF, Ordering::Relaxed);
+                    set_state(STATE_OFF);
                     crate::rtc::set_radio_wanted(false);
                     uart.write_line("[ble] already off");
                 }
@@ -497,7 +548,6 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
             reply: None,
             readvertise: false,
             passkey_for: None,
-            confirm_for: None,
             rebond_for: None,
             recount_bonds: false,
             nus: None,
@@ -524,7 +574,7 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
         };
         // A start, or a restart's recovery, that failed.
         if !(link.start().await && link.serve(&mut changes).await) {
-            STATE.store(STATE_FAILED, Ordering::Relaxed);
+            set_state(STATE_FAILED);
             link.rst.set_low();
             uart.write_line("[ble] start failed: chip held in reset; `ble on` retries");
             on = false;
@@ -534,8 +584,9 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
         link.rst.set_low();
         drop(link);
         MIRROR.store(false, Ordering::Relaxed);
-        ENCRYPTED.store(false, Ordering::Relaxed);
-        STATE.store(STATE_OFF, Ordering::Relaxed);
+        set_encrypted(false);
+        set_state(STATE_OFF);
+        clear_prompt();
         crate::rtc::set_radio_wanted(false);
         uart.write_line("[ble] off: chip held in reset");
         on = false;
@@ -561,7 +612,6 @@ struct Link<'d> {
     /// Deferred work raised by events, done from the main loop.
     readvertise: bool,
     passkey_for: Option<u16>,
-    confirm_for: Option<(u16, Instant)>,
     rebond_for: Option<u16>,
     recount_bonds: bool,
     /// The console service: service, RX and TX characteristic handles.
@@ -680,7 +730,7 @@ impl Link<'_> {
                 || self.recount_bonds
                 || self.passkey_for.is_some()
                 || self.readvertise,
-            confirm_by: self.confirm_for.map(|(_, since)| tick(since + CONFIRM_TIMEOUT + one)),
+            confirm_by: PROMPT.lock(Cell::get).owed().map(|(at, _)| tick(Instant::from_millis(at))),
             transfer: match &self.transfer {
                 None => Transfer::None,
                 Some(s) if s.started() => Transfer::Started,
@@ -702,15 +752,15 @@ impl Link<'_> {
             Request::Off => {}
             Request::Version => self.version().await,
             Request::Yes | Request::No => {
-                if self.confirm_for.is_none() {
-                    return self.uart.write_line("[ble] no comparison is waiting");
+                if !answer_prompt(req == Request::Yes) {
+                    self.uart.write_line("[ble] no comparison is waiting");
                 }
-                ANSWER.store(if req == Request::Yes { 1 } else { 2 }, Ordering::Relaxed);
             }
             Request::Bonds => self.list_bonds().await,
             Request::Forget => {
                 if self.command(ACI_GAP_CLEAR_SECURITY_DB, &[]).await.is_ok() {
                     BONDED.store(0, Ordering::Relaxed);
+                    redraw();
                     self.uart.write_line("[ble] bond database cleared; forget the watch on the central too");
                 }
             }
@@ -831,23 +881,25 @@ impl Link<'_> {
         if let Some(h) = self.passkey_for.take() {
             self.answer_passkey(h).await;
         }
-        if let Some((h, since)) = self.confirm_for {
-            let answer = ANSWER.load(Ordering::Relaxed);
-            let timed_out = since.elapsed() > CONFIRM_TIMEOUT;
-            if answer != 0 || timed_out {
-                self.confirm_for = None;
-                let yes = answer == 1;
-                let hb = h.to_le_bytes();
-                let _ = self.command(ACI_GAP_NUMERIC_COMPARISON_CONFIRM, &[hb[0], hb[1], u8::from(yes)]).await;
-                self.uart.write_line(if yes {
-                    "[ble] comparison confirmed"
-                } else if timed_out {
-                    "[ble] comparison not answered in 60 s: rejected"
-                } else {
-                    "[ble] comparison rejected"
-                });
-                clear_prompt();
+        let now = Instant::now().as_millis();
+        let (prompt, owed) = PROMPT.lock(|p| {
+            let prompt = p.get();
+            let owed = prompt.owed().filter(|&(at, _)| at <= now).map(|(_, yes)| yes);
+            if owed.is_some() {
+                p.set(Prompt::None);
             }
+            (prompt, owed)
+        });
+        if let Some(yes) = owed {
+            let hb = CONN_HANDLE.load(Ordering::Relaxed).to_le_bytes();
+            let _ = self.command(ACI_GAP_NUMERIC_COMPARISON_CONFIRM, &[hb[0], hb[1], u8::from(yes)]).await;
+            self.uart.write_line(if yes {
+                "[ble] comparison confirmed"
+            } else if prompt == Prompt::Answered(false) {
+                "[ble] comparison rejected"
+            } else {
+                "[ble] comparison not answered in 60 s: rejected"
+            });
         }
         if self.readvertise {
             self.readvertise = false;
@@ -895,7 +947,7 @@ impl Link<'_> {
     /// Reset, address, TX power, event mask, GATT, GAP, name, IO capability, security
     /// requirements, advertise: ST's sample order.
     async fn bring_up(&mut self) {
-        STATE.store(STATE_STARTING, Ordering::Relaxed);
+        set_state(STATE_STARTING);
         clear_prompt();
         self.reset().await;
         if self.boot == Some(Boot::InUpdater) {
@@ -1202,7 +1254,7 @@ impl Link<'_> {
     }
 
     fn fail(&mut self, step: &str) {
-        STATE.store(STATE_FAILED, Ordering::Relaxed);
+        set_state(STATE_FAILED);
         self.uart.write_str("[ble] start failed at ");
         self.uart.write_line(step);
     }
@@ -1225,7 +1277,7 @@ impl Link<'_> {
         p[n..n + 5].copy_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00]);
         match self.command(ACI_GAP_SET_DISCOVERABLE, &p[..n + 5]).await {
             Ok(r) if r.status == 0 => {
-                STATE.store(STATE_ADVERTISING, Ordering::Relaxed);
+                set_state(STATE_ADVERTISING);
                 self.advertised = Some(want);
                 self.uart.write_str("[ble] advertising as UNA every ");
                 self.uart.write_u32(u32::from(want.advertise) * 625 / 1000);
@@ -1234,7 +1286,7 @@ impl Link<'_> {
             Ok(r) => {
                 // Refused while a scan runs: it resumes when the scan ends.
                 if self.scanner.advertising_refused() {
-                    STATE.store(STATE_IDLE, Ordering::Relaxed);
+                    set_state(STATE_IDLE);
                 }
                 self.uart.write_str("[ble] advertising refused, status ");
                 self.uart.write_hex8(r.status);
@@ -1251,6 +1303,8 @@ impl Link<'_> {
         if let Ok(r) = self.command(ACI_GAP_GET_BONDED_DEVICES, &[]).await {
             if r.len >= 1 {
                 BONDED.store(r.params[0], Ordering::Relaxed);
+                BONDED_READ.store(true, Ordering::Relaxed);
+                redraw();
                 self.uart.write_str("[ble] bonded devices: ");
                 self.uart.write_u32(u32::from(r.params[0]));
                 for i in 0..usize::from(r.params[0]).min(4) {
@@ -1281,8 +1335,16 @@ impl Link<'_> {
                 return;
             }
         };
-        PROMPT_VALUE.store(key, Ordering::Relaxed);
-        PROMPT_KIND.store(1, Ordering::Relaxed);
+        let shown = PROMPT.lock(|p| {
+            let mut prompt = p.get();
+            let shown = prompt.passkey(key, Instant::now().as_millis());
+            p.set(prompt);
+            shown
+        });
+        if !shown {
+            return self.uart.write_line("[ble] passkey ready after its pairing ended; not given");
+        }
+        crate::wake_display();
         self.uart.write_str("[ble] pairing: type this passkey on the central: ");
         write_six_digits(self.uart, key);
         self.uart.write_line("");
@@ -1429,8 +1491,8 @@ impl Link<'_> {
                     INTERVAL.store(iv, Ordering::Relaxed);
                     LATENCY.store(lat, Ordering::Relaxed);
                 }
-                STATE.store(STATE_CONNECTED, Ordering::Relaxed);
-                ENCRYPTED.store(false, Ordering::Relaxed);
+                set_state(STATE_CONNECTED);
+                set_encrypted(false);
                 self.subscribed = false;
                 self.set_mirror();
                 self.outbox = Outbox::default();
@@ -1461,7 +1523,7 @@ impl Link<'_> {
                 if status != 0 {
                     DISCONNECT_FAILURES.fetch_add(1, Ordering::Relaxed);
                 }
-                STATE.store(STATE_IDLE, Ordering::Relaxed);
+                set_state(STATE_IDLE);
                 self.link_gone();
                 self.uart.write_str("[ble] disconnected, reason ");
                 self.uart.write_hex8(reason);
@@ -1473,7 +1535,7 @@ impl Link<'_> {
                     ENCRYPTION_FAILURES.fetch_add(1, Ordering::Relaxed);
                 }
                 let on = enabled != 0;
-                ENCRYPTED.store(on, Ordering::Relaxed);
+                set_encrypted(on);
                 if on {
                     self.pair_ask.settled();
                     self.interval_ask.encrypted();
@@ -1501,10 +1563,9 @@ impl Link<'_> {
     /// pending asks and any transfer with it.
     fn link_gone(&mut self) {
         CONN_HANDLE.store(0, Ordering::Relaxed);
-        ENCRYPTED.store(false, Ordering::Relaxed);
+        set_encrypted(false);
         self.subscribed = false;
         self.set_mirror();
-        self.confirm_for = None;
         self.request_interval = None;
         self.pair_ask.settled();
         self.interval_ask.disconnected();
@@ -1531,7 +1592,7 @@ impl Link<'_> {
         self.uart.write_line(if boot_reason::updater(reason) { "); resetting it out of the updater" } else { "); resetting it" });
         RESTARTS.fetch_add(1, Ordering::Relaxed);
         LAST_RESTART.store(reason, Ordering::Relaxed);
-        STATE.store(STATE_STARTING, Ordering::Relaxed);
+        set_state(STATE_STARTING);
         self.link_gone();
         clear_out(self.outbox.discard());
         self.outbox = Outbox::default();
@@ -1607,15 +1668,14 @@ impl Link<'_> {
                 self.pair_ask.settled();
                 self.interval_ask.pairing();
                 self.passkey_for = Some(handle(rest));
+                PROMPT.lock(|p| p.set(Prompt::Asked));
             }
             vendor::GAP_NUMERIC_COMPARISON_VALUE if rest.len() >= 6 => {
                 self.pair_ask.settled();
                 self.interval_ask.pairing();
-                let (conn, value) = bluenrg2::numeric_comparison(rest).unwrap_or_default();
-                PROMPT_VALUE.store(value, Ordering::Relaxed);
-                PROMPT_KIND.store(2, Ordering::Relaxed);
-                ANSWER.store(0, Ordering::Relaxed);
-                self.confirm_for = Some((conn, Instant::now()));
+                let (_, value) = bluenrg2::numeric_comparison(rest).unwrap_or_default();
+                PROMPT.lock(|p| p.set(Prompt::Waiting(Pairing::Compare, value, Instant::now().as_millis())));
+                crate::wake_display();
                 self.uart.write_str("[ble] pairing: the central shows a number; if it is ");
                 write_six_digits(self.uart, value);
                 self.uart.write_line(", `ble yes` on the USB console (`ble no` rejects)");
@@ -1624,7 +1684,6 @@ impl Link<'_> {
                 let (status, reason) = bluenrg2::pairing_complete(rest).unwrap_or_default();
                 LAST_PAIRING.store(status.saturating_add(1), Ordering::Relaxed);
                 LAST_PAIRING_REASON.store(reason, Ordering::Relaxed);
-                self.confirm_for = None;
                 self.pair_ask.settled();
                 clear_prompt();
                 if status == 0 {
@@ -1707,10 +1766,26 @@ impl Link<'_> {
     }
 }
 
+fn set_state(state: u8) {
+    if STATE.swap(state, Ordering::Relaxed) != state {
+        redraw();
+    }
+}
+
+fn set_encrypted(on: bool) {
+    if ENCRYPTED.swap(on, Ordering::Relaxed) != on {
+        redraw();
+    }
+}
+
+/// The page redrawn, if up, for a change it shows.
+fn redraw() {
+    crate::redraw(wrist_pages::Page::Bluetooth);
+}
+
 fn clear_prompt() {
-    PROMPT_KIND.store(0, Ordering::Relaxed);
-    PROMPT_VALUE.store(0, Ordering::Relaxed);
-    ANSWER.store(0, Ordering::Relaxed);
+    PROMPT.lock(|p| p.set(Prompt::None));
+    crate::wake_display();
 }
 
 /// A connection interval in 1.25 ms units as milliseconds, `48.75 ms`.

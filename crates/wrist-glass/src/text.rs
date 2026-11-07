@@ -406,6 +406,7 @@ impl Placed {
 pub struct Glass {
     lines: [Option<Placed>; MAX_LINES],
     n: usize,
+    switch: Option<crate::switch::Switch>,
 }
 
 impl Default for Glass {
@@ -417,7 +418,17 @@ impl Default for Glass {
 impl Glass {
     #[must_use]
     pub const fn new() -> Self {
-        Self { lines: [None; MAX_LINES], n: 0 }
+        Self { lines: [None; MAX_LINES], n: 0, switch: None }
+    }
+
+    /// A switch drawn under the lines.
+    pub fn set_switch(&mut self, switch: crate::switch::Switch) {
+        self.switch = Some(switch);
+    }
+
+    #[must_use]
+    pub const fn switch(&self) -> Option<crate::switch::Switch> {
+        self.switch
     }
 
     /// Centres `line` in `font` on `baseline`, less the characters at its end that would not
@@ -457,9 +468,11 @@ impl Glass {
 
     /// The columns where this glass can differ from `before` over the same background: the ink of
     /// the characters that changed or moved in a line that kept its font and baseline, the ink of
-    /// both versions of any other line, and every column without `before`.
+    /// both versions of any other line, and every column without `before` or with a different
+    /// switch.
     #[must_use]
     pub fn changed_columns(&self, before: Option<&Self>) -> [bool; WIDTH as usize] {
+        let before = before.filter(|b| b.switch == self.switch);
         crate::scene::Scene::of(self).changed_columns(before.map(crate::scene::Scene::of).as_ref())
     }
 

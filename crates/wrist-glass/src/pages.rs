@@ -2,12 +2,16 @@
 
 use core::ops::Range;
 
+use embedded_graphics::prelude::*;
+use embedded_graphics::primitives::Rectangle;
+
 use incised_text::faces;
 use inscribed_disc::{Abgr2222, Surface};
 
 use wrist_l10n::Msg;
 
 use crate::scene::Scene;
+use crate::switch::Switch;
 use crate::text::{Font, Glass, Line, Overflow};
 use crate::{ring, HEIGHT, RING_COLOR, RING_RUNS, WIDTH};
 
@@ -190,6 +194,91 @@ pub fn compose_about(a: &About<'_>, locale: &Locale, faces: &Faces) -> (Glass, S
     (b.glass, b.short)
 }
 
+/// What the Bluetooth page shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Bluetooth {
+    pub radio: Radio,
+    pub prompt: Option<Prompt>,
+    /// The centrals the chip keeps keys for, if read.
+    pub bonded: Option<u8>,
+}
+
+/// The radio, as the Bluetooth page names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Radio {
+    Off,
+    Starting,
+    /// Up, and not advertising.
+    On,
+    Discoverable,
+    Connected,
+    /// Connected, and the link encrypted.
+    Secure,
+    Failed,
+}
+
+/// Six digits the wearer is asked about while pairing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Prompt {
+    /// The central shows a number too: Select if they match.
+    Compare(u32),
+    /// The central asks for this number to be typed.
+    Passkey(u32),
+}
+
+const BT_TITLE: i32 = 66;
+const BT_BONDED: i32 = crate::switch::BELOW + 26;
+const BT_STATE: i32 = 104;
+const BT_DIGITS: i32 = 150;
+const BT_HINT: i32 = 176;
+const BT_HINT_2: i32 = 198;
+
+/// A switch for the radio, its state under it and the centrals bonded; while pairing, the six
+/// digits and what to do with them instead.
+#[must_use]
+pub fn compose_bluetooth(bt: &Bluetooth, locale: &Locale, faces: &Faces) -> (Glass, Short) {
+    let mut b = Builder::new();
+    let state = match bt.radio {
+        Radio::Off => Msg::BluetoothOff,
+        Radio::Starting => Msg::BluetoothStarting,
+        Radio::On => Msg::BluetoothOn,
+        Radio::Discoverable => Msg::BluetoothDiscoverable,
+        Radio::Connected => Msg::BluetoothConnected,
+        Radio::Secure => Msg::BluetoothSecure,
+        Radio::Failed => Msg::BluetoothFailed,
+    };
+    match bt.prompt {
+        Some(Prompt::Compare(value) | Prompt::Passkey(value)) => {
+            b.at(faces.words, TITLE, |l| locale.message(l, Msg::BluetoothTitle));
+            b.at(faces.words, BT_STATE, |l| locale.message(l, state));
+            let mut digits = *b"000000";
+            for (i, d) in digits.iter_mut().rev().enumerate() {
+                *d = b'0' + u8::try_from(value / 10u32.pow(u32::try_from(i).unwrap_or(0)) % 10).unwrap_or(0);
+            }
+            b.at(faces.charge, BT_DIGITS, |l| l.push_verbatim(core::str::from_utf8(&digits).unwrap_or("")));
+            if matches!(bt.prompt, Some(Prompt::Compare(_))) {
+                b.at(faces.id, BT_HINT, |l| locale.message(l, Msg::BluetoothSelectMatches));
+                b.at(faces.id, BT_HINT_2, |l| locale.message(l, Msg::BluetoothBackNoMatch));
+            } else {
+                b.at(faces.id, BT_HINT, |l| locale.message(l, Msg::BluetoothTypePasskey));
+            }
+        }
+        None => {
+            b.glass.set_switch(match bt.radio {
+                Radio::Off | Radio::Failed => Switch::Off,
+                Radio::Starting => Switch::Moving,
+                Radio::On | Radio::Discoverable | Radio::Connected | Radio::Secure => Switch::On,
+            });
+            b.at(faces.words, BT_TITLE, |l| locale.message(l, Msg::BluetoothTitle));
+            b.at(faces.words, crate::switch::BELOW, |l| locale.message(l, state));
+            if let Some(n) = bt.bonded {
+                b.at(faces.id, BT_BONDED, |l| locale.message(l, Msg::BluetoothBonded { n: u32::from(n) }));
+            }
+        }
+    }
+    (b.glass, b.short)
+}
+
 fn push_upper(line: &mut Line, s: &str) -> Result<(), Overflow> {
     for c in s.chars() {
         let mut buf = [0u8; 4];
@@ -200,10 +289,35 @@ fn push_upper(line: &mut Line, s: &str) -> Result<(), Overflow> {
 
 /// False, drawing nothing, when `fb` is not `WIDTH * HEIGHT` bytes.
 pub fn render(fb: &mut [u8], glass: &Glass) -> bool {
-    if !background(fb) {
+    if !backdrop(fb, glass.switch()) {
         return false;
     }
     (0..glass.len()).all(|i| draw_line(fb, glass, i))
+}
+
+/// [`background`] with `switch` on it; false for a buffer of the wrong size.
+pub fn backdrop(fb: &mut [u8], switch: Option<Switch>) -> bool {
+    if !background(fb) {
+        return false;
+    }
+    backdrop_in(fb, switch, 0..H, 0..W);
+    true
+}
+
+/// [`backdrop`] within `rows` and `columns` only: [`background_in`], then the switch's part there.
+pub fn backdrop_in(fb: &mut [u8], switch: Option<Switch>, rows: Range<i32>, columns: Range<i32>) {
+    background_in(fb, rows.clone(), columns.clone());
+    let Some(switch) = switch else { return };
+    let rows = rows.start.max(crate::switch::ROWS.start)..rows.end.min(crate::switch::ROWS.end);
+    if rows.is_empty() || columns.is_empty() {
+        return;
+    }
+    let Some(mut surface) = Surface::<Abgr2222>::round(fb, WIDTH, HEIGHT) else { return };
+    let area = Rectangle::new(
+        Point::new(columns.start, rows.start),
+        Size::new(columns.len().try_into().unwrap_or(0), rows.len().try_into().unwrap_or(0)),
+    );
+    crate::switch::draw(&mut surface.clipped(&area), switch);
 }
 
 /// [`background`] within `rows` and `columns` only, so no copy of it need be kept.
@@ -246,12 +360,12 @@ pub fn draw_line(fb: &mut [u8], glass: &Glass, i: usize) -> bool {
     true
 }
 
-/// [`Scene::repaint`] in white over [`background`]; false for a buffer of the wrong size.
-pub fn repaint(fb: &mut [u8], scene: &Scene, before: Option<&Scene>, columns: Range<i32>) -> bool {
+/// [`Scene::repaint`] in white over [`backdrop`]; false for a buffer of the wrong size.
+pub fn repaint(fb: &mut [u8], scene: &Scene, before: Option<&Scene>, columns: Range<i32>, switch: Option<Switch>) -> bool {
     if fb.len() != (WIDTH * HEIGHT) as usize {
         return false;
     }
-    scene.repaint(fb, background_in, before, columns, Abgr2222::WHITE);
+    scene.repaint(fb, |fb, rows, columns| backdrop_in(fb, switch, rows, columns), before, columns, Abgr2222::WHITE);
     true
 }
 

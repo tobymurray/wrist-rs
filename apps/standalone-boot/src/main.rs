@@ -53,7 +53,7 @@ use wrist_glass::scene::Scene;
 use wrist_glass::text::Glass;
 use wrist_flash::vectors::{HANDOFF_POP, SRAM_END, SRAM_START};
 use wrist_board::{light, pins};
-use wrist_pages::{Button, Nav, Page, Press};
+use wrist_pages::{Action, Button, Nav, Page, Pairing, Press};
 
 use crate::mmio::{
     enable_clock, gpio, modify32, read32, write32, DBGMCU_IDCODE, FLASH_ACR, FLASH_OPTR, GPIOC_BASE, GPIO_BSRR, GPIO_IDR, GPIO_MODER, GPIO_OSPEEDR,
@@ -693,8 +693,10 @@ pub fn inject_press(press: Press) -> bool {
     PRESS_IN.try_send(press).is_ok()
 }
 
+const PAGES: &[Page] = if cfg!(feature = "ble") { &Page::ALL } else { &Page::WITHOUT_BLUETOOTH };
+
 /// Where the wearer is among the pages.
-static NAV: Mutex<CriticalSectionRawMutex, Cell<Nav>> = Mutex::new(Cell::new(Nav::new()));
+static NAV: Mutex<CriticalSectionRawMutex, Cell<Nav>> = Mutex::new(Cell::new(Nav::with(PAGES)));
 
 fn now_ms() -> u64 {
     Instant::now().as_millis()
@@ -702,7 +704,28 @@ fn now_ms() -> u64 {
 
 /// Back on the face at once, for the alarm's ring.
 pub fn to_face() {
-    NAV.lock(|n| n.set(Nav::new()));
+    NAV.lock(|n| n.set(Nav::with(PAGES)));
+}
+
+/// Bring `page` up, as a press to it would, if this image has it.
+fn show_page(page: Page) {
+    if NAV.lock(|n| {
+        let mut nav = n.get();
+        let moved = nav.show(page, now_ms());
+        n.set(nav);
+        moved
+    }) {
+        let uart = Uart::best_effort();
+        uart.write_str("[page] ");
+        uart.write_line(page.name());
+    }
+}
+
+/// A redraw, if `page` is up.
+pub fn redraw(page: Page) {
+    if NAV.lock(|n| n.get().page()) == page {
+        wake_display();
+    }
 }
 
 /// The page to draw now, back on the face once a page's timeout has passed; and when that
@@ -842,12 +865,17 @@ fn on_press(uart: Uart, press: Press, injected: bool, light_until: &mut Option<I
         *light_until = Some(Instant::now() + LIT_FOR);
         uart.write_line(": face lit for 3 s");
     }
-    let (moved, page) = NAV.lock(|n| {
+    let (moved, page, action) = NAV.lock(|n| {
         let mut nav = n.get();
+        let action = wrist_pages::action(nav.page(), press, pairing());
         let moved = nav.press(press, now_ms());
         n.set(nav);
-        (moved, nav.page())
+        (moved, nav.page(), action)
     });
+    if let Some(action) = action {
+        act(action);
+        wake_display();
+    }
     if moved {
         uart.write_str("[page] ");
         uart.write_line(page.name());
@@ -899,6 +927,11 @@ async fn display(mut pwr_int: ExtiInput<'static, Async>) -> ! {
                 power.service(bus).await;
             }
         }
+        // Before the frame, so digits drawn in it still get their wake.
+        let pairing_ends = pairing_ends();
+        if let Some(held) = wrist_pages::held(pairing(), alarm::ringing()) {
+            show_page(held);
+        }
         let page = nav_now().0;
         let reading_due = if power::on_battery() { new_minute } else { Instant::now() >= next_reading };
         // A page opened on battery would otherwise show a reading up to a minute old.
@@ -929,6 +962,9 @@ async fn display(mut pwr_int: ExtiInput<'static, Async>) -> ! {
         let mut due = Instant::now() + until_next_minute();
         if let (_, Some(back_to_face)) = nav_now() {
             due = due.min(back_to_face);
+        }
+        if let Some(ends) = pairing_ends {
+            due = due.min(ends);
         }
         if !power::on_battery() {
             due = due.min(next_reading);
@@ -968,6 +1004,31 @@ fn apply_zone_change(uart: Uart) {
     }
 }
 
+/// The pairing whose digits the Bluetooth page shows.
+fn pairing() -> Option<Pairing> {
+    #[cfg(feature = "ble")]
+    return ble::pairing();
+    #[cfg(not(feature = "ble"))]
+    None
+}
+
+fn pairing_ends() -> Option<Instant> {
+    #[cfg(feature = "ble")]
+    return ble::pairing_ends();
+    #[cfg(not(feature = "ble"))]
+    None
+}
+
+fn act(action: Action) {
+    #[cfg(feature = "ble")]
+    match action {
+        Action::ToggleBluetooth => ble::toggle(),
+        Action::Compare(yes) => ble::answer(yes),
+    }
+    #[cfg(not(feature = "ble"))]
+    let _ = action;
+}
+
 /// The page, or the stress screen the console put in its place.
 fn compose_page(page: Page, soc_pct: Option<u8>, cell_mv: Option<u32>) -> (Glass, pages::Short) {
     if let Some((kind, step, _)) = glass::stress() {
@@ -985,6 +1046,10 @@ fn compose_page(page: Page, soc_pct: Option<u8>, cell_mv: Option<u32>) -> (Glass
             locale,
             pages::FACES,
         ),
+        #[cfg(feature = "ble")]
+        Page::Bluetooth => pages::compose_bluetooth(&ble::page(), locale, pages::FACES),
+        #[cfg(not(feature = "ble"))]
+        Page::Bluetooth => pages::compose(&glass::status(soc_pct), locale, pages::FACES),
         Page::About => pages::compose_about(
             &pages::About {
                 version: version::VERSION,
@@ -1023,7 +1088,8 @@ async fn show(
         cost.layout.add(c);
         embassy_futures::yield_now().await;
     }
-    let before = drawn.is_some().then_some(&*shown);
+    // The switch is drawn under the text, so a frame whose switch moved is drawn whole.
+    let before = drawn.is_some_and(|d| d.switch() == composed.switch()).then_some(&*shown);
     let c = busy::cycles();
     let changed = scene.changed_columns(before);
     cost.changed.add(c);
@@ -1031,7 +1097,7 @@ async fn show(
     for columns in wrist_glass::text::strips(&changed, STRIP) {
         let t = Instant::now();
         let c = busy::cycles();
-        pages::repaint(fb, scene, before, columns);
+        pages::repaint(fb, scene, before, columns, composed.switch());
         cost.render.add(c);
         glass::note_max(&glass::MAX_RENDER_US, elapsed_us(t));
         embassy_futures::yield_now().await;
