@@ -106,8 +106,6 @@ const SLAVE_READY_TIMEOUT: Duration = Duration::from_millis(100);
 const IRQ_LOW_TIMEOUT: Duration = Duration::from_millis(1000);
 const BOOT_TIMEOUT: Duration = Duration::from_millis(3000);
 const REPLY_TIMEOUT: Duration = Duration::from_millis(1000);
-/// How long a numeric comparison waits for `ble yes` before it is rejected.
-const CONFIRM_TIMEOUT: Duration = Duration::from_millis(wrist_pages::PROMPT_MS);
 /// A transfer with no bytes for this long is abandoned, as over USB.
 const TRANSFER_IDLE: Duration = Duration::from_secs(5);
 /// One SPI read. The chip queues events back to back and announces them all in one count,
@@ -474,14 +472,14 @@ pub fn toggle() {
 /// The wearer's answer to the numeric comparison waiting, as `ble yes|no`, taken at once.
 pub fn answer(yes: bool) {
     if answer_prompt(yes) {
-        let _ = REQUESTS.try_send(if yes { Request::Yes } else { Request::No });
+        WAKE.signal(());
     }
 }
 
 fn answer_prompt(yes: bool) -> bool {
     PROMPT.lock(|p| {
         let mut prompt = p.get();
-        let answered = prompt.answer(yes);
+        let answered = prompt.answer(yes, Instant::now().as_millis());
         p.set(prompt);
         answered
     })
@@ -550,7 +548,6 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
             reply: None,
             readvertise: false,
             passkey_for: None,
-            confirm_for: None,
             rebond_for: None,
             recount_bonds: false,
             nus: None,
@@ -615,7 +612,6 @@ struct Link<'d> {
     /// Deferred work raised by events, done from the main loop.
     readvertise: bool,
     passkey_for: Option<u16>,
-    confirm_for: Option<(u16, Instant)>,
     rebond_for: Option<u16>,
     recount_bonds: bool,
     /// The console service: service, RX and TX characteristic handles.
@@ -734,7 +730,7 @@ impl Link<'_> {
                 || self.recount_bonds
                 || self.passkey_for.is_some()
                 || self.readvertise,
-            confirm_by: self.confirm_for.map(|(_, since)| tick(since + CONFIRM_TIMEOUT + one)),
+            confirm_by: PROMPT.lock(Cell::get).owed().map(|(at, _)| tick(Instant::from_millis(at))),
             transfer: match &self.transfer {
                 None => Transfer::None,
                 Some(s) if s.started() => Transfer::Started,
@@ -756,10 +752,9 @@ impl Link<'_> {
             Request::Off => {}
             Request::Version => self.version().await,
             Request::Yes | Request::No => {
-                if self.confirm_for.is_none() {
-                    return self.uart.write_line("[ble] no comparison is waiting");
+                if !answer_prompt(req == Request::Yes) {
+                    self.uart.write_line("[ble] no comparison is waiting");
                 }
-                answer_prompt(req == Request::Yes);
             }
             Request::Bonds => self.list_bonds().await,
             Request::Forget => {
@@ -886,23 +881,25 @@ impl Link<'_> {
         if let Some(h) = self.passkey_for.take() {
             self.answer_passkey(h).await;
         }
-        if let Some((h, since)) = self.confirm_for {
-            let answer = PROMPT.lock(Cell::get).answered();
-            let timed_out = since.elapsed() > CONFIRM_TIMEOUT;
-            if answer.is_some() || timed_out {
-                self.confirm_for = None;
-                let yes = answer == Some(true);
-                let hb = h.to_le_bytes();
-                let _ = self.command(ACI_GAP_NUMERIC_COMPARISON_CONFIRM, &[hb[0], hb[1], u8::from(yes)]).await;
-                self.uart.write_line(if yes {
-                    "[ble] comparison confirmed"
-                } else if timed_out {
-                    "[ble] comparison not answered in 60 s: rejected"
-                } else {
-                    "[ble] comparison rejected"
-                });
-                clear_prompt();
+        let now = Instant::now().as_millis();
+        let (prompt, owed) = PROMPT.lock(|p| {
+            let prompt = p.get();
+            let owed = prompt.owed().filter(|&(at, _)| at <= now).map(|(_, yes)| yes);
+            if owed.is_some() {
+                p.set(Prompt::None);
             }
+            (prompt, owed)
+        });
+        if let Some(yes) = owed {
+            let hb = CONN_HANDLE.load(Ordering::Relaxed).to_le_bytes();
+            let _ = self.command(ACI_GAP_NUMERIC_COMPARISON_CONFIRM, &[hb[0], hb[1], u8::from(yes)]).await;
+            self.uart.write_line(if yes {
+                "[ble] comparison confirmed"
+            } else if prompt == Prompt::Answered(false) {
+                "[ble] comparison rejected"
+            } else {
+                "[ble] comparison not answered in 60 s: rejected"
+            });
         }
         if self.readvertise {
             self.readvertise = false;
@@ -1569,7 +1566,6 @@ impl Link<'_> {
         set_encrypted(false);
         self.subscribed = false;
         self.set_mirror();
-        self.confirm_for = None;
         self.request_interval = None;
         self.pair_ask.settled();
         self.interval_ask.disconnected();
@@ -1677,10 +1673,9 @@ impl Link<'_> {
             vendor::GAP_NUMERIC_COMPARISON_VALUE if rest.len() >= 6 => {
                 self.pair_ask.settled();
                 self.interval_ask.pairing();
-                let (conn, value) = bluenrg2::numeric_comparison(rest).unwrap_or_default();
+                let (_, value) = bluenrg2::numeric_comparison(rest).unwrap_or_default();
                 PROMPT.lock(|p| p.set(Prompt::Waiting(Pairing::Compare, value, Instant::now().as_millis())));
                 crate::wake_display();
-                self.confirm_for = Some((conn, Instant::now()));
                 self.uart.write_str("[ble] pairing: the central shows a number; if it is ");
                 write_six_digits(self.uart, value);
                 self.uart.write_line(", `ble yes` on the USB console (`ble no` rejects)");
@@ -1689,7 +1684,6 @@ impl Link<'_> {
                 let (status, reason) = bluenrg2::pairing_complete(rest).unwrap_or_default();
                 LAST_PAIRING.store(status.saturating_add(1), Ordering::Relaxed);
                 LAST_PAIRING_REASON.store(reason, Ordering::Relaxed);
-                self.confirm_for = None;
                 self.pair_ask.settled();
                 clear_prompt();
                 if status == 0 {

@@ -169,19 +169,22 @@ impl Prompt {
         }
     }
 
-    /// Answer the comparison waiting; false when none is.
-    pub fn answer(&mut self, yes: bool) -> bool {
-        let waiting = matches!(self, Self::Waiting(Pairing::Compare, ..));
+    /// Answer the comparison waiting at `now_ms`; false when none is.
+    pub fn answer(&mut self, yes: bool, now_ms: u64) -> bool {
+        let waiting = matches!(self.waiting(now_ms), Some((Pairing::Compare, _)));
         if waiting {
             *self = Self::Answered(yes);
         }
         waiting
     }
 
+    /// When the radio owes the chip the comparison's answer, and the answer: the wearer's, or
+    /// no once the digits stop waiting.
     #[must_use]
-    pub const fn answered(self) -> Option<bool> {
+    pub const fn owed(self) -> Option<(u64, bool)> {
         match self {
-            Self::Answered(yes) => Some(yes),
+            Self::Waiting(Pairing::Compare, _, since) => Some((since.saturating_add(PROMPT_MS), false)),
+            Self::Answered(yes) => Some((0, yes)),
             _ => None,
         }
     }
@@ -439,15 +442,23 @@ mod tests {
     fn an_answered_comparison_waits_no_longer() {
         let mut prompt = Prompt::Waiting(Pairing::Compare, 123_456, 0);
         assert_eq!(prompt.waiting(0), Some((Pairing::Compare, 123_456)));
-        assert_eq!(prompt.answered(), None);
-        assert!(prompt.answer(false));
-        assert_eq!((prompt.waiting(0), prompt.answered(), prompt.ends_ms(0)), (None, Some(false), None));
-        assert!(!prompt.answer(true));
-        assert_eq!(prompt.answered(), Some(false));
+        assert_eq!(prompt.owed(), Some((PROMPT_MS, false)));
+        assert!(prompt.answer(true, 0));
+        assert_eq!((prompt.waiting(0), prompt.owed(), prompt.ends_ms(0)), (None, Some((0, true)), None));
+        assert!(!prompt.answer(false, 0));
+        assert_eq!(prompt.owed(), Some((0, true)));
         let mut passkey = Prompt::Waiting(Pairing::Passkey, 1, 0);
-        assert!(!passkey.answer(true));
-        assert_eq!(passkey.waiting(0), Some((Pairing::Passkey, 1)));
-        assert!(!Prompt::None.answer(true));
+        assert!(!passkey.answer(true, 0));
+        assert_eq!((passkey.waiting(0), passkey.owed()), (Some((Pairing::Passkey, 1)), None));
+        assert!(!Prompt::None.answer(true, 0));
+    }
+
+    #[test]
+    fn a_comparison_answered_after_its_digits_stop_is_not() {
+        let mut prompt = Prompt::Waiting(Pairing::Compare, 7, 1_000);
+        assert!(!prompt.answer(true, 1_000 + PROMPT_MS));
+        assert_eq!(prompt.owed(), Some((1_000 + PROMPT_MS, false)));
+        assert!(prompt.answer(true, 1_000 + PROMPT_MS - 1));
     }
 
     #[test]
