@@ -6,6 +6,9 @@ use crate::{
 /// Everything the radio reports; every chip packet becomes exactly one of these.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RadioEvent {
+    /// The chip came up without a start: a restart, with every link, operation and setting gone.
+    /// A start's own ready is [`crate::Radio::start`]'s answer and never this event, so one boot
+    /// is reported once.
     Ready(ChipInfo),
     /// The chip reset itself: every link is gone and every pending operation with it.
     ChipReset(ResetCause),
@@ -51,6 +54,9 @@ pub enum ResetCause {
     Lockup,
     Brownout,
     Crash,
+    /// It came up in its updater rather than its stack, which answers no normal command; only a
+    /// reset through its pin brings the stack back.
+    Updater,
     Other,
 }
 

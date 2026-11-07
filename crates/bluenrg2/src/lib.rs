@@ -184,6 +184,56 @@ pub mod vendor {
     pub const GATT_SERVER_CONFIRMATION: u16 = 0x0C17;
 }
 
+/// Why the chip says it started: `ACI_BLUE_INITIALIZED`'s reason code (ST's
+/// `bluenrg1_events.h`), its one parameter. The chip sends the event after every reset, asked for
+/// or not.
+pub mod boot_reason {
+    /// The stack started.
+    pub const STARTED: u8 = 0x01;
+    /// The updater runs, started by its command. On firmware 2353 that command is `0xFC20`
+    /// (HARDWARE.md), the opcode STM32WB uses for setting slave latency.
+    pub const UPDATER_BY_COMMAND: u8 = 0x02;
+    /// The updater runs because the stack's image is not marked valid.
+    pub const UPDATER_BAD_FLAG: u8 = 0x03;
+    /// The updater runs because the IRQ pin was high at reset.
+    pub const UPDATER_BY_PIN: u8 = 0x04;
+    pub const WATCHDOG: u8 = 0x05;
+    pub const LOCKUP: u8 = 0x06;
+    pub const BROWNOUT: u8 = 0x07;
+    pub const CRASH: u8 = 0x08;
+    pub const ECC_ERROR: u8 = 0x09;
+
+    /// The updater runs instead of the stack: it answers normal commands with status `0x01`,
+    /// and only a reset brings the stack back.
+    #[must_use]
+    pub const fn updater(reason: u8) -> bool {
+        matches!(reason, UPDATER_BY_COMMAND | UPDATER_BAD_FLAG | UPDATER_BY_PIN)
+    }
+
+    /// A few words for the console.
+    #[must_use]
+    pub const fn describe(reason: u8) -> &'static str {
+        match reason {
+            STARTED => "the stack started",
+            UPDATER_BY_COMMAND => "the updater, by command",
+            UPDATER_BAD_FLAG => "the updater, the stack not marked valid",
+            UPDATER_BY_PIN => "the updater, by the IRQ pin",
+            WATCHDOG => "a watchdog reset",
+            LOCKUP => "a lockup reset",
+            BROWNOUT => "a brownout reset",
+            CRASH => "a crash reset",
+            ECC_ERROR => "an ECC error reset",
+            _ => "a reason unknown",
+        }
+    }
+}
+
+/// `ACI_BLUE_INITIALIZED`'s reason ([`boot_reason`]); 0 if the event is empty.
+#[must_use]
+pub fn blue_initialized(params: &[u8]) -> u8 {
+    params.first().copied().unwrap_or(0)
+}
+
 /// ST's command status codes (`ble_status.h`), HCI's among them.
 pub mod status {
     pub const COMMAND_DISALLOWED: u8 = 0x0C;

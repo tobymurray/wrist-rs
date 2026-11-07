@@ -53,7 +53,8 @@ impl Harness {
     fn new(goals: Goals) -> Self {
         let mut h = Self { core: Core::new(&CAPABILITIES, &Scheduler, &MENU), now: Instant(0), ops: Vec::new(), next_id: 1 };
         h.step(Input::Goals(goals));
-        h.step(Input::Started(Ok(INFO)));
+        let up = started(&h.core);
+        h.step(up);
         h
     }
 
@@ -79,6 +80,11 @@ impl Harness {
     fn next(&mut self) -> Option<Instant> {
         self.core.step(self.now, Input::Tick).next
     }
+}
+
+/// The answer to the start in flight: the chip up.
+fn started(core: &Core<'_>) -> Input {
+    Input::Started(core.state.chip.starting().expect("a start in flight"), Ok(INFO))
 }
 
 fn phone_up(h: &mut Harness, ms: u64, link: ConnHandle) {
@@ -109,7 +115,7 @@ fn the_deadline_announces_securing_turning_unsecured() {
 fn the_deadline_announces_the_phone_turning_unreachable() {
     let mut core = Core::new(&CAPABILITIES, &Scheduler, &MENU);
     core.step(Instant(0), Input::Goals(Goals { radio_on: true, ..Goals::OFF }));
-    let out = core.step(Instant(0), Input::Started(Ok(INFO)));
+    let out = core.step(Instant(0), started(&core));
     assert!(matches!(out.op, Some(Op::Advertise(Some(_)))));
     let busy = wrist_ble::Failure { kind: wrist_ble::FailureKind::Busy, native: 0x0C };
     let mut now = Instant(0);
@@ -182,10 +188,10 @@ fn a_peers_parameter_request_is_refused_and_said_so() {
 fn a_chip_that_never_comes_up_is_reset_within_its_budget() {
     let mut core = Core::new(&CAPABILITIES, &Scheduler, &MENU);
     let out = core.step(Instant(0), Input::Goals(Goals { radio_on: true, power: Power::Cable, ..Goals::OFF }));
-    assert_eq!(out.chip, Some(wrist_ble_core::chip::Action::Start));
+    assert!(matches!(out.chip, Some(wrist_ble_core::chip::Action::Start(_))), "{out:?}");
     let next = out.next.unwrap();
     let out = core.step(next, Input::Tick);
-    assert_eq!(out.chip, Some(wrist_ble_core::chip::Action::Start));
+    assert!(matches!(out.chip, Some(wrist_ble_core::chip::Action::Start(_))), "{out:?}");
 }
 
 #[test]
@@ -197,7 +203,7 @@ fn a_chip_that_never_comes_up_is_started_once_an_hour_after_its_fault() {
     let mut out = core.step(now, Input::Goals(Goals { radio_on: true, power: Power::Cable, ..Goals::OFF }));
     let mut starts = Vec::new();
     while now < Instant(4 * 3_600_000) {
-        if out.chip == Some(Action::Start) {
+        if matches!(out.chip, Some(Action::Start(_))) {
             starts.push(now);
         }
         now = out.next.unwrap();
@@ -215,9 +221,9 @@ fn a_chip_that_never_comes_up_is_started_once_an_hour_after_its_fault() {
 fn events_lost_while_the_chip_starts_reset_it_at_once() {
     let mut core = Core::new(&CAPABILITIES, &Scheduler, &MENU);
     let out = core.step(Instant(0), Input::Goals(Goals { radio_on: true, power: Power::Cable, ..Goals::OFF }));
-    assert_eq!(out.chip, Some(wrist_ble_core::chip::Action::Start));
+    assert!(matches!(out.chip, Some(wrist_ble_core::chip::Action::Start(_))), "{out:?}");
     let out = core.step(Instant(100), Input::Radio(RadioEvent::EventsLost));
-    assert_eq!(out.chip, Some(wrist_ble_core::chip::Action::Start));
+    assert!(matches!(out.chip, Some(wrist_ble_core::chip::Action::Start(_))), "{out:?}");
 }
 
 fn done(id: u16) -> Input {
@@ -228,7 +234,7 @@ fn done(id: u16) -> Input {
 fn retiming_advertising() -> Core<'static> {
     let mut core = Core::new(&CAPABILITIES, &Scheduler, &MENU);
     core.step(Instant(0), Input::Goals(Goals { radio_on: true, ..Goals::OFF }));
-    core.step(Instant(0), Input::Started(Ok(INFO)));
+    core.step(Instant(0), started(&core));
     core.step(Instant(0), Input::Submitted(Ok(OpId(1))));
     core.step(Instant(1), done(1));
     let out = core.step(Instant(1_000), Input::Goals(Goals { radio_on: true, power: Power::Cable, ..Goals::OFF }));
@@ -284,7 +290,7 @@ fn a_phone_link_found_by_resync_is_asked_for_its_parameters() {
 fn a_refusal_the_plan_cannot_avoid_sends_the_chip_to_its_baseline() {
     let mut core = Core::new(&CAPABILITIES, &Scheduler, &MENU);
     core.step(Instant(0), Input::Goals(Goals { radio_on: true, ..Goals::OFF }));
-    core.step(Instant(0), Input::Started(Ok(INFO)));
+    core.step(Instant(0), started(&core));
     core.step(Instant(0), Input::Submitted(Ok(OpId(1))));
     core.step(Instant(1), done(1));
     let hidden = Goals { radio_on: true, phone: wrist_ble_core::goals::PhoneGoal { discoverable: false, pairing_open: false }, ..Goals::OFF };
@@ -294,7 +300,7 @@ fn a_refusal_the_plan_cannot_avoid_sends_the_chip_to_its_baseline() {
     let out = core.step(Instant(1_000), Input::Submitted(Err(refused)));
     assert_eq!(out.op, Some(Op::Advertise(None)));
     let out = core.step(Instant(1_000), Input::Submitted(Err(refused)));
-    assert_eq!((out.op, out.chip), (None, Some(wrist_ble_core::chip::Action::Start)));
+    assert!(matches!((out.op, out.chip), (None, Some(wrist_ble_core::chip::Action::Start(_)))), "{out:?}");
 }
 
 #[test]
@@ -304,7 +310,7 @@ fn a_refusal_the_retry_gets_past_is_not_held_against_a_later_one() {
     let hidden = Goals { radio_on: true, phone: wrist_ble_core::goals::PhoneGoal { discoverable: false, pairing_open: false }, ..Goals::OFF };
     let refused = wrist_ble::Failure { kind: wrist_ble::FailureKind::ModeExclusion, native: 0x0C };
     core.step(Instant(0), Input::Goals(shown));
-    core.step(Instant(0), Input::Started(Ok(INFO)));
+    core.step(Instant(0), started(&core));
     core.step(Instant(0), Input::Submitted(Ok(OpId(1))));
     core.step(Instant(1), done(1));
     core.step(Instant(1_000), Input::Goals(hidden));
@@ -326,12 +332,12 @@ fn a_refusal_before_the_chip_resets_is_forgotten_with_it() {
     let refused = wrist_ble::Failure { kind: wrist_ble::FailureKind::ModeExclusion, native: 0x0C };
     let busy = wrist_ble::Failure { kind: wrist_ble::FailureKind::Busy, native: 0x0C };
     core.step(Instant(0), Input::Goals(Goals { radio_on: true, power: Power::Cable, ..Goals::OFF }));
-    let first = core.step(Instant(0), Input::Started(Ok(INFO))).op;
+    let first = core.step(Instant(0), started(&core)).op;
     let second = core.step(Instant(0), Input::Submitted(Err(refused))).op;
     assert_ne!(first, second);
     core.step(Instant(0), Input::Submitted(Err(busy)));
     core.step(Instant(5), Input::Radio(RadioEvent::ChipReset(wrist_ble::ResetCause::Watchdog)));
-    assert_eq!(core.step(Instant(10), Input::Started(Ok(INFO))).op, first);
+    assert_eq!(core.step(Instant(10), started(&core)).op, first);
     let out = core.step(Instant(10), Input::Submitted(Err(refused)));
     assert_eq!((out.op, out.chip), (second, None));
 }
@@ -344,13 +350,59 @@ fn a_chip_starting_again_unasked_is_a_reset_that_takes_the_link() {
     let link = ConnHandle::new(0x801);
     phone_up(&mut h, 1_000, link);
     let out = h.at(2_000, Input::Radio(RadioEvent::Ready(INFO)));
-    assert_eq!(out.chip, Some(wrist_ble_core::chip::Action::Start));
+    assert!(matches!(out.chip, Some(wrist_ble_core::chip::Action::Start(_))), "{out:?}");
     assert_eq!(h.core.state.phone.link(), None);
     assert_eq!(h.core.counters.resets, 1);
     h.ops.clear();
-    h.at(2_500, Input::Started(Ok(INFO)));
+    h.at(2_500, started(&h.core));
     h.at(3_000, Input::Tick);
     assert!(matches!(h.ops.first(), Some(Op::Advertise(Some(_)))), "{:?}", h.ops);
+}
+
+/// Each start's answer names it, so an answer to a start the deadline replaced is not taken for
+/// the new one's, and the new one's answer then is no restart (F75).
+#[test]
+fn a_late_answer_for_an_earlier_start_is_not_this_ones() {
+    use wrist_ble_core::chip::{Action, Chip};
+    let mut core = Core::new(&CAPABILITIES, &Scheduler, &MENU);
+    let Some(Action::Start(first)) = core.step(Instant(0), Input::Goals(Goals { radio_on: true, ..Goals::OFF })).chip else { panic!() };
+    let late = Instant(0) + CAPABILITIES.start_within;
+    let Some(Action::Start(second)) = core.step(late, Input::Tick).chip else { panic!() };
+    assert_ne!(first, second);
+    core.step(late, Input::Started(first, Ok(INFO)));
+    assert!(matches!(core.state.chip.state, Chip::Starting { .. }), "{:?}", core.state.chip.state);
+    let out = core.step(late + Millis(300), Input::Started(second, Ok(INFO)));
+    assert_eq!((core.state.chip.state, out.chip), (Chip::Ready(INFO), None));
+    assert_eq!(core.counters.resets, 1, "the missed deadline alone");
+}
+
+/// The chip's own ready event is a boot nobody asked for: during a start it answers nothing, so a
+/// driver that passed its boot's event before the answer does not loop resets (F75).
+#[test]
+fn the_chips_ready_during_a_start_answers_nothing() {
+    use wrist_ble_core::chip::Chip;
+    let mut core = Core::new(&CAPABILITIES, &Scheduler, &MENU);
+    core.step(Instant(0), Input::Goals(Goals { radio_on: true, ..Goals::OFF }));
+    for i in 0..10 {
+        let t = Instant(i * 600_000);
+        assert_eq!(core.step(t, Input::Radio(RadioEvent::Ready(INFO))).chip, None);
+        assert!(matches!(core.state.chip.state, Chip::Starting { .. }));
+        assert_eq!(core.step(t, started(&core)).chip, None);
+        assert_eq!(core.state.chip.state, Chip::Ready(INFO));
+        core.step(t + Millis(1), Input::Goals(Goals::OFF));
+        core.step(t + Millis(2), Input::Goals(Goals { radio_on: true, ..Goals::OFF }));
+    }
+    assert_eq!(core.counters.resets, 0);
+}
+
+/// A start that missed its deadline restarts the chip as surely as a reset does (F77).
+#[test]
+fn a_start_past_its_deadline_counts_as_a_reset() {
+    let mut core = Core::new(&CAPABILITIES, &Scheduler, &MENU);
+    let out = core.step(Instant(0), Input::Goals(Goals { radio_on: true, ..Goals::OFF }));
+    let out = core.step(out.next.unwrap(), Input::Tick);
+    assert!(matches!(out.chip, Some(wrist_ble_core::chip::Action::Start(_))), "{out:?}");
+    assert_eq!(core.counters.resets, 1);
 }
 
 /// `BlueZ` accepts a request that changes nothing and sends no update (`fixtures/traces/bluez-*.log`).

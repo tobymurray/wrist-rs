@@ -1,6 +1,6 @@
 //! What each packet from the BlueNRG-2 tells the core.
 
-use bluenrg2::{vendor, Event};
+use bluenrg2::{boot_reason, vendor, Event};
 use wrist_ble::{
     AddrKind, BdAddr, ChipInfo, ConnHandle, Failure, FailureKind, Interval, LeConnRole, LinkParams, PairingEvent, PairingStep, PeerAddr,
     RadioEvent, ResetCause, Status, Timeout,
@@ -64,18 +64,19 @@ impl Translator {
     fn vendor(&mut self, code: u16, params: &[u8]) -> Option<RadioEvent> {
         let link = || ConnHandle::new(bluenrg2::connection_handle(params));
         Some(match code {
-            // The reason codes of `aci_blue_initialized_event` (ST's bluenrg1_events.h); 2 to 4 are
-            // the updater. Whatever the reason, the chip's links are gone.
+            // Whatever the reason, the chip's links are gone. A start's own boot never comes
+            // here: the driver's `start()` consumes it (`wrist_ble::Radio::start`).
             vendor::BLUE_INITIALIZED => {
                 self.phone = None;
-                match params.first() {
-                    Some(1) => RadioEvent::Ready(self.info),
-                    Some(5) => RadioEvent::ChipReset(ResetCause::Watchdog),
-                    Some(6) => RadioEvent::ChipReset(ResetCause::Lockup),
-                    Some(7) => RadioEvent::ChipReset(ResetCause::Brownout),
-                    Some(8) => RadioEvent::ChipReset(ResetCause::Crash),
-                    _ => RadioEvent::ChipReset(ResetCause::Other),
-                }
+                RadioEvent::ChipReset(match bluenrg2::blue_initialized(params) {
+                    boot_reason::STARTED => return Some(RadioEvent::Ready(self.info)),
+                    boot_reason::WATCHDOG => ResetCause::Watchdog,
+                    boot_reason::LOCKUP => ResetCause::Lockup,
+                    boot_reason::BROWNOUT => ResetCause::Brownout,
+                    boot_reason::CRASH => ResetCause::Crash,
+                    r if boot_reason::updater(r) => ResetCause::Updater,
+                    _ => ResetCause::Other,
+                })
             }
             vendor::HAL_EVENTS_LOST => RadioEvent::EventsLost,
             vendor::GAP_NUMERIC_COMPARISON_VALUE => {

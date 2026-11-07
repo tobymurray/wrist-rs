@@ -378,6 +378,32 @@ fn a_reset_takes_every_link_and_operation_with_it() {
     assert_eq!(f.phone_link(), None);
 }
 
+/// A chip that restarts by itself drops its links at once, unreported, and says why only once it
+/// has booted: up again for a plain start or a watchdog reset, but its updater takes nothing.
+#[test]
+fn a_reboot_drops_every_link_and_says_why_once_up() {
+    for (cause, event, up) in [
+        (ResetCause::PowerOn, RadioEvent::Ready(wrist_ble_sim::fake::INFO), true),
+        (ResetCause::Watchdog, RadioEvent::ChipReset(ResetCause::Watchdog), true),
+        (ResetCause::Updater, RadioEvent::ChipReset(ResetCause::Updater), false),
+    ] {
+        let mut f = ready(12);
+        f.submit(Op::Advertise(Some(ADV_100))).unwrap();
+        f.phone_arrives(Phone::new(Os::Linux, 1));
+        run(&mut f, 3_000);
+        assert!(f.phone_link().is_some());
+        let at = f.now();
+        f.reboot(cause);
+        assert_eq!(f.phone_link(), None);
+        assert!(!f.ready() && f.submit(Op::Advertise(Some(ADV_100))).is_err());
+        let events = run(&mut f, 60_000);
+        assert_eq!(events.iter().map(|(_, e)| *e).collect::<Vec<_>>(), [event], "{cause:?}");
+        assert!(events[0].0.since(at) >= Millis(200), "{cause:?}: it boots first");
+        assert_eq!(f.ready(), up, "{cause:?}");
+        assert_eq!(f.advertising(), None, "{cause:?}: it comes up unconfigured");
+    }
+}
+
 #[test]
 fn lost_events_are_reported_and_the_snapshot_tells_the_truth() {
     let mut f = ready(13);

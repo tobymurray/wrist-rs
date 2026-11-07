@@ -35,6 +35,11 @@
 //! the stack announces `ACI_BLUE_INITIALIZED` about 2 s later, and until then MISO only
 //! echoes MOSI.
 //!
+//! Restarts. The chip sends that event after any reset, and one the driver's start did not ask
+//! for means it restarted by itself (`wrist_wake::ble::restart`): the link and everything on it
+//! is dropped, no command goes to it, and it is reset through its pin and brought up again, which
+//! also leaves its updater. More than three in an hour and it is held in reset.
+//!
 //! Address. A static random address from the MCU's unique id
 //! (`bluenrg2::static_random_address`), so bonds survive updates.
 
@@ -70,10 +75,11 @@ use bluenrg2::opcode::{
     ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_REQ, HCI_LE_RAND, HCI_READ_LOCAL_VERSION, HCI_SET_EVENT_MASK,
 };
 use bluenrg2::{
-    address, config, event_code, evt_mask, permission, props, role, uuid_type, vendor, AttributeModified, Event,
+    address, boot_reason, config, event_code, evt_mask, permission, props, role, uuid_type, vendor, AttributeModified, Event,
     L2capUpdateResponse, ADV_IND, ATT_HEADER_LEN, MAX_COMMAND, MIN_ENC_KEY_SIZE, NO_FILTER, PRIMARY_SERVICE,
     PRIVACY_DISABLED, VARIABLE_LENGTH,
 };
+use wrist_wake::ble::restart::{Boot, Restarts};
 use wrist_wake::ble::{timing, IntervalAsk, Lines, Outbox, PairAsk, Power, Radio, Scan, Sink, Timing};
 
 use crate::console::Target;
@@ -158,6 +164,10 @@ enum Request {
     Scan(u8, Option<Scan>),
     #[cfg(feature = "ble-probe")]
     Probe,
+    /// `ble restart [updater]`: the chip restarted under the driver, through its pin or its
+    /// updater's command.
+    #[cfg(feature = "ble-probe")]
+    Restart(bool),
 }
 
 static REQUESTS: Channel<CriticalSectionRawMutex, Request, 4> = Channel::new();
@@ -209,6 +219,9 @@ static DISCONNECT_FAILURES: AtomicU32 = AtomicU32::new(0);
 static ENCRYPTION_FAILURES: AtomicU32 = AtomicU32::new(0);
 /// Packets the image does not act on: other events, unhandled vendor events, malformed packets.
 static UNKNOWN: AtomicU32 = AtomicU32::new(0);
+/// Times the chip restarted by itself, and the last one's `ACI_BLUE_INITIALIZED` reason.
+static RESTARTS: AtomicU32 = AtomicU32::new(0);
+static LAST_RESTART: AtomicU8 = AtomicU8::new(0);
 static BONDED: AtomicU8 = AtomicU8::new(0);
 /// Last pairing outcome: 0 none, else 1 + status (so 1 is success).
 static LAST_PAIRING: AtomicU8 = AtomicU8::new(0);
@@ -299,6 +312,10 @@ pub fn command(args: &[u8], uart: Uart) {
         b"disconnect" => Request::Disconnect,
         #[cfg(feature = "ble-probe")]
         b"probe" => Request::Probe,
+        #[cfg(feature = "ble-probe")]
+        b"restart" => Request::Restart(false),
+        #[cfg(feature = "ble-probe")]
+        b"restart updater" => Request::Restart(true),
         rest if rest.starts_with(b"profile") => {
             let (code, word) = match &rest[7..] {
                 b" auto" => (0, "follows the power source"),
@@ -392,6 +409,12 @@ pub fn write_status(uart: Uart) {
     n(", disconnect failures ", &DISCONNECT_FAILURES);
     n(", encryption failures ", &ENCRYPTION_FAILURES);
     n(", unknown events ", &UNKNOWN);
+    n(", chip restarts ", &RESTARTS);
+    if RESTARTS.load(Ordering::Relaxed) > 0 {
+        uart.write_str(" (last reason ");
+        uart.write_hex8(LAST_RESTART.load(Ordering::Relaxed));
+        uart.write_str(")");
+    }
     match LAST_PAIRING.load(Ordering::Relaxed) {
         0 => {}
         1 => uart.write_str(", last pairing succeeded"),
@@ -441,7 +464,7 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
                     uart.write_line("[ble] off; `ble on` starts it");
                 }
                 #[cfg(feature = "ble-probe")]
-                Request::Probe => uart.write_line("[ble] off; `ble on` starts it"),
+                Request::Probe | Request::Restart(_) => uart.write_line("[ble] off; `ble on` starts it"),
                 Request::Off => {
                     STATE.store(STATE_OFF, Ordering::Relaxed);
                     crate::rtc::set_radio_wanted(false);
@@ -494,16 +517,19 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
             interval_ask: IntervalAsk::default(),
             scanner: scan::Scanner::default(),
             seen: Seen::default(),
+            booting: false,
+            boot: None,
+            restart: None,
+            restarts: Restarts::default(),
         };
-        link.bring_up().await;
-        if Radio::from_u8(STATE.load(Ordering::Relaxed)).start_failed() {
+        // A start, or a restart's recovery, that failed.
+        if !(link.start().await && link.serve(&mut changes).await) {
             STATE.store(STATE_FAILED, Ordering::Relaxed);
             link.rst.set_low();
             uart.write_line("[ble] start failed: chip held in reset; `ble on` retries");
             on = false;
             continue;
         }
-        link.serve(&mut changes).await;
         // `ble off`: the chip in reset first, then SPI1, CS and IRQ dropped back to analog.
         link.rst.set_low();
         drop(link);
@@ -562,6 +588,12 @@ struct Link<'d> {
     interval_ask: IntervalAsk,
     scanner: scan::Scanner,
     seen: Seen,
+    /// A reset through the pin is waiting for the chip's boot, and how that boot came up.
+    booting: bool,
+    boot: Option<Boot>,
+    /// The chip restarted by itself and has not been brought up again.
+    restart: Option<Boot>,
+    restarts: Restarts,
 }
 
 /// Codes of unknown events already named on the console: each is named once.
@@ -584,10 +616,14 @@ impl Seen {
 }
 
 impl Link<'_> {
-    /// Until `ble off`. Each pass does what is due, then sleeps until the chip's IRQ, a
-    /// request, [`WAKE`], a power change or the earliest deadline.
-    async fn serve(&mut self, changes: &mut crate::power::Changes) {
+    /// Until `ble off` (true), or a restart the chip was not brought back from (false). Each pass
+    /// does what is due, then sleeps until the chip's IRQ, a request, [`WAKE`], a power change or
+    /// the earliest deadline.
+    async fn serve(&mut self, changes: &mut crate::power::Changes) -> bool {
         loop {
+            if self.restart.is_some() && !self.recover().await {
+                return false;
+            }
             WAKE.reset();
             self.deferred().await;
             self.scan_tick().await;
@@ -614,7 +650,7 @@ impl Link<'_> {
                         crate::update::abort(session);
                     }
                     let _ = self.command(ACI_GAP_SET_NON_DISCOVERABLE, &[]).await;
-                    return;
+                    return true;
                 }
                 Either4::First(req) => self.request(req).await,
                 Either4::Second(()) => {
@@ -692,6 +728,8 @@ impl Link<'_> {
             Request::Scan(seconds, duty) => self.scan_request(seconds, duty).await,
             #[cfg(feature = "ble-probe")]
             Request::Probe => self.probe().await,
+            #[cfg(feature = "ble-probe")]
+            Request::Restart(updater) => self.restart_chip(updater).await,
         }
     }
 
@@ -836,12 +874,33 @@ impl Link<'_> {
         }
     }
 
+    /// Bring the chip up, and again if it restarts meanwhile; whether it is up.
+    async fn start(&mut self) -> bool {
+        self.bring_up().await;
+        self.recover().await
+    }
+
+    /// Bring up again a chip that restarted by itself, within the budget; whether it is up.
+    async fn recover(&mut self) -> bool {
+        while let Some(boot) = self.restart.take() {
+            if boot == Boot::KeptRestarting {
+                self.uart.write_line("[ble] the chip restarted more than 3 times in an hour");
+                return false;
+            }
+            self.bring_up().await;
+        }
+        !Radio::from_u8(STATE.load(Ordering::Relaxed)).start_failed()
+    }
+
     /// Reset, address, TX power, event mask, GATT, GAP, name, IO capability, security
     /// requirements, advertise: ST's sample order.
     async fn bring_up(&mut self) {
         STATE.store(STATE_STARTING, Ordering::Relaxed);
         clear_prompt();
         self.reset().await;
+        if self.boot == Some(Boot::InUpdater) {
+            return self.fail("reset: the chip came up in its updater");
+        }
         let addr = address_from_uid();
         for (slot, b) in ADDRESS.iter().zip(addr.iter()) {
             slot.store(*b, Ordering::Relaxed);
@@ -1242,6 +1301,9 @@ impl Link<'_> {
         self.rst.set_high();
         self.waiting_for = None;
         self.reply = None;
+        self.restart = None;
+        self.boot = None;
+        self.booting = true;
         CONN_HANDLE.store(0, Ordering::Relaxed);
         // The stack announces itself about 2 s later; until then MISO only echoes MOSI, so
         // wait for the event before any command.
@@ -1250,11 +1312,17 @@ impl Link<'_> {
         } else {
             self.uart.write_line("[ble] no sign of life after reset (no module, or not ST's firmware)");
         }
+        self.booting = false;
     }
 
     /// Send a command and wait for its Command Complete (or Command Status), handling every
     /// other event that arrives meanwhile.
     async fn command(&mut self, opcode: u16, params: &[u8]) -> Result<Reply, &'static str> {
+        // A chip that restarted is reset before it hears anything: its updater, say, takes
+        // commands of its own.
+        if self.restart.is_some() {
+            return Err("not sent: the chip restarted");
+        }
         let mut packet = [0u8; MAX_COMMAND];
         let n = bluenrg2::command(opcode, params, &mut packet);
         #[cfg(feature = "ble-trace")]
@@ -1266,7 +1334,7 @@ impl Link<'_> {
             return Err("the chip did not take the command");
         }
         let deadline = Instant::now() + REPLY_TIMEOUT;
-        while self.reply.is_none() {
+        while self.reply.is_none() && self.restart.is_none() {
             let left = deadline.saturating_duration_since(Instant::now());
             if left == Duration::from_ticks(0) {
                 break;
@@ -1394,18 +1462,7 @@ impl Link<'_> {
                     DISCONNECT_FAILURES.fetch_add(1, Ordering::Relaxed);
                 }
                 STATE.store(STATE_IDLE, Ordering::Relaxed);
-                CONN_HANDLE.store(0, Ordering::Relaxed);
-                ENCRYPTED.store(false, Ordering::Relaxed);
-                self.subscribed = false;
-                self.set_mirror();
-                self.confirm_for = None;
-                self.request_interval = None;
-                self.pair_ask.settled();
-                self.interval_ask.disconnected();
-                clear_prompt();
-                if let Some(session) = self.transfer.take() {
-                    crate::update::abort(session);
-                }
+                self.link_gone();
                 self.uart.write_str("[ble] disconnected, reason ");
                 self.uart.write_hex8(reason);
                 self.uart.write_line(" (13 = the central hung up)");
@@ -1438,6 +1495,56 @@ impl Link<'_> {
                 UNKNOWN.fetch_add(1, Ordering::Relaxed);
             }
         }
+    }
+
+    /// The link is gone: its encryption, the subscription and mirror, a pairing prompt, the
+    /// pending asks and any transfer with it.
+    fn link_gone(&mut self) {
+        CONN_HANDLE.store(0, Ordering::Relaxed);
+        ENCRYPTED.store(false, Ordering::Relaxed);
+        self.subscribed = false;
+        self.set_mirror();
+        self.confirm_for = None;
+        self.request_interval = None;
+        self.pair_ask.settled();
+        self.interval_ask.disconnected();
+        clear_prompt();
+        if let Some(session) = self.transfer.take() {
+            crate::update::abort(session);
+        }
+    }
+
+    /// `ACI_BLUE_INITIALIZED`: the boot a reset waits for, or a restart nobody asked for, which
+    /// leaves nothing of the link or the configuration; [`Link::serve`] brings the chip up again.
+    fn initialized(&mut self, reason: u8) {
+        let boot = self.restarts.initialized(self.booting, reason, Instant::now().as_ticks(), embassy_time::TICK_HZ);
+        let restarted = matches!(boot, Boot::Restarted | Boot::KeptRestarting);
+        self.uart.write_str(if restarted { "[ble] the chip restarted by itself, reason " } else { "[ble] chip initialised, reason " });
+        self.uart.write_hex8(reason);
+        self.uart.write_str(" (");
+        self.uart.write_str(boot_reason::describe(reason));
+        if !restarted {
+            self.booting = false;
+            self.boot = Some(boot);
+            return self.uart.write_line(")");
+        }
+        self.uart.write_line(if boot_reason::updater(reason) { "); resetting it out of the updater" } else { "); resetting it" });
+        RESTARTS.fetch_add(1, Ordering::Relaxed);
+        LAST_RESTART.store(reason, Ordering::Relaxed);
+        STATE.store(STATE_STARTING, Ordering::Relaxed);
+        self.link_gone();
+        clear_out(self.outbox.discard());
+        self.outbox = Outbox::default();
+        self.nus = None;
+        self.mtu = DEFAULT_MTU;
+        self.asked = None;
+        self.advertised = None;
+        self.readvertise = false;
+        self.finish_transfer = false;
+        self.passkey_for = None;
+        self.rebond_for = None;
+        self.recount_bonds = false;
+        self.restart = Some(boot);
     }
 
     /// `[ble] data length TX 251 octets in 2120 us, RX 27 octets in 328 us`.
@@ -1494,7 +1601,7 @@ impl Link<'_> {
     fn vendor(&mut self, ecode: u16, rest: &[u8]) {
         let handle = bluenrg2::connection_handle;
         match ecode {
-            vendor::BLUE_INITIALIZED => self.uart.write_line("[ble] chip initialised"),
+            vendor::BLUE_INITIALIZED => self.initialized(bluenrg2::blue_initialized(rest)),
             vendor::HAL_EVENTS_LOST => self.uart.write_line("[ble] the chip dropped events: the host read too slowly"),
             vendor::GAP_PASS_KEY_REQ => {
                 self.pair_ask.settled();

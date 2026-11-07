@@ -273,7 +273,8 @@ fn waiting() -> (Core<'static>, Fake, Instant) {
     let mut core = Core::new(&CAPABILITIES, &Scheduler, &MENU);
     let now = Instant(0);
     core.step(now, Input::Goals(on(Power::Battery)));
-    let mut out = core.step(now, Input::Started(Ok(INFO)));
+    let up = core.state.chip.starting().expect("a start in flight");
+    let mut out = core.step(now, Input::Started(up, Ok(INFO)));
     for _ in 0..10 {
         if out.op.is_some() {
             break;

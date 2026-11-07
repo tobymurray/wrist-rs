@@ -50,10 +50,14 @@ pub enum Event {
     Tick,
 }
 
+/// One start, which its answer names: an answer to an earlier start is not this one's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct StartId(pub u32);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
-    /// Reset the chip and bring it up.
-    Start,
+    /// Reset the chip and bring it up, then answer with this start's id.
+    Start(StartId),
     /// Keep the chip in reset.
     Hold,
 }
@@ -62,10 +66,18 @@ pub enum Action {
 pub struct ChipMachine {
     pub state: Chip,
     resets: [Option<Instant>; RESETS_PER_HOUR],
+    /// The latest start asked for.
+    start: StartId,
 }
 
 impl ChipMachine {
-    pub const OFF: Self = Self { state: Chip::Off, resets: [None; RESETS_PER_HOUR] };
+    pub const OFF: Self = Self { state: Chip::Off, resets: [None; RESETS_PER_HOUR], start: StartId(0) };
+
+    /// The start in flight, which an answer must name to count.
+    #[must_use]
+    pub fn starting(&self) -> Option<StartId> {
+        matches!(self.state, Chip::Starting { .. }).then_some(self.start)
+    }
 
     #[must_use]
     pub fn step(mut self, caps: &Capabilities, now: Instant, event: Event) -> (Self, Option<Action>) {
@@ -74,14 +86,10 @@ impl ChipMachine {
                 self.state = Chip::Off;
                 Some(Action::Hold)
             }
-            (Chip::Off, Event::RadioOn) | (Chip::Fault { .. }, Event::Retry) => {
-                self.state = Chip::Starting { since: now };
-                Some(Action::Start)
-            }
+            (Chip::Off, Event::RadioOn) | (Chip::Fault { .. }, Event::Retry) => Some(self.begin(now)),
             (Chip::Fault { retry_at, .. }, Event::Tick) if now >= retry_at => {
-                self.state = Chip::Starting { since: now };
                 self.resets = [Some(now + RETRY_PROVEN - HOUR); RESETS_PER_HOUR];
-                Some(Action::Start)
+                Some(self.begin(now))
             }
             (Chip::Starting { .. }, Event::Ready(info)) => {
                 self.state = Chip::Ready(info);
@@ -109,11 +117,16 @@ impl ChipMachine {
         let recent = |at: &Option<Instant>| at.is_some_and(|t| now.since(t) < HOUR);
         if let Some(slot) = self.resets.iter_mut().find(|at| !recent(at)) {
             *slot = Some(now);
-            self.state = Chip::Starting { since: now };
-            Action::Start
+            self.begin(now)
         } else {
             self.state = Chip::Fault { cause, retry_at: now + FAULT_RETRY };
             Action::Hold
         }
+    }
+
+    fn begin(&mut self, now: Instant) -> Action {
+        self.state = Chip::Starting { since: now };
+        self.start = StartId(self.start.0.wrapping_add(1));
+        Action::Start(self.start)
     }
 }

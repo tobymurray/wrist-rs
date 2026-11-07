@@ -1,5 +1,6 @@
 //! `ble probe`: the chip's firmware and updater versions, and its anchor period (PM0257 §4)
-//! idle and beside advertising, or beside a central's link.
+//! idle and beside advertising, or beside a central's link. `ble restart [updater]`: the chip
+//! restarted under the driver, to check that the driver finds it and brings the chip back.
 
 use core::fmt::{self, Write};
 use core::sync::atomic::Ordering;
@@ -7,8 +8,13 @@ use core::sync::atomic::Ordering;
 use bluenrg2::opcode::{ACI_GAP_SET_NON_DISCOVERABLE, ACI_HAL_GET_ANCHOR_PERIOD};
 use bluenrg2::probe::{Beside, Line, Probe};
 
+use embassy_time::Timer;
+
 use super::{Link, INTERVAL, LATENCY, STATE, STATE_ADVERTISING, STATE_CONNECTED, STATE_IDLE};
 use crate::uart::Uart;
+
+/// Starts the chip's updater on firmware 2353 (HARDWARE.md); only this debug command sends it.
+const UPDATER_START: u16 = 0xFC20;
 
 struct Text(Uart);
 
@@ -44,6 +50,27 @@ impl Link<'_> {
                 }
             }
         }
+    }
+
+    /// The chip reset through its pin with no start waiting for it, as a brownout would leave it;
+    /// with `updater`, sent its updater's start, as Linux check 8 did by mistake. Either way the
+    /// next `ACI_BLUE_INITIALIZED` is one the driver did not ask for.
+    pub(super) async fn restart_chip(&mut self, updater: bool) {
+        if updater {
+            let status = self.command(UPDATER_START, &[]).await.map(|r| r.status);
+            self.uart.write_str("[ble] probe: updater start sent, status ");
+            match status {
+                Ok(s) => self.uart.write_hex8(s),
+                Err(why) => self.uart.write_str(why),
+            }
+            return self.uart.write_line("");
+        }
+        #[cfg(feature = "ble-trace")]
+        super::trace::packet(super::trace::Dir::Reset, &[]);
+        self.rst.set_low();
+        Timer::after_millis(5).await;
+        self.rst.set_high();
+        self.uart.write_line("[ble] probe: chip reset through its pin, unannounced");
     }
 
     async fn stop_advertising(&mut self) -> bool {
