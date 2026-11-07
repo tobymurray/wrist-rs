@@ -563,6 +563,19 @@ fn an_address_parses_into_the_chips_byte_order() {
 }
 
 #[test]
+fn only_another_bonds_identity_keeps_a_link_through_a_forget() {
+    use bluenrg2::{another_bond, Address};
+    let reply = [2, 1, 0xFD, 0x81, 0x10, 0xCE, 0xD1, 0x80, 0, 0x5C, 0xFC, 0xD7, 0x03, 0x12, 0xAC];
+    let (random, public) = ([0xFD, 0x81, 0x10, 0xCE, 0xD1, 0x80], [0x5C, 0xFC, 0xD7, 0x03, 0x12, 0xAC]);
+    assert!(another_bond(&reply, random, Address { kind: 0, bytes: public }));
+    assert!(!another_bond(&reply, public, Address { kind: 0, bytes: public }));
+    assert!(!another_bond(&reply, random, Address { kind: 1, bytes: public }));
+    // A resolvable private address, as a phone connects with.
+    assert!(!another_bond(&reply, random, Address { kind: 1, bytes: [1, 2, 3, 4, 5, 0x4A] }));
+    assert!(!another_bond(&[], random, Address { kind: 0, bytes: public }));
+}
+
+#[test]
 fn bonded_devices_reads_each_entry_and_no_more_than_the_reply_holds() {
     // Two bonds: a static random identity and a public one, as the watch's reply gave them.
     let reply = [2, 1, 0xFD, 0x81, 0x10, 0xCE, 0xD1, 0x80, 0, 0x5C, 0xFC, 0xD7, 0x03, 0x12, 0xAC];

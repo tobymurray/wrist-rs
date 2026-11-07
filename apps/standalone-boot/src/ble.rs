@@ -567,6 +567,7 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
             advertised: None,
             request_interval: None,
             subscribed: false,
+            peer: None,
             transfer: None,
             last_data: Instant::from_ticks(0),
             finish_transfer: false,
@@ -636,6 +637,8 @@ struct Link<'d> {
     request_interval: Option<(u16, u16)>,
     /// The central wrote TX's CCCD on: the mirror runs while the link is encrypted too.
     subscribed: bool,
+    /// The connected central's address, as the link gave it.
+    peer: Option<bluenrg2::Address>,
     /// An image arriving through RX, and when its last bytes came.
     transfer: Option<crate::update::Session>,
     last_data: Instant,
@@ -771,13 +774,11 @@ impl Link<'_> {
                     BONDED.store(0, Ordering::Relaxed);
                     redraw();
                     self.uart.write_line("[ble] bond database cleared; forget the watch on the central too");
+                    self.end_forgotten_link().await;
                 }
             }
             Request::ForgetOne(addr) => self.forget_one(addr).await,
-            Request::Disconnect => {
-                let h = CONN_HANDLE.load(Ordering::Relaxed).to_le_bytes();
-                let _ = self.command(ACI_GAP_TERMINATE, &[h[0], h[1], bluenrg2::status::REMOTE_USER_TERMINATED]).await;
-            }
+            Request::Disconnect => self.terminate().await,
             Request::IntervalNow(min, max) => {
                 if STATE.load(Ordering::Relaxed) == STATE_CONNECTED {
                     self.request_interval = Some((min, max));
@@ -1347,6 +1348,7 @@ impl Link<'_> {
             self.write_address(&addr);
             return self.uart.write_line("");
         };
+        let keep = self.peer.is_some_and(|peer| bluenrg2::another_bond(params, addr, peer));
         let mut p = [0u8; 7];
         p[0] = kind;
         p[1..].copy_from_slice(&addr);
@@ -1355,6 +1357,9 @@ impl Link<'_> {
                 self.uart.write_str("[ble] forgot ");
                 self.write_address(&addr);
                 self.uart.write_line("; forget the watch on that central too");
+                if !keep {
+                    self.end_forgotten_link().await;
+                }
                 self.list_bonds().await;
             }
             Ok(r) => {
@@ -1367,6 +1372,20 @@ impl Link<'_> {
                 self.uart.write_line(e);
             }
         }
+    }
+
+    /// The link ended, if one is up: its encryption would otherwise keep the console and
+    /// updates open to a central no longer bonded.
+    async fn end_forgotten_link(&mut self) {
+        if self.peer.is_some() {
+            self.terminate().await;
+            self.uart.write_line("[ble] link ended: not shown to be another bond's");
+        }
+    }
+
+    async fn terminate(&mut self) {
+        let h = CONN_HANDLE.load(Ordering::Relaxed).to_le_bytes();
+        let _ = self.command(ACI_GAP_TERMINATE, &[h[0], h[1], bluenrg2::status::REMOTE_USER_TERMINATED]).await;
     }
 
     /// A random six-digit passkey from the controller's own generator, shown on the console
@@ -1527,8 +1546,9 @@ impl Link<'_> {
                     self.reply = Some(Reply { status, params: [0; 64], len: 0 });
                 }
             }
-            Event::LeConnectionComplete { handle, conn_interval, .. } => {
+            Event::LeConnectionComplete { handle, peer, conn_interval, .. } => {
                 CONN_HANDLE.store(handle, Ordering::Relaxed);
+                self.peer = Some(peer);
                 self.pair_ask.connected(Instant::now().as_ticks(), embassy_time::TICK_HZ);
                 self.interval_ask.connected(Instant::now().as_ticks(), embassy_time::TICK_HZ);
                 if let Some((iv, lat)) = conn_interval {
@@ -1609,6 +1629,7 @@ impl Link<'_> {
         CONN_HANDLE.store(0, Ordering::Relaxed);
         set_encrypted(false);
         self.subscribed = false;
+        self.peer = None;
         self.set_mirror();
         self.request_interval = None;
         self.pair_ask.settled();

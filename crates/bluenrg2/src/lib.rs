@@ -687,6 +687,13 @@ pub fn bonded_devices(params: &[u8]) -> impl Iterator<Item = (u8, [u8; 6])> + '_
     })
 }
 
+/// Whether a link from `peer` is provably not `forgotten`'s: `peer` is the identity of another
+/// bond in a `GET_BONDED_DEVICES` reply. A private address proves nothing.
+#[must_use]
+pub fn another_bond(params: &[u8], forgotten: [u8; 6], peer: Address) -> bool {
+    bonded_devices(params).any(|(kind, addr)| addr != forgotten && (kind, addr) == (peer.kind, peer.bytes))
+}
+
 /// An address as people write it, `AC:12:03:D7:FC:5C` (colons or dashes, either case), into
 /// the chip's byte order, least significant first.
 #[must_use]
