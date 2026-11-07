@@ -60,6 +60,8 @@ bluetooth-select-matches = select: it matches
 bluetooth-back-no-match = back: no match
 # During passkey entry, under the six digits: type them on the phone.
 bluetooth-type-passkey = type on the phone
-# On the face and the Bluetooth page: a phone or computer was refused for a pairing key the
-# watch no longer has; it must forget the watch and pair again.
+# On the Bluetooth page: a phone or computer was refused for a pairing key the watch no longer
+# has; it must forget the watch and pair again.
 bluetooth-old-key = forget & pair
+# On the face, for the same: the Bluetooth page says what to do.
+bluetooth-see-page = see Bluetooth

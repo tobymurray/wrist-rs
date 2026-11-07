@@ -249,9 +249,9 @@ fn the_face_reads_right() {
         let (glass, _) = compose(&Status { ringing: true, missed: true, ..on }, &EN_GB, faces);
         assert_eq!(texts(&glass)[0], "ALARM");
         let (glass, _) = compose(&Status { old_key: true, ..on }, &EN_GB, faces);
-        assert_eq!(texts(&glass), ["Sat 17 Oct", "16:27", "100 %", "forget & pair"]);
+        assert_eq!(texts(&glass), ["Sat 17 Oct", "16:27", "100 %", "see Bluetooth"]);
         let (glass, _) = compose(&Status { old_key: true, ..typical() }, &EN_GB, faces);
-        assert_eq!(texts(&glass)[3], "forget & pair");
+        assert_eq!(texts(&glass)[3], "see Bluetooth");
     }
 }
 

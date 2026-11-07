@@ -112,7 +112,7 @@ pub fn compose(status: &Status, locale: &Locale, faces: &Faces) -> (Glass, Short
     });
     b.at(faces.words, FACE_BATT, |l| push_percent(l, locale, status.soc_pct));
     if status.old_key {
-        b.at(faces.id, FACE_ALARM, |l| locale.message(l, Msg::BluetoothOldKey));
+        b.at(faces.id, FACE_ALARM, |l| locale.message(l, Msg::BluetoothSeePage));
     } else if let Some(alarm) = status.alarm {
         b.at(faces.id, FACE_ALARM, |l| locale.time(l, alarm));
     }
