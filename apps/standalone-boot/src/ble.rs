@@ -66,7 +66,7 @@ use embassy_sync::pipe::Pipe;
 use embassy_sync::signal::Signal;
 use embassy_time::{with_timeout, Duration, Instant, Timer};
 use bluenrg2::opcode::{
-    ACI_GAP_ALLOW_REBOND, ACI_GAP_CLEAR_SECURITY_DB, ACI_GAP_GET_BONDED_DEVICES, ACI_GAP_INIT,
+    ACI_GAP_ALLOW_REBOND, ACI_GAP_CLEAR_SECURITY_DB, ACI_GAP_GET_BONDED_DEVICES, ACI_GAP_REMOVE_BONDED_DEVICE, ACI_GAP_INIT,
     ACI_GAP_NUMERIC_COMPARISON_CONFIRM, ACI_GAP_PASS_KEY_RESP,
     ACI_GAP_SET_AUTHENTICATION_REQUIREMENT, ACI_GAP_SET_DISCOVERABLE, ACI_GAP_SET_IO_CAPABILITY,
     ACI_GAP_SET_NON_DISCOVERABLE, ACI_GAP_SLAVE_SECURITY_REQ, ACI_GAP_TERMINATE, ACI_GATT_ADD_CHAR,
@@ -156,6 +156,8 @@ enum Request {
     No,
     Bonds,
     Forget,
+    /// `ble forget <address>`: one bond, by its address (the chip's byte order).
+    ForgetOne([u8; 6]),
     Disconnect,
     /// Ask for this interval range (1.25 ms units) on the current connection.
     IntervalNow(u16, u16),
@@ -294,7 +296,7 @@ fn power() -> Power {
     }
 }
 
-/// `ble`, `ble on|off|version|yes|no|bonds|forget|disconnect|profile auto|cable|battery|interval now <min> <max>|scan [s [interval window]]`.
+/// `ble`, `ble on|off|version|yes|no|bonds|forget [address]|disconnect|profile auto|cable|battery|interval now <min> <max>|scan [s [interval window]]`.
 pub fn command(args: &[u8], uart: Uart) {
     let request = match args {
         b"" => return write_status(uart),
@@ -305,6 +307,12 @@ pub fn command(args: &[u8], uart: Uart) {
         b"no" => Request::No,
         b"bonds" => Request::Bonds,
         b"forget" => Request::Forget,
+        rest if rest.starts_with(b"forget ") => {
+            match core::str::from_utf8(&rest[7..]).ok().and_then(bluenrg2::parse_address) {
+                Some(addr) => Request::ForgetOne(addr),
+                None => return uart.write_line("[ble] usage: ble forget [<address>, as `ble bonds` lists it]"),
+            }
+        }
         b"disconnect" => Request::Disconnect,
         #[cfg(feature = "ble-probe")]
         b"probe" => Request::Probe,
@@ -340,7 +348,7 @@ pub fn command(args: &[u8], uart: Uart) {
         },
         _ => {
             return uart.write_line(
-                "[ble] usage: ble [on|off|version|yes|no|bonds|forget|disconnect|profile auto|cable|battery|interval now <min> <max>|scan [s [interval window]]]",
+                "[ble] usage: ble [on|off|version|yes|no|bonds|forget [address]|disconnect|profile auto|cable|battery|interval now <min> <max>|scan [s [interval window]]]",
             )
         }
     };
@@ -509,6 +517,7 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
                 Request::Version
                 | Request::Bonds
                 | Request::Forget
+                | Request::ForgetOne(..)
                 | Request::Disconnect
                 | Request::IntervalNow(..)
                 | Request::Scan(..) => {
@@ -558,6 +567,7 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
             advertised: None,
             request_interval: None,
             subscribed: false,
+            peer: None,
             transfer: None,
             last_data: Instant::from_ticks(0),
             finish_transfer: false,
@@ -627,6 +637,8 @@ struct Link<'d> {
     request_interval: Option<(u16, u16)>,
     /// The central wrote TX's CCCD on: the mirror runs while the link is encrypted too.
     subscribed: bool,
+    /// The connected central's address, as the link gave it.
+    peer: Option<bluenrg2::Address>,
     /// An image arriving through RX, and when its last bytes came.
     transfer: Option<crate::update::Session>,
     last_data: Instant,
@@ -762,12 +774,11 @@ impl Link<'_> {
                     BONDED.store(0, Ordering::Relaxed);
                     redraw();
                     self.uart.write_line("[ble] bond database cleared; forget the watch on the central too");
+                    self.end_forgotten_link().await;
                 }
             }
-            Request::Disconnect => {
-                let h = CONN_HANDLE.load(Ordering::Relaxed).to_le_bytes();
-                let _ = self.command(ACI_GAP_TERMINATE, &[h[0], h[1], bluenrg2::status::REMOTE_USER_TERMINATED]).await;
-            }
+            Request::ForgetOne(addr) => self.forget_one(addr).await,
+            Request::Disconnect => self.terminate().await,
             Request::IntervalNow(min, max) => {
                 if STATE.load(Ordering::Relaxed) == STATE_CONNECTED {
                     self.request_interval = Some((min, max));
@@ -1302,27 +1313,79 @@ impl Link<'_> {
     async fn list_bonds(&mut self) {
         if let Ok(r) = self.command(ACI_GAP_GET_BONDED_DEVICES, &[]).await {
             if r.len >= 1 {
-                BONDED.store(r.params[0], Ordering::Relaxed);
+                let params = &r.params[..r.len.min(r.params.len())];
+                BONDED.store(params[0], Ordering::Relaxed);
                 BONDED_READ.store(true, Ordering::Relaxed);
                 redraw();
                 self.uart.write_str("[ble] bonded devices: ");
-                self.uart.write_u32(u32::from(r.params[0]));
-                for i in 0..usize::from(r.params[0]).min(4) {
-                    let e = &r.params[1 + i * 7..];
-                    if e.len() < 7 {
-                        break;
-                    }
+                self.uart.write_u32(u32::from(params[0]));
+                for (_, addr) in bluenrg2::bonded_devices(params) {
                     self.uart.write_str(" ");
-                    for j in (1..7).rev() {
-                        self.uart.write_hex8(e[j]);
-                        if j > 1 {
-                            self.uart.write_str(":");
-                        }
-                    }
+                    self.write_address(&addr);
                 }
                 self.uart.write_line("");
             }
         }
+    }
+
+    fn write_address(&mut self, addr: &[u8; 6]) {
+        for (i, b) in addr.iter().rev().enumerate() {
+            if i > 0 {
+                self.uart.write_str(":");
+            }
+            self.uart.write_hex8(*b);
+        }
+    }
+
+    /// `ble forget <address>`, then the bonds left.
+    async fn forget_one(&mut self, addr: [u8; 6]) {
+        let Ok(r) = self.command(ACI_GAP_GET_BONDED_DEVICES, &[]).await else {
+            return self.uart.write_line("[ble] forget: the bonded devices could not be read");
+        };
+        let params = &r.params[..r.len.min(r.params.len())];
+        let Some((kind, _)) = bluenrg2::bonded_devices(params).find(|(_, a)| *a == addr) else {
+            self.uart.write_str("[ble] forget: not bonded: ");
+            self.write_address(&addr);
+            return self.uart.write_line("");
+        };
+        let keep = self.peer.is_some_and(|peer| bluenrg2::another_bond(params, addr, peer));
+        let mut p = [0u8; 7];
+        p[0] = kind;
+        p[1..].copy_from_slice(&addr);
+        match self.command(ACI_GAP_REMOVE_BONDED_DEVICE, &p).await {
+            Ok(r) if r.status == 0 => {
+                self.uart.write_str("[ble] forgot ");
+                self.write_address(&addr);
+                self.uart.write_line("; forget the watch on that central too");
+                if !keep {
+                    self.end_forgotten_link().await;
+                }
+                self.list_bonds().await;
+            }
+            Ok(r) => {
+                self.uart.write_str("[ble] forget: the chip refused, status ");
+                self.uart.write_hex8(r.status);
+                self.uart.write_line(if r.status == 0x01 { " (its stack has no single-bond removal)" } else { "" });
+            }
+            Err(e) => {
+                self.uart.write_str("[ble] forget: ");
+                self.uart.write_line(e);
+            }
+        }
+    }
+
+    /// The link ended, if one is up: its encryption would otherwise keep the console and
+    /// updates open to a central no longer bonded.
+    async fn end_forgotten_link(&mut self) {
+        if self.peer.is_some() {
+            self.terminate().await;
+            self.uart.write_line("[ble] link ended: not shown to be another bond's");
+        }
+    }
+
+    async fn terminate(&mut self) {
+        let h = CONN_HANDLE.load(Ordering::Relaxed).to_le_bytes();
+        let _ = self.command(ACI_GAP_TERMINATE, &[h[0], h[1], bluenrg2::status::REMOTE_USER_TERMINATED]).await;
     }
 
     /// A random six-digit passkey from the controller's own generator, shown on the console
@@ -1483,8 +1546,9 @@ impl Link<'_> {
                     self.reply = Some(Reply { status, params: [0; 64], len: 0 });
                 }
             }
-            Event::LeConnectionComplete { handle, conn_interval, .. } => {
+            Event::LeConnectionComplete { handle, peer, conn_interval, .. } => {
                 CONN_HANDLE.store(handle, Ordering::Relaxed);
+                self.peer = Some(peer);
                 self.pair_ask.connected(Instant::now().as_ticks(), embassy_time::TICK_HZ);
                 self.interval_ask.connected(Instant::now().as_ticks(), embassy_time::TICK_HZ);
                 if let Some((iv, lat)) = conn_interval {
@@ -1565,6 +1629,7 @@ impl Link<'_> {
         CONN_HANDLE.store(0, Ordering::Relaxed);
         set_encrypted(false);
         self.subscribed = false;
+        self.peer = None;
         self.set_mirror();
         self.request_interval = None;
         self.pair_ask.settled();

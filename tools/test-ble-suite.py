@@ -110,7 +110,8 @@ def snap(build, ble=True):
 
 
 def suite_args(**kw):
-    base = dict(port=None, install=None, restore=None, image=None, btmon=False, name='UNA', scenarios=['console'], sessions=1)
+    base = dict(port=None, install=None, restore=None, image=None, btmon=False, name='UNA', scenarios=['console'], sessions=1,
+                restart_radio=False, profile=None)
     base.update(kw)
     return argparse.Namespace(**base)
 
@@ -118,7 +119,7 @@ def suite_args(**kw):
 def run(scenario, usb, phone, build, **a):
     s = suite.Scenario(scenario.__name__, '')
     with mock.patch('sys.stdout', io.StringIO()):
-        asyncio.run(scenario(s, usb, phone, build, argparse.Namespace(**a)))
+        asyncio.run(scenario(s, usb, phone, build, argparse.Namespace(**{'profile': None, **a})))
     return s.passed
 
 
@@ -554,6 +555,96 @@ def load(name):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+class Replayable(unittest.TestCase):
+    """--restart-radio, --profile and console.log's times, the form the replay reads."""
+
+    class Said:
+        def __init__(self, answers):
+            self.answers, self.sent = answers, []
+
+        async def ask(self, text, pattern, timeout=3):
+            self.sent.append(text)
+            return next((l for l in self.answers.get(text, []) if re.search(pattern, l)), None)
+
+    def prepare(self, usb, **flags):
+        a = argparse.Namespace(restart_radio=False, profile=None)
+        vars(a).update(flags)
+        result = {}
+        with mock.patch.object(suite.asyncio, 'sleep', mock.AsyncMock()):
+            problems = asyncio.run(suite.prepare(usb, a, result))
+        return problems, result
+
+    def test_nothing_asked_without_the_flags(self):
+        usb = self.Said({})
+        self.assertEqual(self.prepare(usb), ([], {}))
+        self.assertEqual(usb.sent, [])
+
+    def test_the_radio_restarted_then_the_profile_held(self):
+        usb = self.Said({'ble off': ['[ble] off'], 'ble on': ['[ble] on'],
+                         'ble': ['[ble] advertising as UNA, timing cable, address D9:5B:7A:EB:29:82'],
+                         'ble profile battery': ['[ble] timing: the battery\'s, whatever the power source']})
+        problems, result = self.prepare(usb, restart_radio=True, profile='battery')
+        self.assertEqual(problems, [])
+        self.assertEqual(usb.sent, ['ble off', 'ble on', 'ble', 'ble profile battery'])
+        self.assertEqual(result['profile'], 'battery')
+        self.assertNotIn('radio_off', result)
+
+    def test_a_radio_that_stays_off_stops_the_run(self):
+        usb = self.Said({'ble': ['[ble] off, timing cable']})
+        problems, _ = self.prepare(usb, restart_radio=True)
+        self.assertEqual(len(problems), 1)
+        self.assertIn('did not come back', problems[0])
+
+    def test_the_profile_is_held_again_after_the_update_s_reset(self):
+        usb = Console({'version': ['[usb] build b1'], 'ble': ['[ble] advertising as UNA, timing cable'],
+                       'ble profile battery': ['[ble] timing: the battery\'s, whatever the power source']})
+        self.assertTrue(run(suite.update, usb, Phone(), 'b1', update_image=None, profile='battery'))
+        self.assertEqual(usb.sent[-1], 'ble profile battery')
+
+    def test_a_run_stopped_with_the_radio_off_turns_it_on(self):
+        usb = Console({'ble off': ['[ble] off'], 'ble on': ['[ble] on']})
+
+        async def stopped(seconds):
+            raise asyncio.CancelledError
+        result = {'scenarios': []}
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(suite, 'host', Quiet), \
+                mock.patch.object(suite.wrist_port, 'find', return_value='/dev/watch'), \
+                mock.patch.object(suite, 'Usb', lambda port, path: usb), \
+                mock.patch.object(suite, 'snapshot', mock.AsyncMock(return_value=snap('b1'))), \
+                mock.patch.object(suite.asyncio, 'sleep', stopped), mock.patch('sys.stdout', io.StringIO()):
+            with self.assertRaises(asyncio.CancelledError):
+                asyncio.run(suite.run(suite_args(restart_radio=True), Path(d), result))
+        self.assertEqual(usb.sent, ['ble off', 'ble on'])
+
+    def test_a_console_gone_at_the_end_still_restores(self):
+        class Gone(Console):
+            def send(self, text):
+                if text == 'ble on':
+                    raise RuntimeError("the watch's USB console is gone")
+                super().send(text)
+        usb, installs = Gone({'ble off': ['[ble] off']}), []
+
+        async def install(u, a, image, out):
+            installs.append(image)
+            return True, usb
+        result = {'scenarios': []}
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(suite, 'host', Quiet), \
+                mock.patch.object(suite.wrist_port, 'find', return_value='/dev/watch'), \
+                mock.patch.object(suite, 'Usb', lambda port, path: usb), \
+                mock.patch.object(suite, 'snapshot', mock.AsyncMock(return_value=snap('b1'))), \
+                mock.patch.object(suite, 'image_problems', lambda *a: []), mock.patch.object(suite, 'install', install), \
+                mock.patch.object(suite.asyncio, 'sleep', mock.AsyncMock()), mock.patch('sys.stdout', io.StringIO()):
+            with self.assertRaises(RuntimeError):
+                asyncio.run(suite.run(suite_args(restart_radio=True, install=Path('new.bin'), restore=Path('old.bin')),
+                                      Path(d), result))
+        self.assertEqual(installs, [Path('new.bin'), Path('old.bin')])
+
+    def test_console_times_are_seconds_since_the_start(self):
+        with mock.patch.object(suite, 'START', 1000.0):
+            self.assertEqual(suite.seconds(1012.3456), '   12.346')
+            self.assertRegex(suite.seconds(1000.0) + ' [trace] 5 e 04', r'^\s*\d+\.\d{3} ')
 
 
 @unittest.skipUnless(importlib.util.find_spec('dbus_fast'), 'hr-sim.py needs dbus-fast (Linux)')

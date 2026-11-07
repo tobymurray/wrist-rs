@@ -4,12 +4,15 @@
     tools/ble-suite.py --image app.bin                     every scenario, against the running image
     tools/ble-suite.py --install new.bin --restore old.bin    install new.bin first, put old.bin back after
     tools/ble-suite.py --scenarios console,reconnect --soak-minutes 5
+    tools/ble-suite.py --restart-radio --profile battery --scenarios soak    a soak the replay can read
 
 The watch needs a `ble` image with the radio on (`ble on`), bonded to this computer
 (`wrist-ble.py --pair`), and its USB console free. The suite holds that console for the whole
 run and judges every scenario from its lines and the answers over the air. Each run writes
 suite.log, console.log and result.json under target/ble-suite/ (or --out), and exits non-zero
-if any check fails. It never runs `ble forget`.
+if any check fails. It never runs `ble forget`. console.log's times are seconds since the run
+started; with --restart-radio it holds the chip's bring-up, so `cargo run -p wrist-ble-sim --bin
+replay -- console.log` replays a `ble-trace` image's run.
 
 --image is the running image's app.bin, which the update scenario sends again. With --install,
 --restore must be the running image's app.bin, and the update scenario sends --image (which must
@@ -69,6 +72,14 @@ HANG_UP = re.compile(r'\[ble\] disconnected, reason (\w+)')
 def stamp(t=None):
     t = time.time() if t is None else t
     return time.strftime('%H:%M:%S', time.localtime(t)) + f'.{int(t * 1000) % 1000:03d}'
+
+
+# When the run started; console.log's times are seconds since, the form the replay reads.
+START = time.time()
+
+
+def seconds(t):
+    return f'{t - START:9.3f}'
 
 
 class Tee:
@@ -199,7 +210,7 @@ class Usb:
     def _note(self, text, t=None):
         t = time.time() if t is None else t
         self.lines.append((t, text))
-        self.log.write(f'{stamp(t)} {text}\n')
+        self.log.write(f'{seconds(t)} {text}\n')
         self.log.flush()
 
     def _read(self):
@@ -565,6 +576,8 @@ async def update(s, usb, phone, build, a):
     s.check(not [l for _, l in usb.since(mark) if 'revert' in l], 'the loader never reverted')
     s.check(await usb.ask('version', rf'build {re.escape(build)}(?: |$)', 10), f'the watch runs build {build} after it')
     s.check(await usb.ask('ble', r'\[ble\] (advertising as \S+|connected), ', 5), 'the radio is back on after the reset')
+    if a.profile:
+        s.check(await usb.ask(f'ble profile {a.profile}', r'\[ble\] timing', 5), f'`ble profile {a.profile}` held again')
 
 
 # -- pre-flight and install --
@@ -589,6 +602,35 @@ def build_of(text):
 def crc_of(text):
     m = re.search(r'standalone-boot \S+ build \S+ crc ([0-9A-F]{8})\b', text or '')
     return m[1] if m else None
+
+
+async def say(usb, command, answer):
+    try:
+        await usb.ask(command, answer, 5)
+    except Exception as e:
+        print(f'-- `{command}` not sent: {e}', flush=True)
+
+
+async def prepare(usb, a, result):
+    """--restart-radio and --profile, before the scenarios; the problems, if any."""
+    if a.restart_radio:
+        print('-- radio off and on, so the capture holds the chip\'s bring-up', flush=True)
+        result['radio_off'] = True
+        await usb.ask('ble off', r'\[ble\]', 5)
+        await asyncio.sleep(3)
+        if await usb.ask('ble on', r'\[ble\]', 5):
+            del result['radio_off']
+        await asyncio.sleep(8)
+        status = await usb.ask('ble', STATUS, 5)
+        result['restarted_radio'] = status
+        if not status or not re.search(r'\[ble\] (advertising|connected)', status):
+            return [f'the radio did not come back: {status}']
+    if a.profile:
+        line = await usb.ask(f'ble profile {a.profile}', r'\[ble\] timing', 5)
+        result['profile'] = a.profile
+        if not line:
+            return [f'`ble profile {a.profile}` was not answered']
+    return []
 
 
 async def snapshot(usb):
@@ -705,6 +747,12 @@ async def run(a, out, result):
                 return False
             build, a.update_image = now['build'], a.image or a.install
         result['build_under_test'] = build
+        problems = await prepare(usb, a, result)
+        if problems:
+            result['preflight'] = problems
+            for p in problems:
+                print(f'  pre-flight: {p}', flush=True)
+            return False
         phone = BleakPhone(a.name)
         for name in a.scenarios:
             s = Scenario(name, CRITERIA[name].format(a=a))
@@ -731,6 +779,10 @@ async def run(a, out, result):
             if result['capture'] == 'failed':
                 print(f'-- btmon capture failed{f" (btmon exited {died} during the run)" if died is not None else ""}; '
                       'no count of connections that failed to establish', flush=True)
+        if result.pop('radio_off', False):
+            await say(usb, 'ble on', r'\[ble\]')
+        if a.profile and 'profile' in result:
+            await say(usb, 'ble profile auto', r'\[ble\] timing')
         if installed:
             ok, usb = await install(usb, a, a.restore, out)
             after = await snapshot(usb)
@@ -770,6 +822,9 @@ def main():
     ap.add_argument('--hold', type=float, default=30, help='seconds each soak connection stays')
     ap.add_argument('--gap', type=float, default=10, help='seconds between soak connections')
     ap.add_argument('--btmon', action='store_true', help='capture with btmon (Linux)')
+    ap.add_argument('--restart-radio', action='store_true',
+                    help='`ble off` and `ble on` before the scenarios, so console.log replays from the chip\'s bring-up')
+    ap.add_argument('--profile', choices=['cable', 'battery'], help='hold this Bluetooth timing for the run (`ble profile`)')
     ap.add_argument('--out', type=Path)
     a = ap.parse_args()
     a.scenarios = [s.strip() for s in a.scenarios.split(',') if s.strip()]
@@ -788,6 +843,8 @@ def main():
         out.mkdir(parents=True, exist_ok=False)
     except FileExistsError:
         sys.exit(f'ble-suite.py: {out} already exists; pick a new --out')
+    global START
+    START = time.time()
     sys.stdout = Tee(sys.stdout, out / 'suite.log')
     result = {'started': time.strftime('%Y-%m-%dT%H:%M:%S%z'), 'argv': sys.argv[1:], 'scenarios': []}
     try:
