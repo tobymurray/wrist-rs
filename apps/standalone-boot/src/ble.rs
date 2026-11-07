@@ -435,7 +435,8 @@ pub fn write_status(uart: Uart) {
         write_address(uart, &address);
         uart.write_str(", ");
         uart.write_u32(n);
-        uart.write_str(" times; forget UNA on it, then pair again");
+        uart.write_str(if n == 1 { " time" } else { " times" });
+        uart.write_str("; forget UNA on it, then pair again");
     }
     let Some((pairing, value)) = waiting() else { return uart.write_line("") };
     uart.write_str(match pairing {
