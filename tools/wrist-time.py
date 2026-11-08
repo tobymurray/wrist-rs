@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Set the watch's clock to this machine's local time over the USB console,
-with the zone's offset and its next two changes, so the watch follows
-daylight saving for a year; and, given --alarm, the daily alarm.
+"""Set the watch's clock to this machine's local time over the USB console, or with --ble over
+Bluetooth to a bonded watch, with the zone's offset and its next two changes, so the watch follows
+daylight saving for a year; and, given --alarm, the daily alarm. It then reads the clock back and
+says how far it is from this machine's.
 
-    tools/wrist-time.py [--port /dev/ttyACM0] [--print] [--alarm HH:MM|on|off]
+    tools/wrist-time.py [--port /dev/ttyACM0 | --ble [--name UNA]] [--print] [--alarm HH:MM|on|off]
 """
 import argparse
 import os
@@ -68,43 +69,94 @@ def lines(tz, now):
     return f"time set {stamp}", zone
 
 
+def replied(text, alarm):
+    """Whether the watch has answered `time set`, `time zone` and, if sent, `alarm`, in whole lines."""
+    whole = text[:text.rfind('\n') + 1]
+    return whole.count('[rtc]') >= 2 and (not alarm or '[alarm]' in whole)
+
+
+def watch_clock(text):
+    """The watch's local time in `time`'s report, to the RTC's subsecond, or None."""
+    cal = re.search(r'calendar set;[^\n]*?(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)', text)
+    if not cal:
+        return None
+    at = datetime.strptime(cal.group(1), '%Y-%m-%d %H:%M:%S')
+    prer = re.search(r'RTC_PRER\s*= 0x([0-9A-Fa-f]+)', text)
+    ssr = re.search(r'RTC_SSR\s*= 0x([0-9A-Fa-f]+)', text)
+    if prer and ssr:
+        # The subsecond counter counts down from PREDIV_S each second.
+        prediv = int(prer.group(1), 16) & 0x7FFF
+        left = int(ssr.group(1), 16)
+        if left <= prediv:
+            at += timedelta(seconds=(prediv - left) / (prediv + 1))
+    return at
+
+
+def offset(watch, tz, sent, heard):
+    """Seconds the watch's clock is ahead of this machine's, from a report asked for at `sent`
+    and heard at `heard` (Unix seconds), taken as read halfway between; and that half."""
+    mid = (sent + heard) / 2
+    here = datetime.fromtimestamp(mid, timezone.utc).astimezone(tz).replace(tzinfo=None)
+    return (watch - here).total_seconds(), (heard - sent) / 2
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--port')
     ap.add_argument('--print', action='store_true',
                     help="print the lines it would send and exit")
     ap.add_argument('--alarm', metavar='HH:MM|on|off',
                     help="also set the daily alarm, in the watch's local time, or turn it on or off")
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import wrist_port
+    wrist_port.add_link_arguments(ap)
     args = ap.parse_args()
     if args.alarm is not None and not re.fullmatch(r'([01]?\d|2[0-3]):[0-5]\d|on|off', args.alarm):
         ap.error("--alarm takes HH:MM on the 24-hour clock, on or off")
+    if args.ble and args.port:
+        ap.error("--port is the USB console; --ble does without it")
     extra = (f"alarm {args.alarm}",) if args.alarm is not None else ()
     tz = local_zone()
     if args.print:
         for line in lines(tz, datetime.now(timezone.utc)) + extra:
             print(line)
         return
+    if not args.ble:
+        try:
+            import serial  # noqa: F401
+        except ImportError:
+            sys.exit("pyserial is needed: pip install pyserial")
+    # Connect first: over the air that, and securing the link, take seconds.
+    link = wrist_port.open_link(args)
     try:
-        import serial
-    except ImportError:
-        sys.exit("pyserial is needed: pip install pyserial")
-    import wrist_port
-    s = wrist_port.open_console(args.port, timeout=0.5)
-    # Send on a second boundary, so the watch's seconds start in step.
-    now = time.time()
-    time.sleep(1.0 - (now % 1.0))
-    sent = lines(tz, datetime.now(timezone.utc).replace(microsecond=0)) + extra
-    for line in sent:
-        s.write(f"{line}\r\n".encode())
-    deadline = time.time() + 4.0
-    buf = b''
-    while time.time() < deadline and (buf.count(b'[rtc]') < 2 or extra and b'[alarm]' not in buf):
-        buf += s.read(4096)
-    for line in buf.decode('ascii', 'replace').splitlines():
-        if line.startswith(('[rtc]', '[alarm]', '[usb] unknown')):
-            print(line)
-    for line in sent:
-        print(f"sent {line}")
+        interval = link.hasten()
+        if args.ble:
+            print(f"-- {interval or 'interval unknown'}")
+        # The lines for the next whole second, sent at it, so the watch's seconds start in step.
+        at = int(time.time()) + 1
+        if at - time.time() < 0.2:
+            at += 1
+        sent = lines(tz, datetime.fromtimestamp(at, timezone.utc)) + extra
+        time.sleep(max(0.0, at - time.time()))
+        for line in sent:
+            link.send(line)
+        text = link.read(4.0, lambda t: replied(t, extra))
+        for line in text.splitlines():
+            if line.startswith(('[rtc]', '[alarm]', '[usb] unknown')):
+                print(line)
+        for line in sent:
+            print(f"sent {line}")
+        asked = time.time()
+        link.send('time')
+        report = link.read(4.0, lambda t: re.search(r'calendar[^\n]*\n', t))
+        heard = time.time()
+    finally:
+        link.close()
+    watch = watch_clock(report)
+    if watch is None:
+        print("-- the clock was not read back")
+    else:
+        ahead, within = offset(watch, tz, asked, heard)
+        print(f"-- read back: the watch is {ahead:+.2f} s from this machine, to within {within:.2f} s")
 
 
 if __name__ == '__main__':

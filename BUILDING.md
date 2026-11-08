@@ -141,7 +141,13 @@ watch's number over the USB console.
 .venv/bin/python tools/wrist-ble.py --pair
 .venv/bin/python tools/wrist-ble.py "ble;boot"
 .venv/bin/python tools/wrist-ble.py --update app.bin   # waits, over the air, for state boot
+.venv/bin/python tools/wrist-time.py --ble             # the clock, zone and --alarm, with no cable
 ```
+
+`wrist-time.py --ble` connects and secures the link first, asks for a 15 ms interval, then
+sends the time on a second boundary and reads the clock back.
+[`tools/wrist_port.py`](tools/wrist_port.py)'s `open_link` gives a console tool either link
+behind `--port`, `--ble` and `--name`.
 
 An update that arrived over the air is kept once USB is configured or an encrypted
 Bluetooth link is up. BlueZ keeps a bonded watch's services: after a build that changes

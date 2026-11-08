@@ -37,38 +37,13 @@ import zlib
 
 from bleak import BleakClient, BleakScanner
 
-RX = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
-TX = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
+import wrist_port
+from wrist_port import RX, AirConsole as Console, air_send as send
+
 DEFAULT_MTU = 23
 ATT_HEADER = 3
 # The characteristics' value size, NUS_VALUE_LEN in the image's ble.rs.
 VALUE_LEN = 244
-
-
-class Console:
-    def __init__(self, echo=lambda text: print(text, flush=True)):
-        self.buf = b""
-        self.lines = []
-        self.echo = echo
-
-    def on_notify(self, _handle, data: bytearray):
-        self.buf += bytes(data)
-        while b"\n" in self.buf:
-            line, self.buf = self.buf.split(b"\n", 1)
-            text = line.decode("utf-8", "replace").rstrip("\r")
-            self.lines.append(text)
-            self.echo(text)
-
-    async def wait_for(self, needles, timeout):
-        start = len(self.lines)
-        end = time.time() + timeout
-        while time.time() < end:
-            for line in self.lines[start:]:
-                for n in needles:
-                    if n in line:
-                        return line
-            await asyncio.sleep(0.05)
-        return None
 
 
 async def acquire_mtu(client):
@@ -102,24 +77,11 @@ def mtu_of(client):
     return client.mtu_size or DEFAULT_MTU
 
 
-async def send(client, text):
-    await client.write_gatt_char(RX, (text + "\r\n").encode(), response=True)
-
-
 async def fast_interval(client, con):
     """BlueZ connects at 30 ms and never moves; ask for 15 ms on this connection only."""
     if not hasattr(getattr(client, "_backend", None), "_acquire_mtu"):
         return
-    await send(client, "ble interval now 12 12")
-    line = None
-    for _ in range(5):
-        await asyncio.sleep(0.6)
-        await send(client, "ble")
-        line = await con.wait_for(["[ble] connected"], 2)
-        if line and "interval 15.00 ms" in line:
-            break
-    found = re.search(r"interval [0-9.]+ ms", line or "")
-    print(f"-- {found.group(0) if found else 'interval unknown'}", flush=True)
+    print(f"-- {await wrist_port.air_hasten(client, con) or 'interval unknown'}", flush=True)
 
 
 async def transfer(client, con, path, chunk_pace, chunk_max=VALUE_LEN):
@@ -164,19 +126,13 @@ async def find(name, timeout=15):
 
 
 async def attach(client, con):
-    """Subscribe to TX; the watch mirrors its console once the link is encrypted. A host that
-    is not bonded gets no answer (BlueZ may try to pair, which the watch times out)."""
-    await client.start_notify(TX, con.on_notify)
-    for _ in range(10):
-        try:
-            await asyncio.wait_for(send(client, "ping"), 5)
-        except (asyncio.TimeoutError, Exception) as e:
-            print(f"-- a write was not answered ({e!r})", flush=True)
-            break
-        if await con.wait_for(["pong"], 1):
-            return True
-    print("-- no answer over the air: is this host bonded? (--pair)", flush=True)
-    return False
+    """Subscribe to TX and ping (`wrist_port.air_attach`); False, said why, when nothing answers."""
+    why = await wrist_port.air_attach(client, con)
+    if why and why != "no answer":
+        print(f"-- {why}", flush=True)
+    if why:
+        print("-- no answer over the air: is this host bonded? (--pair)", flush=True)
+    return why is None
 
 
 async def wait_kept(name, timeout):
@@ -206,8 +162,6 @@ async def wait_kept(name, timeout):
 
 
 def usb_console(port):
-    sys.path.insert(0, __file__.rsplit("/", 1)[0])
-    import wrist_port
     return wrist_port.open_console(port)
 
 
@@ -388,7 +342,7 @@ async def pair(name, port, host_answer="match", watch_answer="match", commands=N
 async def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("commands", nargs="?", default="", help="commands separated by ;")
-    ap.add_argument("--name", default="UNA")
+    ap.add_argument("--name", default=wrist_port.NAME)
     ap.add_argument("--pair", action="store_true", help="pair and bond (BlueZ), confirmed over USB")
     ap.add_argument("--port", help="the watch's USB console, for --pair")
     ap.add_argument("--host-answer", choices=["match", "yes", "no", "never", "cancel"], default="match",
