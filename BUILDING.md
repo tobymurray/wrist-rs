@@ -20,7 +20,7 @@ rustup component add llvm-tools
 ```
 
 `cargo build --release --features usb-log` also keeps `embassy-usb`'s own log of the link,
-which the console's `usblog` prints. `--features ble` adds the console and updates over
+which the console's `usblog` prints. `--features ble`, which releases have from 0.5.0, adds the console and updates over
 Bluetooth ([below](#bluetooth)), and `--features ble-probe` adds `ble probe` to those: the
 chip's firmware and updater versions and its anchor period, one `key=value` line each. It also
 adds `ble restart`, which resets the chip through its pin behind the driver's back, and `ble
@@ -30,7 +30,7 @@ restart and bring the chip back.
 The console's `version` prints the image's version, build ID and CRC:
 
 ```text
-[usb] standalone-boot 0.3.0+ble.local build 4f1e9a07c3d2 crc 6D81FE53
+[usb] standalone-boot 0.5.0+local build 4f1e9a07c3d2 crc 6D81FE53
 ```
 
 The ID is 12 hex digits hashing the tracked files that go into the binaries, listed in
@@ -43,10 +43,10 @@ A build that differs from the recipe's hashes how into its ID, and names it afte
 version: each feature beyond the release's (`app_features` in
 [release/toolchain.json](release/toolchain.json)), and `local` for any build
 outside the recipe, since the binary holds the checkout's and Cargo's paths
-([release/README.md](release/README.md#the-recipe) has the rest). So the default, `ble`
-and `usb-log` builds have three IDs. The report's `[step] build` line also gives the
-source hash, as `<ID> (<hash>+ble.local)`. `WRIST_RELEASE_BUILD_ID=<name> cargo build
---release` names a build with the release's features instead, and is refused with others.
+([release/README.md](release/README.md#the-recipe) has the rest). So `cargo build --release` with no
+features is `+no-ble.local`, and the plain, `ble` and `usb-log` builds have three IDs. The report's `[step] build` line also gives the
+source hash, as `<ID> (<hash>+local)`. `WRIST_RELEASE_BUILD_ID=<name> cargo build
+--release --features ble` names a build with the release's features instead, and is refused with others.
 
 The CRC is the CRC-32 of the image's own bytes in flash, computed once at boot (`crc
 pending` for its first moments), and the same that `tools/wrist-update.py` prints when it

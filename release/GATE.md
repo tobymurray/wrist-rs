@@ -34,7 +34,7 @@ sections in the order below: A, C, D when it runs, then B.
 
    ```sh
    cd apps/standalone-boot
-   WRIST_RELEASE_BUILD_ID=gate-test cargo build --release
+   WRIST_RELEASE_BUILD_ID=gate-test cargo build --release --features ble
    <objcopy> -O binary target/thumbv8m.main-none-eabihf/release/standalone-boot gate-test.bin
    ```
 
