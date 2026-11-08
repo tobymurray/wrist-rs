@@ -802,7 +802,7 @@ impl Link<'_> {
                     self.uart.write_line("[ble] no comparison is waiting");
                 }
             }
-            Request::Bonds => self.list_bonds().await,
+            Request::Bonds => self.list_bonds(false).await,
             Request::Forget => {
                 if self.command(ACI_GAP_CLEAR_SECURITY_DB, &[]).await.is_ok() {
                     BONDED.store(0, Ordering::Relaxed);
@@ -921,7 +921,7 @@ impl Link<'_> {
             self.uart.write_line("[ble] the central lost its bond; allowing it to pair again");
         }
         if core::mem::take(&mut self.recount_bonds) {
-            self.list_bonds().await;
+            self.list_bonds(true).await;
         }
         if let Some(h) = self.passkey_for.take() {
             self.answer_passkey(h).await;
@@ -1076,7 +1076,7 @@ impl Link<'_> {
             }
         }
         self.uart.write_line(if central { ", peripheral and central" } else { ", peripheral only" });
-        self.list_bonds().await;
+        self.list_bonds(false).await;
         self.advertise().await;
     }
 
@@ -1344,10 +1344,11 @@ impl Link<'_> {
         }
     }
 
-    async fn list_bonds(&mut self) {
+    async fn list_bonds(&mut self, after_pairing: bool) {
         if let Ok(r) = self.command(ACI_GAP_GET_BONDED_DEVICES, &[]).await {
             if r.len >= 1 {
                 let params = &r.params[..r.len.min(r.params.len())];
+                let before = BONDED_READ.load(Ordering::Relaxed).then(|| BONDED.load(Ordering::Relaxed));
                 BONDED.store(params[0], Ordering::Relaxed);
                 BONDED_READ.store(true, Ordering::Relaxed);
                 redraw();
@@ -1358,6 +1359,9 @@ impl Link<'_> {
                     write_address(self.uart, &addr);
                 }
                 self.uart.write_line("");
+                if after_pairing && self.peer.is_some_and(|peer| bluenrg2::bond_kept(params, before, peer)) {
+                    self.uart.write_line("[ble] bonded");
+                }
             }
         }
     }
@@ -1385,7 +1389,7 @@ impl Link<'_> {
                 if !keep {
                     self.end_forgotten_link().await;
                 }
-                self.list_bonds().await;
+                self.list_bonds(false).await;
             }
             Ok(r) => {
                 self.uart.write_str("[ble] forget: the chip refused, status ");
@@ -1778,7 +1782,7 @@ impl Link<'_> {
                 clear_prompt();
                 if status == 0 {
                     old_key(OldKey::clear);
-                    self.uart.write_line("[ble] paired and bonded");
+                    self.uart.write_line("[ble] paired");
                     self.recount_bonds = true;
                 } else {
                     if let (bluenrg2::PAIRING_LTK_MISSING, Some(peer)) = (status, self.peer) {
