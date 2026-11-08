@@ -142,6 +142,36 @@ If the watch reports a crash, `power` shows its record, and [`tools/wrist-crash.
 decodes it if this release wrote it: `.venv/bin/python tools/wrist-crash.py manifest.json
 "<the [crash] line>"`. Keep the debug zip and `manifest.json` with any report.
 
+## Bluetooth
+
+The radio is off until you turn it on. Press Down from the face until the page reads
+**BLUETOOTH**, then Select: it reads `discoverable` while it waits for a computer. Select
+again turns it off, and the choice survives restarts and updates.
+
+From Linux, with the cable in, pairing needs no button on the watch: the tool reads the
+watch's number over the cable and confirms it.
+
+```sh
+.venv/bin/python -m pip install -r tools/requirements-ble.txt
+.venv/bin/python tools/wrist-ble.py --pair
+.venv/bin/python tools/wrist-ble.py "boot;version"     # any console command, over the air
+.venv/bin/python tools/wrist-ble.py --update app.bin   # waits, over the air, for state boot
+```
+
+A pairing started from the computer's own Bluetooth settings, as **UNA**, shows six digits
+on the Bluetooth page: press Select if the computer shows the same six, Back if not.
+
+TODO before merge: macOS, once one pairing through the page is checked.
+
+An update over the air is kept once the new version has an encrypted link to the computer,
+as an update over USB is once the computer connects; a restart before then brings the
+previous version back. The loader is updated only over USB.
+
+`ble bonds`, on the console, lists the bonded computers; `ble forget <address>` removes one.
+Forget the watch on that computer too. If the face shows `see Bluetooth`, a computer has a
+key the watch no longer has: forget the watch in its Bluetooth settings
+(`bluetoothctl remove <address>` on Linux) and pair again.
+
 ## Back to stock, and out of any failure
 
 <img src="images/wrist-rs-to-stock.svg" width="600" alt="From wrist-rs back to the stock firmware: hold Select until the USB screen, 3 to 16 s, copy the .ota to UNA BOOT, unplug and choose Continue">
