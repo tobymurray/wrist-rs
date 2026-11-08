@@ -165,6 +165,9 @@ enum Request {
     Scan(u8, Option<Scan>),
     #[cfg(feature = "ble-probe")]
     Probe,
+    /// `ble probe gatt services|records|values`: fill the GATT table until the chip refuses.
+    #[cfg(feature = "ble-probe")]
+    ProbeGatt(probe::Gatt),
     /// `ble restart [updater]`: the chip restarted under the driver, through its pin or its
     /// updater's command.
     #[cfg(feature = "ble-probe")]
@@ -317,6 +320,12 @@ pub fn command(args: &[u8], uart: Uart) {
         b"disconnect" => Request::Disconnect,
         #[cfg(feature = "ble-probe")]
         b"probe" => Request::Probe,
+        #[cfg(feature = "ble-probe")]
+        b"probe gatt services" => Request::ProbeGatt(probe::Gatt::Services),
+        #[cfg(feature = "ble-probe")]
+        b"probe gatt records" => Request::ProbeGatt(probe::Gatt::Records),
+        #[cfg(feature = "ble-probe")]
+        b"probe gatt values" => Request::ProbeGatt(probe::Gatt::Values),
         #[cfg(feature = "ble-probe")]
         b"restart" => Request::Restart(false),
         #[cfg(feature = "ble-probe")]
@@ -556,7 +565,7 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
                     uart.write_line("[ble] off; `ble on` starts it");
                 }
                 #[cfg(feature = "ble-probe")]
-                Request::Probe | Request::Restart(_) => uart.write_line("[ble] off; `ble on` starts it"),
+                Request::Probe | Request::ProbeGatt(_) | Request::Restart(_) => uart.write_line("[ble] off; `ble on` starts it"),
                 Request::Off => {
                     set_state(STATE_OFF);
                     crate::rtc::set_radio_wanted(false);
@@ -823,6 +832,8 @@ impl Link<'_> {
             Request::Scan(seconds, duty) => self.scan_request(seconds, duty).await,
             #[cfg(feature = "ble-probe")]
             Request::Probe => self.probe().await,
+            #[cfg(feature = "ble-probe")]
+            Request::ProbeGatt(what) => self.probe_gatt(what).await,
             #[cfg(feature = "ble-probe")]
             Request::Restart(updater) => self.restart_chip(updater).await,
         }
