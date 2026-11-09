@@ -263,7 +263,7 @@ class Packaging(unittest.TestCase):
                             ((sp, end - 1), True), ((sp, end + 1), False), ((sp, APP - 1), False), ((sp, APP), False)]:
             self.assertEqual(scope['vectors_ok'](struct.pack('<II', *vectors), APP, APP_SIZE), ok, [hex(v) for v in vectors])
 
-    def test_wrist_ble_carries_the_images_console_service(self):
+    def test_the_tools_carry_the_images_console_service(self):
         rust = lambda path, name: re.search(rf'const {name}: [^=]+= ([^;]+);', (r.ROOT/path).read_text())[1]
         ble = 'apps/standalone-boot/src/ble.rs'
         base = [int(b, 16) for b in re.findall(r'0x([0-9A-F]{2})', rust(ble, 'NUS_BASE'))]
@@ -271,7 +271,7 @@ class Packaging(unittest.TestCase):
             b = base.copy()
             b[12] = int(rust(ble, f'NUS_{name}'), 16)
             h = bytes(reversed(b)).hex()
-            self.assertEqual(tool_constant('wrist-ble.py', name), f'{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:]}', name)
+            self.assertEqual(tool_constant('wrist_port.py', name), f'{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:]}', name)
         default, header = (int(rust('crates/bluenrg2/src/lib.rs', n)) for n in ('ATT_DEFAULT_MTU', 'ATT_HEADER_LEN'))
         largest = int(rust(ble, 'MAX_MTU'))
         self.assertEqual((tool_constant('wrist-ble.py', 'DEFAULT_MTU'), tool_constant('wrist-ble.py', 'ATT_HEADER')), (default, header))
