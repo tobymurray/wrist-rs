@@ -16,6 +16,7 @@ New since 0.4.0:
 - A computer bonded to the watch gets the console and application updates over the air with [`tools/wrist-ble.py`](../tools/wrist-ble.py), which works on Linux and macOS ([INSTALL.md](INSTALL.md#bluetooth)). The loader is never updated over the air, and the console answers no one else.
 - Pairing is confirmed on the watch: the Bluetooth page shows the six digits the computer shows; Select if they match, Back if not. From Linux, `wrist-ble.py --pair` confirms them over the USB cable instead, with no button pressed.
 - A computer that kept a key the watch no longer has can't connect until it forgets the watch and pairs again; the face shows `see Bluetooth`, and the page `forget & pair`, until it does.
+- `tools/wrist-time.py --ble` sets the clock, the zone and the alarm over Bluetooth, so a change of zone or a power reset no longer needs the cable. Over either link it now reads the clock back and says how far it is from the computer's.
 - An update sent over the air is kept once the new version has an encrypted Bluetooth link, as a USB update is once the computer connects.
 - Windows now recognises the watch's console port. The tools are still checked only on Linux and macOS.
 - The loader is unchanged: no loader update is needed.
@@ -24,8 +25,8 @@ New since 0.4.0:
 
 - The watch takes one Bluetooth connection at a time. While another device holds it, a bonded computer finds nothing; UNA's phone app, if the watch was ever paired with it, can be that device.
 - No phone can use the watch over Bluetooth yet: there is no app, and phones' own Bluetooth settings don't connect to it.
-- `--pair` works only on Linux. TODO before merge: how a Mac pairs and pairs again, once one pairing through the page is checked.
-- On battery the radio advertises about once a second and keeps an idle link slow, and a Linux computer takes about 9 s to secure each reconnection. TODO before merge: the radio's cost on battery, from the soaks.
+- `--pair` works only on Linux. macOS's Bluetooth settings may not list the watch: a Mac pairs, and pairs again, by running `tools/wrist-ble.py` with the radio on and confirming the digits on the Bluetooth page ([INSTALL.md](INSTALL.md#bluetooth)).
+- On battery the radio advertises about once a second and keeps an idle link slow, and a Linux computer takes about 9 s to secure each reconnection. The radio's cost on battery is not measured: the watch's fuel gauge can't see a draw this small.
 - The watch follows daylight saving for the two changes [`tools/wrist-time.py`](../tools/wrist-time.py) last sent, about a year. After that, after a change of zone, or after a 16-second hold of Select, which resets the power and clears the zone and the alarm with the clock, run the tool again. It knows no zone names.
 - One alarm, every day: no days of the week, no snooze, and no way yet to set it on the watch itself.
 - A short press lights the face for 3 s, or turns off a light switched on from the console. Back and Select only light it, except on the Bluetooth page; Up and Down also move between pages.

@@ -642,7 +642,7 @@ class GateScript(unittest.TestCase):
 
     def test_steps(self):
         self.assertEqual(gate.steps('4-6,11'), {4, 5, 6, 11})
-        self.assertEqual(gate.run_order(gate.steps('1-18')), [4, 5, 6, 7, 8, 12, *range(13, 19), 9, 10, 11])
+        self.assertEqual(gate.run_order(gate.steps('1-22')), [4, 5, 6, 7, 8, 12, *range(13, 23), 9, 10, 11])
         self.assertEqual(gate.run_order(gate.steps('9-11')), [9, 10, 11])
 
     def test_modules(self):

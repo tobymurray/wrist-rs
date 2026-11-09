@@ -19,7 +19,7 @@ that writes flash is a numbered install in the validation records, failures incl
 [`tools/gate.py`](../tools/gate.py), run from a checkout at the candidate's commit, walks
 this checklist: it does the console and drive work, checks what it can read, asks for each
 press, hold and unplug, and keeps every step's output under one directory. It runs the
-sections in the order below: A, C, D when it runs, then B.
+sections in the order below: A, C, D when it runs, E, then B.
 
 ### Prepare
 
@@ -129,6 +129,24 @@ are byte for byte the ones it ran, and the recipe holds the image to the install
     count, and the staging area as the recovery left it.
 18. Install the same candidate again, as in step 16: wrist-rs, `state boot`, the build.
 
+### E. Bluetooth
+
+`ble` below is `.venv/bin/python tools/wrist-ble.py`, with `tools/requirements-ble.txt`
+installed, on a computer with Bluetooth on.
+
+19. `cmd ble` reads `off (chip in reset)`, as the radio was left. From the face, Down to the
+    Bluetooth page, then Select: the page reads `discoverable`, and `cmd ble` `advertising as
+    UNA`. `cmd reset`: once it is back, `cmd ble` reads `advertising as UNA` again.
+20. `ble ping` answers `pong`. If this computer isn't bonded yet: on Linux, `ble --pair`
+    first; on macOS, the ping itself starts a pairing, and the Bluetooth page shows six
+    digits to confirm with Select. `cmd "ble bonds"` lists at least one.
+21. `ble "boot;version"` answers `state boot` and the build. `.venv/bin/python
+    tools/wrist-time.py --ble` prints `[rtc] set` and reads the clock back within 0.25 s.
+    Unplug, then `ble --update app.bin`: it ends `kept: state boot`. Plug back in: `cmd
+    "boot;version"`, `state boot` and the build.
+22. On the Bluetooth page, Select: it reads `off`, `cmd ble` `off (chip in reset)`, and `ble
+    ping` says no watch is found. The radio stays off for section B.
+
 ### B. On battery, last
 
 The gate's one long wait, so it runs after C, and after D when D runs: once it starts, the
@@ -161,13 +179,14 @@ rest is unplugging, waiting and plugging back in.
 
 ### Record
 
-19. Write each install into the validation records, with its output; failures too.
-20. On `main`, add anything learned to HARDWARE.md.
-21. In [`gate.json`](gate.json): the install numbers, `image_crc32` as step 1 noted it, and
-    `round_trip_validated` true only if steps 4 to 12 passed, and 13 to 18 when they ran.
+23. Write each install into the validation records, with its output; failures too.
+24. On `main`, add anything learned to HARDWARE.md.
+25. In [`gate.json`](gate.json): the install numbers, `image_crc32` as step 1 noted it, and
+    `round_trip_validated` true only if steps 4 to 12 and 19 to 22 passed, and 13 to 18 when
+    they ran.
     After a round trip: `stock_version` as the version it used, `round_trip_release` as this
     version and `round_trip_fingerprint` as step 1 noted it.
-22. In [NOTES.md](NOTES.md): which stock version this release needs.
+26. In [NOTES.md](NOTES.md): which stock version this release needs.
 
 ## Owner decisions
 

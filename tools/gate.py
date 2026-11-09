@@ -8,7 +8,7 @@ CANDIDATE_DIR holds wrist-rs-VERSION.zip and SHA256SUMS, as CI's artifact unpack
 from a checkout at the candidate's commit. Every step's output goes under
 target/gate-BUILD_ID-TIME/ (or --out), with summary.md at the end. Section D runs when the
 candidate's round-trip fingerprint is not gate.json's, or with --round-trip.
-The battery stretch, section B (steps 9 to 11), runs last, after sections C and D.
+The battery stretch, section B (steps 9 to 11), runs last, after sections C, D and E.
 """
 import argparse
 from datetime import datetime, timedelta
@@ -867,6 +867,62 @@ class Gate:
     def step18(self):
         self.install(18, self.drive17)
 
+    def ble(self, *args, timeout=180):
+        return self.tool('wrist-ble.py', *args, timeout=timeout)
+
+    def ble_state(self, want, timeout=20):
+        """`ble`'s line, once it reads `want` or `timeout` s have passed."""
+        end = time.time() + timeout
+        while want not in (text := self.cmd('ble', 2)) and time.time() < end:
+            time.sleep(2)
+        return text
+
+    def step19(self):
+        self.check(19, '[ble] off (chip in reset)' in self.cmd('ble', 2), 'the radio is off, as it was left')
+        self.do(19, 'from the face, press Down to the Bluetooth page, then Select')
+        self.ask(19, 'the page reads discoverable?')
+        self.check(19, '[ble] advertising as UNA' in self.ble_state('advertising as UNA'), 'advertising as UNA')
+        self.cmd('reset', 2)
+        self.booted()
+        self.check(19, '[ble] advertising as UNA' in self.ble_state('advertising as UNA'), 'still advertising after a restart')
+
+    def step20(self):
+        rc, out = self.ble('ping')
+        if 'pong' not in out and sys.platform.startswith('linux'):
+            self.ble('--pair', *(['--port', self.a.port] if self.a.port else []))
+            rc, out = self.ble('ping')
+        elif 'pong' not in out:
+            self.do(20, 'have the Bluetooth page showing; when the ping starts a pairing, press Select if the digits match')
+            rc, out = self.ble('ping')
+        self.save('step20-ping.txt', out)
+        self.check(20, 'pong' in out, 'ping over the air: pong')
+        bonds = re.search(r'bonded devices: (\d+)', self.cmd('ble bonds', 2))
+        self.check(20, bonds is not None and int(bonds[1]) >= 1, 'ble bonds lists at least one')
+
+    def step21(self):
+        rc, out = self.ble('boot;version')
+        self.save('step21-version.txt', out)
+        self.check(21, 'state boot' in out and f'build {self.m["build_id"]}' in out, 'over the air: state boot and the build')
+        rc, out = self.tool('wrist-time.py', '--ble', timeout=90)
+        self.save('step21-time.txt', out)
+        back = re.search(r'the watch is ([-+][0-9.]+) s from', out)
+        self.check(21, rc == 0 and '[rtc] set' in out, 'wrist-time.py --ble: [rtc] set')
+        self.check(21, back is not None and abs(float(back[1])) <= 0.25, f'read back within 0.25 s ({back and back[1]} s)')
+        self.do(21, 'unplug the cable')
+        rc, out = self.ble('--update', self.pkg / 'app.bin', timeout=300)
+        self.save('step21-update.txt', out)
+        self.check(21, 'kept: state boot' in out, 'an update over the air, kept: state boot')
+        self.installed(21, 'the candidate over the air')
+        self.do(21, 'plug the cable back in')
+        self.version_is(21, self.m['build_id'])
+
+    def step22(self):
+        self.do(22, 'on the Bluetooth page, press Select')
+        self.ask(22, 'the page reads off?')
+        self.check(22, '[ble] off (chip in reset)' in self.ble_state('off (chip in reset)'), 'the radio is off')
+        rc, out = self.ble('ping', timeout=60)
+        self.check(22, rc != 0 and 'not found' in out, 'ping over the air: not found')
+
     def summary(self):
         failed = [r for r in self.results if r[1] == 'FAIL']
         lines = [f'# Gate run: build {self.m["build_id"]}, image CRC {self.m["image_crc32"]}', '',
@@ -899,7 +955,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('candidate', type=Path, help="the directory holding the candidate's zips and SHA256SUMS")
     ap.add_argument('--ota', type=Path, help='the stock .ota, for section D')
-    ap.add_argument('--steps', default='4-18', help='which steps, as 4-8,11; 1 to 3 always run')
+    ap.add_argument('--steps', default='4-22', help='which steps, as 4-8,11; 1 to 3 always run')
     ap.add_argument('--round-trip', action='store_true', help='run section D even when it carries over')
     ap.add_argument('--port')
     ap.add_argument('--out', type=Path)
