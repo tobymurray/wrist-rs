@@ -70,9 +70,9 @@ impl Bench {
         id
     }
 
-    fn refuse(&mut self, kind: FailureKind) {
+    fn refuse(&mut self, kind: FailureKind) -> Outputs {
         assert!(self.asked.take().is_some(), "nothing asked for");
-        self.feed(Input::Submitted(Err(Failure { kind, native: 0x0C })));
+        self.feed(Input::Submitted(Err(Failure { kind, native: 0x0C })))
     }
 
     /// Ticks until `until`, at the times the core asks to run; the operations asked for meanwhile,
@@ -193,26 +193,22 @@ fn a_phone_that_answers_the_ask_with_its_own_is_not_asked_again() {
     assert_eq!(asks(&b.run_to(120_000)), 0);
 }
 
-/// R1-3: an answer to the chip's own procedure goes out past an operation on air, even queued
-/// behind one that may not; a security request on the same link waits for its parameter update.
+/// R1-3: an answer to the chip's own procedure goes out past an operation on air: the rebond a
+/// lost bond needs passes the security request waiting on it (check 8's P1 path), and nothing
+/// asks for parameters before the link is encrypted (F62).
 #[test]
-fn an_answer_passes_a_pending_update_and_a_security_request_does_not() {
+fn an_answer_passes_a_pending_security_request() {
     let mut b = Bench::new(battery());
     b.phone_up(1_000);
-    // Unencrypted: asked for parameters after 1.5 s, the update then left on air.
-    let ops = b.run_to(2_600);
-    assert_eq!(asks(&ops), 1, "{ops:?}");
-    assert!(matches!(b.core.pending().map(|p| p.op), Some(Op::UpdateParams(..))));
-    // The security request is due at 5 s, but waits behind the update on its link.
-    let out = b.at(6_100, Input::Tick);
-    assert_eq!(out.op, None, "{out:?}");
-    // The chip's bond-lost event wants the rebond answered: it goes out at once.
-    let out = b.at(6_200, Input::Radio(RadioEvent::BondLost(link())));
+    assert_eq!(b.at(2_600, Input::Tick).op, None);
+    let out = b.at(6_000, Input::Tick);
+    assert_eq!(out.op, Some(Op::RequestSecurity(link())), "{out:?}");
+    b.accept();
+    let out = b.at(6_100, Input::Radio(RadioEvent::BondLost(link())));
     assert_eq!(out.op, Some(Op::AllowRebond(link())), "{out:?}");
     b.accept();
-    // The update's outcome frees the link, and the security request follows.
-    let out = b.params(6_300, BATTERY);
-    assert_eq!(out.op, Some(Op::RequestSecurity(link())), "{out:?}");
+    let out = b.at(6_400, Input::Radio(RadioEvent::Encryption { link: link(), on: true }));
+    assert!(matches!(out.op, Some(Op::UpdateParams(l, _)) if l == link()), "{out:?}");
 }
 
 fn stop_advertising() -> Goals {
@@ -277,4 +273,26 @@ fn a_link_a_resync_finds_again_is_judged_afresh() {
     let snap = Snapshot { at: Instant(2_001), links, advertising: false, scanning: false, initiating: false, anchor: None };
     let out = b.at(2_001, Input::Snapshot(Ok(snap)));
     assert!(matches!(out.op, Some(Op::UpdateParams(l, _)) if l == link()), "{out:?}");
+}
+
+/// The restart when the busy budget runs out ends the phone's link too: a chip that answers
+/// nothing but busy is restarted whoever is connected (owner, 2026-11-09).
+#[test]
+fn a_chip_that_stays_busy_is_restarted_under_the_phones_link() {
+    let mut b = asked_on_battery();
+    b.refuse(FailureKind::Busy);
+    let mut restarted = 0;
+    for i in 1..u16::from(BUSY_BUDGET) {
+        // A new want each time (the console's ask), so each is asked at once and refused busy.
+        let now = wrist_ble_sim::menu::interval_now(8 + i, 8 + i);
+        let t = 2_000 + u64::from(i) * 40_000;
+        let out = b.at(t, Input::Goals(Goals { phone_params: Some(now), ..battery() }));
+        let out = if out.op.is_some() { out } else { b.at(t + 33_000, Input::Tick) };
+        assert!(matches!(out.op, Some(Op::UpdateParams(..))), "{i}: {out:?}");
+        let out = b.refuse(FailureKind::Busy);
+        restarted += usize::from(matches!(out.chip, Some(wrist_ble_core::chip::Action::Start(_))));
+    }
+    assert_eq!(restarted, 1, "{:?}", b.core.counters);
+    assert_eq!(b.core.counters.busy_spent, 1);
+    assert_eq!(b.core.state.phone.link(), None);
 }

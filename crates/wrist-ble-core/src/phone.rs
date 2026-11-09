@@ -6,9 +6,6 @@ use wrist_ble::{Instant, ConnHandle, Millis, PairingStep};
 /// encryption start (HARDWARE.md).
 pub const ASK_TO_PAIR_AFTER: Millis = Millis::secs(5);
 
-/// A link neither encrypted nor pairing may be asked for parameters after this long; never at
-/// connect, where it ended a bonded macOS central's link (HARDWARE.md).
-pub const ASK_PARAMS_AFTER: Millis = Millis(1_500);
 
 /// A numeric comparison the user has not answered is rejected after this long: the Security
 /// Manager's own timeout (Core Vol 3 Part H §3.4), which ends it on the chip and on every central
@@ -54,10 +51,14 @@ pub enum Security {
     Secure,
 }
 
+/// Whether this device may ask the phone for parameters: only once the link is encrypted, or
+/// its pairing has failed. Never at connect, where it ended a bonded macOS central's link, and
+/// never across a pairing: after a re-pair the watch's own security request started, a link
+/// asked at 1.5 s died with both sides silent 4 times in 30, one held to encryption none in 16
+/// (HARDWARE.md, F62). A central that neither encrypts nor pairs is not asked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Params {
-    Until(Instant),
-    Pairing,
+    Held,
     Open,
 }
 
@@ -115,7 +116,7 @@ impl Phone {
                 security: Security::Unsecured,
                 params_at: now,
                 ask_pair: Some(now + ASK_TO_PAIR_AFTER),
-                params: Params::Until(now + ASK_PARAMS_AFTER),
+                params: Params::Held,
                 bond_lost: false,
                 pairing_failed: false,
                 told_bond_lost: false,
@@ -138,17 +139,13 @@ impl Phone {
             Security::Pairing { deadline, .. } => Some(deadline),
             _ => None,
         };
-        let params = match l.params {
-            Params::Until(at) => Some(at),
-            _ => None,
-        };
-        [l.ask_pair, numeric, params].into_iter().flatten().min()
+        [l.ask_pair, numeric].into_iter().flatten().min()
     }
 
     /// Whether this device may ask the phone for new parameters now.
     #[must_use]
-    pub fn may_ask_params(&self, now: Instant) -> bool {
-        matches!(self, Phone::Up(l) if l.params == Params::Open || matches!(l.params, Params::Until(at) if now >= at))
+    pub fn may_ask_params(&self, _now: Instant) -> bool {
+        matches!(self, Phone::Up(l) if l.params == Params::Open)
     }
 
     /// No central start before this.
@@ -186,9 +183,6 @@ impl PhoneLink {
                 PairingStep::Numeric(value) => {
                     self.security = Security::Pairing { value, deadline: now + NUMERIC_DEADLINE, answered: false };
                     self.ask_pair = None;
-                    if matches!(self.params, Params::Until(_)) {
-                        self.params = Params::Pairing;
-                    }
                 }
                 PairingStep::Complete | PairingStep::PasskeyWanted => self.ask_pair = None,
                 PairingStep::Failed => self.fail_pairing(out),
@@ -218,9 +212,6 @@ impl PhoneLink {
                 if self.ask_pair.is_some_and(|at| now >= at) {
                     self.ask_pair = None;
                     out.push(Action::RequestSecurity(link));
-                }
-                if matches!(self.params, Params::Until(at) if now >= at) {
-                    self.params = Params::Open;
                 }
             }
             _ => {}

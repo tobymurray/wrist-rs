@@ -491,7 +491,10 @@ impl<'a> Core<'a> {
     }
 
     /// A chip that keeps saying busy has had its retries: it is restarted, which the chip's own
-    /// reset budget bounds in turn (I2: nothing retries for ever).
+    /// reset budget bounds in turn (I2: nothing retries for ever). The restart ends every link,
+    /// the phone's too, deliberately (owner, 2026-11-09): a chip that has said nothing but busy
+    /// for a minute and a half is not serving that link either, and the phone reconnects to the
+    /// advertising that follows the restart.
     fn spend(&mut self, now: Instant, out: &mut Outputs) {
         if self.busy.tokens == 0 && matches!(self.state.chip.state, Chip::Ready(_)) {
             self.counters.busy_spent += 1;

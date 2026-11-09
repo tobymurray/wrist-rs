@@ -284,13 +284,15 @@ fn a_phone_link_found_by_resync_is_asked_for_its_parameters() {
     let mut h = Harness::new(Goals { radio_on: true, ..Goals::OFF });
     let old = ConnHandle::new(0x801);
     phone_up(&mut h, 0, old);
-    h.at(1_500, Input::Tick);
+    h.at(1_500, Input::Radio(RadioEvent::Encryption { link: old, on: true }));
     assert!(matches!(h.ops.last(), Some(Op::UpdateParams(l, _)) if *l == old), "{:?}", h.ops);
     let fits = LinkParams { interval: Duration::from_u16(120), latency: 4, timeout: Duration::from_u16(600) };
     h.at(1_600, Input::Radio(RadioEvent::Params { link: old, result: Ok(fits) }));
     let new = ConnHandle::new(0x802);
     h.at(10_000, Input::Radio(RadioEvent::EventsLost));
     h.at(10_000, Input::Snapshot(Ok(snapshot_with(new))));
+    // A link the resync found is asked once it is encrypted, as any other.
+    h.at(10_500, Input::Radio(RadioEvent::Encryption { link: new, on: true }));
     while h.now < Instant(12_000) {
         let next = h.next().unwrap();
         h.at(next.0, Input::Tick);
@@ -423,13 +425,14 @@ fn a_centrals_acceptance_ends_the_request_though_nothing_changes() {
     let mut h = Harness::new(Goals { radio_on: true, ..Goals::OFF });
     let link = ConnHandle::new(0x801);
     phone_up(&mut h, 0, link);
-    h.at(1_500, Input::Tick);
+    h.at(1_500, Input::Radio(RadioEvent::Encryption { link, on: true }));
     assert!(matches!(h.ops.last(), Some(Op::UpdateParams(..))), "{:?}", h.ops);
     let asked = h.next_id - 1;
     h.at(1_800, done(asked));
-    while h.now < Instant(6_000) {
-        let next = h.next().unwrap();
-        h.at(next.0, Input::Tick);
-    }
-    assert!(h.ops.iter().any(|op| matches!(op, Op::RequestSecurity(l) if *l == link)), "{:?}", h.ops);
+    // Nothing is left pending: the console's own ask goes out at once.
+    assert!(h.core.pending().is_none());
+    let now = wrist_ble_sim::menu::interval_now(6, 6);
+    h.at(2_000, Input::Goals(Goals { radio_on: true, phone_params: Some(now), ..Goals::OFF }));
+    let asks = h.ops.iter().filter(|op| matches!(op, Op::UpdateParams(l, _) if *l == link)).count();
+    assert_eq!(asks, 2, "{:?}", h.ops);
 }
