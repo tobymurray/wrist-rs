@@ -88,22 +88,43 @@ class Failures(unittest.TestCase):
     def test_the_host_side(self):
         self.assertIn('systemctl start bluetooth',
                       wrist_port.air_failure('host', detail='BleakDBusError: [org.freedesktop.DBus.Error.ServiceUnknown]'))
-        self.assertIn('bluetoothctl power on', wrist_port.air_failure('host', detail='BleakError: NotReady'))
+        self.assertNotIn('systemctl', wrist_port.air_failure(
+            'host', detail='BleakDBusError: [org.freedesktop.DBus.Error.AccessDenied]'))
+        self.assertIn('bluetoothctl power on', wrist_port.air_failure('host', detail='BleakError: NotReady', linux=True))
+        self.assertEqual(wrist_port.air_failure('host', detail='BleakError: Bluetooth device is turned off', linux=False),
+                         "this computer's Bluetooth is off: turn it on")
+
+    def test_a_mac_is_given_no_linux_commands(self):
+        for kind, detail, paired in [('not bonded', '', None), ('attach', 'no answer', None), ('attach', 'no answer', True),
+                                     ('connect', 'BleakError: disconnected', None)]:
+            text = wrist_port.air_failure(kind, 'UNA', 'C1A3F0D2-0000-0000-0000-000000000000', detail, paired, linux=False)
+            self.assertNotIn('bluetoothctl', text, kind)
+            self.assertIn('Bluetooth settings', text, kind)
+
+    def test_an_unconfirmed_first_pairing_is_not_called_a_lost_key(self):
+        text = wrist_port.air_failure('attach', 'UNA', 'X', 'a write was not answered (TimeoutError())', None, linux=False)
+        self.assertIn('run again and confirm the six digits', text)
+        self.assertNotIn('lost', text)
+
+    def test_a_paired_mac_whose_link_merely_dropped_is_told_to_run_again(self):
+        text = wrist_port.air_failure('connect', 'UNA', 'X', 'BleakError: disconnected', None, linux=False)
+        self.assertTrue(text.endswith('otherwise run again'), text)
 
     def test_no_bond_is_paired_and_confirmed_on_the_watch_not_over_usb(self):
-        text = wrist_port.air_failure('not bonded', 'UNA', 'D9:5B:7A:EB:29:82')
+        text = wrist_port.air_failure('not bonded', 'UNA', 'D9:5B:7A:EB:29:82', linux=True)
         self.assertIn('bluetoothctl pair D9:5B:7A:EB:29:82', text)
         self.assertIn("on the watch's Bluetooth page", text)
         self.assertNotIn('USB', text)
-        self.assertEqual(wrist_port.air_failure('attach', 'UNA', 'X', 'no answer', paired=False), text.replace(
+        self.assertEqual(wrist_port.air_failure('attach', 'UNA', 'X', 'no answer', paired=False, linux=True), text.replace(
             'D9:5B:7A:EB:29:82', 'X'))
 
     def test_a_refused_key_says_to_forget_the_watch_and_pair_again(self):
         for kind, detail in [('attach', 'no answer'), ('connect', 'BleakError: PIN or Key Missing'),
                              ('attach', "a write was not answered (BleakDBusError('org.bluez.Error.NotPermitted'))")]:
-            text = wrist_port.air_failure(kind, 'UNA', 'D9:5B:7A:EB:29:82', detail, paired=True)
+            text = wrist_port.air_failure(kind, 'UNA', 'D9:5B:7A:EB:29:82', detail, paired=True, linux=True)
             self.assertIn('bluetoothctl remove D9:5B:7A:EB:29:82', text, detail)
             self.assertIn('see Bluetooth', text)
+            self.assertIn('otherwise run again', text)
 
     def test_a_connection_that_merely_failed_is_tried_again(self):
         self.assertIn('run again', wrist_port.air_failure('connect', 'UNA', 'X', 'TimeoutError: ', paired=True))
@@ -133,6 +154,23 @@ class Links(unittest.TestCase):
         link.s = FakeSerial([b'[rtc] set\r\n[rtc] zo', b'ne -05:00\r\n', b'more\r\n'])
         text = link.read(2.0, lambda t: wrist_time.replied(t, ()))
         self.assertEqual(text, '[rtc] set\r\n[rtc] zone -05:00\r\n')
+
+    def test_a_link_that_drops_after_connecting_is_one_line(self):
+        import asyncio
+        link = wrist_port.AirLink.__new__(wrist_port.AirLink)
+        link.name, link.loop, link.client = 'UNA', asyncio.new_event_loop(), object()
+
+        from bleak.exc import BleakError
+
+        async def fail(e):
+            raise e
+        with self.assertRaisesRegex(wrist_port.LinkError, r'^the link to UNA dropped \(BleakError: Not connected\): run again$'):
+            link.run(fail(BleakError('Not connected')))
+        with self.assertRaisesRegex(wrist_port.LinkError, r'^UNA did not secure the link'):
+            link.run(fail(wrist_port.LinkError('UNA did not secure the link')))
+        with self.assertRaises(ZeroDivisionError):
+            link.run(fail(ZeroDivisionError()))
+        link.loop.close()
 
     def test_air_read_returns_each_line_once(self):
         import asyncio

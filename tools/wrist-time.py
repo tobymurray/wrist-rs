@@ -149,6 +149,8 @@ def main():
         link.send('time')
         report = link.read(4.0, lambda t: re.search(r'calendar[^\n]*\n', t))
         heard = time.time()
+    except wrist_port.LinkError as e:
+        sys.exit(str(e))
     finally:
         link.close()
     watch = watch_clock(report)

@@ -138,20 +138,21 @@ def bonded(details):
     return None if props is None or "Paired" not in props else bool(props["Paired"])
 
 
-def air_failure(kind, name=NAME, address=None, detail="", paired=None):
+def air_failure(kind, name=NAME, address=None, detail="", paired=None, linux=sys.platform.startswith("linux")):
     """The one line a tool exits with when the console over the air cannot be reached."""
-    remove = f"bluetoothctl remove {address}" if address else "bluetoothctl remove <address>"
-    pair = (f"pair it from this computer's Bluetooth settings (or `bluetoothctl pair {address or '<address>'}`) "
+    address = address or "<address>"
+    forget = f"`bluetoothctl remove {address}`" if linux else f"forget {name} in this computer's Bluetooth settings"
+    pair = (f"pair it from this computer's Bluetooth settings{f' (or `bluetoothctl pair {address}`)' if linux else ''} "
             f"and confirm the six digits on the watch's Bluetooth page")
     if kind == "bleak":
         return "--ble needs bleak: pip install bleak"
     if kind == "host":
-        if any(s in detail for s in ("NameHasNoOwner", "ServiceUnknown", "org.freedesktop.DBus.Error")):
+        if any(s in detail for s in ("NameHasNoOwner", "ServiceUnknown")):
             return "Bluetooth is not running on this computer: sudo systemctl start bluetooth"
         if "No Bluetooth adapters" in detail:
             return "this computer has no Bluetooth adapter"
         if any(s in detail for s in ("NotReady", "not powered", "turned off", "powered off")):
-            return "this computer's Bluetooth is off: turn it on (bluetoothctl power on)"
+            return f"this computer's Bluetooth is off: turn it on{' (bluetoothctl power on)' if linux else ''}"
         return f"Bluetooth on this computer failed: {detail}"
     if kind == "not found":
         return (f"no watch advertising as {name}: turn its radio on (Select on its Bluetooth page); "
@@ -165,8 +166,11 @@ def air_failure(kind, name=NAME, address=None, detail="", paired=None):
     # A write refused or unanswered, or the link dropped while it was secured.
     if paired is False:
         return f"this computer is not bonded to {name}: {pair}"
-    return (f"{name} does not accept this computer's key: if it shows `see Bluetooth` it has lost the bond, "
-            f"so `{remove}` here, then {pair}")
+    if paired is None:
+        return (f"{name} did not secure the link: if this computer has not paired with it, run again and confirm "
+                f"the six digits on the watch's Bluetooth page; if the watch shows `see Bluetooth`, {forget}, then {pair}; otherwise run again")
+    return (f"{name} did not secure the link: if the watch shows `see Bluetooth` it has lost this computer's key, "
+            f"so {forget}, then {pair}; otherwise run again")
 
 
 class LinkError(Exception):
@@ -221,7 +225,14 @@ class AirLink:
             raise
 
     def run(self, coro):
-        return self.loop.run_until_complete(coro)
+        import asyncio
+        from bleak.exc import BleakError
+        try:
+            return self.loop.run_until_complete(coro)
+        except (BleakError, OSError, EOFError, asyncio.TimeoutError) as e:
+            if self.client is None:
+                raise
+            raise LinkError(f"the link to {self.name} dropped ({type(e).__name__}: {e}): run again") from e
 
     async def connect(self):
         from bleak import BleakClient, BleakScanner
