@@ -25,7 +25,9 @@ Bluetooth ([below](#bluetooth)), and `--features ble-probe` adds `ble probe` to 
 chip's firmware and updater versions and its anchor period, one `key=value` line each. It also
 adds `ble restart`, which resets the chip through its pin behind the driver's back, and `ble
 restart updater`, which starts the chip's updater, so a check can watch the driver find the
-restart and bring the chip back.
+restart and bring the chip back. `ble probe gatt services|records|values` fills the GATT table
+until the chip refuses, to measure how much room is left; `ble off` then `ble on` after it puts
+the image's own table back.
 
 The console's `version` prints the image's version, build ID and CRC:
 

@@ -5,7 +5,8 @@
 use core::fmt::{self, Write};
 use core::sync::atomic::Ordering;
 
-use bluenrg2::opcode::{ACI_GAP_SET_NON_DISCOVERABLE, ACI_HAL_GET_ANCHOR_PERIOD};
+use bluenrg2::opcode::{ACI_GAP_SET_NON_DISCOVERABLE, ACI_GATT_ADD_CHAR, ACI_GATT_ADD_SERVICE, ACI_HAL_GET_ANCHOR_PERIOD};
+use bluenrg2::{evt_mask, permission, props, uuid_type, MIN_ENC_KEY_SIZE, PRIMARY_SERVICE};
 use bluenrg2::probe::{Beside, Line, Probe};
 
 use embassy_time::Timer;
@@ -25,7 +26,150 @@ impl Write for Text {
     }
 }
 
+/// What `ble probe gatt` fills until the chip refuses. Each leaves the table full: `ble off` then
+/// `ble on` afterwards puts back the image's own services.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Gatt {
+    /// Services of one record each.
+    Services,
+    /// The largest record reservation one service is given, then 1-byte characteristics in it.
+    Records,
+    /// Fixed-length characteristics from 512 bytes down, halving at each refusal.
+    Values,
+}
+
+/// Test UUIDs, not assigned to any service or characteristic.
+const PROBE_UUID: u16 = 0xFF00;
+const FIXED_LENGTH: u8 = 0x00;
+
 impl Link<'_> {
+    pub(super) async fn probe_gatt(&mut self, what: Gatt) {
+        match what {
+            Gatt::Services => {
+                let mut n = 0u32;
+                let status = loop {
+                    match self.probe_service(PROBE_UUID + u16::try_from(n).unwrap_or(0), 1).await {
+                        Ok(_) if n < 32 => n += 1,
+                        Ok(_) => break 0,
+                        Err(s) => break s,
+                    }
+                };
+                self.uart.write_str("[ble] probe gatt services: ");
+                self.uart.write_u32(n);
+                self.uart.write_str(" added beside ours, then status ");
+                self.uart.write_hex8(status);
+                self.uart.write_line("");
+            }
+            Gatt::Records => {
+                let mut records = 255u8;
+                let mut first = None;
+                let service = loop {
+                    match self.probe_service(PROBE_UUID, records).await {
+                        Ok(h) => break Some(h),
+                        Err(s) => {
+                            first.get_or_insert(s);
+                            if records == 1 {
+                                break None;
+                            }
+                            records -= 1;
+                        }
+                    }
+                };
+                let Some(service) = service else {
+                    self.uart.write_str("[ble] probe gatt records: no service at all, status ");
+                    self.uart.write_hex8(first.unwrap_or(0));
+                    return self.uart.write_line("");
+                };
+                self.uart.write_str("[ble] probe gatt records: one service took ");
+                self.uart.write_u32(u32::from(records));
+                self.uart.write_str(" records, larger refused with status ");
+                self.uart.write_hex8(first.unwrap_or(0));
+                self.uart.write_line("");
+                let mut n = 0u32;
+                let status = loop {
+                    match self.probe_char(service, PROBE_UUID + 1 + u16::try_from(n).unwrap_or(0), 1).await {
+                        Ok(()) if n < 200 => n += 1,
+                        Ok(()) => break 0,
+                        Err(s) => break s,
+                    }
+                };
+                self.uart.write_str("[ble] probe gatt records: ");
+                self.uart.write_u32(n);
+                self.uart.write_str(" one-byte characteristics (two records each) in it, then status ");
+                self.uart.write_hex8(status);
+                self.uart.write_line("");
+            }
+            Gatt::Values => {
+                let mut records = 64u8;
+                let service = loop {
+                    match self.probe_service(PROBE_UUID, records).await {
+                        Ok(h) => break Some(h),
+                        Err(_) if records > 3 => records -= 1,
+                        Err(_) => break None,
+                    }
+                };
+                let Some(service) = service else {
+                    return self.uart.write_line("[ble] probe gatt values: no service at all");
+                };
+                self.uart.write_str("[ble] probe gatt values: a service of ");
+                self.uart.write_u32(u32::from(records));
+                self.uart.write_line(" records");
+                let (mut len, mut total, mut n, mut uuid) = (512u16, 0u32, 0u32, PROBE_UUID + 1);
+                while len > 0 && n < 64 {
+                    match self.probe_char(service, uuid, len).await {
+                        Ok(()) => {
+                            total += u32::from(len);
+                            n += 1;
+                            uuid += 1;
+                        }
+                        Err(s) => {
+                            self.uart.write_str("[ble] probe gatt values: ");
+                            self.uart.write_u32(u32::from(len));
+                            self.uart.write_str(" bytes refused, status ");
+                            self.uart.write_hex8(s);
+                            self.uart.write_str(", after ");
+                            self.uart.write_u32(total);
+                            self.uart.write_line(" bytes");
+                            len /= 2;
+                        }
+                    }
+                }
+                self.uart.write_str("[ble] probe gatt values: ");
+                self.uart.write_u32(total);
+                self.uart.write_str(" bytes in ");
+                self.uart.write_u32(n);
+                self.uart.write_line(" fixed-length characteristics beside ours");
+            }
+        }
+        self.uart.write_line("[ble] probe gatt: the table is full; `ble off` then `ble on` puts ours back");
+    }
+
+    /// A primary service with a 16-bit UUID: its handle, or the chip's refusal (0xFF unanswered).
+    async fn probe_service(&mut self, uuid: u16, records: u8) -> Result<u16, u8> {
+        let u = uuid.to_le_bytes();
+        match self.command(ACI_GATT_ADD_SERVICE, &[uuid_type::U16, u[0], u[1], PRIMARY_SERVICE, records]).await {
+            Ok(r) if r.status == 0 && r.len >= 2 => Ok(u16::from_le_bytes([r.params[0], r.params[1]])),
+            Ok(r) => Err(if r.status == 0 { 0xFE } else { r.status }),
+            Err(_) => Err(0xFF),
+        }
+    }
+
+    /// A readable fixed-length characteristic of `len` bytes.
+    async fn probe_char(&mut self, service: u16, uuid: u16, len: u16) -> Result<(), u8> {
+        let sv = service.to_le_bytes();
+        let u = uuid.to_le_bytes();
+        let l = len.to_le_bytes();
+        let p = [
+            sv[0], sv[1], uuid_type::U16, u[0], u[1], l[0], l[1], props::READ, permission::NONE, evt_mask::NONE, MIN_ENC_KEY_SIZE,
+            FIXED_LENGTH,
+        ];
+        match self.command(ACI_GATT_ADD_CHAR, &p).await {
+            Ok(r) if r.status == 0 => Ok(()),
+            Ok(r) => Err(r.status),
+            Err(_) => Err(0xFF),
+        }
+    }
+
     pub(super) async fn probe(&mut self) {
         if self.scanner.until().is_some() {
             return self.uart.write_line("[ble] probe: a scan is running; try after it");
