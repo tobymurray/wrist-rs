@@ -271,14 +271,34 @@ def volumes():
             yield from (p for p in base.iterdir() if p.is_dir())
 
 
+# The watch's drives: the bootloader's, and stock's.
+WATCH_LABELS = ('UNA BOOT', 'UNA WATCH')
+
+
+def unmounted_parts(tree):
+    """From `lsblk -J --tree -o PATH,LABEL,MOUNTPOINT,TYPE,TRAN`, the labelled partitions nothing has
+    mounted, as (device, label, the watch's): the watch's when its label is one of WATCH_LABELS
+    on a USB disk."""
+    found = []
+    for disk in tree.get('blockdevices', []):
+        usb = disk.get('tran') == 'usb'
+        for part in disk.get('children', []):
+            label = part.get('label')
+            if part.get('type') == 'part' and label and not part.get('mountpoint'):
+                found.append((part['path'], label, usb and label in WATCH_LABELS))
+    return found
+
+
 def unmounted():
-    """Labelled partitions on Linux that nothing has mounted, as (device, label)."""
+    """unmounted_parts on Linux, read from lsblk; empty elsewhere."""
     if not sys.platform.startswith('linux') or not shutil.which('lsblk'):
         return []
-    out = subprocess.run(['lsblk', '-rno', 'PATH,LABEL,MOUNTPOINT,TYPE'], capture_output=True, text=True).stdout
-    rows = [line.split(' ') for line in out.splitlines()]
-    return [(r[0], r[1].encode().decode('unicode_escape')) for r in rows
-            if len(r) == 4 and r[1] and not r[2] and r[3] == 'part']
+    # --tree: with PATH among the columns, util-linux 2.42 lists partitions flat, off their disks.
+    out = subprocess.run(['lsblk', '-J', '--tree', '-o', 'PATH,LABEL,MOUNTPOINT,TYPE,TRAN'], capture_output=True, text=True)
+    try:
+        return unmounted_parts(json.loads(out.stdout))
+    except ValueError:
+        return []
 
 
 class Gate:
@@ -416,10 +436,15 @@ class Gate:
                     self.log(f'  drive: {v}')
                     return v
             waited = int(time.time() - start)
-            for dev, label in unmounted():
-                # Nothing on some desktops mounts a drive by itself.
+            for dev, label, watch in unmounted():
+                # Nothing on some desktops mounts a drive by itself: after 5 s, mount the
+                # watch's, once; any other only gets the hint.
                 if waited >= 5 and dev not in hinted:
                     hinted.add(dev)
+                    if watch:
+                        self.log(f'  {dev} ({label}) attached but not mounted: udisksctl mount -b {dev}')
+                        if subprocess.run(['udisksctl', 'mount', '-b', dev]).returncode == 0:
+                            continue
                     print(f'  {dev} ({label}) is attached but not mounted: udisksctl mount -b {dev}', flush=True)
             if waited and waited % 30 == 0:
                 print(f'  still waiting for {what}: {timeout - waited} s left', flush=True)

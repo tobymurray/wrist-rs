@@ -589,6 +589,21 @@ class GateScript(unittest.TestCase):
         self.assertEqual(self.failed(DRY_RUN), [])
         self.assertTrue(all(ok for ok, _ in gate.witness_checks(DRY_RUN, '28E7EE86')))
 
+    def test_only_the_watchs_drive_is_mounted(self):
+        def disk(tran, *parts):
+            return {'path': '/dev/x', 'label': None, 'mountpoint': None, 'type': 'disk', 'tran': tran,
+                    'children': [{'path': p, 'label': label, 'mountpoint': at, 'type': 'part', 'tran': None}
+                                 for p, label, at in parts]}
+        tree = {'blockdevices': [
+            disk('usb', ('/dev/sda1', 'UNA WATCH', None)),
+            disk('usb', ('/dev/sdb1', 'UNA BOOT', None), ('/dev/sdb2', 'UNA BOOT', '/run/media/u/UNA BOOT')),
+            disk('usb', ('/dev/sdc1', 'BACKUP', None)),
+            disk('nvme', ('/dev/nvme0n1p1', 'UNA WATCH', None), ('/dev/nvme0n1p2', None, None)),
+            {'path': '/dev/loop0', 'type': 'loop', 'tran': None}]}
+        self.assertEqual(gate.unmounted_parts(tree), [
+            ('/dev/sda1', 'UNA WATCH', True), ('/dev/sdb1', 'UNA BOOT', True),
+            ('/dev/sdc1', 'BACKUP', False), ('/dev/nvme0n1p1', 'UNA WATCH', False)])
+
     def test_what_install_md_refuses(self):
         self.assertEqual(self.failed(DRY_RUN, crc='28E7EE87'), ['CRC 28E7EE87'])
         self.assertEqual(self.failed(DRY_RUN, size=1), ['image.bin, 1 bytes'])
