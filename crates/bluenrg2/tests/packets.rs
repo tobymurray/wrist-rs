@@ -622,6 +622,14 @@ fn bonded_devices_reads_each_entry_and_no_more_than_the_reply_holds() {
     // A count past the entries present stops at the last whole one.
     assert_eq!(bonded_devices(&[5, 0, 1, 2, 3, 4, 5, 6, 0, 1]).count(), 1);
     assert_eq!(bonded_devices(&[]).count(), 0);
+    // A type past random reads as a peer's does, so the printed form finds the bond again.
+    for (raw, kind) in [(2, 0), (3, 1)] {
+        let reply = [1, raw, 0xE5, 0x19, 0xBE, 0x16, 0x41, 0xFC];
+        let (k, bytes) = bonded_devices(&reply).next().unwrap();
+        assert_eq!(k, kind);
+        let printed = parse_address(Address { kind: k, bytes }.text(&mut [0; bluenrg2::ADDRESS_TEXT_MAX])).unwrap();
+        assert!(bluenrg2::listed(&reply, printed), "{raw}");
+    }
 }
 
 #[test]

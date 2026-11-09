@@ -687,7 +687,7 @@ pub fn bonded_devices(params: &[u8]) -> impl Iterator<Item = (u8, [u8; 6])> + '_
     params.get(1..).unwrap_or(&[]).as_chunks::<7>().0.iter().take(count).map(|e| {
         let mut addr = [0u8; 6];
         addr.copy_from_slice(&e[1..7]);
-        (e[0], addr)
+        (e[0] & 0x01, addr)
     })
 }
 
