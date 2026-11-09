@@ -26,8 +26,8 @@ impl Write for Text {
     }
 }
 
-/// What `ble probe gatt` fills until the chip refuses. Each leaves the table full: `ble restart`
-/// afterwards puts back the image's own services.
+/// What `ble probe gatt` fills until the chip refuses. Each leaves the table full: `ble off` then
+/// `ble on` afterwards puts back the image's own services.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Gatt {
     /// Services of one record each.
@@ -75,14 +75,16 @@ impl Link<'_> {
                         }
                     }
                 };
+                let Some(service) = service else {
+                    self.uart.write_str("[ble] probe gatt records: no service at all, status ");
+                    self.uart.write_hex8(first.unwrap_or(0));
+                    return self.uart.write_line("");
+                };
                 self.uart.write_str("[ble] probe gatt records: one service took ");
                 self.uart.write_u32(u32::from(records));
                 self.uart.write_str(" records, larger refused with status ");
                 self.uart.write_hex8(first.unwrap_or(0));
                 self.uart.write_line("");
-                let Some(service) = service else {
-                    return self.uart.write_line("[ble] probe gatt records: no service at all");
-                };
                 let mut n = 0u32;
                 let status = loop {
                     match self.probe_char(service, PROBE_UUID + 1 + u16::try_from(n).unwrap_or(0), 1).await {
@@ -139,7 +141,7 @@ impl Link<'_> {
                 self.uart.write_line(" fixed-length characteristics beside ours");
             }
         }
-        self.uart.write_line("[ble] probe gatt: the table is full; `ble restart` puts ours back");
+        self.uart.write_line("[ble] probe gatt: the table is full; `ble off` then `ble on` puts ours back");
     }
 
     /// A primary service with a 16-bit UUID: its handle, or the chip's refusal (0xFF unanswered).
