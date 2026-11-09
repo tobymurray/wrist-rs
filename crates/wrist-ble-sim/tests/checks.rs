@@ -114,6 +114,8 @@ fn advertising_stopped_while_the_status_says_discoverable() {
 fn advertising_retimed() {
     let mut s = Sim::started(1, on(Power::Battery));
     let fast = AdvParams { interval_min: Duration::from_u16(160), interval_max: Duration::from_u16(160), connectable: true };
+    // The chip takes a new interval only after a stop (HARDWARE.md).
+    s.fake.submit(Op::Advertise(None)).unwrap();
     s.fake.submit(Op::Advertise(Some(fast))).unwrap();
     s.run_for(Millis::secs(20));
 }
@@ -361,6 +363,7 @@ fn a_gap_no_longer_counts_once_it_is_a_window_old() {
 fn retimed(still: Millis) -> Result<(), String> {
     let mut b = Bench::new();
     let fast = AdvParams { interval_min: Duration::from_u16(160), interval_max: Duration::from_u16(160), connectable: true };
+    b.s.fake.submit(Op::Advertise(None)).unwrap();
     b.s.fake.submit(Op::Advertise(Some(fast))).unwrap();
     let t = b.at(0);
     b.c.disturbed(t);

@@ -46,7 +46,11 @@ pub enum Tell {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Outputs {
-    /// Submit this, and answer with [`Input::Submitted`].
+    /// Submit this, and answer with [`Input::Submitted`] exactly once, before the core can ask
+    /// for another: until that answer it asks for nothing more, whatever else it is told. Once
+    /// accepted, the operation ends in a [`RadioEvent::Done`] or the event its kind ends with
+    /// ([`OpKind::ends_with_event`]); if neither comes by [`Capabilities::op_deadline`] and a
+    /// second's grace, the core ends it itself as timed out.
     pub op: Option<Op>,
     /// Bring the chip up (answer with [`Input::Started`], naming the start) or hold it in reset.
     pub chip: Option<chip::Action>,
@@ -79,6 +83,10 @@ pub struct Counters {
     pub mic_failures: u32,
     pub instant_passed: u32,
     pub refused_peer_requests: u32,
+    /// Asks of the phone for parameters, beyond the first on a link and want.
+    pub reasks: u32,
+    /// Times the chip said busy until [`BUSY_BUDGET`] ran out, and was restarted.
+    pub busy_spent: u32,
 }
 
 /// Waits before an operation kind that failed is tried again: 1 s, doubling to 32 s.
@@ -115,6 +123,15 @@ pub struct Core<'a> {
     /// The phone link's parameters, and what this device last asked of it.
     phone_params: Option<LinkParams>,
     phone_asked: Option<ConnParams>,
+    /// When this device last asked the phone for parameters, and how often for this want.
+    phone_asked_at: Option<Instant>,
+    phone_asks: u8,
+    /// The phone's link has fitted what it was last asked for: a later change is the phone's own.
+    phone_held: bool,
+    /// The last ask was refused before it reached the air.
+    phone_refused: bool,
+    /// Busy refusals the chip may still give before it is restarted, and when one came back.
+    busy: Bucket,
     retry: [bool; MAX_PERIPHERALS],
     snapshot: bool,
     /// When goals or power last changed, or the chip came up.
@@ -140,6 +157,11 @@ impl<'a> Core<'a> {
             backoff: [Backoff::default(); KINDS],
             phone_params: None,
             phone_asked: None,
+            phone_asked_at: None,
+            phone_asks: 0,
+            phone_held: false,
+            phone_refused: false,
+            busy: Bucket::FULL,
             retry: [false; MAX_PERIPHERALS],
             snapshot: false,
             settled_since: Instant(0),
@@ -194,6 +216,7 @@ impl<'a> Core<'a> {
                 self.expire(now);
             }
         }
+        self.spend(now, &mut out);
         self.reconcile(now, &mut out);
         out.next = self.deadline(now);
         out
@@ -273,8 +296,7 @@ impl<'a> Core<'a> {
         self.pending = None;
         self.queue = [None; QUEUE];
         self.backoff = [Backoff::default(); KINDS];
-        self.phone_params = None;
-        self.phone_asked = None;
+        self.forget_phone_params();
     }
 
     fn phone(&mut self, now: Instant, e: phone::Event, out: &mut Outputs) {
@@ -311,8 +333,8 @@ impl<'a> Core<'a> {
                     // A link ends advertising, whatever an advertising op still in flight reports.
                     self.end_pending(|op| op.kind() == OpKind::Advertise);
                     self.phone(now, phone::Event::LinkUp(link), out);
+                    self.forget_phone_params();
                     self.phone_params = Some(params);
-                    self.phone_asked = None;
                 }
                 self.state.radio.peripheral = self.state.radio.peripheral.saturating_add(1);
                 self.state.radio.advertising = None;
@@ -335,8 +357,7 @@ impl<'a> Core<'a> {
                     self.phone(now, phone::Event::LinkDown(link), out);
                     self.state.radio.peripheral = self.state.radio.peripheral.saturating_sub(1);
                     self.state.silent_since = now;
-                    self.phone_params = None;
-                    self.phone_asked = None;
+                    self.forget_phone_params();
                 }
                 for i in 0..MAX_PERIPHERALS {
                     if self.state.peers[i].and_then(|p| linked(&p.machine)) == Some(link) {
@@ -349,6 +370,9 @@ impl<'a> Core<'a> {
                 match result {
                     Ok(p) if self.state.phone.link() == Some(link) => {
                         self.phone_params = Some(p);
+                        if self.phone_asked.is_some_and(|w| self.phone_fits(&w)) {
+                            self.phone_held = true;
+                        }
                         self.phone(now, phone::Event::ParamsChanged(link), out);
                     }
                     Ok(_) => {}
@@ -436,17 +460,24 @@ impl<'a> Core<'a> {
             Err(f) => {
                 self.counters.refused += 1;
                 let change = change_of(&op);
-                match (f.kind, change) {
-                    (FailureKind::Schedule(_) | FailureKind::ModeExclusion, Some(change)) => {
-                        self.counters.divergences += 1;
-                        out.tell(Tell::Divergence { kind: op.kind(), native: f.native });
-                        // Refused twice running: the plan cannot avoid it.
-                        let key = fingerprint(&self.state.radio, &change);
-                        if self.last_refused.replace(key) == Some(key) || !self.refused.insert(key) {
-                            self.chip(now, chip::Event::BaselineRefused, out);
-                        }
+                if let (FailureKind::Schedule(_) | FailureKind::ModeExclusion, Some(change)) = (f.kind, change) {
+                    self.counters.divergences += 1;
+                    out.tell(Tell::Divergence { kind: op.kind(), native: f.native });
+                    // Refused twice running: the plan cannot avoid it.
+                    let key = fingerprint(&self.state.radio, &change);
+                    if self.last_refused.replace(key) == Some(key) || !self.refused.insert(key) {
+                        self.chip(now, chip::Event::BaselineRefused, out);
                     }
-                    _ => self.back_off(now, op.kind()),
+                } else {
+                    if f.kind == FailureKind::Busy {
+                        self.busy = self.busy.take(now);
+                    }
+                    // An ask refused before it reached the air is asked again after the backoff,
+                    // within the want's budget.
+                    if op.kind() == OpKind::UpdateParams {
+                        self.phone_refused = true;
+                    }
+                    self.back_off(now, op.kind());
                 }
             }
         }
@@ -459,14 +490,32 @@ impl<'a> Core<'a> {
         b.until = Some(now + wait);
     }
 
+    /// A chip that keeps saying busy has had its retries: it is restarted, which the chip's own
+    /// reset budget bounds in turn (I2: nothing retries for ever).
+    fn spend(&mut self, now: Instant, out: &mut Outputs) {
+        if self.busy.tokens == 0 && matches!(self.state.chip.state, Chip::Ready(_)) {
+            self.counters.busy_spent += 1;
+            self.busy = Bucket::FULL;
+            self.chip(now, chip::Event::BaselineRefused, out);
+        }
+    }
+
+    fn forget_phone_params(&mut self) {
+        self.phone_params = None;
+        self.phone_asked = None;
+        self.phone_asked_at = None;
+        self.phone_asks = 0;
+        self.phone_held = false;
+        self.phone_refused = false;
+    }
+
     fn resync(&mut self, now: Instant, r: Result<Snapshot, Fault>) {
         let Ok(s) = r else { return };
         let mut mismatch = false;
         let phone = s.links.iter().flatten().find(|l| l.role == LeConnRole::Peripheral).map(|l| l.link);
         if phone != self.state.phone.link() {
             mismatch = true;
-            self.phone_params = None;
-            self.phone_asked = None;
+            self.forget_phone_params();
             if let Some(l) = self.state.phone.link() {
                 self.state.phone = self.state.phone.step(now, phone::Event::LinkDown(l)).0;
                 self.state.silent_since = now;
@@ -475,6 +524,12 @@ impl<'a> Core<'a> {
                 self.end_pending(|op| op.kind() == OpKind::Advertise);
                 self.state.phone = self.state.phone.step(now, phone::Event::LinkUp(l)).0;
             }
+        }
+        if !mismatch && phone.is_some() {
+            // The same handle may have been ended and made again behind the lost events, which a
+            // snapshot cannot show: what was known of its parameters is let go, so the link is
+            // judged afresh by its next update or the ask.
+            self.forget_phone_params();
         }
         self.state.radio.peripheral = u8::from(phone.is_some());
         let gone = |l: ConnHandle| !s.links.iter().flatten().any(|k| k.link == l);
@@ -570,12 +625,14 @@ impl<'a> Core<'a> {
         if self.asked.is_some() || !matches!(self.state.chip.state, Chip::Ready(_)) {
             return;
         }
-        // An answer to the chip's own procedure goes out past an operation on air, which may be
-        // waiting for it: a security request waits on the rebond a lost bond needs.
-        if self.pending.is_some() && !self.queue[0].is_some_and(|op| answers(op.kind())) {
-            return;
-        }
-        if let Some(op) = self.next_op(now) {
+        // Past an operation on air go answers to the chip's own procedures, which it may be
+        // waiting for (a security request waits on the rebond a lost bond needs), and a security
+        // request on another link; the first queued that may.
+        let op = match self.pending {
+            Some(p) => self.take_queued(|op| may_pass(op, &p.op)),
+            None => self.next_op(now),
+        };
+        if let Some(op) = op {
             self.counters.submitted += 1;
             self.asked = Some(op);
             out.op = Some(op);
@@ -586,11 +643,17 @@ impl<'a> Core<'a> {
         self.backoff[kind_index(kind)].until.is_none_or(|t| now >= t)
     }
 
+    /// The first queued operation `may` admits, taken from the queue.
+    fn take_queued(&mut self, may: impl Fn(&Op) -> bool) -> Option<Op> {
+        let i = self.queue.iter().position(|q| q.as_ref().is_some_and(&may))?;
+        let op = self.queue[i].take();
+        self.queue[i..].rotate_left(1);
+        op
+    }
+
     fn next_op(&mut self, now: Instant) -> Option<Op> {
-        if let Some(i) = self.queue.iter().position(Option::is_some) {
-            let op = self.queue[i].take();
-            self.queue[i..].rotate_left(1);
-            return op;
+        if let Some(op) = self.take_queued(|_| true) {
+            return Some(op);
         }
         for p in self.state.peers.iter().flatten() {
             if let Stage::Dropping { link, .. } = p.machine.stage {
@@ -601,7 +664,10 @@ impl<'a> Core<'a> {
         }
         let want = self.target.activities.advertising;
         if want != self.state.radio.advertising && self.ready_for(now, OpKind::Advertise) {
-            return Some(Op::Advertise(want));
+            // The chip refuses advertising over advertising, at any interval (HARDWARE.md): a new
+            // interval is a stop, then a start, each its own operation with its own outcome.
+            let op = if want.is_some() && self.state.radio.advertising.is_some() { None } else { want };
+            return Some(Op::Advertise(op));
         }
         self.phone_ask(now)
     }
@@ -615,14 +681,53 @@ impl<'a> Core<'a> {
         if matches!(self.state.phone, Phone::Up(l) if matches!(l.security, Security::Pairing { .. })) {
             return None;
         }
-        let power = if self.goals.transfer { Power::Cable } else { self.goals.power };
-        let want = self.menu.phone.iter().find(|c| c.when.power.is_none_or(|p| p == power))?.params;
-        if self.phone_asked == Some(want) {
+        let want = self.phone_want()?;
+        if self.phone_asked != Some(want) {
+            // A new want, or a new link: judged now, and asked once if the link does not fit.
+            self.phone_asked = Some(want);
+            self.phone_asked_at = Some(now);
+            self.phone_asks = 0;
+            if self.phone_fits(&want) {
+                return None;
+            }
+        } else if self.phone_fits(&want) || !(self.phone_refused || self.reask_at().is_some_and(|t| now >= t)) {
             return None;
         }
-        self.phone_asked = Some(want);
-        let fits = self.phone_params.is_some_and(|p| (want.interval_min.as_u16()..=want.interval_max.as_u16()).contains(&p.interval.as_u16()) && p.latency == want.latency);
-        (!fits).then_some(Op::UpdateParams(link, want))
+        if self.phone_asks >= ASKS_PER_WANT {
+            return None;
+        }
+        if self.phone_asks > 0 {
+            self.counters.reasks += 1;
+        }
+        self.phone_asks += 1;
+        self.phone_asked_at = Some(now);
+        self.phone_held = false;
+        self.phone_refused = false;
+        Some(Op::UpdateParams(link, want))
+    }
+
+    /// The parameters wanted of the phone: the console's, else the menu's, a transfer's the cable's.
+    fn phone_want(&self) -> Option<ConnParams> {
+        if let Some(p) = self.goals.phone_params {
+            return Some(p);
+        }
+        let power = if self.goals.transfer { Power::Cable } else { self.goals.power };
+        Some(self.menu.phone.iter().find(|c| c.when.power.is_none_or(|p| p == power))?.params)
+    }
+
+    fn phone_fits(&self, want: &ConnParams) -> bool {
+        self.phone_params.is_some_and(|p| (want.interval_min.as_u16()..=want.interval_max.as_u16()).contains(&p.interval.as_u16()) && p.latency == want.latency)
+    }
+
+    /// When the phone may be asked again for what it was asked: once the link has fitted the ask,
+    /// then moved off it and held [`phone::SETTLE`] (an Android's own update undoing the watch's),
+    /// within [`ASKS_PER_WANT`]. A phone that answered the ask with other parameters (macOS
+    /// keeping 45 ms) has given its answer, and is not asked again.
+    fn reask_at(&self) -> Option<Instant> {
+        let Phone::Up(l) = self.state.phone else { return None };
+        let asked = self.phone_asked_at?;
+        let want = self.phone_asked?;
+        (self.phone_held && l.params_at > asked && !self.phone_fits(&want) && self.phone_asks < ASKS_PER_WANT).then_some(l.params_at + phone::SETTLE)
     }
 
     fn deadline(&self, now: Instant) -> Option<Instant> {
@@ -633,7 +738,8 @@ impl<'a> Core<'a> {
         });
         let backoff = self.backoff.iter().filter_map(|b| b.until).filter(|&t| t > now);
         let pending = self.pending.map(|p| p.deadline + GRACE);
-        let marks = [self.state.chip.deadline(self.caps), self.state.phone.deadline(), pending, self.phone_mark(now)];
+        let reask = self.reask_at().filter(|&t| t > now);
+        let marks = [self.state.chip.deadline(self.caps), self.state.phone.deadline(), pending, self.phone_mark(now), reask];
         marks.into_iter().flatten().chain(peers).chain(backoff).min()
     }
 
@@ -662,6 +768,36 @@ impl<'a> Core<'a> {
 /// Past an operation's deadline, the driver has this long to report its timeout.
 const GRACE: Millis = Millis(1_000);
 
+/// Asks of the phone for one want on one link: the first, and two re-asks after the phone's own
+/// updates undid it.
+pub const ASKS_PER_WANT: u8 = 3;
+
+/// Busy refusals the chip may give before it is restarted: with the backoff's 1 to 32 s, about
+/// a minute and a half of a chip that says nothing else.
+pub const BUSY_BUDGET: u8 = 7;
+
+/// A busy refusal's token comes back after this.
+pub const BUSY_REFILL: Millis = Millis::secs(600);
+
+/// [`BUSY_BUDGET`] tokens, one back each [`BUSY_REFILL`]: an occasional busy chip is retried for
+/// ever, one that stays busy is restarted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Bucket {
+    tokens: u8,
+    since: Option<Instant>,
+}
+
+impl Bucket {
+    const FULL: Self = Self { tokens: BUSY_BUDGET, since: None };
+
+    fn take(self, now: Instant) -> Self {
+        let back = self.since.map_or(0, |t| now.since(t).0 / BUSY_REFILL.0);
+        let tokens = u8::try_from((u64::from(self.tokens) + u64::from(back)).min(u64::from(BUSY_BUDGET))).unwrap_or(BUSY_BUDGET);
+        let since = if back > 0 || self.since.is_none() { Some(now) } else { self.since };
+        Self { tokens: tokens.saturating_sub(1), since }
+    }
+}
+
 fn linked(p: &Peripheral) -> Option<ConnHandle> {
     match p.stage {
         Stage::Linked { link, .. } | Stage::Live { link, .. } | Stage::Dropping { link, .. } => Some(link),
@@ -677,6 +813,12 @@ fn change_of(op: &Op) -> Option<Change> {
         Op::Connect(_, p) => Some(Change::Initiate(Some(p))),
         _ => None,
     }
+}
+
+/// Whether `op` may go out while `pending` is on air: an answer always; a security request only
+/// beside an operation on another link, so never across the same link's parameter update.
+fn may_pass(op: &Op, pending: &Op) -> bool {
+    answers(op.kind()) || (op.kind() == OpKind::RequestSecurity && pending.link().is_some() && pending.link() != op.link())
 }
 
 /// Operations that answer a procedure the chip or a peer started, rather than start one.

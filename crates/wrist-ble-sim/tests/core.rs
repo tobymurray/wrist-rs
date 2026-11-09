@@ -230,7 +230,8 @@ fn done(id: u16) -> Input {
     Input::Radio(RadioEvent::Done(OpId(id), Ok(wrist_ble::Outcome::Done)))
 }
 
-/// A core advertising on battery, then asked to advertise at the cable interval, that op accepted as `OpId(2)`.
+/// A core advertising on battery, then asked to advertise at the cable interval: the stop
+/// (`OpId(2)`) done, and the start at the new interval accepted as `OpId(3)`.
 fn retiming_advertising() -> Core<'static> {
     let mut core = Core::new(&CAPABILITIES, &Scheduler, &MENU);
     core.step(Instant(0), Input::Goals(Goals { radio_on: true, ..Goals::OFF }));
@@ -238,9 +239,20 @@ fn retiming_advertising() -> Core<'static> {
     core.step(Instant(0), Input::Submitted(Ok(OpId(1))));
     core.step(Instant(1), done(1));
     let out = core.step(Instant(1_000), Input::Goals(Goals { radio_on: true, power: Power::Cable, ..Goals::OFF }));
-    assert!(matches!(out.op, Some(Op::Advertise(Some(_)))), "{out:?}");
+    assert!(matches!(out.op, Some(Op::Advertise(None))), "{out:?}");
     core.step(Instant(1_000), Input::Submitted(Ok(OpId(2))));
+    let out = core.step(Instant(1_000), done(2));
+    assert!(matches!(out.op, Some(Op::Advertise(Some(_)))), "{out:?}");
+    core.step(Instant(1_000), Input::Submitted(Ok(OpId(3))));
     core
+}
+
+/// The chip refuses advertising over advertising (HARDWARE.md), so a new interval is a stop
+/// and then a start.
+#[test]
+fn a_new_advertising_interval_is_a_stop_then_a_start() {
+    let core = retiming_advertising();
+    assert!(matches!(core.pending().map(|p| p.op), Some(Op::Advertise(Some(_)))));
 }
 
 fn snapshot_with(link: ConnHandle) -> wrist_ble::Snapshot {
@@ -254,7 +266,7 @@ fn advertising_done_after_the_phone_connects_stays_ended() {
     let mut core = retiming_advertising();
     let link = ConnHandle::new(0x801);
     core.step(Instant(1_001), Input::Radio(RadioEvent::LinkUp { link, role: LeConnRole::Peripheral, peer: phone_addr(), params: PHONE }));
-    core.step(Instant(1_001), done(2));
+    core.step(Instant(1_001), done(3));
     assert_eq!(core.state.radio.advertising, None);
 }
 
@@ -263,7 +275,7 @@ fn advertising_done_after_a_resync_finds_the_phone_stays_ended() {
     let mut core = retiming_advertising();
     core.step(Instant(1_001), Input::Radio(RadioEvent::EventsLost));
     core.step(Instant(1_002), Input::Snapshot(Ok(snapshot_with(ConnHandle::new(0x801)))));
-    core.step(Instant(1_003), done(2));
+    core.step(Instant(1_003), done(3));
     assert_eq!(core.state.radio.advertising, None);
 }
 
