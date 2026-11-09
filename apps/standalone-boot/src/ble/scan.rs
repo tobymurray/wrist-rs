@@ -7,7 +7,7 @@ use bluenrg2::opcode::{ACI_GAP_SET_NON_DISCOVERABLE, ACI_GAP_START_GENERAL_DISCO
 use bluenrg2::{address, gap_proc, Address, Uuid, FILTER_DUPLICATES, SCAN_RSP};
 use wrist_wake::ble::{scan, Scan};
 
-use super::{power, Link, Request, STATE, STATE_ADVERTISING, STATE_IDLE};
+use super::{power, write_address, Link, Request, STATE, STATE_ADVERTISING, STATE_IDLE};
 use crate::uart::Uart;
 
 const SCAN_DEFAULT_S: u8 = 10;
@@ -42,18 +42,6 @@ pub(super) fn parse(args: &[u8]) -> Option<Request> {
         None => Some(Request::Scan(SCAN_DEFAULT_S, None)),
         Some(Ok(s)) if (1..=SCAN_MAX_S).contains(&s) => Some(Request::Scan(s, duty)),
         _ => None,
-    }
-}
-
-fn write_address(uart: Uart, a: Address) {
-    for i in (0..6).rev() {
-        uart.write_hex8(a.bytes[i]);
-        if i > 0 {
-            uart.write_str(":");
-        }
-    }
-    if a.kind == address::RANDOM {
-        uart.write_str(" (random)");
     }
 }
 

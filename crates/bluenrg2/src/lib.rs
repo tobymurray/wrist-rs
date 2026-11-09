@@ -677,13 +677,17 @@ pub fn numeric_comparison(params: &[u8]) -> Option<(u16, u32)> {
     Some((connection_handle(params), u32::from_le_bytes([v[0], v[1], v[2], v[3]])))
 }
 
+/// The most a Command Complete carries after its status: an event's 255 parameter bytes less the
+/// packet count, the opcode and the status (Core Vol 4 Part E 5.4.4, 7.7.14).
+pub const RETURN_PARAMS_MAX: usize = 255 - 4;
+
 /// The `(address type, address)` entries of an `ACI_GAP_GET_BONDED_DEVICES` reply, never past its end.
 pub fn bonded_devices(params: &[u8]) -> impl Iterator<Item = (u8, [u8; 6])> + '_ {
     let count = usize::from(params.first().copied().unwrap_or(0));
     params.get(1..).unwrap_or(&[]).as_chunks::<7>().0.iter().take(count).map(|e| {
         let mut addr = [0u8; 6];
         addr.copy_from_slice(&e[1..7]);
-        (e[0], addr)
+        (e[0] & 0x01, addr)
     })
 }
 
@@ -695,8 +699,8 @@ pub fn listed(params: &[u8], peer: Address) -> bool {
 
 /// Whether a link from `peer` is provably not `forgotten`'s: `peer` is the identity of another bond.
 #[must_use]
-pub fn another_bond(params: &[u8], forgotten: [u8; 6], peer: Address) -> bool {
-    peer.bytes != forgotten && listed(params, peer)
+pub fn another_bond(params: &[u8], forgotten: Address, peer: Address) -> bool {
+    peer != forgotten && listed(params, peer)
 }
 
 /// Whether a pairing with `peer` provably kept a bond: the reply read after it lists `peer`, or
@@ -706,20 +710,45 @@ pub fn bond_kept(params: &[u8], before: Option<u8>, peer: Address) -> bool {
     before.zip(params.first()).is_some_and(|(before, &now)| now > before) || listed(params, peer)
 }
 
-/// An address as people write it, `AC:12:03:D7:FC:5C` (colons or dashes, either case), into
-/// the chip's byte order, least significant first.
+/// The longest [`Address::text`].
+pub const ADDRESS_TEXT_MAX: usize = 26;
+
+impl Address {
+    /// `AC:12:03:D7:FC:5C`, then ` (random)` for a random one.
+    pub fn text(self, out: &mut [u8; ADDRESS_TEXT_MAX]) -> &str {
+        const HEX: &[u8; 16] = b"0123456789ABCDEF";
+        for (i, b) in self.bytes.iter().rev().enumerate() {
+            out[3 * i] = HEX[usize::from(b >> 4)];
+            out[3 * i + 1] = HEX[usize::from(b & 0x0F)];
+            out[3 * i + 2] = b':';
+        }
+        let mut len = 17;
+        if self.kind == address::RANDOM {
+            out[len..].copy_from_slice(b" (random)");
+            len = ADDRESS_TEXT_MAX;
+        }
+        core::str::from_utf8(&out[..len]).unwrap_or_default()
+    }
+}
+
+/// An [`Address::text`] read back, colons or dashes, either case.
 #[must_use]
-pub fn parse_address(text: &str) -> Option<[u8; 6]> {
-    let mut out = [0u8; 6];
-    let mut parts = text.trim().split([':', '-']);
+pub fn parse_address(text: &str) -> Option<Address> {
+    let text = text.trim();
+    let (text, kind) = match text.strip_suffix("(random)") {
+        Some(rest) => (rest.trim_end(), address::RANDOM),
+        None => (text, address::PUBLIC),
+    };
+    let mut bytes = [0u8; 6];
+    let mut parts = text.split([':', '-']);
     for i in (0..6).rev() {
         let part = parts.next()?;
         if part.len() != 2 {
             return None;
         }
-        out[i] = u8::from_str_radix(part, 16).ok()?;
+        bytes[i] = u8::from_str_radix(part, 16).ok()?;
     }
-    parts.next().is_none().then_some(out)
+    parts.next().is_none().then_some(Address { kind, bytes })
 }
 
 /// `GAP_PAIRING_COMPLETE`'s status for a central that encrypted with a key this side has lost.
