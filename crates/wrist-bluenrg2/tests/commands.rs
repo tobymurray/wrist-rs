@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use wrist_ble::{AdvParams, ConnHandle, ConnParams, DisconnectReason, Interval, LeConnRole, Op, Slots, Timeout};
-use wrist_bluenrg2::commands::command;
+use wrist_bluenrg2::commands::{command, MAX_PARAMS};
 
 const NAME: &[u8] = b"UNA";
 
@@ -115,6 +115,8 @@ fn what_no_command_here_carries_out_is_none() {
     // The advertisement holds 23 bytes of name beside the chip's flags and TX power (HARDWARE.md).
     let c = command(&Op::Advertise(Some(open)), &long[..23], |_| Some(LeConnRole::Peripheral)).unwrap();
     assert_eq!(&c.params()[9..9 + 23], &long[..23]);
+    // It is the longest command here, and fills the buffer exactly.
+    assert_eq!(c.params().len(), MAX_PARAMS);
     assert_eq!(command(&Op::Advertise(Some(open)), &long[..24], |_| Some(LeConnRole::Peripheral)), None);
 }
 
