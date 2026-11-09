@@ -136,7 +136,8 @@ are byte for byte the ones it ran, and the recipe holds the image to the install
 installed, on a computer with Bluetooth on.
 
 19. `cmd ble` reads `off (chip in reset)`, as the radio was left. From the face, Down to the
-    Bluetooth page, then Select: the page reads `discoverable`, and `cmd ble` `advertising as
+    Bluetooth page, then Select: the page reads `discoverable`, or `connected` or `secure link`
+    when a bonded computer nearby reconnects at once (BlueZ does), and `cmd ble` `advertising as
     UNA`. `cmd reset`: once it is back, `cmd ble` reads `advertising as UNA` again.
 20. `ble ping` answers `pong`. If this computer isn't bonded yet: on Linux, `ble --pair`
     first; on macOS, the ping itself starts a pairing, and the Bluetooth page shows six
@@ -160,8 +161,9 @@ rest is unplugging, waiting and plugging back in.
     brings USB back up.
 11. `cmd power`: the input is external, and the last stretch on battery shows its length,
     mean current, charge at each end and the gauge's time to empty; `unanswered input
-    reads in a row 0; Stop follows the input`. `stop2_wakes` divided
-    by that length in minutes is the wake rate on battery: expect about thirty-six a minute, from
+    reads in a row 0; Stop follows the input`. `stop2_wakes` counts from boot: its rise since
+    a `cmd power` just before step 9's unplug, divided by that length in minutes, is the wake
+    rate on battery (step 21's update on battery adds its own): expect about thirty-six a minute, from
     the time driver every 2 s, the watchdog's feed every 16 s and the minute's redraw.
     `PWR_INT_L` reads high, and `input interrupts` has gone up by two, the unplug and the
     plug. Under `[lptim]`: `alarms handled over 5 ms late 0`, `Stop entered with one

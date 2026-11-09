@@ -632,8 +632,11 @@ class GateScript(unittest.TestCase):
     def test_wake_rate(self):
         power = ('[power] last on battery: 11 min, mean -560 uA over 12 readings\n'
                  '[sleep] policy=auto input=external stop1_wakes=0 stop2_wakes=432 stop_ms=705028')
-        self.assertAlmostEqual(gate.wake_rate(power), 432 / 11)
-        self.assertIsNone(gate.wake_rate('[power] no stretch on battery finished since boot'))
+        self.assertAlmostEqual(gate.wake_rate(power, 'stop2_wakes=0'), 432 / 11)
+        # Wakes from before the stretch, as section E's update on battery leaves, don't count.
+        self.assertAlmostEqual(gate.wake_rate(power.replace('=432', '=5827'), 'stop2_wakes=5395'), 432 / 11)
+        self.assertIsNone(gate.wake_rate(power, ''))
+        self.assertIsNone(gate.wake_rate('[power] no stretch on battery finished since boot', 'stop2_wakes=0'))
 
     def test_park_bits(self):
         bits = gate.mmio_bits()

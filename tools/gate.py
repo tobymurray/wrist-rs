@@ -127,15 +127,16 @@ def witness_checks(text, crc, page=None):
             (bool(re.search(rf'witness page \(bank 1, {page}\): ours', text)), 'witness page ours')]
 
 
-def wake_rate(power):
-    """Stop 2 wakes a minute over the last stretch on battery, or None."""
+def wake_rate(power, before):
+    """Stop 2 wakes a minute over the last stretch on battery, or None. `stop2_wakes` counts
+    from boot, so the stretch's are its rise since `before`, read on USB just before it."""
     stretch = re.search(r'last on battery: (?:(\d+) d )?(?:(\d+) h)? ?(?:(\d+) min)?,', power)
-    wakes = re.search(r'stop2_wakes=(\d+)', power)
-    if not (stretch and wakes):
+    wakes, earlier = (re.search(r'stop2_wakes=(\d+)', t) for t in (power, before))
+    if not (stretch and wakes and earlier):
         return None
     d, h, m = (int(v or 0) for v in stretch.groups())
     minutes = (d * 24 + h) * 60 + m
-    return int(wakes[1]) / minutes if minutes else None
+    return (int(wakes[1]) - int(earlier[1])) / minutes if minutes else None
 
 
 SLOTS = ('view', 'link1', 'link2')
@@ -759,7 +760,7 @@ class Gate:
         text = self.cmd('power', 4)
         self.save('step11-power.txt', self.before + '\n--- after battery ---\n' + text)
         interrupts = lambda t: int(m[1]) if (m := re.search(r'input interrupts (\d+)', t)) else None
-        rate = wake_rate(text)
+        rate = wake_rate(text, self.before)
         for ok, what in [('input external' in text, 'the input is external'),
                          ('unanswered input reads in a row 0; Stop follows the input' in text, 'no unanswered input reads'),
                          ('PWR_INT_L high' in text, 'PWR_INT_L high'),
@@ -917,7 +918,8 @@ class Gate:
     def step19(self):
         self.check(19, '[ble] off (chip in reset)' in self.cmd('ble', 2), 'the radio is off, as it was left')
         self.do(19, 'from the face, press Down to the Bluetooth page, then Select')
-        self.ask(19, 'the page reads discoverable?')
+        # A bonded computer nearby, such as this one, may connect at once.
+        self.ask(19, 'the page reads discoverable, or connected or secure link if a bonded computer connected?')
         self.check(19, '[ble] advertising as UNA' in self.ble_state('advertising as UNA'), 'advertising as UNA')
         self.cmd('reset', 2)
         self.booted()
