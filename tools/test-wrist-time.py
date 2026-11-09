@@ -16,7 +16,7 @@ spec.loader.exec_module(wrist_time)
 
 TORONTO = ZoneInfo('America/Toronto')
 
-# `time`'s report as a `ble` build sent it over the air, 2026-11-08.
+# `time`'s report from a `ble` build, over the air.
 REPORT = """\
   RTC_ICSR  = 0x00000037
   RTC_PRER  = 0x007F00FF

@@ -161,10 +161,6 @@ async def wait_kept(name, timeout):
     return False
 
 
-def usb_console(port):
-    return wrist_port.open_console(port)
-
-
 def usb_command(s, text, seconds=1.0):
     s.write((text + "\r\n").encode())
     s.flush()
@@ -192,7 +188,7 @@ async def pair(name, port, host_answer="match", watch_answer="match", commands=N
     from dbus_fast.aio import MessageBus
     from dbus_fast.service import ServiceInterface, method
 
-    usb = None if commands else usb_console(port)
+    usb = None if commands else wrist_port.open_console(port)
     loop = asyncio.get_running_loop()
     t0 = time.time()
 

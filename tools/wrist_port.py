@@ -60,11 +60,12 @@ def write_command(s, text):
         s.write(data[i:i + 60]); s.flush(); time.sleep(0.005)
 
 
-# The same console over Bluetooth, to a bonded computer: a `ble` build's Nordic-UART-shaped service,
-# RX written with response, TX notified. Needs `bleak`, imported only when used.
+# A `ble` build's Nordic-UART-shaped console service; `bleak` is imported only when it is used.
 NAME = "UNA"
 RX = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
 TX = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
+# The fastest interval asked for, in the 1.25 ms units of `ble interval now`.
+FAST_INTERVAL = 12
 
 
 class AirConsole:
@@ -102,9 +103,7 @@ async def air_send(client, text):
 
 
 async def air_attach(client, con):
-    """Subscribe to TX and ping; the watch mirrors its console once the link is encrypted. None once
-    it answers, else why not: a host that is not bonded gets no answer (BlueZ may try to pair, which
-    the watch times out)."""
+    """Subscribe to TX and ping: None once the watch answers, else why not."""
     import asyncio
     await client.start_notify(TX, con.on_notify)
     for _ in range(10):
@@ -118,17 +117,16 @@ async def air_attach(client, con):
 
 
 async def air_hasten(client, con):
-    """Ask for a 15 ms interval, latency 0, on this connection, so what is sent lands within 15 ms;
-    the interval the watch then reports, or None."""
+    """Ask for `FAST_INTERVAL` on this connection: the interval the watch then reports, or None."""
     import asyncio
     import re
-    await air_send(client, "ble interval now 12 12")
+    await air_send(client, f"ble interval now {FAST_INTERVAL} {FAST_INTERVAL}")
     line = None
     for _ in range(5):
         await asyncio.sleep(0.6)
         await air_send(client, "ble")
         line = await con.wait_for(["[ble] connected"], 2)
-        if line and "interval 15.00 ms" in line:
+        if line and f"interval {FAST_INTERVAL * 1.25:.2f} ms" in line:
             break
     found = re.search(r"interval [0-9.]+ ms", line or "")
     return found.group(0) if found else None
@@ -202,9 +200,8 @@ class UsbLink:
 
 
 class AirLink:
-    """The console over Bluetooth, connected and answering, driven from synchronous code: each call
-    runs the link's own event loop until it is done, and notifications wait in the loop between
-    calls. Raises LinkError with one line when it cannot connect."""
+    """The console over Bluetooth, driven from synchronous code through its own event loop; raises
+    LinkError with one line when it cannot connect."""
 
     def __init__(self, name=NAME):
         self.name = name
