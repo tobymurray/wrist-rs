@@ -108,9 +108,13 @@ fn what_no_command_here_carries_out_is_none() {
     assert_eq!(command(&Op::UpdateParams(link, params), NAME, |_| Some(LeConnRole::Central)), None);
     assert_eq!(command(&Op::UpdateParams(link, params), NAME, |_| None), None);
     assert_eq!(command(&Op::Scan(None), NAME, |_| Some(LeConnRole::Peripheral)), None);
+    assert_eq!(command(&Op::Disconnect(link, DisconnectReason::PairingWithUnitKeyNotSupported), NAME, |_| None), None);
     let long = [b'x'; 32];
     let open = AdvParams { connectable: true, ..quiet };
     assert_eq!(command(&Op::Advertise(Some(open)), &long, |_| Some(LeConnRole::Peripheral)), None);
-    assert!(command(&Op::Advertise(Some(open)), &long[..18], |_| Some(LeConnRole::Peripheral)).is_some());
-    assert_eq!(command(&Op::Advertise(Some(open)), &long[..19], |_| Some(LeConnRole::Peripheral)), None);
+    // The advertisement holds 23 bytes of name beside the chip's flags and TX power (HARDWARE.md).
+    let c = command(&Op::Advertise(Some(open)), &long[..23], |_| Some(LeConnRole::Peripheral)).unwrap();
+    assert_eq!(&c.params()[9..9 + 23], &long[..23]);
+    assert_eq!(command(&Op::Advertise(Some(open)), &long[..24], |_| Some(LeConnRole::Peripheral)), None);
 }
+
