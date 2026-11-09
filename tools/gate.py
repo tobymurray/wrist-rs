@@ -8,7 +8,7 @@ CANDIDATE_DIR holds wrist-rs-VERSION.zip and SHA256SUMS, as CI's artifact unpack
 from a checkout at the candidate's commit. Every step's output goes under
 target/gate-BUILD_ID-TIME/ (or --out), with summary.md at the end. Section D runs when the
 candidate's round-trip fingerprint is not gate.json's, or with --round-trip.
-The battery stretch, section B (steps 9 to 11), runs last, after sections C and D.
+The battery stretch, section B (steps 9 to 11), runs last, after sections C, D and E.
 """
 import argparse
 from datetime import datetime, timedelta
@@ -43,6 +43,15 @@ def plan_pages(root=ROOT):
     first = int(re.search(r'FIRST_KERNEL_PAGE: \w+ = (\d+)', plan)[1])
     pages = int(re.search(r'pub const MAX_PAGES: \w+ = (\d+)', plan)[1])
     return first, first + pages - 1
+
+
+def page_cycle(features, root=ROOT):
+    """The pages Down steps through from the face, by console name, as the image picks them
+    (`PAGES` in standalone-boot's main.rs): wrist-pages' `ALL` with `ble`, else `WITHOUT_BLUETOOTH`."""
+    pages = (root / 'crates/wrist-pages/src/lib.rs').read_text().split('impl Page {', 1)[1]
+    which = 'ALL' if 'ble' in features else 'WITHOUT_BLUETOOTH'
+    listed = re.search(rf'pub const {which}: \[Self; \d+\] = \[([^\]]*)\];', pages)[1]
+    return [name.lower() for name in re.findall(r'Self::(\w+)', listed)]
 
 
 def record_page(root=ROOT):
@@ -118,15 +127,16 @@ def witness_checks(text, crc, page=None):
             (bool(re.search(rf'witness page \(bank 1, {page}\): ours', text)), 'witness page ours')]
 
 
-def wake_rate(power):
-    """Stop 2 wakes a minute over the last stretch on battery, or None."""
+def wake_rate(power, before):
+    """Stop 2 wakes a minute over the last stretch on battery, or None. `stop2_wakes` counts
+    from boot, so the stretch's are its rise since `before`, read on USB just before it."""
     stretch = re.search(r'last on battery: (?:(\d+) d )?(?:(\d+) h)? ?(?:(\d+) min)?,', power)
-    wakes = re.search(r'stop2_wakes=(\d+)', power)
-    if not (stretch and wakes):
+    wakes, earlier = (re.search(r'stop2_wakes=(\d+)', t) for t in (power, before))
+    if not (stretch and wakes and earlier):
         return None
     d, h, m = (int(v or 0) for v in stretch.groups())
     minutes = (d * 24 + h) * 60 + m
-    return int(wakes[1]) / minutes if minutes else None
+    return (int(wakes[1]) - int(earlier[1])) / minutes if minutes else None
 
 
 SLOTS = ('view', 'link1', 'link2')
@@ -262,14 +272,34 @@ def volumes():
             yield from (p for p in base.iterdir() if p.is_dir())
 
 
+# The watch's drives: the bootloader's, and stock's.
+WATCH_LABELS = ('UNA BOOT', 'UNA WATCH')
+
+
+def unmounted_parts(tree):
+    """From `lsblk -J --tree -o PATH,LABEL,MOUNTPOINT,TYPE,TRAN`, the labelled partitions nothing has
+    mounted, as (device, label, the watch's): the watch's when its label is one of WATCH_LABELS
+    on a USB disk."""
+    found = []
+    for disk in tree.get('blockdevices', []):
+        usb = disk.get('tran') == 'usb'
+        for part in disk.get('children', []):
+            label = part.get('label')
+            if part.get('type') == 'part' and label and not part.get('mountpoint'):
+                found.append((part['path'], label, usb and label in WATCH_LABELS))
+    return found
+
+
 def unmounted():
-    """Labelled partitions on Linux that nothing has mounted, as (device, label)."""
+    """unmounted_parts on Linux, read from lsblk; empty elsewhere."""
     if not sys.platform.startswith('linux') or not shutil.which('lsblk'):
         return []
-    out = subprocess.run(['lsblk', '-rno', 'PATH,LABEL,MOUNTPOINT,TYPE'], capture_output=True, text=True).stdout
-    rows = [line.split(' ') for line in out.splitlines()]
-    return [(r[0], r[1].encode().decode('unicode_escape')) for r in rows
-            if len(r) == 4 and r[1] and not r[2] and r[3] == 'part']
+    # --tree: with PATH among the columns, util-linux 2.42 lists partitions flat, off their disks.
+    out = subprocess.run(['lsblk', '-J', '--tree', '-o', 'PATH,LABEL,MOUNTPOINT,TYPE,TRAN'], capture_output=True, text=True)
+    try:
+        return unmounted_parts(json.loads(out.stdout))
+    except ValueError:
+        return []
 
 
 class Gate:
@@ -407,10 +437,15 @@ class Gate:
                     self.log(f'  drive: {v}')
                     return v
             waited = int(time.time() - start)
-            for dev, label in unmounted():
-                # Nothing on some desktops mounts a drive by itself.
+            for dev, label, watch in unmounted():
+                # Nothing on some desktops mounts a drive by itself: after 5 s, mount the
+                # watch's, once; any other only gets the hint.
                 if waited >= 5 and dev not in hinted:
                     hinted.add(dev)
+                    if watch:
+                        self.log(f'  {dev} ({label}) attached but not mounted: udisksctl mount -b {dev}')
+                        if subprocess.run(['udisksctl', 'mount', '-b', dev]).returncode == 0:
+                            continue
                     print(f'  {dev} ({label}) is attached but not mounted: udisksctl mount -b {dev}', flush=True)
             if waited and waited % 30 == 0:
                 print(f'  still waiting for {what}: {timeout - waited} s left', flush=True)
@@ -676,8 +711,11 @@ class Gate:
         short('Back', "the console's light off")
         short('Back', 'face lit for 3 s')
         # Each press restarts the pages' 10 s, so the moves go first, with no question between.
-        for button, page in [('Down', 'battery'), ('Down', 'about'), ('Down', 'face'),
-                             ('Up', 'about'), ('Up', 'battery'), ('Back', 'face')]:
+        # Down round to the face again, Up back two pages, then Back to the face.
+        cycle = page_cycle(self.m.get('toolchain', {}).get('app_features', []))
+        moves = ([('Down', page) for page in cycle[1:] + cycle[:1]]
+                 + [('Up', page) for page in cycle[:0:-1][:2]] + [('Back', 'face')])
+        for button, page in moves:
             short(button, f'[page] {page}')
         cargo = (ROOT / 'apps/standalone-boot/Cargo.toml').read_text()
         version = re.search(r'(?m)^version\s*=\s*"([^"]*)"', cargo)[1]
@@ -722,7 +760,7 @@ class Gate:
         text = self.cmd('power', 4)
         self.save('step11-power.txt', self.before + '\n--- after battery ---\n' + text)
         interrupts = lambda t: int(m[1]) if (m := re.search(r'input interrupts (\d+)', t)) else None
-        rate = wake_rate(text)
+        rate = wake_rate(text, self.before)
         for ok, what in [('input external' in text, 'the input is external'),
                          ('unanswered input reads in a row 0; Stop follows the input' in text, 'no unanswered input reads'),
                          ('PWR_INT_L high' in text, 'PWR_INT_L high'),
@@ -867,6 +905,63 @@ class Gate:
     def step18(self):
         self.install(18, self.drive17)
 
+    def ble(self, *args, timeout=180):
+        return self.tool('wrist-ble.py', *args, timeout=timeout)
+
+    def ble_state(self, want, timeout=20):
+        """`ble`'s line, once it reads `want` or `timeout` s have passed."""
+        end = time.time() + timeout
+        while want not in (text := self.cmd('ble', 2)) and time.time() < end:
+            time.sleep(2)
+        return text
+
+    def step19(self):
+        self.check(19, '[ble] off (chip in reset)' in self.cmd('ble', 2), 'the radio is off, as it was left')
+        self.do(19, 'from the face, press Down to the Bluetooth page, then Select')
+        # A bonded computer nearby, such as this one, may connect at once.
+        self.ask(19, 'the page reads discoverable, or connected or secure link if a bonded computer connected?')
+        self.check(19, '[ble] advertising as UNA' in self.ble_state('advertising as UNA'), 'advertising as UNA')
+        self.cmd('reset', 2)
+        self.booted()
+        self.check(19, '[ble] advertising as UNA' in self.ble_state('advertising as UNA'), 'still advertising after a restart')
+
+    def step20(self):
+        rc, out = self.ble('ping')
+        if 'pong' not in out and sys.platform.startswith('linux'):
+            self.ble('--pair', *(['--port', self.a.port] if self.a.port else []))
+            rc, out = self.ble('ping')
+        elif 'pong' not in out:
+            self.do(20, 'have the Bluetooth page showing; when the ping starts a pairing, press Select if the digits match')
+            rc, out = self.ble('ping')
+        self.save('step20-ping.txt', out)
+        self.check(20, 'pong' in out, 'ping over the air: pong')
+        bonds = re.search(r'bonded devices: (\d+)', self.cmd('ble bonds', 2))
+        self.check(20, bonds is not None and int(bonds[1]) >= 1, 'ble bonds lists at least one')
+
+    def step21(self):
+        rc, out = self.ble('boot;version')
+        self.save('step21-version.txt', out)
+        self.check(21, 'state boot' in out and f'build {self.m["build_id"]}' in out, 'over the air: state boot and the build')
+        rc, out = self.tool('wrist-time.py', '--ble', timeout=90)
+        self.save('step21-time.txt', out)
+        back = re.search(r'the watch is ([-+][0-9.]+) s from', out)
+        self.check(21, rc == 0 and '[rtc] set' in out, 'wrist-time.py --ble: [rtc] set')
+        self.check(21, back is not None and abs(float(back[1])) <= 0.25, f'read back within 0.25 s ({back and back[1]} s)')
+        self.do(21, 'unplug the cable')
+        rc, out = self.ble('--update', self.pkg / 'app.bin', timeout=300)
+        self.save('step21-update.txt', out)
+        self.check(21, 'kept: state boot' in out, 'an update over the air, kept: state boot')
+        self.installed(21, 'the candidate over the air')
+        self.do(21, 'plug the cable back in')
+        self.version_is(21, self.m['build_id'])
+
+    def step22(self):
+        self.do(22, 'on the Bluetooth page, press Select')
+        self.ask(22, 'the page reads off?')
+        self.check(22, '[ble] off (chip in reset)' in self.ble_state('off (chip in reset)'), 'the radio is off')
+        rc, out = self.ble('ping', timeout=60)
+        self.check(22, rc != 0 and 'not found' in out, 'ping over the air: not found')
+
     def summary(self):
         failed = [r for r in self.results if r[1] == 'FAIL']
         lines = [f'# Gate run: build {self.m["build_id"]}, image CRC {self.m["image_crc32"]}', '',
@@ -899,7 +994,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('candidate', type=Path, help="the directory holding the candidate's zips and SHA256SUMS")
     ap.add_argument('--ota', type=Path, help='the stock .ota, for section D')
-    ap.add_argument('--steps', default='4-18', help='which steps, as 4-8,11; 1 to 3 always run')
+    ap.add_argument('--steps', default='4-22', help='which steps, as 4-8,11; 1 to 3 always run')
     ap.add_argument('--round-trip', action='store_true', help='run section D even when it carries over')
     ap.add_argument('--port')
     ap.add_argument('--out', type=Path)

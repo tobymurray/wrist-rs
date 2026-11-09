@@ -583,9 +583,26 @@ class GateScript(unittest.TestCase):
     def test_a_good_dry_run(self):
         self.assertEqual(gate.plan_pages(), (48, 115))
         self.assertEqual(gate.record_page(), 45)
+        self.assertEqual(gate.page_cycle(['ble']), ['face', 'battery', 'bluetooth', 'about'])
+        self.assertEqual(gate.page_cycle([]), ['face', 'battery', 'about'])
         self.assertEqual(gate.unlock_passed(), 3)
         self.assertEqual(self.failed(DRY_RUN), [])
         self.assertTrue(all(ok for ok, _ in gate.witness_checks(DRY_RUN, '28E7EE86')))
+
+    def test_only_the_watchs_drive_is_mounted(self):
+        def disk(tran, *parts):
+            return {'path': '/dev/x', 'label': None, 'mountpoint': None, 'type': 'disk', 'tran': tran,
+                    'children': [{'path': p, 'label': label, 'mountpoint': at, 'type': 'part', 'tran': None}
+                                 for p, label, at in parts]}
+        tree = {'blockdevices': [
+            disk('usb', ('/dev/sda1', 'UNA WATCH', None)),
+            disk('usb', ('/dev/sdb1', 'UNA BOOT', None), ('/dev/sdb2', 'UNA BOOT', '/run/media/u/UNA BOOT')),
+            disk('usb', ('/dev/sdc1', 'BACKUP', None)),
+            disk('nvme', ('/dev/nvme0n1p1', 'UNA WATCH', None), ('/dev/nvme0n1p2', None, None)),
+            {'path': '/dev/loop0', 'type': 'loop', 'tran': None}]}
+        self.assertEqual(gate.unmounted_parts(tree), [
+            ('/dev/sda1', 'UNA WATCH', True), ('/dev/sdb1', 'UNA BOOT', True),
+            ('/dev/sdc1', 'BACKUP', False), ('/dev/nvme0n1p1', 'UNA WATCH', False)])
 
     def test_what_install_md_refuses(self):
         self.assertEqual(self.failed(DRY_RUN, crc='28E7EE87'), ['CRC 28E7EE87'])
@@ -615,8 +632,11 @@ class GateScript(unittest.TestCase):
     def test_wake_rate(self):
         power = ('[power] last on battery: 11 min, mean -560 uA over 12 readings\n'
                  '[sleep] policy=auto input=external stop1_wakes=0 stop2_wakes=432 stop_ms=705028')
-        self.assertAlmostEqual(gate.wake_rate(power), 432 / 11)
-        self.assertIsNone(gate.wake_rate('[power] no stretch on battery finished since boot'))
+        self.assertAlmostEqual(gate.wake_rate(power, 'stop2_wakes=0'), 432 / 11)
+        # Wakes from before the stretch, as section E's update on battery leaves, don't count.
+        self.assertAlmostEqual(gate.wake_rate(power.replace('=432', '=5827'), 'stop2_wakes=5395'), 432 / 11)
+        self.assertIsNone(gate.wake_rate(power, ''))
+        self.assertIsNone(gate.wake_rate('[power] no stretch on battery finished since boot', 'stop2_wakes=0'))
 
     def test_park_bits(self):
         bits = gate.mmio_bits()
@@ -642,7 +662,7 @@ class GateScript(unittest.TestCase):
 
     def test_steps(self):
         self.assertEqual(gate.steps('4-6,11'), {4, 5, 6, 11})
-        self.assertEqual(gate.run_order(gate.steps('1-18')), [4, 5, 6, 7, 8, 12, *range(13, 19), 9, 10, 11])
+        self.assertEqual(gate.run_order(gate.steps('1-22')), [4, 5, 6, 7, 8, 12, *range(13, 23), 9, 10, 11])
         self.assertEqual(gate.run_order(gate.steps('9-11')), [9, 10, 11])
 
     def test_modules(self):

@@ -36,9 +36,9 @@ recipe's flags. Any other build of the image hashes how it differs into its own 
 [`build.rs`](../apps/standalone-boot/build.rs), and names the differences after the
 version, as SemVer build metadata: `+` and each feature beyond `app_features`, `no-<feature>`
 for each one of them left out, and `local` for a build outside the recipe; `Variant` in
-build.rs names the rest. So `cargo build --release --features ble` prints
-`standalone-boot 0.3.0+ble.local build <its own ID>`, and the report's `[step] build`
-line adds the source hash it came from, `(<firmware hash>+ble.local)`.
+build.rs names the rest. So `cargo build --release`, without the release's `ble`, prints
+`standalone-boot 0.5.0+no-ble.local build <its own ID>`, and the report's `[step] build`
+line adds the source hash it came from, `(<firmware hash>+no-ble.local)`.
 `WRIST_RELEASE_BUILD_ID` is for the recipe's features only: build.rs refuses it on any
 other build, and the recipe and the gate pass `app_features` as `--features`.
 build.rs's target and opt-level are copies, which

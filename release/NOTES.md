@@ -1,4 +1,4 @@
-# wrist-rs 0.4.0
+# wrist-rs 0.5.0
 
 | | |
 |---|---|
@@ -6,26 +6,29 @@
 | **Watch** | UNA Watch |
 | **Install guide** | [INSTALL.md](INSTALL.md) |
 
-A watch face for the UNA Watch that shows the time, the day and date, and the battery's charge, with a daily alarm and pages for the battery and the build, in place of the stock firmware. `manifest.json`, in the release zip, names this build's version and source commit.
+A watch face for the UNA Watch that shows the time, the day and date, and the battery's charge, with a daily alarm, pages for the battery, Bluetooth and the build, and the console and updates over Bluetooth, in place of the stock firmware. `manifest.json`, in the release zip, names this build's version and source commit.
 
 ## In this release
 
-New since 0.3.1:
+New since 0.4.0:
 
-- A daily alarm. Set it from the computer with [`tools/wrist-time.py`](../tools/wrist-time.py) `--alarm HH:MM`, or `alarm HH:MM` on the console (24-hour, the watch's local time); `alarm off` turns it off. While it is on, the face shows its time below the charge.
-- At its minute the alarm wakes the watch, lights the face, shows `ALARM`, and buzzes the vibration motor, 350 ms on and 250 ms off, for a minute or until any button is pressed. That press only stops it.
-- An alarm the watch could not ring on time, because it was restarting or updating, still rings up to 5 minutes late; later than that, the face shows `MISSED` until a button is pressed.
-- The vibration motor is driven for the first time; the console's `haptic` plays a tap or the alarm's buzz and reads the motor's driver back.
-- The about page and `version` show the image's CRC, the same one [`tools/wrist-update.py`](../tools/wrist-update.py) prints when it installs, so you can check which image is on the watch.
-- A crash record names the build that wrote it, when, and how many times in a row; [`tools/wrist-crash.py`](../tools/wrist-crash.py) takes the release zip and refuses a record from another build.
-- A frame whose transfer to the display loses part of the picture is drawn again, rather than shown shifted by a column.
-- During an update, the watch's check of the received image no longer holds it busy for the whole check.
+- Bluetooth, off until you turn it on. A Bluetooth page, between the battery and about pages, shows the radio's state and how many computers are bonded; Select turns the radio on or off, and the choice survives restarts and updates. A watch that never turns it on runs as 0.4.0 did.
+- A computer bonded to the watch gets the console and application updates over the air with [`tools/wrist-ble.py`](../tools/wrist-ble.py), which works on Linux and macOS ([INSTALL.md](INSTALL.md#bluetooth)). The loader is never updated over the air, and the console answers no one else.
+- Pairing is confirmed on the watch: the Bluetooth page shows the six digits the computer shows; Select if they match, Back if not. From Linux, `wrist-ble.py --pair` confirms them over the USB cable instead, with no button pressed.
+- A computer that kept a key the watch no longer has can't connect until it forgets the watch and pairs again; the face shows `see Bluetooth`, and the page `forget & pair`, until it does.
+- `tools/wrist-time.py --ble` sets the clock, the zone and the alarm over Bluetooth, so a change of zone or a power reset no longer needs the cable. Over either link it now reads the clock back and says how far it is from the computer's.
+- An update sent over the air is kept once the new version has an encrypted Bluetooth link, as a USB update is once the computer connects.
+- Windows now recognises the watch's console port. The tools are still checked only on Linux and macOS.
 - The loader is unchanged: no loader update is needed.
 
 ## Limits
 
+- The watch takes one Bluetooth connection at a time. While another device holds it, a bonded computer finds nothing; UNA's phone app, if the watch was ever paired with it, can be that device.
+- No phone can use the watch over Bluetooth yet: there is no app, and phones' own Bluetooth settings don't connect to it.
+- `--pair` works only on Linux. macOS's Bluetooth settings may not list the watch: a Mac pairs, and pairs again, by running `tools/wrist-ble.py` with the radio on and confirming the digits on the Bluetooth page ([INSTALL.md](INSTALL.md#bluetooth)).
+- On battery the radio advertises about once a second and keeps an idle link slow, and a Linux computer takes about 9 s to secure each reconnection. The radio's cost on battery is not measured: the watch's fuel gauge can't see a draw this small.
 - The watch follows daylight saving for the two changes [`tools/wrist-time.py`](../tools/wrist-time.py) last sent, about a year. After that, after a change of zone, or after a 16-second hold of Select, which resets the power and clears the zone and the alarm with the clock, run the tool again. It knows no zone names.
 - One alarm, every day: no days of the week, no snooze, and no way yet to set it on the watch itself.
-- A short press lights the face for 3 s, or turns off a light switched on from the console. Back and Select only light it; Up and Down also move between pages.
+- A short press lights the face for 3 s, or turns off a light switched on from the console. Back and Select only light it, except on the Bluetooth page; Up and Down also move between pages.
 - After a cable is pulled during an update, the next update can get no answer from the watch. Run it again.
-- No stock apps, notifications, sensors, Bluetooth or activity storage.
+- No stock apps, notifications, sensors or activity storage.

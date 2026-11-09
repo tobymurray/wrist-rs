@@ -220,7 +220,7 @@ FONT_LICENSES = ['OFL-Poppins.txt', 'OFL-AtkinsonHyperlegibleNext.txt']
 # The docs in release/ as the zip holds them, under these names; the tools beside them.
 PACKAGED_DOCS = {'INSTALL.md': 'START-HERE.md', 'NOTES.md': 'RELEASE-NOTES.md', 'NOTICES.md': 'NOTICES.md'}
 PACKAGED_TOOLS = ['wrist-update.py', 'wrist-cmd.py', 'wrist-time.py', 'wrist-crash.py', 'wrist_port.py',
-                  '60-wrist-rs.rules', 'requirements.txt']
+                  'wrist-ble.py', '60-wrist-rs.rules', 'requirements.txt', 'requirements-ble.txt']
 REPOSITORY = 'https://github.com/tobymurray/wrist-rs'
 
 
@@ -362,7 +362,7 @@ def verify_archive(path, debug=False):
                     'round-trip fingerprint mismatch')
             for name in ['START-HERE.md', 'LICENSE', 'NOTICES.md', 'RELEASE-NOTES.md', 'tools/requirements.txt',
                          'tools/wrist-update.py', 'tools/wrist-cmd.py', 'tools/wrist-time.py', 'tools/wrist-crash.py',
-                         'tools/wrist_port.py', 'tools/60-wrist-rs.rules',
+                         'tools/wrist_port.py', 'tools/wrist-ble.py', 'tools/requirements-ble.txt', 'tools/60-wrist-rs.rules',
                          'licenses/sdk/libstdc++/GPL-3.0-or-later.txt', 'licenses/sdk/libstdc++/GCC-exception-3.1.txt',
                          'licenses/gnu-arm-toolchain/license.txt']:
                 require(name in names, 'missing user asset: ' + name)

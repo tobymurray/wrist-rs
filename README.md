@@ -25,7 +25,7 @@ stock version is not supported until they name it.
 ## What it does
 
 - Shows the time, the day and date, and the battery's charge.
-- Lights the face when you press a button; Up and Down step to the battery and about pages.
+- Lights the face when you press a button; Up and Down step to the battery, Bluetooth and about pages.
 - One daily alarm, set from the console or with `tools/wrist-time.py --alarm HH:MM`. It
   buzzes, lights the face and shows `ALARM` until any button or a minute stops it, follows
   daylight saving, says `MISSED` if the watch was down at its time, and survives restarts and
@@ -35,9 +35,10 @@ stock version is not supported until they name it.
 - Installs updates over USB into a second slot, and goes back to the previous version if
   the watch restarts before the new one has run a while with the computer connected.
 - Turns off everything the face doesn't use, and sleeps on battery.
-- Optionally, in a build with the `ble` feature: the console, updates and `wrist-time.py --ble` over
-  Bluetooth, for a computer it is bonded to. The radio stays off until you turn it on ([BUILDING.md](BUILDING.md#bluetooth)).
-  The same build lists the Bluetooth LE devices around it.
+- The console, updates and the clock (`wrist-time.py --ble`) over Bluetooth, for a computer it is
+  bonded to. The radio stays off until you turn it on, on the Bluetooth page, which also confirms
+  a pairing ([INSTALL.md](release/INSTALL.md#bluetooth)). The console's `ble scan` lists the
+  Bluetooth LE devices around it.
 - Never writes UNA's bootloader code, so the stock firmware is always one recovery away.
   The installer records its outcome in a blank page at the end of the bootloader's partition.
 
