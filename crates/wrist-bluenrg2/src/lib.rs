@@ -7,7 +7,7 @@ pub mod commands;
 pub mod events;
 
 use wrist_ble::{
-    Activities, AdvParams, Admitted, Capabilities, CentralSlot, Change, ConnParams, Duration, Exclusion, GattLimits, Interval, Micros,
+    Activities, AdvParams, Admitted, Anchor, Capabilities, CentralSlot, Change, ConnParams, Duration, Exclusion, GattLimits, Interval, Micros,
     Millis, OpKind, ParamAnswer, RoleSet, SchedKind, Schedule, ScanParams, Slots, MAX_LINKS,
 };
 
@@ -98,6 +98,17 @@ fn micros(m: Micros) -> Ns {
 #[must_use]
 pub fn anchor(a: &Activities) -> Option<Ns> {
     a.central.iter().flatten().map(|s| interval_ns(s.interval) / u64::from(s.latency.max(1))).min()
+}
+
+/// What `ACI_HAL_GET_ANCHOR_PERIOD` reads beside `a`: the time base a first central link would
+/// join, and its longest free slot in whole 0.625 ms slots, as the chip counts it; `None` where the
+/// chip reads 0 for both (idle, or only links as peripheral). HARDWARE.md, `ble probe`.
+#[must_use]
+pub fn anchor_reading(a: &Activities) -> Option<Anchor> {
+    let period = anchor(a).or_else(|| a.advertising.as_ref().map(adv_period))?;
+    let slots = free(period, occupied(a, None, false)) / SLOT;
+    let us = |ns: Ns| Micros(u32::try_from(ns / 1_000).unwrap_or(u32::MAX));
+    Some(Anchor { period: us(period), max_free_slot: us(slots * SLOT) })
 }
 
 /// PM0257 §4.2's slot allocator, taking `ce_len` as a slot's minimum and maximum length alike.

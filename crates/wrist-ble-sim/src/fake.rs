@@ -10,7 +10,7 @@ use wrist_ble::{
     PairingStep, PeerAddr, RadioEvent, ResetCause, ScanParams, SchedKind, Schedule, ServerAttr, ServiceRef, CharRef, Snapshot, Status,
     MAX_LINKS,
 };
-use wrist_bluenrg2::{adv_period, interval_ns, native, Scheduler, CAPABILITIES};
+use wrist_bluenrg2::{adv_period, anchor_reading, interval_ns, native, Scheduler, CAPABILITIES};
 
 use crate::peers::{Keys, Os, Phone, Sensor};
 use crate::rng::Rng;
@@ -464,7 +464,7 @@ impl Fake {
             advertising: self.acts.get().advertising.is_some(),
             scanning: self.acts.get().scanning.is_some(),
             initiating: self.acts.get().initiating.is_some(),
-            anchor: None,
+            anchor: anchor_reading(self.acts.get()),
         }
     }
 

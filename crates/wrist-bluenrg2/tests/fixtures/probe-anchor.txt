@@ -1,0 +1,5 @@
+# `ble probe`'s anchor readings on the watch (public #116; HARDWARE.md, the Bluetooth module),
+# written as the probe prints them. The link is a Mac's, with the watch as peripheral.
+probe anchor beside=idle anchor_period_us=0 max_free_slot_us=0
+probe anchor beside=advertising adv_interval_us=100000 anchor_period_us=105000 max_free_slot_us=86875
+probe anchor beside=link conn_interval_us=30000 latency=0 anchor_period_us=0 max_free_slot_us=0
