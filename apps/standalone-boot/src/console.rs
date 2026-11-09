@@ -485,7 +485,7 @@ pub fn command(cmd: &[u8], flash: &'static FlashMutex) {
     match cmd.strip_suffix(b" ").unwrap_or(cmd) {
         b"help" | b"?" => {
             uart.write_line(
-                "[usb] commands: help ping uptime version boot reset report usblog time [set YYYY-MM-DD HH:MM:SS|zone <min> [<utc s> <min>]...] alarm [HH:MM|on|off|test|wake-test <s>] power [sleep on|off|status|clear-crash] page [lag [s]|vcom [auto|low|high]|light on|off|dump|stress [...]] press <up|down|back|select> [long] modules [force view|link1] haptic [tap|alarm|stop] flash survey|ecc-test staging <len>|<off> <n> update <len> <crc32> loader <len> <crc32>",
+                "[usb] commands: help ping uptime version boot reset report usblog time [set YYYY-MM-DD HH:MM:SS|zone <min> [<utc s> <min>]...] alarm [HH:MM|on|off|test|wake-test <s>] power [gauge|sleep on|off|status|clear-crash] page [lag [s]|vcom [auto|low|high]|light on|off|dump|stress [...]] press <up|down|back|select> [long] modules [force view|link1] haptic [tap|alarm|stop] flash survey|ecc-test staging <len>|<off> <n> update <len> <crc32> loader <len> <crc32>",
             );
             uart.write_line("[usb]   boot: the loader's state word; update: stream a new application (tools/wrist-update.py)");
             uart.write_line("[usb]   time set: the calendar in local time (tools/wrist-time.py sends the host's)");

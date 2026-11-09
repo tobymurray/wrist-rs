@@ -20,24 +20,45 @@ pub mod pca9420 {
 /// The MAX17262's registers and the bits used (ADI UG6595, UG6597).
 pub mod max17262 {
     pub const STATUS: u8 = 0x00;
+    pub const REP_CAP: u8 = 0x05;
     pub const REP_SOC: u8 = 0x06;
     pub const TEMP: u8 = 0x08;
     pub const VCELL: u8 = 0x09;
     pub const CURRENT: u8 = 0x0A;
     pub const AVG_CURRENT: u8 = 0x0B;
+    pub const MIX_SOC: u8 = 0x0D;
+    pub const AV_SOC: u8 = 0x0E;
     pub const FULL_CAP_REP: u8 = 0x10;
     pub const TTE: u8 = 0x11;
+    pub const FULL_SOC_THR: u8 = 0x13;
+    pub const CYCLES: u8 = 0x17;
     pub const DESIGN_CAP: u8 = 0x18;
+    pub const CONFIG: u8 = 0x1D;
     pub const ICHG_TERM: u8 = 0x1E;
+    pub const FULL_CAP_NOM: u8 = 0x23;
+    pub const LEARN_CFG: u8 = 0x28;
+    pub const MISC_CFG: u8 = 0x2B;
+    pub const CGAIN: u8 = 0x2E;
+    pub const COFF: u8 = 0x2F;
+    pub const RCOMP0: u8 = 0x38;
+    pub const TEMP_CO: u8 = 0x39;
     pub const V_EMPTY: u8 = 0x3A;
     pub const FSTAT: u8 = 0x3D;
     pub const COMMAND: u8 = 0x60;
     pub const STATUS2: u8 = 0xB0;
     pub const HIB_CFG: u8 = 0xBA;
+    pub const CONFIG2: u8 = 0xBB;
     pub const MODEL_CFG: u8 = 0xDB;
+    pub const VFOCV: u8 = 0xFB;
+    pub const VFSOC: u8 = 0xFF;
 
     pub const STATUS_POR: u16 = 1 << 1;
     pub const FSTAT_DNR: u16 = 1 << 0;
+    pub const FSTAT_REL_DT2: u16 = 1 << 6;
+    pub const FSTAT_FQ: u16 = 1 << 7;
+    pub const FSTAT_EDET: u16 = 1 << 8;
+    pub const FSTAT_REL_DT: u16 = 1 << 9;
+    pub const STATUS2_FULL_DET: u16 = 1 << 5;
     pub const MODEL_CFG_REFRESH: u16 = 1 << 15;
     pub const SOFT_WAKEUP: u16 = 0x0090;
 }
@@ -302,6 +323,92 @@ async fn run_restore(bus: &mut impl GaugeBus, hib_cfg: &mut Option<u16>) -> Resu
 #[must_use]
 pub fn tte_seconds(raw: u16) -> Option<u32> {
     (raw != 0xFFFF).then(|| u32::from(raw) * 45 / 8)
+}
+
+/// A MAX17262 register's unit (ADI UG6597, "Register Type"; the MAX17262 datasheet's register LSBs).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unit {
+    /// 1/256 %.
+    Percent,
+    /// 0.5 mAh.
+    Capacity,
+    /// 78.125 µV.
+    Voltage,
+    /// 156.25 µA, signed, positive into the battery.
+    Current,
+    /// 1 % of a cycle.
+    Cycles,
+}
+
+impl Unit {
+    /// `raw` in hundredths of [`Unit::name`], toward zero.
+    #[must_use]
+    pub fn hundredths(self, raw: u16) -> i32 {
+        let r = i64::from(raw);
+        let v = match self {
+            Self::Percent => r * 100 / 256,
+            Self::Capacity => r * 50,
+            Self::Voltage => r * 78_125 / 10_000,
+            Self::Current => i64::from(raw.cast_signed()) * 125 / 8,
+            Self::Cycles => r,
+        };
+        i32::try_from(v).unwrap_or(i32::MAX)
+    }
+
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Percent => "%",
+            Self::Capacity => "mAh",
+            Self::Voltage => "mV",
+            Self::Current => "mA",
+            Self::Cycles => "cycles",
+        }
+    }
+}
+
+/// `Status2.FullDet` (ADI UG6597).
+#[must_use]
+pub const fn full_detected(status2: u16) -> bool {
+    status2 & max17262::STATUS2_FULL_DET != 0
+}
+
+/// `LearnCfg.LS` (ADI UG6597).
+#[must_use]
+pub const fn learn_stage(learn_cfg: u16) -> u8 {
+    ((learn_cfg >> 4) & 0x7).to_le_bytes()[0]
+}
+
+/// `MiscCfg.FUS` (ADI UG6597).
+#[must_use]
+pub const fn full_update_slope(misc_cfg: u16) -> u8 {
+    (misc_cfg >> 12).to_le_bytes()[0]
+}
+
+/// `MiscCfg.MR`, in 6.25 µV across the sense resistor (ADI UG6597).
+#[must_use]
+pub const fn mixing_rate(misc_cfg: u16) -> u8 {
+    ((misc_cfg >> 5) & 0x1F).to_le_bytes()[0]
+}
+
+/// The names of the `FStat` flags set (ADI UG6597, Table 20).
+pub fn fstat_flags(fstat: u16) -> impl Iterator<Item = &'static str> {
+    use max17262::{FSTAT_DNR, FSTAT_EDET, FSTAT_FQ, FSTAT_REL_DT, FSTAT_REL_DT2};
+    [(FSTAT_DNR, "DNR"), (FSTAT_REL_DT, "RelDt"), (FSTAT_REL_DT2, "RelDt2"), (FSTAT_FQ, "FQ"), (FSTAT_EDET, "EDet")]
+        .into_iter()
+        .filter(move |&(bit, _)| fstat & bit != 0)
+        .map(|(_, name)| name)
+}
+
+/// Whether `VFSOC`, `Current` and `AvgCurrent`, in that order, pass end-of-charge detection (ADI UG6597).
+#[must_use]
+pub fn end_of_charge(vfsoc: u16, full_soc_thr: u16, ichg_term: u16, current: u16, avg_current: u16) -> [bool; 3] {
+    let term = i32::from(ichg_term.cast_signed());
+    let in_band = |raw: u16| {
+        let i = i32::from(raw.cast_signed());
+        8 * i > term && 4 * i < 5 * term
+    };
+    [vfsoc > full_soc_thr, in_band(current), in_band(avg_current)]
 }
 
 /// The PCA9420's `MODECFG_0_0`; mode `n`'s four registers start `4 * n` after it.

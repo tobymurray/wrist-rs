@@ -9,7 +9,7 @@ use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::mutex::Mutex as AsyncMutex;
 
 use wrist_power::max17262::{self, HIB_CFG};
-use wrist_power::pca9420;
+use wrist_power::{pca9420, Unit};
 
 use crate::uart::Lines;
 
@@ -53,9 +53,34 @@ pub struct Snapshot {
     pub full_cap_raw: Option<u16>,
     pub design_cap_raw: Option<u16>,
     pub gauge_status: Option<u16>,
+    /// [`DIAG`]'s, in its order.
+    pub diag: [Option<u16>; DIAG.len()],
     /// Every register read, not only the reading's.
     pub full: bool,
 }
+
+/// The gauge's registers that say why its charge is what it is, read only for the full report.
+const DIAG: [(&str, u8, Option<Unit>); 19] = [
+    ("VFSOC", max17262::VFSOC, Some(Unit::Percent)),
+    ("AvSOC", max17262::AV_SOC, Some(Unit::Percent)),
+    ("MixSOC", max17262::MIX_SOC, Some(Unit::Percent)),
+    ("FullSOCThr", max17262::FULL_SOC_THR, Some(Unit::Percent)),
+    ("VFOCV", max17262::VFOCV, Some(Unit::Voltage)),
+    ("RepCap", max17262::REP_CAP, Some(Unit::Capacity)),
+    ("FullCapNom", max17262::FULL_CAP_NOM, Some(Unit::Capacity)),
+    ("IChgTerm", max17262::ICHG_TERM, Some(Unit::Current)),
+    ("COff", max17262::COFF, Some(Unit::Current)),
+    ("Cycles", max17262::CYCLES, Some(Unit::Cycles)),
+    ("FStat", max17262::FSTAT, None),
+    ("LearnCfg", max17262::LEARN_CFG, None),
+    ("MiscCfg", max17262::MISC_CFG, None),
+    ("RComp0", max17262::RCOMP0, None),
+    ("TempCo", max17262::TEMP_CO, None),
+    ("CGain", max17262::CGAIN, None),
+    ("ModelCfg", max17262::MODEL_CFG, None),
+    ("Config", max17262::CONFIG, None),
+    ("Config2", max17262::CONFIG2, None),
+];
 
 /// (chip, register, two bytes wide, read with every reading), in [`Snapshot`]'s order; the rest
 /// only with the full report.
@@ -82,7 +107,7 @@ const READS: [(u8, u8, bool, bool); 20] = [
     (MAX17262, max17262::STATUS, true, true),
 ];
 
-fn assemble(v: &[Option<u16>; READS.len()], full: bool) -> Snapshot {
+fn assemble(v: &[Option<u16>; READS.len()], diag: [Option<u16>; DIAG.len()], full: bool) -> Snapshot {
     let b = |i: usize| v[i].and_then(|x| u8::try_from(x).ok());
     Snapshot {
         dev_info: b(0),
@@ -105,6 +130,7 @@ fn assemble(v: &[Option<u16>; READS.len()], full: bool) -> Snapshot {
         full_cap_raw: v[17],
         design_cap_raw: v[18],
         gauge_status: v[19],
+        diag,
         full,
     }
 }
@@ -124,7 +150,12 @@ pub fn snapshot_blocking(bus: &mut AsyncBus) -> Snapshot {
         let n = if wide { 2 } else { 1 };
         *slot = bus.blocking_write_read(addr, &[reg], &mut b[..n]).ok().map(|()| value(b, wide));
     }
-    assemble(&v, true)
+    let mut diag = [None; DIAG.len()];
+    for (slot, &(_, reg, _)) in diag.iter_mut().zip(DIAG.iter()) {
+        let mut b = [0u8; 2];
+        *slot = bus.blocking_write_read(MAX17262, &[reg], &mut b).ok().map(|()| u16::from_le_bytes(b));
+    }
+    assemble(&v, diag, true)
 }
 
 pub async fn snapshot(bus: &mut AsyncBus, full: bool) -> Snapshot {
@@ -138,8 +169,23 @@ pub async fn snapshot(bus: &mut AsyncBus, full: bool) -> Snapshot {
         let r: Result<(), Error> = bus.write_read(addr, &[reg], &mut b[..n]).await;
         *slot = r.ok().map(|()| value(b, wide));
     }
-    assemble(&v, full)
+    let mut diag = [None; DIAG.len()];
+    if full {
+        for (slot, &(_, reg, _)) in diag.iter_mut().zip(DIAG.iter()) {
+            let mut b = [0u8; 2];
+            *slot = bus.write_read(MAX17262, &[reg], &mut b).await.ok().map(|()| u16::from_le_bytes(b));
+        }
+    }
+    let s = assemble(&v, diag, full);
+    if full {
+        let now = embassy_time::Instant::now().as_secs();
+        LAST_FULL.lock(|l| l.set(Some((now, s))));
+    }
+    s
 }
+
+/// The last full reading, and the uptime in seconds it was taken at.
+static LAST_FULL: Mutex<CriticalSectionRawMutex, Cell<Option<(u64, Snapshot)>>> = Mutex::new(Cell::new(None));
 
 fn hex_or_dashes(uart: &mut Lines, v: Option<u8>) {
     match v {
@@ -319,6 +365,98 @@ pub fn write_report(uart: &mut Lines, s: &Snapshot) {
         }
         uart.write_line("");
     }
+}
+
+fn write_hundredths(uart: &mut Lines, v: i32) {
+    if v < 0 {
+        uart.write_str("-");
+    }
+    let v = v.unsigned_abs();
+    uart.write_u32(v / 100);
+    uart.write_str(if v % 100 < 10 { ".0" } else { "." });
+    uart.write_u32(v % 100);
+}
+
+fn yes_no(v: Option<bool>) -> &'static str {
+    match v {
+        Some(true) => "yes",
+        Some(false) => "no",
+        None => "--",
+    }
+}
+
+/// [`DIAG`] from a full reading, raw and scaled, and what they decode to.
+pub fn write_gauge(uart: &mut Lines, s: &Snapshot) {
+    let reg = |r: u8| DIAG.iter().zip(s.diag).find(|((_, a, _), _)| *a == r).and_then(|(_, v)| v);
+    for (row, values) in DIAG.chunks(5).zip(s.diag.chunks(5)) {
+        uart.write_str("[gauge]");
+        for (&(label, _, unit), &v) in row.iter().zip(values) {
+            uart.write_str("  ");
+            uart.write_str(label);
+            uart.write_str(" ");
+            write_hex16(uart, v);
+            if let (Some(unit), Some(v)) = (unit, v) {
+                uart.write_str(" ");
+                write_hundredths(uart, unit.hundredths(v));
+                uart.write_str(" ");
+                uart.write_str(unit.name());
+            }
+        }
+        uart.write_line("");
+    }
+    uart.write_str("[gauge]  FStat:");
+    match reg(max17262::FSTAT) {
+        Some(f) => {
+            let mut none = true;
+            for name in wrist_power::fstat_flags(f) {
+                uart.write_str(" ");
+                uart.write_str(name);
+                none = false;
+            }
+            if none {
+                uart.write_str(" none");
+            }
+        }
+        None => uart.write_str(" --"),
+    }
+    uart.write_str("  Status2 FullDet ");
+    uart.write_str(yes_no(s.status2.map(wrist_power::full_detected)));
+    uart.write_str(" Hib ");
+    uart.write_str(yes_no(s.status2.map(wrist_power::hibernating)));
+    if let Some(l) = reg(max17262::LEARN_CFG) {
+        uart.write_str("  learn stage ");
+        uart.write_u32(u32::from(wrist_power::learn_stage(l)));
+    }
+    if let Some(m) = reg(max17262::MISC_CFG) {
+        uart.write_str("  FUS ");
+        uart.write_u32(u32::from(wrist_power::full_update_slope(m)));
+        uart.write_str(" MR ");
+        uart.write_u32(u32::from(wrist_power::mixing_rate(m)));
+    }
+    uart.write_line("");
+    uart.write_str("[gauge]  end of charge: VFSOC > FullSOCThr, Current and AvgCurrent in the IChgTerm band: ");
+    match (reg(max17262::VFSOC), reg(max17262::FULL_SOC_THR), reg(max17262::ICHG_TERM), s.current_raw, s.avg_current_raw) {
+        (Some(vf), Some(thr), Some(term), Some(i), Some(avg)) => {
+            for (sep, met) in ["", ", ", ", "].into_iter().zip(wrist_power::end_of_charge(vf, thr, term, i, avg)) {
+                uart.write_str(sep);
+                uart.write_str(yes_no(Some(met)));
+            }
+            uart.write_line("");
+        }
+        _ => uart.write_line("--"),
+    }
+}
+
+/// The gauge's registers from the last full reading.
+pub fn write_last_gauge(uart: &mut Lines) {
+    let Some((at, s)) = LAST_FULL.lock(Cell::get) else {
+        return uart.write_line("[gauge] no full reading yet");
+    };
+    uart.write_str("[gauge] from the full reading ");
+    uart.write_u32(u32::try_from(embassy_time::Instant::now().as_secs().saturating_sub(at)).unwrap_or(u32::MAX));
+    uart.write_line(" s ago:");
+    write_summary(uart, &s);
+    write_gauge(uart, &s);
 }
 
 /// At boot, before any awaited transfer: `HibCfg` as read back after
