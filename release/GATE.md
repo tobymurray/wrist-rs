@@ -77,8 +77,9 @@ The watch runs an earlier wrist-rs.
 8. Buttons. A short press of each of Up, Down, Back and Select lights the face. `cmd "page
    light on"`, then a short press: the light goes off, and the next press lights the face
    for 3 s. Pages: from the face, Down shows the battery (the charge, the voltage, `input
-   USB`), Down again about (the version and `build_id` in upper case), and Down again the
-   face; Up goes the other way, and Back returns to the face from either page. Left on the
+   USB`), Down again Bluetooth (`off`; in an image with `ble`), Down again about (the version
+   and `build_id` in upper case), and Down again the face; Up goes the other way, and Back
+   returns to the face from any page. Left on the
    battery page, the face comes back within 10 s. The alarm, worn: `cmd "alarm test"` rings
    it, `[alarm] ringing`, the face lit and showing `ALARM`, the motor buzzing; a short press
    of Down stops both, `[alarm] dismissed by short press SW3/Down after … s; face lit for 3

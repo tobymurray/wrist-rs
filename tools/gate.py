@@ -45,6 +45,15 @@ def plan_pages(root=ROOT):
     return first, first + pages - 1
 
 
+def page_cycle(features, root=ROOT):
+    """The pages Down steps through from the face, by console name, as the image picks them
+    (`PAGES` in standalone-boot's main.rs): wrist-pages' `ALL` with `ble`, else `WITHOUT_BLUETOOTH`."""
+    pages = (root / 'crates/wrist-pages/src/lib.rs').read_text().split('impl Page {', 1)[1]
+    which = 'ALL' if 'ble' in features else 'WITHOUT_BLUETOOTH'
+    listed = re.search(rf'pub const {which}: \[Self; \d+\] = \[([^\]]*)\];', pages)[1]
+    return [name.lower() for name in re.findall(r'Self::(\w+)', listed)]
+
+
 def record_page(root=ROOT):
     """The bank 1 page the installer keeps its outcome record in, from wrist-flash's layout."""
     layout = (root / 'crates/wrist-flash/src/layout.rs').read_text()
@@ -676,8 +685,11 @@ class Gate:
         short('Back', "the console's light off")
         short('Back', 'face lit for 3 s')
         # Each press restarts the pages' 10 s, so the moves go first, with no question between.
-        for button, page in [('Down', 'battery'), ('Down', 'about'), ('Down', 'face'),
-                             ('Up', 'about'), ('Up', 'battery'), ('Back', 'face')]:
+        # Down round to the face again, Up back two pages, then Back to the face.
+        cycle = page_cycle(self.m.get('toolchain', {}).get('app_features', []))
+        moves = ([('Down', page) for page in cycle[1:] + cycle[:1]]
+                 + [('Up', page) for page in cycle[:0:-1][:2]] + [('Back', 'face')])
+        for button, page in moves:
             short(button, f'[page] {page}')
         cargo = (ROOT / 'apps/standalone-boot/Cargo.toml').read_text()
         version = re.search(r'(?m)^version\s*=\s*"([^"]*)"', cargo)[1]
