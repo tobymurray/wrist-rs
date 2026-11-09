@@ -555,24 +555,46 @@ fn the_chip_says_why_it_started() {
 
 #[test]
 fn an_address_parses_into_the_chips_byte_order() {
-    assert_eq!(parse_address("AC:12:03:D7:FC:5C"), Some([0x5C, 0xFC, 0xD7, 0x03, 0x12, 0xAC]));
-    assert_eq!(parse_address(" ac-12-03-d7-fc-5c "), Some([0x5C, 0xFC, 0xD7, 0x03, 0x12, 0xAC]));
-    for bad in ["", "AC:12:03:D7:FC", "AC:12:03:D7:FC:5C:00", "AC:12:03:D7:FC:5", "AC:12:03:D7:FC:5G", "AC1203D7FC5C"] {
+    let public = Address { kind: 0, bytes: [0x5C, 0xFC, 0xD7, 0x03, 0x12, 0xAC] };
+    let random = Address { kind: 1, ..public };
+    assert_eq!(parse_address("AC:12:03:D7:FC:5C"), Some(public));
+    assert_eq!(parse_address(" ac-12-03-d7-fc-5c "), Some(public));
+    assert_eq!(parse_address("AC:12:03:D7:FC:5C (random)"), Some(random));
+    assert_eq!(parse_address("ac-12-03-d7-fc-5c(random) "), Some(random));
+    for bad in ["", "AC:12:03:D7:FC", "AC:12:03:D7:FC:5C:00", "AC:12:03:D7:FC:5", "AC:12:03:D7:FC:5G", "AC1203D7FC5C", "(random)",
+        "AC:12:03:D7:FC:5C (public)", "AC:12:03:D7:FC:5C random", "AC:12:03:D7:FC:5C (random) (random)"] {
         assert_eq!(parse_address(bad), None, "{bad:?}");
     }
+}
+
+#[test]
+fn an_address_is_written_with_its_type_and_reads_back() {
+    use bluenrg2::ADDRESS_TEXT_MAX;
+    let mut out = [0; ADDRESS_TEXT_MAX];
+    let public = Address { kind: 0, bytes: [0x5C, 0xFC, 0xD7, 0x03, 0x12, 0xAC] };
+    assert_eq!(public.text(&mut out), "AC:12:03:D7:FC:5C");
+    assert_eq!(Address { kind: 1, ..public }.text(&mut out), "AC:12:03:D7:FC:5C (random)");
+    proptest::proptest!(|(kind in 0u8..2, bytes: [u8; 6])| {
+        let a = Address { kind, bytes };
+        proptest::prop_assert_eq!(parse_address(a.text(&mut [0; ADDRESS_TEXT_MAX])), Some(a));
+    });
 }
 
 #[test]
 fn only_another_bonds_identity_keeps_a_link_through_a_forget() {
     use bluenrg2::{another_bond, Address};
     let reply = [2, 1, 0xFD, 0x81, 0x10, 0xCE, 0xD1, 0x80, 0, 0x5C, 0xFC, 0xD7, 0x03, 0x12, 0xAC];
-    let (random, public) = ([0xFD, 0x81, 0x10, 0xCE, 0xD1, 0x80], [0x5C, 0xFC, 0xD7, 0x03, 0x12, 0xAC]);
-    assert!(another_bond(&reply, random, Address { kind: 0, bytes: public }));
-    assert!(!another_bond(&reply, public, Address { kind: 0, bytes: public }));
-    assert!(!another_bond(&reply, random, Address { kind: 1, bytes: public }));
+    let random = Address { kind: 1, bytes: [0xFD, 0x81, 0x10, 0xCE, 0xD1, 0x80] };
+    let public = Address { kind: 0, bytes: [0x5C, 0xFC, 0xD7, 0x03, 0x12, 0xAC] };
+    assert!(another_bond(&reply, random, public));
+    assert!(!another_bond(&reply, public, public));
+    assert!(!another_bond(&reply, random, Address { kind: 1, ..public }));
     // A resolvable private address, as a phone connects with.
     assert!(!another_bond(&reply, random, Address { kind: 1, bytes: [1, 2, 3, 4, 5, 0x4A] }));
-    assert!(!another_bond(&[], random, Address { kind: 0, bytes: public }));
+    assert!(!another_bond(&[], random, public));
+    // Two bonds that share an address but not its type.
+    let twins = [2, 1, 0x5C, 0xFC, 0xD7, 0x03, 0x12, 0xAC, 0, 0x5C, 0xFC, 0xD7, 0x03, 0x12, 0xAC];
+    assert!(another_bond(&twins, Address { kind: 1, ..public }, public));
 }
 
 #[test]
@@ -600,4 +622,16 @@ fn bonded_devices_reads_each_entry_and_no_more_than_the_reply_holds() {
     // A count past the entries present stops at the last whole one.
     assert_eq!(bonded_devices(&[5, 0, 1, 2, 3, 4, 5, 6, 0, 1]).count(), 1);
     assert_eq!(bonded_devices(&[]).count(), 0);
+}
+
+#[test]
+fn the_largest_bonded_devices_reply_fits_the_return_parameters() {
+    use bluenrg2::RETURN_PARAMS_MAX;
+    let bonds = (RETURN_PARAMS_MAX - 1) / 7;
+    let mut p = vec![0x04, 0x0E, 0xFF, 0x01, 0xA3, 0xFC, 0x00, u8::try_from(bonds).unwrap()];
+    p.extend((0..bonds).flat_map(|i| [1, u8::try_from(i).unwrap(), 0, 0, 0, 0, 0xC0]));
+    p.resize(3 + 0xFF, 0);
+    let Event::CommandComplete { return_param_bytes, .. } = parse(&p) else { panic!() };
+    assert_eq!(return_param_bytes.len(), RETURN_PARAMS_MAX);
+    assert_eq!(bonded_devices(return_param_bytes).count(), 35);
 }
