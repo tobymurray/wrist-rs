@@ -5,17 +5,27 @@
 use core::fmt::{self, Write};
 use core::sync::atomic::Ordering;
 
-use bluenrg2::opcode::{ACI_GAP_SET_NON_DISCOVERABLE, ACI_GATT_ADD_CHAR, ACI_GATT_ADD_SERVICE, ACI_HAL_GET_ANCHOR_PERIOD};
-use bluenrg2::{evt_mask, permission, props, uuid_type, MIN_ENC_KEY_SIZE, PRIMARY_SERVICE};
+use bluenrg2::opcode::{
+    ACI_GAP_SET_DISCOVERABLE, ACI_GAP_SET_NON_DISCOVERABLE, ACI_GAP_TERMINATE, ACI_GATT_ADD_CHAR, ACI_GATT_ADD_SERVICE, ACI_HAL_GET_ANCHOR_PERIOD,
+};
+use bluenrg2::{ad, address, evt_mask, permission, props, uuid_type, ADV_IND, MIN_ENC_KEY_SIZE, NO_FILTER, PRIMARY_SERVICE};
 use bluenrg2::probe::{Beside, Line, Probe};
 
 use embassy_time::Timer;
 
-use super::{Link, INTERVAL, LATENCY, STATE, STATE_ADVERTISING, STATE_CONNECTED, STATE_IDLE};
+use super::{Link, CONN_HANDLE, DEVICE_NAME, INTERVAL, LATENCY, STATE, STATE_ADVERTISING, STATE_CONNECTED, STATE_IDLE};
 use crate::uart::Uart;
 
 /// Starts the chip's updater on firmware 2353 (HARDWARE.md); only this debug command sends it.
 const UPDATER_START: u16 = 0xFC20;
+
+/// `ble probe adv`'s steps: the interval (0.625 ms units) each `ACI_GAP_SET_DISCOVERABLE` asks
+/// for, and whether `ACI_GAP_SET_NON_DISCOVERABLE` goes first. 100 ms, then 1022.5 ms over it,
+/// back to 100 ms over that, and 100 ms over itself.
+const ADVERTISING_STEPS: [(u16, bool); 4] = [(160, true), (1636, false), (160, false), (160, false)];
+
+/// How long each step of `ble probe adv` advertises, for a host to time the advertisements.
+const STEP_MS: u64 = 6_000;
 
 struct Text(Uart);
 
@@ -250,4 +260,82 @@ impl Link<'_> {
 fn write(uart: Uart, line: Line<'_>) {
     let _ = write!(Text(uart), "[ble] {line}");
     uart.write_line("");
+}
+
+impl Link<'_> {
+    /// F55: whether the chip takes `ACI_GAP_SET_DISCOVERABLE` while already advertising, and at
+    /// which interval it then advertises (the anchor period, PM0257 §4, and a host's timing).
+    /// One `[ble] probe adv` line per step; the policy's advertising after.
+    pub(super) async fn probe_advertising(&mut self) {
+        if STATE.load(Ordering::Relaxed) == STATE_CONNECTED || self.scanner.until().is_some() {
+            return self.uart.write_line("[ble] probe adv: connected or scanning; try while advertising");
+        }
+        for (step, (interval, stop_first)) in ADVERTISING_STEPS.into_iter().enumerate() {
+            let stopped = if stop_first { self.command(ACI_GAP_SET_NON_DISCOVERABLE, &[]).await.ok().map(|r| r.status) } else { None };
+            let status = self.discoverable(interval).await;
+            let reply = self.command(ACI_HAL_GET_ANCHOR_PERIOD, &[]).await.ok();
+            let mut t = Text(self.uart);
+            let _ = write!(t, "[ble] probe adv step={step} interval={interval} stop_first={stop_first}");
+            if let Some(s) = stopped {
+                let _ = write!(t, " stop_status={s:02X}");
+            }
+            match status {
+                Ok(s) => {
+                    let _ = write!(t, " status={s:02X}");
+                }
+                Err(why) => {
+                    let _ = write!(t, " error={why}");
+                }
+            }
+            if let Some(r) = reply.filter(|r| r.status == 0 && r.len >= 8) {
+                let p = &r.params;
+                let anchor = u32::from_le_bytes([p[0], p[1], p[2], p[3]]);
+                let free = u32::from_le_bytes([p[4], p[5], p[6], p[7]]);
+                let _ = write!(t, " anchor={anchor} free={free}");
+            }
+            self.uart.write_line("");
+            Timer::after_millis(STEP_MS).await;
+        }
+        let _ = self.command(ACI_GAP_SET_NON_DISCOVERABLE, &[]).await;
+        STATE.store(STATE_IDLE, Ordering::Relaxed);
+        self.advertised = None;
+        self.advertise().await;
+        self.uart.write_line("[ble] probe adv: done");
+    }
+
+    /// `ACI_GAP_SET_DISCOVERABLE` as `advertise` sends it, at `interval`; the chip's status.
+    async fn discoverable(&mut self, interval: u16) -> Result<u8, &'static str> {
+        let mut p = [0u8; 20];
+        p[0] = ADV_IND;
+        p[1..3].copy_from_slice(&interval.to_le_bytes());
+        p[3..5].copy_from_slice(&interval.to_le_bytes());
+        p[5] = address::STATIC_RANDOM;
+        p[6] = NO_FILTER;
+        p[7] = u8::try_from(1 + DEVICE_NAME.len()).unwrap_or(0);
+        p[8] = ad::NAME_COMPLETE;
+        p[9..9 + DEVICE_NAME.len()].copy_from_slice(DEVICE_NAME);
+        let n = 9 + DEVICE_NAME.len();
+        self.command(ACI_GAP_SET_DISCOVERABLE, &p[..n + 5]).await.map(|r| {
+            if r.status == 0 {
+                STATE.store(STATE_ADVERTISING, Ordering::Relaxed);
+            }
+            r.status
+        })
+    }
+
+    /// F55: `ACI_GAP_TERMINATE` with `reason`, and the chip's status; the central sees the
+    /// reason if the chip takes it.
+    pub(super) async fn probe_drop(&mut self, reason: u8) {
+        if STATE.load(Ordering::Relaxed) != STATE_CONNECTED {
+            return self.uart.write_line("[ble] probe drop: not connected");
+        }
+        let h = CONN_HANDLE.load(Ordering::Relaxed).to_le_bytes();
+        let status = self.command(ACI_GAP_TERMINATE, &[h[0], h[1], reason]).await.map(|r| r.status);
+        let mut t = Text(self.uart);
+        let _ = match status {
+            Ok(s) => write!(t, "[ble] probe drop reason={reason:02X} status={s:02X}"),
+            Err(why) => write!(t, "[ble] probe drop reason={reason:02X} error={why}"),
+        };
+        self.uart.write_line("");
+    }
 }
