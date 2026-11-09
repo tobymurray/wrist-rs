@@ -222,3 +222,98 @@ fn a_phone_connecting_ends_advertising() {
     assert_eq!((a.advertising, a.peripheral), (None, 1));
     assert!(connect(&a, link(50.0, 50.0, 4)).is_ok());
 }
+
+/// PM0257 §4.3: advertising whose period is a multiple of the scan's runs beside it, as the watch
+/// does (HARDWARE.md, a scan beside advertising every 995 ms heard one window per period).
+#[test]
+fn advertising_a_multiple_of_a_scan_runs_beside_it() {
+    let a = Activities { scanning: Some(scan(160)), ..Activities::IDLE };
+    assert_eq!(Scheduler.admit(&a, &Change::Advertise(Some(adv(1592)))), Ok(Admitted::AS_ASKED));
+}
+
+/// PM0257 §4.2.3, `ble_status.h`'s names: advertising shorter than the anchor fails as a new
+/// interval, longer as too large. The short case is unmeasured, a probe cell.
+#[test]
+fn advertising_shorter_than_the_anchor_is_a_new_interval_refused() {
+    let at_500 = connect(&Activities::IDLE, link(500.0, 500.0, 4)).unwrap();
+    assert_eq!(Scheduler.admit(&at_500, &Change::Advertise(Some(adv(160)))), Err(SchedKind::NewIntervalFailed));
+}
+
+/// Closing one link leaves the time base as it was (PM0257 §4.3: only closing every link resets
+/// it), so the period stays the one the closed link set.
+#[test]
+fn closing_one_link_keeps_the_anchor_it_set() {
+    let mut a = Activities::IDLE;
+    for (min, max, ce) in [(100.0, 300.0, 32), (250.0, 500.0, 80), (50.0, 150.0, 40)] {
+        a = connect(&a, link(min, max, ce)).unwrap();
+    }
+    let a = a.walk(&Scheduler, &[Change::Close { slot: 2 }]).unwrap();
+    assert_eq!(anchor(&a), Some(100 * MS));
+}
+
+/// The chip holds eight links in all (`CAPABILITIES.max_links`), the phone's among them.
+#[test]
+fn a_phone_beside_seven_centrals_is_the_ninth_link_refused() {
+    let mut a = Activities { peripheral: 1, ..Activities::IDLE };
+    for _ in 0..7 {
+        a = connect(&a, link(50.0, 50.0, 2)).unwrap();
+    }
+    assert_eq!(Scheduler.admit(&a, &Change::PeripheralUp), Err(SchedKind::NoSlot));
+    let mut a = Activities::IDLE;
+    for _ in 0..8 {
+        a = connect(&a, link(50.0, 50.0, 2)).unwrap();
+    }
+    assert_eq!(Scheduler.admit(&a, &Change::PeripheralUp), Err(SchedKind::NoSlot));
+}
+
+/// PM0257 §4.2.2, case 3: a shorter anchor keeps a slot that ends with its guard exactly at the
+/// new period, and a link fits the gap before it.
+#[test]
+fn a_slot_ending_with_its_guard_at_the_period_still_fits() {
+    let mut a = Activities::IDLE;
+    // 148 slots of 0.625 ms and five guards of 1.5 ms: 100 ms exactly.
+    for ce in [30, 30, 30, 30, 28] {
+        a = connect(&a, link(200.0, 200.0, ce)).unwrap();
+    }
+    let a = a.walk(&Scheduler, &[Change::Close { slot: 1 }]).unwrap();
+    let b = connect(&a, link(50.0, 100.0, 30)).unwrap();
+    assert_eq!(anchor(&b), Some(100 * MS));
+    assert_eq!(b.central[1].map(|s| s.offset.0), Some(20_250));
+}
+
+/// PM0257 §4.2.2: a link asked for with no event length is given the free space, after the last
+/// slot, never a gap of nothing.
+#[test]
+fn a_link_with_no_length_takes_the_room_after_the_last_slot() {
+    let mut a = Activities::IDLE;
+    for _ in 0..3 {
+        a = connect(&a, link(100.0, 100.0, 16)).unwrap();
+    }
+    let a = a.walk(&Scheduler, &[Change::Close { slot: 1 }]).unwrap();
+    let b = connect(&a, link(100.0, 100.0, 0)).unwrap();
+    let s = b.central[1].unwrap();
+    assert_eq!(s.offset.0, 34_500);
+    assert!(s.ce_len.as_u16() > 0);
+}
+
+/// Core Specification Vol 4 Part E §7.8.12: the interval's minimum is at most its maximum, and
+/// not zero. The chip's code for either is unmeasured (F33).
+#[test]
+fn an_interval_range_upside_down_or_from_zero_is_refused() {
+    assert!(connect(&Activities::IDLE, link(50.0, 30.0, 4)).is_err());
+    assert!(connect(&Activities::IDLE, link(0.0, 30.0, 4)).is_err());
+}
+
+/// A link's interval is a whole number of 1.25 ms (Core Specification Vol 6 Part B §4.5.1), so a
+/// period that is not (advertising at 161 × 0.625 ms + 5 ms is 105.625 ms) is never one.
+#[test]
+fn a_period_off_the_interval_grid_is_never_a_links_interval() {
+    let a = Activities { advertising: Some(adv(161)), ..Activities::IDLE };
+    assert_eq!(connect(&a, link(100.0, 110.0, 4)), Err(SchedKind::NewIntervalFailed));
+    // §4.2.2: a multiple of it can be, with that many periods' latency.
+    let b = connect(&a, link(200.0, 250.0, 4)).unwrap().central[0].unwrap();
+    assert_eq!((interval_ms(b), b.latency), (211.25, 2));
+    // A submultiple must be on the grid too: 1027.5 ms / 4 = 256.875 ms is not.
+    let at_1022 = Activities { advertising: Some(adv(1636)), ..Activities::IDLE };
+    assert_eq!(connect(&at_1022, link(250.0, 260.0, 4)), Err(SchedKind::NewIntervalFailed));
+}
