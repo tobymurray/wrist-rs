@@ -52,8 +52,15 @@ pub struct Report {
     pub cut_by_the_trace: u32,
     /// Times the watch reset, each the start of a new epoch.
     pub resets: u32,
+    /// Where a capture began with the chip already up, which the core was told at once, and the
+    /// operations it then asked for to catch up with a chip it never saw configured, which are not
+    /// compared.
+    pub seeded: Option<(u64, Vec<Op>)>,
     pub core_ops: Vec<(u64, Op)>,
     pub driver_ops: Vec<(u64, DriverOp)>,
+    /// When the operator told the driver to drop the phone's link (`ble disconnect`), which the
+    /// core has no goal for.
+    pub operator_disconnects: Vec<u64>,
 }
 
 /// A driver command that is one of the core's operations, with what the comparison reads of it.
@@ -64,6 +71,8 @@ pub enum DriverOp {
     StopAdvertising,
     /// Interval min and max in 1.25 ms, and latency.
     AskParams(u16, u16, u16),
+    /// The answer to a numeric comparison.
+    Confirm(bool),
     Other(OpKind),
 }
 
@@ -89,6 +98,9 @@ impl Report {
             let _ = writeln!(s, "{k:<20} {d:>6} {c:>5}{mark}");
         }
         let _ = writeln!(s, "unknown events: {}, cut by the trace: {}, watch resets: {}", self.unknown_events, self.cut_by_the_trace, self.resets);
+        if let Some((at, ops)) = &self.seeded {
+            let _ = writeln!(s, "the chip already up at {at}; not compared, the core's catching up: {ops:?}");
+        }
         let d = self.disagreements();
         let _ = writeln!(s, "disagreements: {}", d.len());
         for line in d {
@@ -144,6 +156,8 @@ struct Replay<'a> {
     /// The core's parameter request on air, which the central's answer ends.
     asked_update: Option<OpId>,
     advertising: bool,
+    /// The core is being told of a chip the capture began with already up.
+    seeding: bool,
     last_status: String,
     report: Report,
 }
@@ -179,8 +193,13 @@ impl Replay<'_> {
         }
         if let Some(op) = out.op {
             self.push(Who::Core, format!("{op:?}"));
-            self.report.core_ops.push((self.now.0, op));
-            self.report.tally.entry(format!("{:?}", op.kind())).or_default().1 += 1;
+            match &mut self.report.seeded {
+                Some((_, ops)) if self.seeding => ops.push(op),
+                _ => {
+                    self.report.core_ops.push((self.now.0, op));
+                    self.report.tally.entry(format!("{:?}", op.kind())).or_default().1 += 1;
+                }
+            }
             self.ids = self.ids.wrapping_add(1);
             let id = OpId(self.ids);
             if op.kind() == OpKind::UpdateParams {
@@ -215,6 +234,18 @@ impl Replay<'_> {
     fn goals(&mut self) {
         let g = self.goals;
         self.feed(Input::Goals(g));
+    }
+
+    /// A capture that begins with the chip up, as a suite run does, never shows the core its start:
+    /// the chip's ready answers the core's start at once, and what the core asks for in that step
+    /// sets up what the driver had already.
+    fn seed(&mut self) {
+        let Some(id) = self.core.state.chip.starting() else { return };
+        self.push(Who::Line, "-- the chip was already up".into());
+        self.report.seeded = Some((self.now.0, Vec::new()));
+        self.seeding = true;
+        self.feed(Input::Started(id, Ok(INFO)));
+        self.seeding = false;
     }
 
     /// Whether the watch has reset since this epoch's last trace line: its milliseconds, or the
@@ -269,6 +300,7 @@ impl Replay<'_> {
                     self.goals.power = Power::Cable;
                     self.goals();
                 }
+                "ble disconnect" => self.report.operator_disconnects.push(self.now.0),
                 "ble yes" => self.feed(Input::Answer(true)),
                 "ble no" => self.feed(Input::Answer(false)),
                 _ => {}
@@ -301,6 +333,8 @@ impl Replay<'_> {
                         (OpKind::Advertise, _) => DriverOp::StopAdvertising,
                         // Handle, then interval min and max (1.25 ms), latency, timeout (10 ms).
                         (OpKind::UpdateParams, _) => DriverOp::AskParams(at(6), at(8), at(10)),
+                        // Handle, then 1 to confirm.
+                        (OpKind::ConfirmNumeric, _) => DriverOp::Confirm(bytes.get(6) == Some(&1)),
                         _ => DriverOp::Other(kind),
                     };
                     let detail = match op {
@@ -379,6 +413,7 @@ pub fn replay(capture: &str) -> Report {
         phone: None,
         asked_update: None,
         advertising: false,
+        seeding: false,
         last_status: String::new(),
         report: Report::default(),
     };
@@ -413,6 +448,10 @@ pub fn replay(capture: &str) -> Report {
                 r.now = Instant(ms);
                 r.goals();
                 started = true;
+                // The trace starts where the driver resets the chip, or the chip was already up.
+                if text.split_whitespace().nth(2).is_none_or(|d| d != "r") {
+                    r.seed();
+                }
             }
         }
         r.line(text);

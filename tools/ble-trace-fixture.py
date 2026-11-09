@@ -5,8 +5,9 @@
 
 Kept: chip resets; the driver's commands that are one of the core's operations; the chip's
 events but its replies (one lists the bonded addresses), advertising reports and console writes,
-with a connection's peer and resolvable addresses zeroed; the console commands the replay takes
-as goals; scenario marks. Every line keeps its host time.
+with a connection's peer and resolvable addresses zeroed; the console commands the replay reads
+(its goals, answers and `ble disconnect`); scenario marks, with anything shaped like an address
+replaced. Every line keeps its host time, as seconds or the wall clock's HH:MM:SS.mmm.
 """
 
 import argparse
@@ -15,8 +16,10 @@ import sys
 
 # The driver's commands the replay reads as operations (wrist-ble-sim's replay.rs, driver_op).
 OPS = {0xFC83, 0xFC81, 0xFD81, 0xFC8D, 0xFC95, 0xFCA5, 0xFC88, 0xFC93, 0xFC97, 0xFC9D}
-GOALS = re.compile(r'^ble (on|off|yes|no|profile (cable|battery))$')
-LINE = re.compile(r'^\s*(\d+\.\d{3}) (.*)$')
+GOALS = re.compile(r'^ble (on|off|yes|no|disconnect|profile (auto|cable|battery))$')
+LINE = re.compile(r'^\s*((?:\d{2}:\d{2}:\d{2}|\d+)\.\d{3}) (.*)$')
+# Six bytes with or without separators, as an address is written anywhere in the console.
+ADDRESS = re.compile(r'(?<![0-9A-Fa-f])[0-9A-Fa-f]{2}(?:[:_-]?[0-9A-Fa-f]{2}){5,}(?![0-9A-Fa-f])')
 
 EVENT, LE_META, VENDOR, COMMAND_COMPLETE, COMMAND_STATUS = 0x04, 0x3E, 0xFF, 0x0E, 0x0F
 REPORT, CONNECTION_COMPLETE, ENHANCED_CONNECTION_COMPLETE = 0x02, 0x01, 0x0A
@@ -49,7 +52,7 @@ def scrub(line):
     host, text = m.groups()
     text = text.strip()
     if text.startswith('== '):
-        return f'{host} {text}'
+        return f'{host} {ADDRESS.sub("<address>", text)}'
     if text.startswith('>> usb '):
         cmd = text[len('>> usb '):].strip()
         return f'{host} >> usb {cmd}' if GOALS.match(cmd) else None

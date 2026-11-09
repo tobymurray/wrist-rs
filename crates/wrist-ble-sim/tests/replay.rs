@@ -19,13 +19,95 @@ fn traces() -> Vec<(String, String)> {
     all
 }
 
+/// Where the core is known to act otherwise than the driver did, by fixture.
+const KNOWN: &[(&str, &[&str])] = &[(
+    // Nobody answered: the core refuses at its 30 s deadline, 2 ms before the chip's own security
+    // timeout fails the pairing; the driver leaves it to the chip.
+    "android14-comparison-unanswered.log",
+    &["1062525: the core did ConfirmNumeric(ConnHandle(2053), false) and the driver did not"],
+)];
+
 #[test]
 fn the_core_acts_where_and_as_the_driver_did() {
     for (name, capture) in traces() {
         let report = replay(&capture);
         assert!(!report.core_ops.is_empty() && !report.driver_ops.is_empty(), "{name}: nothing replayed");
-        assert_eq!(report.disagreements(), Vec::<String>::new(), "{name}\n{}", report.render(false));
+        let known = KNOWN.iter().find(|(f, _)| name.ends_with(f)).map_or(&[][..], |(_, d)| *d);
+        assert_eq!(report.disagreements(), known, "{name}\n{}", report.render(false));
     }
+}
+
+/// A suite run opens the console with the chip long up, and updates the watch partway through.
+#[test]
+fn a_capture_that_begins_with_the_chip_up_is_taken_as_up() {
+    let r = replay(&fixture("bluez-suite.log"));
+    assert_eq!(r.disagreements(), Vec::<String>::new(), "{}", r.render(false));
+    let (at, ops) = r.seeded.clone().expect("not seeded");
+    let first = fixture("bluez-suite.log").lines().next().and_then(|l| l.split_whitespace().nth(2)?.parse::<u64>().ok());
+    assert_eq!(Some(at), first);
+    assert!(ops.iter().all(|op| op.kind() == OpKind::Advertise), "{ops:?}");
+    assert_eq!(r.resets, 1, "the update's reset");
+    let kinds = |k: OpKind| (r.driver_ops.iter().filter(|(_, d)| d_kind(*d) == k).count(), r.core_ops.iter().filter(|(_, op)| op.kind() == k).count());
+    let (driver, core) = kinds(OpKind::Advertise);
+    assert_eq!(driver, core);
+    assert!(driver > 40, "{driver}");
+    assert_eq!(kinds(OpKind::RequestSecurity), (1, 1));
+    for (name, capture) in traces() {
+        if capture.lines().find(|l| l.contains("[trace] ")).is_some_and(|l| l.ends_with(" r")) {
+            assert_eq!(replay(&capture).seeded, None, "{name}");
+        }
+    }
+}
+
+fn d_kind(d: DriverOp) -> OpKind {
+    match d {
+        DriverOp::Advertise(..) | DriverOp::StopAdvertising => OpKind::Advertise,
+        DriverOp::AskParams(..) => OpKind::UpdateParams,
+        DriverOp::Confirm(_) => OpKind::ConfirmNumeric,
+        DriverOp::Other(k) => k,
+    }
+}
+
+#[test]
+fn an_answer_on_one_side_alone_or_unlike_the_others_is_a_disagreement() {
+    let link = ConnHandle::new(1);
+    let yes = Op::ConfirmNumeric(link, true);
+    assert_eq!(report(&[(1_000, yes)], &[(1_200, DriverOp::Confirm(true))]).disagreements().len(), 0);
+    assert_eq!(report(&[(1_000, yes)], &[(1_000, DriverOp::Confirm(false))]).disagreements().len(), 2, "the other answer");
+    assert_eq!(report(&[(1_000, yes)], &[]).disagreements().len(), 1, "the core answered unprompted");
+    assert_eq!(report(&[], &[(1_000, DriverOp::Confirm(false))]).disagreements().len(), 1, "the core never answered");
+    assert_eq!(report(&[(1_000, yes)], &[(1_301, DriverOp::Confirm(true))]).disagreements().len(), 2, "too far apart");
+}
+
+#[test]
+fn security_rebonds_and_disconnects_on_one_side_alone_are_disagreements() {
+    let link = ConnHandle::new(1);
+    let drop = Op::Disconnect(link, wrist_ble::DisconnectReason::RemoteUserTerminatedConn);
+    for (op, kind) in [(Op::RequestSecurity(link), OpKind::RequestSecurity), (Op::AllowRebond(link), OpKind::AllowRebond), (drop, OpKind::Disconnect)] {
+        assert_eq!(report(&[(1_000, op)], &[(1_100, DriverOp::Other(kind))]).disagreements().len(), 0, "{kind:?}");
+        assert_eq!(report(&[(1_000, op)], &[]).disagreements().len(), 1, "{kind:?}");
+        assert_eq!(report(&[], &[(1_000, DriverOp::Other(kind))]).disagreements().len(), 1, "{kind:?}");
+    }
+}
+
+/// The core has no goal for the operator's `ble disconnect`, so the driver's disconnect just after
+/// it is the operator's, and any other is the driver's own.
+#[test]
+fn only_a_disconnect_the_operator_asked_for_is_the_drivers_alone() {
+    let asked = |at: u64, disconnect: u64| Report {
+        driver_ops: vec![(disconnect, DriverOp::Other(OpKind::Disconnect))],
+        operator_disconnects: vec![at],
+        ..Report::default()
+    };
+    assert_eq!(asked(1_000, 1_000).disagreements().len(), 0);
+    assert_eq!(asked(1_000, 2_000).disagreements().len(), 0);
+    assert_eq!(asked(1_000, 2_001).disagreements().len(), 1, "too long after");
+    assert_eq!(asked(1_000, 999).disagreements().len(), 1, "before it");
+    let with = fixture("bluez-cable.log");
+    let without = with.lines().filter(|l| !l.ends_with(">> usb ble disconnect")).collect::<Vec<_>>().join("\n");
+    assert_ne!(with, without);
+    assert_eq!(replay(&with).disagreements(), Vec::<String>::new());
+    assert_eq!(replay(&without).disagreements().len(), 1);
 }
 
 #[test]
@@ -233,7 +315,9 @@ fn the_rebond_a_lost_bond_needs_goes_out_past_the_security_request() {
 /// A capture stamped by the wall clock replays as one stamped in seconds.
 #[test]
 fn wall_clock_stamps_replay_as_seconds_do() {
-    for (name, capture) in traces() {
+    let on_the_clock = |c: &str| c.lines().next().is_some_and(|l| l.as_bytes().get(2) == Some(&b':'));
+    assert!(on_the_clock(&fixture("bluez-suite.log")));
+    for (name, capture) in traces().into_iter().filter(|(_, c)| !on_the_clock(c)) {
         let restamped: String = capture
             .lines()
             .map(|line| match line.trim_start().split_once(' ') {
