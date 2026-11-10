@@ -491,11 +491,8 @@ impl<'a> Core<'a> {
         b.until = Some(now + wait);
     }
 
-    /// A chip that keeps saying busy has had its retries: it is restarted, which the chip's own
-    /// reset budget bounds in turn (I2: nothing retries for ever). The restart ends every link,
-    /// the phone's too, deliberately (owner, 2026-11-09): a chip that has said nothing but busy
-    /// for a minute and a half is not serving that link either, and the phone reconnects to the
-    /// advertising that follows the restart.
+    /// A chip that keeps saying busy is restarted, ending every link, the phone's too; the chip's
+    /// own reset budget bounds the restarts (I2).
     fn spend(&mut self, now: Instant, out: &mut Outputs) {
         if self.busy.tokens == 0 && matches!(self.state.chip.state, Chip::Ready(_)) {
             self.counters.busy_spent += 1;
@@ -775,8 +772,7 @@ const GRACE: Millis = Millis(1_000);
 /// updates undid it.
 pub const ASKS_PER_WANT: u8 = 3;
 
-/// Busy refusals the chip may give before it is restarted: with the backoff's 1 to 32 s, about
-/// a minute and a half of a chip that says nothing else.
+/// Busy refusals the chip may give before it is restarted.
 pub const BUSY_BUDGET: u8 = 7;
 
 /// A busy refusal's token comes back after this.

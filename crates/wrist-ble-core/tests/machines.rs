@@ -32,7 +32,7 @@ fn phone_asks_an_unencrypted_link_to_pair_once() {
     assert_eq!(actions(p, 9_000, phone::Event::Tick).1, NONE);
 }
 
-/// F62: no parameter ask before encryption, however long the link has been up unencrypted.
+/// No parameter ask before encryption, however long the link has been up unencrypted.
 #[test]
 fn phone_parameters_wait_for_encryption() {
     let p = up(0);

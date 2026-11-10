@@ -51,11 +51,8 @@ pub enum Security {
     Secure,
 }
 
-/// Whether this device may ask the phone for parameters: only once the link is encrypted, or
-/// its pairing has failed. Never at connect, where it ended a bonded macOS central's link, and
-/// never across a pairing: after a re-pair the watch's own security request started, a link
-/// asked at 1.5 s died with both sides silent 4 times in 30, one held to encryption none in 16
-/// (HARDWARE.md, F62). A central that neither encrypts nor pairs is not asked.
+/// Whether this device may ask the phone for parameters: only once the link is encrypted, or its
+/// pairing has failed, since an ask at connect or across a re-pair can end the link (HARDWARE.md).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Params {
     Held,

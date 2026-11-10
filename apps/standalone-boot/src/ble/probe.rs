@@ -20,8 +20,7 @@ use crate::uart::Uart;
 const UPDATER_START: u16 = 0xFC20;
 
 /// `ble probe adv`'s steps: the interval (0.625 ms units) each `ACI_GAP_SET_DISCOVERABLE` asks
-/// for, and whether `ACI_GAP_SET_NON_DISCOVERABLE` goes first. 100 ms, then 1022.5 ms over it,
-/// back to 100 ms over that, and 100 ms over itself.
+/// for, and whether `ACI_GAP_SET_NON_DISCOVERABLE` goes first.
 const ADVERTISING_STEPS: [(u16, bool); 4] = [(160, true), (1636, false), (160, false), (160, false)];
 
 /// How long each step of `ble probe adv` advertises, for a host to time the advertisements.
@@ -263,9 +262,7 @@ fn write(uart: Uart, line: Line<'_>) {
 }
 
 impl Link<'_> {
-    /// F55: whether the chip takes `ACI_GAP_SET_DISCOVERABLE` while already advertising, and at
-    /// which interval it then advertises (the anchor period, PM0257 §4, and a host's timing).
-    /// One `[ble] probe adv` line per step; the policy's advertising after.
+    /// Whether the chip takes `ACI_GAP_SET_DISCOVERABLE` while already advertising, one line per step.
     pub(super) async fn probe_advertising(&mut self) {
         if STATE.load(Ordering::Relaxed) == STATE_CONNECTED || self.scanner.until().is_some() {
             return self.uart.write_line("[ble] probe adv: connected or scanning; try while advertising");
@@ -323,8 +320,7 @@ impl Link<'_> {
         })
     }
 
-    /// F55: `ACI_GAP_TERMINATE` with `reason`, and the chip's status; the central sees the
-    /// reason if the chip takes it.
+    /// `ACI_GAP_TERMINATE` with `reason`, and the chip's status.
     pub(super) async fn probe_drop(&mut self, reason: u8) {
         if STATE.load(Ordering::Relaxed) != STATE_CONNECTED {
             return self.uart.write_line("[ble] probe drop: not connected");

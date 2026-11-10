@@ -1,5 +1,5 @@
 //! The reconciler's rules for what goes out past an operation on air, asking the phone again,
-//! and a chip that keeps saying busy (F46).
+//! and a chip that keeps saying busy.
 
 use wrist_ble::{
     AddrKind, BdAddr, ConnHandle, Duration, Failure, FailureKind, Instant, LeConnRole, LinkParams, Op, OpId, Outcome, PeerAddr,
@@ -20,7 +20,7 @@ fn link() -> ConnHandle {
 const OPENED: LinkParams = LinkParams { interval: Duration::from_u16(24), latency: 0, timeout: Duration::from_u16(500) };
 /// The battery ask, as a phone that takes it reports it.
 const BATTERY: LinkParams = LinkParams { interval: Duration::from_u16(156), latency: 4, timeout: Duration::from_u16(600) };
-/// An Android's own update after the watch's, and what macOS answers an ask with: 45 ms.
+/// A phone's own parameters after it moves off the watch's ask, or answers with its own.
 const OWN: LinkParams = LinkParams { interval: Duration::from_u16(36), latency: 0, timeout: Duration::from_u16(500) };
 
 fn phone() -> PeerAddr {
@@ -126,7 +126,7 @@ fn asked_on_battery() -> Bench {
     b
 }
 
-/// R1-4: an ask refused before it reached the air is asked again once the backoff ends.
+/// An ask refused before it reached the air is asked again once the backoff ends.
 #[test]
 fn an_ask_refused_at_submit_is_asked_again_after_the_backoff() {
     let mut b = asked_on_battery();
@@ -153,7 +153,7 @@ fn asks_refused_at_submit_are_bounded() {
     assert_eq!(asked, usize::from(ASKS_PER_WANT));
 }
 
-/// B-1: a phone that took the ask and then moved off it by its own update (an Android) is asked
+/// A phone that took the ask and then moved off it by its own update is asked
 /// again once it has settled, and at most [`ASKS_PER_WANT`] times for one want.
 #[test]
 fn a_phone_that_undoes_the_ask_is_asked_again_within_the_budget() {
@@ -193,9 +193,9 @@ fn a_phone_that_answers_the_ask_with_its_own_is_not_asked_again() {
     assert_eq!(asks(&b.run_to(120_000)), 0);
 }
 
-/// R1-3: an answer to the chip's own procedure goes out past an operation on air: the rebond a
-/// lost bond needs passes the security request waiting on it (check 8's P1 path), and nothing
-/// asks for parameters before the link is encrypted (F62).
+/// An answer to the chip's own procedure goes out past an operation on air: the rebond a lost
+/// bond needs passes the security request waiting on it, and nothing asks for parameters before
+/// the link is encrypted.
 #[test]
 fn an_answer_passes_a_pending_security_request() {
     let mut b = Bench::new(battery());
@@ -215,8 +215,7 @@ fn stop_advertising() -> Goals {
     Goals { phone: PhoneGoal { discoverable: false, pairing_open: false }, ..battery() }
 }
 
-/// I2: a chip that says busy to everything is restarted once its budget is spent, about a
-/// minute and a half in, not retried every 32 s for ever.
+/// I2: a chip that says busy to everything is restarted once its budget is spent, not retried for ever.
 #[test]
 fn a_chip_that_stays_busy_is_restarted() {
     let mut b = Bench::new(battery());
@@ -275,8 +274,7 @@ fn a_link_a_resync_finds_again_is_judged_afresh() {
     assert!(matches!(out.op, Some(Op::UpdateParams(l, _)) if l == link()), "{out:?}");
 }
 
-/// The restart when the busy budget runs out ends the phone's link too: a chip that answers
-/// nothing but busy is restarted whoever is connected (owner, 2026-11-09).
+/// A chip that answers nothing but busy is restarted whoever is connected, ending the phone's link.
 #[test]
 fn a_chip_that_stays_busy_is_restarted_under_the_phones_link() {
     let mut b = asked_on_battery();
@@ -297,8 +295,7 @@ fn a_chip_that_stays_busy_is_restarted_under_the_phones_link() {
     assert_eq!(b.core.state.phone.link(), None);
 }
 
-/// One busy refusal every nine minutes, against one token back every ten: six hours of them stay
-/// within the budget.
+/// Busy refusals slower than the refill stay within the budget.
 #[test]
 fn a_busy_refusal_every_nine_minutes_keeps_its_refills() {
     let mut b = Bench::new(battery());

@@ -112,7 +112,7 @@ fn what_no_command_here_carries_out_is_none() {
     let long = [b'x'; 32];
     let open = AdvParams { connectable: true, ..quiet };
     assert_eq!(command(&Op::Advertise(Some(open)), &long, |_| Some(LeConnRole::Peripheral)), None);
-    // The advertisement holds 23 bytes of name beside the chip's flags and TX power (HARDWARE.md).
+    // The advertisement holds 23 bytes of name beside the chip's flags and TX power (PM0257 Table 43).
     let c = command(&Op::Advertise(Some(open)), &long[..23], |_| Some(LeConnRole::Peripheral)).unwrap();
     assert_eq!(&c.params()[9..9 + 23], &long[..23]);
     // It is the longest command here, and fills the buffer exactly.

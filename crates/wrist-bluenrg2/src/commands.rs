@@ -3,8 +3,7 @@
 use bluenrg2::{ad, address, opcode, ADV_IND, NO_FILTER};
 use wrist_ble::{ConnHandle, DisconnectReason, LeConnRole, Op};
 
-/// The longest complete local name the chip's advertisement holds: its 31 bytes less the flags
-/// and TX power level the chip adds (3 bytes each) and the name's own length and type (HARDWARE.md).
+/// The longest complete local name the chip's advertisement holds beside its flags and TX power (PM0257 Table 43).
 pub const MAX_NAME: usize = 31 - 3 - 3 - 2;
 
 /// The longest parameters a command here writes: `ACI_GAP_SET_DISCOVERABLE` with the longest name.
@@ -73,8 +72,7 @@ pub fn command(op: &Op, name: &[u8], role: impl Fn(ConnHandle) -> Option<LeConnR
         Op::AllowRebond(l) => Command::new(opcode::ACI_GAP_ALLOW_REBOND, &[&h(l)]),
         Op::ConfirmNumeric(l, yes) => Command::new(opcode::ACI_GAP_NUMERIC_COMPARISON_CONFIRM, &[&h(l), &[u8::from(*yes)]]),
         Op::Passkey(l, key) => Command::new(opcode::ACI_GAP_PASS_KEY_RESP, &[&h(l), &key.to_le_bytes()]),
-        // ST lists 0x05, 0x13, 0x14, 0x15, 0x1A and 0x3B for `ACI_GAP_TERMINATE`; the chip takes
-        // 0x29 too (HARDWARE.md), but it is a BR/EDR reason no link here ends with.
+        // ST doesn't list 0x29 for `ACI_GAP_TERMINATE`, a BR/EDR reason no link here ends with.
         Op::Disconnect(_, DisconnectReason::PairingWithUnitKeyNotSupported) => None,
         Op::Disconnect(l, reason) => Command::new(opcode::ACI_GAP_TERMINATE, &[&h(l), &[*reason as u8]]),
         _ => None,
