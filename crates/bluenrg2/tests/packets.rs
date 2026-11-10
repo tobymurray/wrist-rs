@@ -598,6 +598,28 @@ fn only_another_bonds_identity_keeps_a_link_through_a_forget() {
 }
 
 #[test]
+fn forget_takes_only_the_bond_of_the_type_given_and_names_one_of_another() {
+    use bluenrg2::{forget, Forget};
+    let random = Address { kind: 1, bytes: [0x5F, 0x4E, 0x3D, 0x2C, 0x1B, 0x0A] };
+    let public = Address { kind: 0, bytes: [0xEB, 0xDA, 0xC9, 0xB8, 0xA7, 0xC6] };
+    let reply = [2, 1, 0x5F, 0x4E, 0x3D, 0x2C, 0x1B, 0x0A, 0, 0xEB, 0xDA, 0xC9, 0xB8, 0xA7, 0xC6];
+    assert_eq!(forget(&reply, random), Forget::Bond);
+    assert_eq!(forget(&reply, public), Forget::Bond);
+    // Typed without its type, as `ble bonds` printed it before the type was added.
+    let bare = parse_address("0A:1B:2C:3D:4E:5F").unwrap();
+    let Forget::OtherType(bond) = forget(&reply, bare) else { panic!("{:?}", forget(&reply, bare)) };
+    assert_eq!(bond, random);
+    assert_eq!(bond.text(&mut [0; bluenrg2::ADDRESS_TEXT_MAX]), "0A:1B:2C:3D:4E:5F (random)");
+    assert_eq!(forget(&reply, Address { kind: 1, ..public }), Forget::OtherType(public));
+    assert_eq!(forget(&reply, Address { kind: 0, bytes: [1, 2, 3, 4, 5, 6] }), Forget::NotBonded);
+    assert_eq!(forget(&[], random), Forget::NotBonded);
+    // Two bonds that share an address but not its type: each type names its own.
+    let twins = [2, 1, 0x5F, 0x4E, 0x3D, 0x2C, 0x1B, 0x0A, 0, 0x5F, 0x4E, 0x3D, 0x2C, 0x1B, 0x0A];
+    assert_eq!(forget(&twins, random), Forget::Bond);
+    assert_eq!(forget(&twins, bare), Forget::Bond);
+}
+
+#[test]
 fn a_pairing_is_bonded_only_when_the_bond_list_shows_it() {
     use bluenrg2::{bond_kept, Address};
     let mac = [1, 0xEB, 0xDA, 0xC9, 0xB8, 0xA7, 0xC6];

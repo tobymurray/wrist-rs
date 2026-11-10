@@ -697,6 +697,27 @@ pub fn listed(params: &[u8], peer: Address) -> bool {
     bonded_devices(params).any(|entry| entry == (peer.kind, peer.bytes))
 }
 
+/// The bond `ble forget <address>` names in a `GET_BONDED_DEVICES` reply.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Forget {
+    /// A bond with this address and type, the only one to remove.
+    Bond,
+    /// No bond of the type given, but this one has the same bytes and is left alone.
+    OtherType(Address),
+    NotBonded,
+}
+
+/// Which bond, if any, `wanted` names; a bond of another type is reported, never chosen.
+#[must_use]
+pub fn forget(params: &[u8], wanted: Address) -> Forget {
+    if listed(params, wanted) {
+        return Forget::Bond;
+    }
+    bonded_devices(params)
+        .find(|&(_, bytes)| bytes == wanted.bytes)
+        .map_or(Forget::NotBonded, |(kind, bytes)| Forget::OtherType(Address { kind, bytes }))
+}
+
 /// Whether a link from `peer` is provably not `forgotten`'s: `peer` is the identity of another bond.
 #[must_use]
 pub fn another_bond(params: &[u8], forgotten: Address, peer: Address) -> bool {
