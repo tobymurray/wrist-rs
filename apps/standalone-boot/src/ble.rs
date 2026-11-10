@@ -1677,24 +1677,14 @@ impl Link<'_> {
                     ENCRYPTION_FAILURES.fetch_add(1, Ordering::Relaxed);
                 }
                 let on = matches!(e.encryption(), Some((_, true)));
-                set_encrypted(on);
-                if on {
-                    self.pair_ask.settled();
-                    self.interval_ask.encrypted();
-                }
-                if on && !PROVEN.swap(true, Ordering::Relaxed) {
-                    PROVEN_NOW.signal(());
-                }
-                self.uart.write_line(if on { "[ble] link encrypted" } else { "[ble] link encryption off" });
-                self.set_mirror();
+                self.set_link_encrypted(on, if on { "[ble] link encrypted" } else { "[ble] link encryption off" });
             }
             e @ Event::EncryptionKeyRefresh { status, .. } => {
                 if status != BleStatus::SUCCESS {
                     ENCRYPTION_FAILURES.fetch_add(1, Ordering::Relaxed);
                 }
-                set_encrypted(matches!(e.encryption(), Some((_, true))));
-                self.uart.write_line(if status == BleStatus::SUCCESS { "[ble] link keys refreshed" } else { "[ble] link key refresh failed" });
-                self.set_mirror();
+                let on = matches!(e.encryption(), Some((_, true)));
+                self.set_link_encrypted(on, if status == BleStatus::SUCCESS { "[ble] link keys refreshed" } else { "[ble] link key refresh failed" });
             }
             Event::LeDataLengthChange { max_tx_octets, max_tx_time, max_rx_octets, max_rx_time, .. } => {
                 self.data_length((max_tx_octets, max_tx_time), (max_rx_octets, max_rx_time));
@@ -1707,6 +1697,21 @@ impl Link<'_> {
                 UNKNOWN.fetch_add(1, Ordering::Relaxed);
             }
         }
+    }
+
+    /// The link's encryption, from either event that reports it, so a refresh after a lost
+    /// change settles the same state.
+    fn set_link_encrypted(&mut self, on: bool, line: &str) {
+        set_encrypted(on);
+        if on {
+            self.pair_ask.settled();
+            self.interval_ask.encrypted();
+            if !PROVEN.swap(true, Ordering::Relaxed) {
+                PROVEN_NOW.signal(());
+            }
+        }
+        self.uart.write_line(line);
+        self.set_mirror();
     }
 
     /// The link is gone: its encryption, the subscription and mirror, a pairing prompt, the
