@@ -82,7 +82,7 @@ class Failures(unittest.TestCase):
                  ('host', 'OSError: odd'), ('not found', ''), ('not bonded', ''), ('connect', 'TimeoutError: '),
                  ('connect', 'BleakError: Authentication Failed'), ('attach', 'no answer')]
         for kind, detail in cases:
-            text = wrist_port.air_failure(kind, 'UNA', 'D9:5B:7A:EB:29:82', detail)
+            text = wrist_port.air_failure(kind, 'UNA', 'C2:3D:4E:5F:60:71', detail)
             self.assertNotIn('\n', text, kind)
 
     def test_the_host_side(self):
@@ -111,18 +111,18 @@ class Failures(unittest.TestCase):
         self.assertTrue(text.endswith('otherwise run again'), text)
 
     def test_no_bond_is_paired_and_confirmed_on_the_watch_not_over_usb(self):
-        text = wrist_port.air_failure('not bonded', 'UNA', 'D9:5B:7A:EB:29:82', linux=True)
-        self.assertIn('bluetoothctl pair D9:5B:7A:EB:29:82', text)
+        text = wrist_port.air_failure('not bonded', 'UNA', 'C2:3D:4E:5F:60:71', linux=True)
+        self.assertIn('bluetoothctl pair C2:3D:4E:5F:60:71', text)
         self.assertIn("on the watch's Bluetooth page", text)
         self.assertNotIn('USB', text)
         self.assertEqual(wrist_port.air_failure('attach', 'UNA', 'X', 'no answer', paired=False, linux=True), text.replace(
-            'D9:5B:7A:EB:29:82', 'X'))
+            'C2:3D:4E:5F:60:71', 'X'))
 
     def test_a_refused_key_says_to_forget_the_watch_and_pair_again(self):
         for kind, detail in [('attach', 'no answer'), ('connect', 'BleakError: PIN or Key Missing'),
                              ('attach', "a write was not answered (BleakDBusError('org.bluez.Error.NotPermitted'))")]:
-            text = wrist_port.air_failure(kind, 'UNA', 'D9:5B:7A:EB:29:82', detail, paired=True, linux=True)
-            self.assertIn('bluetoothctl remove D9:5B:7A:EB:29:82', text, detail)
+            text = wrist_port.air_failure(kind, 'UNA', 'C2:3D:4E:5F:60:71', detail, paired=True, linux=True)
+            self.assertIn('bluetoothctl remove C2:3D:4E:5F:60:71', text, detail)
             self.assertIn('see Bluetooth', text)
             self.assertIn('otherwise run again', text)
 

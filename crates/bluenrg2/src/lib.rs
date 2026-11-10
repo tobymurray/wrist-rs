@@ -714,7 +714,7 @@ pub fn bond_kept(params: &[u8], before: Option<u8>, peer: Address) -> bool {
 pub const ADDRESS_TEXT_MAX: usize = 26;
 
 impl Address {
-    /// `AC:12:03:D7:FC:5C`, then ` (random)` for a random one.
+    /// `0A:1B:2C:3D:4E:5F`, then ` (random)` for a random one.
     pub fn text(self, out: &mut [u8; ADDRESS_TEXT_MAX]) -> &str {
         const HEX: &[u8; 16] = b"0123456789ABCDEF";
         for (i, b) in self.bytes.iter().rev().enumerate() {

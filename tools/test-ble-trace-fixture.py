@@ -11,7 +11,7 @@ spec.loader.exec_module(fixture)
 
 class Scrub(unittest.TestCase):
     def test_an_address_in_a_mark_is_replaced(self):
-        for written in ['D9:5B:7A:EB:29:82', 'd9-5b-7a-eb-29-82', 'D95B7AEB2982', 'D9_5B_7A_EB_29_82']:
+        for written in ['C2:3D:4E:5F:60:71', 'c2-3d-4e-5f-60-71', 'C23D4E5F6071', 'C2_3D_4E_5F_60_71']:
             kept = fixture.scrub(f'12.345 == the phone {written} connects')
             self.assertEqual(kept, '12.345 == the phone <address> connects', written)
 
@@ -27,7 +27,7 @@ class Scrub(unittest.TestCase):
         self.assertEqual(fixture.scrub('  85.804 >> usb ble disconnect'), '85.804 >> usb ble disconnect')
         self.assertEqual(fixture.scrub('85.804 >> usb ble profile auto'), '85.804 >> usb ble profile auto')
         self.assertIsNone(fixture.scrub('85.804 >> usb ble bonds'))
-        self.assertIsNone(fixture.scrub('85.804 >> usb ble forget D9:5B:7A:EB:29:82'))
+        self.assertIsNone(fixture.scrub('85.804 >> usb ble forget C2:3D:4E:5F:60:71'))
 
     def test_wall_clock_times_are_read_as_seconds_are(self):
         self.assertEqual(fixture.scrub('09:27:15.813 >> usb ble off'), '09:27:15.813 >> usb ble off')
