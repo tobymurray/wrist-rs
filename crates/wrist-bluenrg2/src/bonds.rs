@@ -16,22 +16,11 @@ pub const PAIRING: AuthenticationRequirement = AuthenticationRequirement {
 
 /// The watch's static random address from the MCU's 96-bit unique id (FNV-1a).
 #[must_use]
-pub const fn static_random_address(uid: [u32; 3]) -> [u8; 6] {
+pub fn static_random_address(uid: [u32; 3]) -> [u8; 6] {
     // 64-bit FNV-1a's offset basis and prime.
     const OFFSET: u64 = 0xCBF2_9CE4_8422_2325;
     const PRIME: u64 = 0x0100_0000_01B3;
-    let mut h = OFFSET;
-    let mut w = 0;
-    while w < 3 {
-        let bytes = uid[w].to_le_bytes();
-        let mut i = 0;
-        while i < 4 {
-            h ^= bytes[i] as u64;
-            h = h.wrapping_mul(PRIME);
-            i += 1;
-        }
-        w += 1;
-    }
+    let h = uid.iter().flat_map(|w| w.to_le_bytes()).fold(OFFSET, |h, b| (h ^ u64::from(b)).wrapping_mul(PRIME));
     static_random(h)
 }
 

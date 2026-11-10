@@ -53,8 +53,7 @@ impl Translator {
             }
             Event::Vendor { code, params } => self.vendor(code, params)?,
             Event::LeUnknown { subevent_code } => RadioEvent::Unknown { raw_code: u16::from_be_bytes([0x3E, subevent_code]) },
-            Event::Unknown { code } => RadioEvent::Unknown { raw_code: u16::from(code) },
-            // A link without its timing, a connection or disconnection that failed, a malformed packet.
+            // Another event, a link without its timing, a connection or disconnection that failed, a malformed packet.
             _ => RadioEvent::Unknown { raw_code: packet.get(1).map_or(0, |&c| u16::from(c)) },
         };
         Some(e)
