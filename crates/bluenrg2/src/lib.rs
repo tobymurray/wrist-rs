@@ -419,8 +419,9 @@ pub struct ConnTiming {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Event<'a> {
-    /// Command Complete (7.7.14): the opcode answered, its status, the return parameters.
-    CommandComplete { cmd_opcode: u16, status: BleStatus, return_param_bytes: &'a [u8] },
+    /// Command Complete (7.7.14): the opcode answered, its status, the return parameters after it.
+    /// No status when there are no return parameters, as for opcode 0x0000, which only grants credits.
+    CommandComplete { cmd_opcode: u16, status: Option<BleStatus>, return_param_bytes: &'a [u8] },
     /// Command Status (7.7.15): a command accepted or refused, results to follow.
     CommandStatus { cmd_opcode: u16, status: BleStatus },
     /// LE (Enhanced) Connection Complete (7.7.65.1, 7.7.65.10) with success: the handle, the
@@ -494,8 +495,11 @@ fn standard(code: u8, params: &[u8]) -> Option<Event<'_>> {
     Some(match code {
         ev::COMMAND_COMPLETE => {
             let e: hci::CommandComplete = first(params)?;
-            let (status, return_param_bytes) = u8::from_hci_bytes(&params[params.len() - e.bytes.len()..]).ok()?;
-            Event::CommandComplete { cmd_opcode: e.cmd_opcode.to_raw(), status: BleStatus(status), return_param_bytes }
+            let (status, return_param_bytes) = match params[params.len() - e.bytes.len()..].split_first() {
+                Some((&status, rest)) => (Some(BleStatus(status)), rest),
+                None => (None, &[][..]),
+            };
+            Event::CommandComplete { cmd_opcode: e.cmd_opcode.to_raw(), status, return_param_bytes }
         }
         ev::COMMAND_STATUS => {
             let e: hci::CommandStatus = first(params)?;

@@ -1608,13 +1608,15 @@ impl Link<'_> {
         #[cfg(feature = "ble-trace")]
         trace::packet(trace::Dir::FromChip, p);
         match bluenrg2::parse(p) {
-            Event::CommandComplete { cmd_opcode, status, return_param_bytes: params } => {
+            Event::CommandComplete { cmd_opcode, status: Some(status), return_param_bytes: params } => {
                 if self.waiting_for == Some(cmd_opcode) {
                     let mut reply = Reply { status: status.into_inner(), params: [0; RETURN_PARAMS_MAX], len: params.len().min(RETURN_PARAMS_MAX) };
                     reply.params[..reply.len].copy_from_slice(&params[..reply.len]);
                     self.reply = Some(reply);
                 }
             }
+            // Credits only: no command's reply.
+            Event::CommandComplete { status: None, .. } => {}
             Event::CommandStatus { cmd_opcode, status } => {
                 if self.waiting_for == Some(cmd_opcode) {
                     self.reply = Some(Reply { status: status.into_inner(), params: [0; RETURN_PARAMS_MAX], len: 0 });
