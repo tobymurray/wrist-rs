@@ -735,7 +735,7 @@ pub fn bonded_devices(params: &[u8]) -> impl Iterator<Item = Address> + '_ {
 pub const ADDRESS_TEXT_MAX: usize = 26;
 
 impl Address {
-    /// `0A:1B:2C:3D:4E:5F`, then ` (random)` for a random one.
+    /// `0A:1B:2C:3D:4E:5F`, then ` (random)` for a random one, resolved (3) or not.
     pub fn text(self, out: &mut [u8; ADDRESS_TEXT_MAX]) -> &str {
         const HEX: &[u8; 16] = b"0123456789ABCDEF";
         for (i, b) in self.bytes.iter().rev().enumerate() {
@@ -744,7 +744,7 @@ impl Address {
             out[3 * i + 2] = b':';
         }
         let mut len = 17;
-        if self.kind == AddrKind::RANDOM {
+        if self.kind.as_raw() & 0x01 != 0 {
             out[len..].copy_from_slice(b" (random)");
             len = ADDRESS_TEXT_MAX;
         }

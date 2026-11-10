@@ -588,6 +588,11 @@ fn an_address_is_written_with_its_type_and_reads_back() {
     let public = Address { kind: AddrKind::PUBLIC, bytes: [0x5F, 0x4E, 0x3D, 0x2C, 0x1B, 0x0A] };
     assert_eq!(public.text(&mut out), "0A:1B:2C:3D:4E:5F");
     assert_eq!(Address { kind: AddrKind::RANDOM, ..public }.text(&mut out), "0A:1B:2C:3D:4E:5F (random)");
+    // A resolved identity's type prints as public or random.
+    for (raw, kind) in [(2, AddrKind::PUBLIC), (3, AddrKind::RANDOM)] {
+        let a = Address { kind: AddrKind::new(raw), ..public };
+        assert_eq!(parse_address(a.text(&mut out)), Some(Address { kind, ..public }), "{raw}");
+    }
     proptest::proptest!(|(kind in 0u8..2, bytes: [u8; 6])| {
         let a = Address { kind: AddrKind::new(kind), bytes };
         proptest::prop_assert_eq!(parse_address(a.text(&mut [0; ADDRESS_TEXT_MAX])), Some(a));
