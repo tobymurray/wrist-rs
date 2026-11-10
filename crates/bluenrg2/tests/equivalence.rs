@@ -181,7 +181,7 @@ fn command_complete(opcode: u16, status: u8, params: &[u8]) -> Vec<u8> {
     hci_event(0x0E, &all)
 }
 
-/// The packets of `tests/packets.rs` and `tests/probe.rs`.
+/// The packets of `tests/packets.rs` and `tests/hal.rs`.
 fn corpus() -> Vec<Vec<u8>> {
     let connection = le_event(0x01, &[0x00, 0x01, 0x08, 0x01, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 24, 0, 0, 0, 0xF4, 0x01, 0x00]);
     let mut enhanced_params = vec![0x00, 0x01, 0x08, 0x01, 0x00];

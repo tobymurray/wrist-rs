@@ -9,7 +9,7 @@
 
 #![no_std]
 
-pub mod probe;
+pub mod hal;
 
 pub use bt_hci;
 pub use bt_hci::param::{AddrKind, ConnHandle, EncryptionEnabledLevel, LeAdvEventKind, LeConnRole};

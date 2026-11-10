@@ -3,7 +3,7 @@
 use core::fmt;
 
 use bluenrg2::opcode;
-use bluenrg2::probe::{updater_version, AnchorPeriod, FirmwareDetails};
+use bluenrg2::hal::{updater_version, AnchorPeriod, FirmwareDetails};
 
 /// Microseconds in the 0.625 ms unit of the anchor period and advertising intervals.
 const SLOT_US: u64 = 625;
