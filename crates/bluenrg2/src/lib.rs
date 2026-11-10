@@ -12,9 +12,9 @@
 pub mod probe;
 
 pub use bt_hci;
-pub use bt_hci::param::{AddrKind, EncryptionEnabledLevel, LeAdvEventKind, LeConnRole};
+pub use bt_hci::param::{AddrKind, ConnHandle, EncryptionEnabledLevel, LeAdvEventKind, LeConnRole};
 
-use bt_hci::param::{BdAddr, ConnHandle, Status};
+use bt_hci::param::{BdAddr, Status};
 use bt_hci::FromHciBytes;
 
 /// The SPI header the host sends to write (`0A`) or read (`0B`); the chip
@@ -418,24 +418,24 @@ pub enum Event<'a> {
     /// LE (Enhanced) Connection Complete (7.7.65.1, 7.7.65.10) with success: the handle, the
     /// local device's role, the peer, and the interval (1.25 ms units), latency and supervision
     /// timeout (10 ms units) when the packet carries them.
-    LeConnectionComplete { handle: u16, role: LeConnRole, peer: Address, conn_interval: Option<(u16, u16)>, supervision_timeout: Option<u16> },
+    LeConnectionComplete { handle: ConnHandle, role: LeConnRole, peer: Address, conn_interval: Option<(u16, u16)>, supervision_timeout: Option<u16> },
     /// LE (Enhanced) Connection Complete with an error: no connection formed.
     LeConnectionFailed { status: BleStatus },
     /// LE Connection Update Complete (7.7.65.3) with success: interval (1.25 ms units), latency,
     /// supervision timeout (10 ms units).
-    LeConnectionUpdateComplete { handle: u16, conn_interval: u16, peripheral_latency: u16, supervision_timeout: u16 },
+    LeConnectionUpdateComplete { handle: ConnHandle, conn_interval: u16, peripheral_latency: u16, supervision_timeout: u16 },
     /// LE Connection Update Complete with an error: the link keeps the parameters it had.
-    LeConnectionUpdateFailed { handle: u16, status: BleStatus },
+    LeConnectionUpdateFailed { handle: ConnHandle, status: BleStatus },
     /// Disconnection Complete (7.7.5): a status other than success is a disconnection that
     /// failed, the link still up; else the reason.
-    DisconnectionComplete { handle: u16, status: BleStatus, reason: BleStatus },
+    DisconnectionComplete { handle: ConnHandle, status: BleStatus, reason: BleStatus },
     /// Encryption Change (7.7.8): a status other than success is a change that failed.
-    EncryptionChange { handle: u16, status: BleStatus, enabled: EncryptionEnabledLevel },
+    EncryptionChange { handle: ConnHandle, status: BleStatus, enabled: EncryptionEnabledLevel },
     /// Encryption Key Refresh Complete (7.7.39): an encrypted link encrypted again, a status
     /// other than success a refresh that failed.
-    EncryptionKeyRefresh { handle: u16, status: BleStatus },
+    EncryptionKeyRefresh { handle: ConnHandle, status: BleStatus },
     /// LE Data Length Change (7.7.65.7): the largest payload each way, octets and microseconds.
-    LeDataLengthChange { handle: u16, max_tx_octets: u16, max_tx_time: u16, max_rx_octets: u16, max_rx_time: u16 },
+    LeDataLengthChange { handle: ConnHandle, max_tx_octets: u16, max_tx_time: u16, max_rx_octets: u16, max_rx_time: u16 },
     /// LE Advertising Report (7.7.65.2): one or more reports ([`reports`]).
     LeAdvertisingReport { data: &'a [u8] },
     /// One of ST's events (event code 0xFF): its code and the bytes after it.
@@ -452,7 +452,7 @@ impl Event<'_> {
     /// For an Encryption Change or Key Refresh Complete, the link's handle and whether it is
     /// encrypted now: only on success, with encryption on.
     #[must_use]
-    pub fn encryption(&self) -> Option<(u16, bool)> {
+    pub fn encryption(&self) -> Option<(ConnHandle, bool)> {
         match *self {
             Event::EncryptionChange { handle, status, enabled } => Some((handle, status == BleStatus::SUCCESS && enabled != EncryptionEnabledLevel::Off)),
             Event::EncryptionKeyRefresh { handle, status } => Some((handle, status == BleStatus::SUCCESS)),
@@ -496,15 +496,15 @@ fn standard(code: u8, params: &[u8]) -> Option<Event<'_>> {
         }
         ev::DISCONNECTION_COMPLETE => {
             let e: hci::DisconnectionComplete = first(params)?;
-            Event::DisconnectionComplete { handle: link(e.handle)?, status: ble(e.status), reason: ble(e.reason) }
+            Event::DisconnectionComplete { handle: link(e.handle.raw())?, status: ble(e.status), reason: ble(e.reason) }
         }
         ev::ENCRYPTION_CHANGE => {
             let e: hci::EncryptionChangeV1 = first(params)?;
-            Event::EncryptionChange { handle: link(e.handle)?, status: ble(e.status), enabled: e.enabled }
+            Event::EncryptionChange { handle: link(e.handle.raw())?, status: ble(e.status), enabled: e.enabled }
         }
         ev::ENCRYPTION_KEY_REFRESH_COMPLETE => {
             let e: hci::EncryptionKeyRefreshComplete = first(params)?;
-            Event::EncryptionKeyRefresh { handle: link(e.handle)?, status: ble(e.status) }
+            Event::EncryptionKeyRefresh { handle: link(e.handle.raw())?, status: ble(e.status) }
         }
         ev::LE_META => le_meta(params)?,
         ev::VENDOR => {
@@ -527,7 +527,7 @@ fn le_meta(params: &[u8]) -> Option<Event<'_>> {
             if status == Status::SUCCESS {
                 let e: le::LeConnectionUpdateComplete = first(params)?;
                 Event::LeConnectionUpdateComplete {
-                    handle: link(e.handle)?,
+                    handle: link(e.handle.raw())?,
                     conn_interval: e.conn_interval.as_u16(),
                     peripheral_latency: e.peripheral_latency,
                     supervision_timeout: e.supervision_timeout.as_u16(),
@@ -540,7 +540,7 @@ fn le_meta(params: &[u8]) -> Option<Event<'_>> {
         sub::DATA_LENGTH_CHANGE => {
             let e: le::LeDataLengthChange = first(params)?;
             Event::LeDataLengthChange {
-                handle: link(e.handle)?,
+                handle: link(e.handle.raw())?,
                 max_tx_octets: e.max_tx_octets,
                 max_tx_time: e.max_tx_time,
                 max_rx_octets: e.max_rx_octets,
@@ -565,7 +565,7 @@ fn connection_complete(code: u8, params: &[u8]) -> Option<Event<'_>> {
         return Some(Event::LeConnectionFailed { status: ble(status) });
     }
     // The link exists on the chip even when the rest is short or reserved, so it is still taken.
-    let (handle, rest) = ConnHandle::from_hci_bytes(rest).ok()?;
+    let (handle, rest) = u16::from_hci_bytes(rest).ok()?;
     let (role, rest) = u8::from_hci_bytes(rest).ok()?;
     let (kind, rest) = AddrKind::from_hci_bytes(rest).ok()?;
     let peer: BdAddr = first(rest)?;
@@ -661,7 +661,7 @@ pub fn ad_uuid128s(data: &[u8]) -> impl Iterator<Item = &[u8; 16]> + '_ {
 
 /// The connection handle that starts most vendor events; `None` if short or above 0x0EFF.
 #[must_use]
-pub fn connection_handle(params: &[u8]) -> Option<u16> {
+pub fn connection_handle(params: &[u8]) -> Option<ConnHandle> {
     link(first(params)?)
 }
 
@@ -670,8 +670,8 @@ fn ble(status: Status) -> BleStatus {
 }
 
 /// A connection handle, which is at most 0x0EFF (Core Vol 4 Part E 5.4.2).
-fn link(handle: ConnHandle) -> Option<u16> {
-    Some(handle.raw()).filter(|&h| h <= 0x0EFF)
+fn link(handle: u16) -> Option<ConnHandle> {
+    (handle <= 0x0EFF).then(|| ConnHandle::new(handle))
 }
 
 /// `GATT_ATTRIBUTE_MODIFIED`: a peer wrote one of our attributes.
@@ -702,7 +702,7 @@ impl<'a> AttributeModified<'a> {
 
 /// `GAP_NUMERIC_COMPARISON_VALUE`: the connection and the six-digit number.
 #[must_use]
-pub fn numeric_comparison(params: &[u8]) -> Option<(u16, u32)> {
+pub fn numeric_comparison(params: &[u8]) -> Option<(ConnHandle, u32)> {
     let v = params.get(2..6)?;
     Some((connection_handle(params)?, u32::from_le_bytes([v[0], v[1], v[2], v[3]])))
 }
@@ -929,7 +929,7 @@ pub fn gap_proc_complete(params: &[u8]) -> Option<(u8, BleStatus)> {
 /// latency and a timeout; the answer echoes the identifier.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct L2capUpdateRequest {
-    pub handle: u16,
+    pub handle: ConnHandle,
     pub identifier: u8,
     pub interval_min: u16,
     pub interval_max: u16,
@@ -952,7 +952,7 @@ impl L2capUpdateRequest {
 /// (Core Specification, Vol 3, Part A, 4.21).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct L2capUpdateResponse {
-    pub handle: u16,
+    pub handle: ConnHandle,
     pub result: u16,
 }
 

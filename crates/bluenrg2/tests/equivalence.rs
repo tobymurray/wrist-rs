@@ -2,13 +2,13 @@
 //! every packet the other tests use, each cut and each byte changed, every status of the LE
 //! events, and generated packets.
 
-use bluenrg2::{packet_len, parse, vendor, AddrKind, Address, Event, LeConnRole};
+use bluenrg2::{packet_len, parse, vendor, AddrKind, Address, ConnHandle, Event, LeConnRole};
 use proptest::prelude::*;
 
 /// The hand decoder, as it was but for its types.
 mod hand {
     use bluenrg2::bt_hci::FromHciBytes;
-    use bluenrg2::{event_code, le_subevent, packet, packet_len, packet_whole, AddrKind, Address, EncryptionEnabledLevel, Event, LeConnRole, BleStatus};
+    use bluenrg2::{event_code, le_subevent, packet, packet_len, packet_whole, AddrKind, Address, ConnHandle, EncryptionEnabledLevel, Event, LeConnRole, BleStatus};
 
     /// The event in one HCI packet, read no further than the packet's own length, with no
     /// connection handle above 0x0EFF.
@@ -22,7 +22,7 @@ mod hand {
             | Event::EncryptionChange { handle, .. }
             | Event::EncryptionKeyRefresh { handle, .. }
             | Event::LeDataLengthChange { handle, .. }
-                if handle > 0x0EFF =>
+                if handle.raw() > 0x0EFF =>
             {
                 Event::Malformed(&p[..packet_len(p)])
             }
@@ -41,6 +41,8 @@ mod hand {
         }
         let p = &p[..packet_len(p)];
         let u16_at = |i: usize| u16::from_le_bytes([p[i], p[i + 1]]);
+        // Unchecked, for `parse` above to judge.
+        let handle_at = |i: usize| ConnHandle::from_hci_bytes(&p[i..]).unwrap().0;
         match p {
             [EVENT, ev::COMMAND_COMPLETE, _, _num, lo, hi, status, return_param_bytes @ ..] => Event::CommandComplete {
                 cmd_opcode: u16::from_le_bytes([*lo, *hi]),
@@ -51,22 +53,22 @@ mod hand {
                 Event::CommandStatus { cmd_opcode: u16::from_le_bytes([*lo, *hi]), status: BleStatus::new(*status) }
             }
             [EVENT, ev::DISCONNECTION_COMPLETE, _, status, _, _, reason, ..] => {
-                Event::DisconnectionComplete { handle: u16_at(4), status: BleStatus::new(*status), reason: BleStatus::new(*reason) }
+                Event::DisconnectionComplete { handle: handle_at(4), status: BleStatus::new(*status), reason: BleStatus::new(*reason) }
             }
             // A reserved Encryption_Enabled (Core Vol 4 Part E §7.7.8) has no `EncryptionEnabledLevel`.
             [EVENT, ev::ENCRYPTION_CHANGE, _, status, _, _, enabled, ..] => match EncryptionEnabledLevel::from_hci_bytes(&[*enabled]) {
-                Ok((enabled, _)) => Event::EncryptionChange { handle: u16_at(4), status: BleStatus::new(*status), enabled },
+                Ok((enabled, _)) => Event::EncryptionChange { handle: handle_at(4), status: BleStatus::new(*status), enabled },
                 Err(_) => Event::Malformed(p),
             },
             [EVENT, ev::ENCRYPTION_KEY_REFRESH_COMPLETE, _, status, _, _, ..] => {
-                Event::EncryptionKeyRefresh { handle: u16_at(4), status: BleStatus::new(*status) }
+                Event::EncryptionKeyRefresh { handle: handle_at(4), status: BleStatus::new(*status) }
             }
             // Status, handle, role, peer address type and address, then (Enhanced) two resolvable
             // addresses, then interval and latency.
             [EVENT, ev::LE_META, _, sub @ (le::CONNECTION_COMPLETE | le::ENHANCED_CONNECTION_COMPLETE), 0x00, _, _, role, kind, a0, a1, a2, a3, a4, a5, ..] => {
                 let at = if *sub == le::CONNECTION_COMPLETE { LEGACY_INTERVAL_AT } else { LEGACY_INTERVAL_AT + 12 };
                 Event::LeConnectionComplete {
-                    handle: u16_at(5),
+                    handle: handle_at(5),
                     role: if *role == 0 { LeConnRole::Central } else { LeConnRole::Peripheral },
                     // An Enhanced event says 2 or 3 for an identity it resolved: still public or random.
                     peer: Address { kind: AddrKind::new(kind & 0x01), bytes: [*a0, *a1, *a2, *a3, *a4, *a5] },
@@ -78,17 +80,17 @@ mod hand {
             }
             [EVENT, ev::LE_META, _, le::CONNECTION_COMPLETE | le::ENHANCED_CONNECTION_COMPLETE, status @ 0x01..=0xFF, ..] => Event::LeConnectionFailed { status: BleStatus::new(*status) },
             [EVENT, ev::LE_META, _, le::CONNECTION_UPDATE_COMPLETE, 0x00, _, _, _, _, _, _, ..] => Event::LeConnectionUpdateComplete {
-                handle: u16_at(5),
+                handle: handle_at(5),
                 conn_interval: u16_at(7),
                 peripheral_latency: u16_at(9),
                 // A shorter one is malformed, so what stands in here is never compared.
                 supervision_timeout: p.get(11..13).map_or(0, |v| u16::from_le_bytes([v[0], v[1]])),
             },
             [EVENT, ev::LE_META, _, le::CONNECTION_UPDATE_COMPLETE, status @ 0x01..=0xFF, _, _, ..] => {
-                Event::LeConnectionUpdateFailed { handle: u16_at(5), status: BleStatus::new(*status) }
+                Event::LeConnectionUpdateFailed { handle: handle_at(5), status: BleStatus::new(*status) }
             }
             [EVENT, ev::LE_META, _, le::DATA_LENGTH_CHANGE, _, _, _, _, _, _, _, _, _, _, ..] => Event::LeDataLengthChange {
-                handle: u16_at(4),
+                handle: handle_at(4),
                 max_tx_octets: u16_at(6),
                 max_tx_time: u16_at(8),
                 max_rx_octets: u16_at(10),
@@ -282,10 +284,10 @@ fn where_the_hand_decoder_took_what_the_layout_does_not_allow() {
     let mut reserved_accuracy = connection.clone();
     reserved_accuracy[21] = 0x08;
     for p in [shortened(&connection, 17), reserved_role, reserved_accuracy] {
-        assert!(matches!(hand::parse(&p), Event::LeConnectionComplete { handle: 0x0801, conn_interval: Some((24, 0)), .. }));
+        assert!(matches!(hand::parse(&p), Event::LeConnectionComplete { handle, conn_interval: Some((24, 0)), .. } if handle == ConnHandle::new(0x0801)));
         assert_eq!(
             parse(&p),
-            Event::LeConnectionComplete { handle: 0x0801, role: LeConnRole::Peripheral, peer, conn_interval: None, supervision_timeout: None }
+            Event::LeConnectionComplete { handle: ConnHandle::new(0x0801), role: LeConnRole::Peripheral, peer, conn_interval: None, supervision_timeout: None }
         );
     }
     let encryption = hci_event(0x08, &[0x00, 0x01, 0x08, 0x03]);

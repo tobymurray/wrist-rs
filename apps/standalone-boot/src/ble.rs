@@ -1621,7 +1621,7 @@ impl Link<'_> {
                 }
             }
             Event::LeConnectionComplete { handle, peer, conn_interval, .. } => {
-                CONN_HANDLE.store(handle, Ordering::Relaxed);
+                CONN_HANDLE.store(handle.raw(), Ordering::Relaxed);
                 self.peer = Some(peer);
                 self.pair_ask.connected(Instant::now().as_ticks(), embassy_time::TICK_HZ);
                 self.interval_ask.connected(Instant::now().as_ticks(), embassy_time::TICK_HZ);
@@ -1823,7 +1823,7 @@ impl Link<'_> {
             vendor::GAP_PASS_KEY_REQ if handle(rest).is_some() => {
                 self.pair_ask.settled();
                 self.interval_ask.pairing();
-                self.passkey_for = handle(rest);
+                self.passkey_for = handle(rest).map(|h| h.raw());
                 PROMPT.lock(|p| p.set(Prompt::Asked));
             }
             vendor::GAP_NUMERIC_COMPARISON_VALUE if bluenrg2::numeric_comparison(rest).is_some() => {
