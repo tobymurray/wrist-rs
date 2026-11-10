@@ -7,6 +7,7 @@ use core::sync::atomic::Ordering;
 
 use bluenrg2::opcode::{
     ACI_GAP_SET_DISCOVERABLE, ACI_GAP_SET_NON_DISCOVERABLE, ACI_GAP_TERMINATE, ACI_GATT_ADD_CHAR, ACI_GATT_ADD_SERVICE, ACI_HAL_GET_ANCHOR_PERIOD,
+    ACI_UPDATER_START,
 };
 use bluenrg2::{ad, address, evt_mask, permission, props, uuid_type, ADV_IND, MIN_ENC_KEY_SIZE, NO_FILTER, PRIMARY_SERVICE};
 use wrist_bluenrg2::probe::{Beside, Line, Probe};
@@ -15,9 +16,6 @@ use embassy_time::Timer;
 
 use super::{Link, CONN_HANDLE, DEVICE_NAME, INTERVAL, LATENCY, STATE, STATE_ADVERTISING, STATE_CONNECTED, STATE_IDLE};
 use crate::uart::Uart;
-
-/// Starts the chip's updater on firmware 2353 (HARDWARE.md); only this debug command sends it.
-const UPDATER_START: u16 = 0xFC20;
 
 /// `ble probe adv`'s steps: the interval (0.625 ms units) each `ACI_GAP_SET_DISCOVERABLE` asks
 /// for, and whether `ACI_GAP_SET_NON_DISCOVERABLE` goes first.
@@ -210,7 +208,7 @@ impl Link<'_> {
     /// next `ACI_BLUE_INITIALIZED` is one the driver did not ask for.
     pub(super) async fn restart_chip(&mut self, updater: bool) {
         if updater {
-            let status = self.command(UPDATER_START, &[]).await.map(|r| r.status);
+            let status = self.command(ACI_UPDATER_START, &[]).await.map(|r| r.status);
             self.uart.write_str("[ble] probe: updater start sent, status ");
             match status {
                 Ok(s) => self.uart.write_hex8(s),

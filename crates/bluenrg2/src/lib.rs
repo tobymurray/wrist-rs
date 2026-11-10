@@ -42,8 +42,11 @@ pub mod opcode {
     pub const ACI_HAL_WRITE_CONFIG_DATA: u16 = 0xFC0C;
     pub const ACI_HAL_SET_TX_POWER_LEVEL: u16 = 0xFC0F;
     pub const ACI_HAL_GET_ANCHOR_PERIOD: u16 = 0xFC19;
-    /// Reads only; the updater's start command reboots the chip into it.
+    /// Reads only; [`ACI_UPDATER_START`] reboots the chip into the updater.
     pub const ACI_HAL_GET_UPDATER_VERSION: u16 = 0xFC22;
+    /// Reboots the chip into its updater: status 0, then `BLUE_INITIALIZED` with
+    /// [`super::boot_reason::UPDATER_BY_COMMAND`]. BlueNRG-MS's name for it.
+    pub const ACI_UPDATER_START: u16 = 0xFC20;
     pub const ACI_GAP_SET_NON_DISCOVERABLE: u16 = 0xFC81;
     pub const ACI_GAP_SET_DISCOVERABLE: u16 = 0xFC83;
     pub const ACI_GAP_SET_IO_CAPABILITY: u16 = 0xFC85;
@@ -175,9 +178,7 @@ pub mod vendor {
 pub mod boot_reason {
     /// The stack started.
     pub const STARTED: u8 = 0x01;
-    /// The updater runs, started by its command. On stack build 2353 that command is `0xFC20`,
-    /// the opcode STM32WB uses for setting slave latency: the chip answered it with status 0, then
-    /// this reason.
+    /// The updater runs, started by [`super::opcode::ACI_UPDATER_START`].
     pub const UPDATER_BY_COMMAND: u8 = 0x02;
     /// The updater runs because the stack's image is not marked valid.
     pub const UPDATER_BAD_FLAG: u8 = 0x03;
@@ -688,7 +689,7 @@ fn link(handle: u16) -> Option<ConnHandle> {
     (handle <= 0x0EFF).then(|| ConnHandle::new(handle))
 }
 
-/// `GATT_ATTRIBUTE_MODIFIED`: a peer wrote one of our attributes.
+/// `GATT_ATTRIBUTE_MODIFIED`: a peer wrote an attribute of the local GATT server.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AttributeModified<'a> {
     pub attr: u16,
@@ -768,7 +769,7 @@ pub fn parse_address(text: &str) -> Option<Address> {
     parts.next().is_none().then_some(Address { kind, bytes })
 }
 
-/// `GAP_PAIRING_COMPLETE`'s status for a central that encrypted with a key the local device no longer holds.
+/// `GAP_PAIRING_COMPLETE`'s status when encryption failed for a key the local device no longer holds.
 pub const PAIRING_LTK_MISSING: u8 = 0x03;
 
 /// `GAP_PAIRING_COMPLETE`: status (0 success) and reason.
