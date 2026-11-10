@@ -567,7 +567,7 @@ fn le_meta(params: &[u8]) -> Option<Event<'_>> {
 }
 
 /// LE (Enhanced) Connection Complete: a failure by its status alone, a success by the fields
-/// both layouts share, and the interval, latency and timeout when the whole event decodes.
+/// both layouts share (a reserved role is malformed), and the timing when the whole event decodes.
 fn connection_complete(code: u8, params: &[u8]) -> Option<Event<'_>> {
     use bt_hci::event::le;
     let (status, rest) = Status::from_hci_bytes(params).ok()?;
@@ -575,9 +575,9 @@ fn connection_complete(code: u8, params: &[u8]) -> Option<Event<'_>> {
         // No connection formed, so the other fields mean nothing (Core Vol 4 Part E §7.7.65.1).
         return Some(Event::LeConnectionFailed { status: ble(status) });
     }
-    // The link exists on the chip even when the rest is short or reserved, so it is still taken.
+    // The link exists on the chip even when the tail is short or reserved, so it is still taken.
     let (handle, rest) = u16::from_hci_bytes(rest).ok()?;
-    let (role, rest) = u8::from_hci_bytes(rest).ok()?;
+    let (role, rest) = LeConnRole::from_hci_bytes(rest).ok()?;
     let (kind, rest) = AddrKind::from_hci_bytes(rest).ok()?;
     let peer: BdAddr = first(rest)?;
     let timing = if code == le_subevent::CONNECTION_COMPLETE {
@@ -587,7 +587,7 @@ fn connection_complete(code: u8, params: &[u8]) -> Option<Event<'_>> {
     };
     Some(Event::LeConnectionComplete {
         handle: link(handle)?,
-        role: if role == 0 { LeConnRole::Central } else { LeConnRole::Peripheral },
+        role,
         // An Enhanced event says 2 or 3 for an identity it resolved: still public or random.
         peer: Address { kind: AddrKind::new(kind.as_raw() & 0x01), bytes: peer.into_inner() },
         timing: timing.map(|(interval, latency, timeout)| ConnTiming {

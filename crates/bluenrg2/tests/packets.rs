@@ -204,6 +204,17 @@ fn connection_complete_gives_handle_role_peer_interval_latency_and_timeout() {
 }
 
 #[test]
+fn a_reserved_role_is_malformed_and_a_reserved_clock_accuracy_drops_only_the_timing() {
+    for (mut p, accuracy_at) in [(connection_complete(), 21), (enhanced_connection_complete(), 33)] {
+        let mut role = p.clone();
+        role[7] = 0x02;
+        assert_eq!(parse(&role), Event::Malformed(&role));
+        p[accuracy_at] = 0x08;
+        assert!(matches!(parse(&p), Event::LeConnectionComplete { role: LeConnRole::Peripheral, timing: None, .. }));
+    }
+}
+
+#[test]
 fn a_connection_that_never_formed_carries_its_status() {
     // Connection Failed to be Established, and a directed advertising timeout.
     for (sub, status) in [(0x01, 0x3E), (0x0A, 0x3C)] {

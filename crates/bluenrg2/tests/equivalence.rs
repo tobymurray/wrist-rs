@@ -139,11 +139,12 @@ fn expected(p: &[u8]) -> Event<'_> {
         Event::LeAdvertisingReport { data: [] } => Event::Malformed(whole),
         // Supervision_Timeout ends a success (Core Vol 4 Part E §7.7.65.3).
         Event::LeConnectionUpdateComplete { .. } if params.len() < 1 + 9 => Event::Malformed(whole),
-        // The interval and latency come only with a whole event, its Role and Central_Clock_Accuracy
+        // Role is 0 or 1, and the timing comes only with a whole event, its Central_Clock_Accuracy
         // not reserved (Core Vol 4 Part E §7.7.65.1, §7.7.65.10).
+        Event::LeConnectionComplete { .. } if params[1 + 3] > 1 => Event::Malformed(whole),
         Event::LeConnectionComplete { handle, role, peer, timing } => {
             let (len, accuracy_at) = if params[0] == 0x01 { (1 + 18, 1 + 17) } else { (1 + 30, 1 + 29) };
-            let full = params.len() >= len && params[1 + 3] <= 1 && params[accuracy_at] <= 7;
+            let full = params.len() >= len && params[accuracy_at] <= 7;
             Event::LeConnectionComplete { handle, role, peer, timing: timing.filter(|_| full) }
         }
         e => e,
@@ -282,7 +283,9 @@ fn where_the_hand_decoder_took_what_the_layout_does_not_allow() {
     reserved_role[7] = 0x02;
     let mut reserved_accuracy = connection.clone();
     reserved_accuracy[21] = 0x08;
-    for p in [shortened(&connection, 18), reserved_role, reserved_accuracy] {
+    assert!(matches!(hand::parse(&reserved_role), Event::LeConnectionComplete { role: LeConnRole::Peripheral, .. }));
+    assert_eq!(parse(&reserved_role), Event::Malformed(&reserved_role));
+    for p in [shortened(&connection, 18), reserved_accuracy] {
         assert!(matches!(hand::parse(&p), Event::LeConnectionComplete { handle, timing: Some(ConnTiming { conn_interval: 24, .. }), .. } if handle == ConnHandle::new(0x0801)));
         assert_eq!(
             parse(&p),
