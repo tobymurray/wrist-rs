@@ -20,7 +20,7 @@ class Scrub(unittest.TestCase):
         self.assertEqual(fixture.scrub(mark), mark)
 
     def test_twelve_hex_digits_are_taken_for_an_address(self):
-        # A build id can't be told from an address written bare; the replay's fixture test refuses both.
+        # A build id can't be told from an address written bare.
         self.assertEqual(fixture.scrub('1.000 == build 77df27bcf274'), '1.000 == build <address>')
 
     def test_the_operators_disconnect_is_kept(self):

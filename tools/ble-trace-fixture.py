@@ -18,7 +18,7 @@ import sys
 OPS = {0xFC83, 0xFC81, 0xFD81, 0xFC8D, 0xFC95, 0xFCA5, 0xFC88, 0xFC93, 0xFC97, 0xFC9D}
 GOALS = re.compile(r'^ble (on|off|yes|no|disconnect|profile (auto|cable|battery))$')
 LINE = re.compile(r'^\s*((?:\d{2}:\d{2}:\d{2}|\d+)\.\d{3}) (.*)$')
-# Six bytes with or without separators, as an address is written anywhere in the console.
+# Six bytes, with or without separators.
 ADDRESS = re.compile(r'(?<![0-9A-Fa-f])[0-9A-Fa-f]{2}(?:[:_-]?[0-9A-Fa-f]{2}){5,}(?![0-9A-Fa-f])')
 
 EVENT, LE_META, VENDOR, COMMAND_COMPLETE, COMMAND_STATUS = 0x04, 0x3E, 0xFF, 0x0E, 0x0F
