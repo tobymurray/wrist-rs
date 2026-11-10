@@ -448,8 +448,7 @@ pub fn replay(capture: &str) -> Report {
                 r.now = Instant(ms);
                 r.goals();
                 started = true;
-                // The trace starts where the driver resets the chip, or the chip was already up.
-                if text.split_whitespace().nth(2).is_none_or(|d| d != "r") {
+                if !comes_up(text) {
                     r.seed();
                 }
             }
@@ -457,6 +456,14 @@ pub fn replay(capture: &str) -> Report {
         r.line(text);
     }
     r.report
+}
+
+/// Whether a trace line is the driver resetting the chip or the chip's ready, which a console
+/// opened during the watch's boot can begin at.
+fn comes_up(text: &str) -> bool {
+    let mut f = text.split_whitespace().skip(2);
+    // `ACI_BLUE_INITIALIZED`, started normally.
+    matches!((f.next(), f.next()), (Some("r"), _) | (Some("e"), Some("04FF03010001")))
 }
 
 /// A line's host time in milliseconds, from seconds with three decimals or a wall clock's `HH:MM:SS.mmm`.

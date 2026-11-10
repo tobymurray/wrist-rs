@@ -52,10 +52,17 @@ fn a_capture_that_begins_with_the_chip_up_is_taken_as_up() {
     assert_eq!(driver, core);
     assert!(driver > 40, "{driver}");
     assert_eq!(kinds(OpKind::RequestSecurity), (1, 1));
-    for (name, capture) in traces() {
-        if capture.lines().find(|l| l.contains("[trace] ")).is_some_and(|l| l.ends_with(" r")) {
-            assert_eq!(replay(&capture).seeded, None, "{name}");
-        }
+}
+
+/// A console opened during the watch's boot begins at the driver's reset or, that line lost, at the
+/// chip's ready, as the suite's console after the update does: the core's start is answered there.
+#[test]
+fn a_capture_that_begins_as_the_chip_comes_up_is_a_start() {
+    let from = |name: &str, first: &str| fixture(name).lines().skip_while(|l| !l.ends_with(first)).flat_map(|l| [l, "\n"]).collect::<String>();
+    for capture in [from("bluez-cable.log", " r"), from("bluez-suite.log", " e 04FF03010001")] {
+        let r = replay(&capture);
+        assert_eq!(r.seeded, None, "{}", r.render(false));
+        assert_eq!(r.disagreements(), Vec::<String>::new(), "{}", r.render(false));
     }
 }
 
