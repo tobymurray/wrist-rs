@@ -392,12 +392,7 @@ pub fn write_status(uart: Uart) {
         (_, Power::Battery) => "battery (forced)",
     });
     uart.write_str(", address ");
-    for i in (0..6).rev() {
-        uart.write_hex8(ADDRESS[i].load(Ordering::Relaxed));
-        if i > 0 {
-            uart.write_str(":");
-        }
-    }
+    write_address(uart, bluenrg2::Address { kind: address::STATIC_RANDOM, bytes: ADDRESS.each_ref().map(|b| b.load(Ordering::Relaxed)) });
     uart.write_str(", bonded ");
     uart.write_u32(u32::from(BONDED.load(Ordering::Relaxed)));
     let n = |label: &str, v: &AtomicU32| {
@@ -1080,12 +1075,7 @@ impl Link<'_> {
             return;
         }
         self.uart.write_str("[ble] up: ST stack, address ");
-        for i in (0..6).rev() {
-            self.uart.write_hex8(addr[i]);
-            if i > 0 {
-                self.uart.write_str(":");
-            }
-        }
+        write_address(self.uart, bluenrg2::Address { kind: address::STATIC_RANDOM, bytes: addr });
         self.uart.write_line(if central { ", peripheral and central" } else { ", peripheral only" });
         self.list_bonds(false).await;
         self.advertise().await;
@@ -1383,9 +1373,14 @@ impl Link<'_> {
             return self.uart.write_line("[ble] forget: the bonded devices could not be read");
         };
         let params = &r.params[..r.len.min(r.params.len())];
-        if !bluenrg2::listed(params, addr) {
+        let found = bluenrg2::forget(params, addr);
+        if found != bluenrg2::Forget::Bond {
             self.uart.write_str("[ble] forget: not bonded: ");
             write_address(self.uart, addr);
+            if let bluenrg2::Forget::OtherType(bond) = found {
+                self.uart.write_str("; bonded as ");
+                write_address(self.uart, bond);
+            }
             return self.uart.write_line("");
         }
         let keep = self.peer.is_some_and(|peer| bluenrg2::another_bond(params, addr, peer));
