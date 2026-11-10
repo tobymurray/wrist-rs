@@ -11,7 +11,10 @@
 
 pub mod probe;
 
-use bt_hci::param::{AddrKind, BdAddr, ConnHandle, Status};
+pub use bt_hci;
+pub use bt_hci::param::{AddrKind, EncryptionEnabledLevel, LeAdvEventKind, LeConnRole, Status};
+
+use bt_hci::param::{BdAddr, ConnHandle};
 use bt_hci::FromHciBytes;
 
 /// The SPI header the host sends to write (`0A`) or read (`0B`); the chip
@@ -29,7 +32,7 @@ pub fn header_sizes(header: &[u8; 5]) -> (usize, usize) {
     )
 }
 
-/// HCI commands and ST's vendor commands.
+/// HCI commands and ST's vendor commands: the ones in use so far, not the whole ACI.
 pub mod opcode {
     pub const HCI_READ_LOCAL_VERSION: u16 = 0x1001;
     pub const HCI_SET_EVENT_MASK: u16 = 0x0C01;
@@ -58,11 +61,12 @@ pub mod opcode {
     pub const ACI_GAP_CREATE_CONNECTION: u16 = 0xFC9C;
     /// Ends a GAP procedure by its code ([`super::gap_proc`]).
     pub const ACI_GAP_TERMINATE_GAP_PROC: u16 = 0xFC9D;
-    /// As a central: handle, interval min and max, latency, timeout, CE length min and max.
+    /// From the central: handle, interval min and max, latency, timeout, CE length min and max.
     pub const ACI_GAP_START_CONNECTION_UPDATE: u16 = 0xFC9E;
     pub const ACI_GAP_GET_BONDED_DEVICES: u16 = 0xFCA3;
     pub const ACI_GAP_NUMERIC_COMPARISON_CONFIRM: u16 = 0xFCA5;
-    /// Removes one bonded device; PM0257 doesn't list it (HARDWARE.md).
+    /// Removes one bonded device (identity address type, then the address); PM0257 doesn't list
+    /// it, but stack build 2353 answers it with status 0 and drops only that bond.
     pub const ACI_GAP_REMOVE_BONDED_DEVICE: u16 = 0xFCAA;
     pub const ACI_GATT_INIT: u16 = 0xFD01;
     pub const ACI_GATT_ADD_SERVICE: u16 = 0xFD02;
@@ -103,11 +107,11 @@ pub mod config {
     pub const STATIC_RANDOM_ADDRESS: u8 = 0x2E;
 }
 
-/// Address types, own and identity.
+/// Address types as command parameters carry them: own, identity and peer.
 pub mod address {
     pub const PUBLIC: u8 = 0x00;
-    pub const STATIC_RANDOM: u8 = 0x01;
-    /// A peer's random address, static or private.
+    /// The local device's own static random address ([`super::config::STATIC_RANDOM_ADDRESS`]),
+    /// or a peer's random address, static or private.
     pub const RANDOM: u8 = 0x01;
 }
 
@@ -121,27 +125,6 @@ pub const fn static_random(bits: u64) -> [u8; 6] {
         a[0] ^= 1;
     }
     a
-}
-
-/// The watch's static random address from the MCU's 96-bit unique id (FNV-1a).
-#[must_use]
-pub const fn static_random_address(uid: [u32; 3]) -> [u8; 6] {
-    // 64-bit FNV-1a's offset basis and prime.
-    const OFFSET: u64 = 0xCBF2_9CE4_8422_2325;
-    const PRIME: u64 = 0x0100_0000_01B3;
-    let mut h = OFFSET;
-    let mut w = 0;
-    while w < 3 {
-        let bytes = uid[w].to_le_bytes();
-        let mut i = 0;
-        while i < 4 {
-            h ^= bytes[i] as u64;
-            h = h.wrapping_mul(PRIME);
-            i += 1;
-        }
-        w += 1;
-    }
-    static_random(h)
 }
 
 /// `ACI_GATT_ADD_CHAR`'s security permissions (ST's `ble_defs.h`).
@@ -166,9 +149,9 @@ pub mod vendor {
     /// A GAP procedure ended: its code, status, data ([`super::gap_proc_complete`]).
     pub const GAP_PROC_COMPLETE: u16 = 0x0407;
     pub const GAP_NUMERIC_COMPARISON_VALUE: u16 = 0x0409;
-    /// The central's answer to the watch's own parameter request ([`super::L2capUpdateResponse`]).
+    /// The central's answer to the local device's parameter request ([`super::L2capUpdateResponse`]).
     pub const L2CAP_CONNECTION_UPDATE_RESP: u16 = 0x0800;
-    /// As a central: a peripheral asks for new connection parameters.
+    /// To the central: a peripheral asks for new connection parameters.
     pub const L2CAP_CONNECTION_UPDATE_REQ: u16 = 0x0802;
     pub const GATT_ATTRIBUTE_MODIFIED: u16 = 0x0C01;
     pub const GATT_PROC_TIMEOUT: u16 = 0x0C02;
@@ -192,8 +175,9 @@ pub mod vendor {
 pub mod boot_reason {
     /// The stack started.
     pub const STARTED: u8 = 0x01;
-    /// The updater runs, started by its command. On firmware 2353 that command is `0xFC20`
-    /// (HARDWARE.md), the opcode STM32WB uses for setting slave latency.
+    /// The updater runs, started by its command. On stack build 2353 that command is `0xFC20`,
+    /// the opcode STM32WB uses for setting slave latency: the chip answered it with status 0, then
+    /// this reason.
     pub const UPDATER_BY_COMMAND: u8 = 0x02;
     /// The updater runs because the stack's image is not marked valid.
     pub const UPDATER_BAD_FLAG: u8 = 0x03;
@@ -299,9 +283,6 @@ pub mod le_subevent {
     pub const ENHANCED_CONNECTION_COMPLETE: u8 = 0x0A;
 }
 
-/// An advertising report's `Event_Type` for a scan response (Core Vol 4 Part E 7.7.65.2).
-pub const SCAN_RSP: u8 = 0x04;
-
 /// `ACI_GAP_SET_AUTHENTICATION_REQUIREMENT`'s parameters, in ST's order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(clippy::struct_excessive_bools)]
@@ -346,18 +327,6 @@ impl AuthenticationRequirement {
     }
 }
 
-/// The watch's pairing.
-pub const PAIRING: AuthenticationRequirement = AuthenticationRequirement {
-    bonding: true,
-    mitm: true,
-    secure_connections: 2,
-    keypress_notifications: false,
-    min_key_size: 16,
-    max_key_size: 16,
-    fixed_pin: None,
-    identity_address_type: address::STATIC_RANDOM,
-};
-
 /// An HCI command packet (`01`, opcode, length, parameters) into `out`;
 /// returns its length. Parameters past 255 bytes, or past `out`, are cut.
 pub fn command(opcode: u16, params: &[u8], out: &mut [u8]) -> usize {
@@ -399,37 +368,39 @@ pub fn packet_whole(p: &[u8]) -> bool {
     }
 }
 
-/// A device address as the air carries it: little-endian, and public (0) or random (1).
+/// A device address as the air carries it: little-endian, and public or random.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct Address {
-    pub kind: u8,
+    /// [`AddrKind::PUBLIC`] or [`AddrKind::RANDOM`]; a resolved identity's type is given as one of these.
+    pub kind: AddrKind,
     pub bytes: [u8; 6],
 }
 
 /// The event in one HCI packet, by section of the Core Specification, Vol 4 Part E, whose
 /// layouts ST's `bluenrg1_events.h` follows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Event<'a> {
     /// Command Complete (7.7.14): the opcode answered, its status, the return parameters.
-    CommandComplete { cmd_opcode: u16, status: u8, return_param_bytes: &'a [u8] },
-    /// Command Status (7.7.15): a command accepted (0) or refused, results to follow.
-    CommandStatus { cmd_opcode: u16, status: u8 },
-    /// LE (Enhanced) Connection Complete (7.7.65.1, 7.7.65.10) with success: the handle,
-    /// whether the watch is the central, the peer, and the interval (1.25 ms units), latency and
-    /// supervision timeout (10 ms units) when the packet carries them.
-    LeConnectionComplete { handle: u16, central: bool, peer: Address, conn_interval: Option<(u16, u16)>, supervision_timeout: Option<u16> },
+    CommandComplete { cmd_opcode: u16, status: Status, return_param_bytes: &'a [u8] },
+    /// Command Status (7.7.15): a command accepted or refused, results to follow.
+    CommandStatus { cmd_opcode: u16, status: Status },
+    /// LE (Enhanced) Connection Complete (7.7.65.1, 7.7.65.10) with success: the handle, the
+    /// local device's role, the peer, and the interval (1.25 ms units), latency and supervision
+    /// timeout (10 ms units) when the packet carries them.
+    LeConnectionComplete { handle: u16, role: LeConnRole, peer: Address, conn_interval: Option<(u16, u16)>, supervision_timeout: Option<u16> },
     /// LE (Enhanced) Connection Complete with an error: no connection formed.
-    LeConnectionFailed { status: u8 },
+    LeConnectionFailed { status: Status },
     /// LE Connection Update Complete (7.7.65.3) with success: interval (1.25 ms units), latency,
     /// supervision timeout (10 ms units).
     LeConnectionUpdateComplete { handle: u16, conn_interval: u16, peripheral_latency: u16, supervision_timeout: u16 },
     /// LE Connection Update Complete with an error: the link keeps the parameters it had.
-    LeConnectionUpdateFailed { handle: u16, status: u8 },
-    /// Disconnection Complete (7.7.5): a nonzero status is a disconnection that failed, the
-    /// link still up; else the reason (0x13: the peer hung up).
-    DisconnectionComplete { handle: u16, status: u8, reason: u8 },
-    /// Encryption Change (7.7.8): a nonzero status is a change that failed; 1 on, 0 off.
-    EncryptionChange { handle: u16, status: u8, enabled: u8 },
+    LeConnectionUpdateFailed { handle: u16, status: Status },
+    /// Disconnection Complete (7.7.5): a status other than success is a disconnection that
+    /// failed, the link still up; else the reason.
+    DisconnectionComplete { handle: u16, status: Status, reason: Status },
+    /// Encryption Change (7.7.8): a status other than success is a change that failed.
+    EncryptionChange { handle: u16, status: Status, enabled: EncryptionEnabledLevel },
     /// LE Data Length Change (7.7.65.7): the largest payload each way, octets and microseconds.
     LeDataLengthChange { handle: u16, max_tx_octets: u16, max_tx_time: u16, max_rx_octets: u16, max_rx_time: u16 },
     /// LE Advertising Report (7.7.65.2): one or more reports ([`reports`]).
@@ -471,19 +442,19 @@ fn standard(code: u8, params: &[u8]) -> Option<Event<'_>> {
         ev::COMMAND_COMPLETE => {
             let e: hci::CommandComplete = first(params)?;
             let (status, return_param_bytes) = Status::from_hci_bytes(&params[params.len() - e.bytes.len()..]).ok()?;
-            Event::CommandComplete { cmd_opcode: e.cmd_opcode.to_raw(), status: status.into_inner(), return_param_bytes }
+            Event::CommandComplete { cmd_opcode: e.cmd_opcode.to_raw(), status, return_param_bytes }
         }
         ev::COMMAND_STATUS => {
             let e: hci::CommandStatus = first(params)?;
-            Event::CommandStatus { cmd_opcode: e.cmd_opcode.to_raw(), status: e.status.into_inner() }
+            Event::CommandStatus { cmd_opcode: e.cmd_opcode.to_raw(), status: e.status }
         }
         ev::DISCONNECTION_COMPLETE => {
             let e: hci::DisconnectionComplete = first(params)?;
-            Event::DisconnectionComplete { handle: e.handle.raw(), status: e.status.into_inner(), reason: e.reason.into_inner() }
+            Event::DisconnectionComplete { handle: e.handle.raw(), status: e.status, reason: e.reason }
         }
         ev::ENCRYPTION_CHANGE => {
             let e: hci::EncryptionChangeV1 = first(params)?;
-            Event::EncryptionChange { handle: e.handle.raw(), status: e.status.into_inner(), enabled: e.enabled as u8 }
+            Event::EncryptionChange { handle: e.handle.raw(), status: e.status, enabled: e.enabled }
         }
         ev::LE_META => le_meta(params)?,
         ev::VENDOR => {
@@ -513,7 +484,7 @@ fn le_meta(params: &[u8]) -> Option<Event<'_>> {
                 }
             } else {
                 // A failure's interval, latency and timeout mean nothing (Core Vol 4 Part E §7.7.65.3).
-                Event::LeConnectionUpdateFailed { handle: first::<ConnHandle>(rest)?.raw(), status: status.into_inner() }
+                Event::LeConnectionUpdateFailed { handle: first::<ConnHandle>(rest)?.raw(), status }
             }
         }
         sub::DATA_LENGTH_CHANGE => {
@@ -541,7 +512,7 @@ fn connection_complete(code: u8, params: &[u8]) -> Option<Event<'_>> {
     let (status, rest) = Status::from_hci_bytes(params).ok()?;
     if status != Status::SUCCESS {
         // No connection formed, so the other fields mean nothing (Core Vol 4 Part E §7.7.65.1).
-        return Some(Event::LeConnectionFailed { status: status.into_inner() });
+        return Some(Event::LeConnectionFailed { status });
     }
     // The link exists on the chip even when the rest is short or reserved, so it is still taken.
     let (handle, rest) = ConnHandle::from_hci_bytes(rest).ok()?;
@@ -555,19 +526,18 @@ fn connection_complete(code: u8, params: &[u8]) -> Option<Event<'_>> {
     };
     Some(Event::LeConnectionComplete {
         handle: handle.raw(),
-        central: role == 0,
+        role: if role == 0 { LeConnRole::Central } else { LeConnRole::Peripheral },
         // An Enhanced event says 2 or 3 for an identity it resolved: still public or random.
-        peer: Address { kind: kind.as_raw() & 0x01, bytes: peer.into_inner() },
+        peer: Address { kind: AddrKind::new(kind.as_raw() & 0x01), bytes: peer.into_inner() },
         conn_interval: timing.map(|(interval, latency, _)| (interval, latency)),
         supervision_timeout: timing.map(|(.., timeout)| timeout),
     })
 }
 
-/// One advertising report: what kind (0 connectable undirected, 4 a scan response, ...),
-/// who, the advertising data and the signal.
+/// One advertising report: what kind, who, the advertising data and the signal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Report<'a> {
-    pub kind: u8,
+    pub kind: LeAdvEventKind,
     pub address: Address,
     pub data: &'a [u8],
     pub rssi: i8,
@@ -575,7 +545,7 @@ pub struct Report<'a> {
 
 /// The reports in an LE Advertising Report's parameters (after the subevent code): a count,
 /// then each report whole (type, address type, address, length, data, RSSI), as ST's stack
-/// packs them. A report cut short ends the list.
+/// packs them. A report cut short, or of a kind the specification doesn't define, ends the list.
 pub fn reports(data: &[u8]) -> impl Iterator<Item = Report<'_>> + '_ {
     let count = data.first().copied().unwrap_or(0);
     let mut at = 1;
@@ -584,10 +554,11 @@ pub fn reports(data: &[u8]) -> impl Iterator<Item = Report<'_>> + '_ {
         let len = usize::from(head[8]);
         let body = data.get(at + 9..at + 9 + len)?;
         let rssi = *data.get(at + 9 + len)?;
+        let kind = first(&head[..1])?;
         at += 10 + len;
         Some(Report {
-            kind: head[0],
-            address: Address { kind: head[1] & 0x01, bytes: [head[2], head[3], head[4], head[5], head[6], head[7]] },
+            kind,
+            address: Address { kind: AddrKind::new(head[1] & 0x01), bytes: [head[2], head[3], head[4], head[5], head[6], head[7]] },
             data: body,
             rssi: rssi.cast_signed(),
         })
@@ -681,54 +652,14 @@ pub fn numeric_comparison(params: &[u8]) -> Option<(u16, u32)> {
 /// packet count, the opcode and the status (Core Vol 4 Part E 5.4.4, 7.7.14).
 pub const RETURN_PARAMS_MAX: usize = 255 - 4;
 
-/// The `(address type, address)` entries of an `ACI_GAP_GET_BONDED_DEVICES` reply, never past its end.
-pub fn bonded_devices(params: &[u8]) -> impl Iterator<Item = (u8, [u8; 6])> + '_ {
+/// The identity addresses in an `ACI_GAP_GET_BONDED_DEVICES` reply, never past its end.
+pub fn bonded_devices(params: &[u8]) -> impl Iterator<Item = Address> + '_ {
     let count = usize::from(params.first().copied().unwrap_or(0));
     params.get(1..).unwrap_or(&[]).as_chunks::<7>().0.iter().take(count).map(|e| {
-        let mut addr = [0u8; 6];
-        addr.copy_from_slice(&e[1..7]);
-        (e[0] & 0x01, addr)
+        let mut bytes = [0u8; 6];
+        bytes.copy_from_slice(&e[1..7]);
+        Address { kind: AddrKind::new(e[0] & 0x01), bytes }
     })
-}
-
-/// Whether `peer` is a bond's identity in a `GET_BONDED_DEVICES` reply. A private address proves nothing.
-#[must_use]
-pub fn listed(params: &[u8], peer: Address) -> bool {
-    bonded_devices(params).any(|entry| entry == (peer.kind, peer.bytes))
-}
-
-/// The bond `ble forget <address>` names in a `GET_BONDED_DEVICES` reply.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Forget {
-    /// A bond with this address and type, the only one to remove.
-    Bond,
-    /// No bond of the type given, but this one has the same bytes and is left alone.
-    OtherType(Address),
-    NotBonded,
-}
-
-/// Which bond, if any, `wanted` names; a bond of another type is reported, never chosen.
-#[must_use]
-pub fn forget(params: &[u8], wanted: Address) -> Forget {
-    if listed(params, wanted) {
-        return Forget::Bond;
-    }
-    bonded_devices(params)
-        .find(|&(_, bytes)| bytes == wanted.bytes)
-        .map_or(Forget::NotBonded, |(kind, bytes)| Forget::OtherType(Address { kind, bytes }))
-}
-
-/// Whether a link from `peer` is provably not `forgotten`'s: `peer` is the identity of another bond.
-#[must_use]
-pub fn another_bond(params: &[u8], forgotten: Address, peer: Address) -> bool {
-    peer != forgotten && listed(params, peer)
-}
-
-/// Whether a pairing with `peer` provably kept a bond: the reply read after it lists `peer`, or
-/// holds more bonds than the `before` count read ahead of it.
-#[must_use]
-pub fn bond_kept(params: &[u8], before: Option<u8>, peer: Address) -> bool {
-    before.zip(params.first()).is_some_and(|(before, &now)| now > before) || listed(params, peer)
 }
 
 /// The longest [`Address::text`].
@@ -744,7 +675,7 @@ impl Address {
             out[3 * i + 2] = b':';
         }
         let mut len = 17;
-        if self.kind == address::RANDOM {
+        if self.kind == AddrKind::RANDOM {
             out[len..].copy_from_slice(b" (random)");
             len = ADDRESS_TEXT_MAX;
         }
@@ -757,8 +688,8 @@ impl Address {
 pub fn parse_address(text: &str) -> Option<Address> {
     let text = text.trim();
     let (text, kind) = match text.strip_suffix("(random)") {
-        Some(rest) => (rest.trim_end(), address::RANDOM),
-        None => (text, address::PUBLIC),
+        Some(rest) => (rest.trim_end(), AddrKind::RANDOM),
+        None => (text, AddrKind::PUBLIC),
     };
     let mut bytes = [0u8; 6];
     let mut parts = text.split([':', '-']);
@@ -772,7 +703,7 @@ pub fn parse_address(text: &str) -> Option<Address> {
     parts.next().is_none().then_some(Address { kind, bytes })
 }
 
-/// `GAP_PAIRING_COMPLETE`'s status for a central that encrypted with a key this side has lost.
+/// `GAP_PAIRING_COMPLETE`'s status for a central that encrypted with a key the local device no longer holds.
 pub const PAIRING_LTK_MISSING: u8 = 0x03;
 
 /// `GAP_PAIRING_COMPLETE`: status (0 success) and reason.
@@ -923,16 +854,16 @@ pub fn gatt_error(params: &[u8]) -> Option<(u8, u16, u8)> {
     Some((*params.get(2)?, u16::from_le_bytes([*params.get(3)?, *params.get(4)?]), *params.get(5)?))
 }
 
-/// `GATT_PROC_COMPLETE`: 0 when the procedure succeeded, else its error.
+/// `GATT_PROC_COMPLETE`: success, or the procedure's error.
 #[must_use]
-pub fn proc_complete(params: &[u8]) -> Option<u8> {
-    params.get(2).copied()
+pub fn proc_complete(params: &[u8]) -> Option<Status> {
+    params.get(2).copied().map(Status::new)
 }
 
-/// `GAP_PROC_COMPLETE`: the procedure's code and its status (0 success).
+/// `GAP_PROC_COMPLETE`: the procedure's code and its status.
 #[must_use]
-pub fn gap_proc_complete(params: &[u8]) -> Option<(u8, u8)> {
-    Some((*params.first()?, *params.get(1)?))
+pub fn gap_proc_complete(params: &[u8]) -> Option<(u8, Status)> {
+    Some((*params.first()?, Status::new(*params.get(1)?)))
 }
 
 /// `L2CAP_CONNECTION_UPDATE_REQ`: a peripheral asks the central for an interval range, a
@@ -958,7 +889,7 @@ impl L2capUpdateRequest {
     }
 }
 
-/// `L2CAP_CONNECTION_UPDATE_RESP`: the central's answer to the watch's parameter request
+/// `L2CAP_CONNECTION_UPDATE_RESP`: the central's answer to the local device's parameter request
 /// (Core Specification, Vol 3, Part A, 4.21).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct L2capUpdateResponse {

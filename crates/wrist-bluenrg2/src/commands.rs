@@ -51,7 +51,7 @@ pub fn command(op: &Op, name: &[u8], role: impl Fn(ConnHandle) -> Option<LeConnR
                     &[ADV_IND],
                     &p.interval_min.as_u16().to_le_bytes(),
                     &p.interval_max.as_u16().to_le_bytes(),
-                    &[address::STATIC_RANDOM, NO_FILTER, name_len, ad::NAME_COMPLETE],
+                    &[address::RANDOM, NO_FILTER, name_len, ad::NAME_COMPLETE],
                     name,
                     &[0, 0, 0, 0, 0],
                 ],

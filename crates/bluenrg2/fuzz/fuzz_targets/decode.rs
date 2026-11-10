@@ -75,7 +75,6 @@ fuzz_target!(|read: &[u8]| {
                 assert!(conn_interval.is_none() || packet.len() >= if packet[3] == 0x01 { 22 } else { 34 });
             }
             Event::LeConnectionUpdateComplete { .. } => assert!(packet.len() >= 13),
-            Event::EncryptionChange { enabled, .. } => assert!(enabled <= 2),
             _ => assert!(packet_whole(rest)),
         }
         // A packet cut short ends the read.

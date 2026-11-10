@@ -9,7 +9,7 @@ use bluenrg2::opcode::{
     ACI_GAP_SET_DISCOVERABLE, ACI_GAP_SET_NON_DISCOVERABLE, ACI_GAP_TERMINATE, ACI_GATT_ADD_CHAR, ACI_GATT_ADD_SERVICE, ACI_HAL_GET_ANCHOR_PERIOD,
 };
 use bluenrg2::{ad, address, evt_mask, permission, props, uuid_type, ADV_IND, MIN_ENC_KEY_SIZE, NO_FILTER, PRIMARY_SERVICE};
-use bluenrg2::probe::{Beside, Line, Probe};
+use wrist_bluenrg2::probe::{Beside, Line, Probe};
 
 use embassy_time::Timer;
 
@@ -306,7 +306,7 @@ impl Link<'_> {
         p[0] = ADV_IND;
         p[1..3].copy_from_slice(&interval.to_le_bytes());
         p[3..5].copy_from_slice(&interval.to_le_bytes());
-        p[5] = address::STATIC_RANDOM;
+        p[5] = address::RANDOM;
         p[6] = NO_FILTER;
         p[7] = u8::try_from(1 + DEVICE_NAME.len()).unwrap_or(0);
         p[8] = ad::NAME_COMPLETE;

@@ -5,7 +5,7 @@ use bluenrg2::{
     ad_name, bonded_devices, parse_address, ad_uuid128s, ad_uuid16s, att_mtu, characteristics, command, descriptors, gap_proc_complete, gatt_error,
     header_sizes, notification, numeric_comparison, packet_len, packet_whole, pairing_complete, parse, read_value,
     reports, service_range, services, vendor, Address, AttributeModified, Characteristic, Event, L2capUpdateRequest,
-    L2capUpdateResponse, Service, Uuid,
+    L2capUpdateResponse, Service, Uuid, AddrKind, EncryptionEnabledLevel, LeAdvEventKind, LeConnRole, Status,
 };
 
 /// A vendor event packet: `04 FF len code params`.
@@ -130,12 +130,12 @@ fn shortened(p: &[u8], n: usize) -> Vec<u8> {
 #[test]
 fn command_complete_and_status() {
     let p = [0x04, 0x0E, 0x05, 0x01, 0x06, 0xFD, 0x00, 0xAA];
-    assert_eq!(parse(&p), Event::CommandComplete { cmd_opcode: 0xFD06, status: 0, return_param_bytes: &[0xAA] });
+    assert_eq!(parse(&p), Event::CommandComplete { cmd_opcode: 0xFD06, status: Status::SUCCESS, return_param_bytes: &[0xAA] });
     let p = [0x04, 0x0F, 0x04, 0x00, 0x01, 0x13, 0xFD];
-    assert_eq!(parse(&p), Event::CommandStatus { cmd_opcode: 0xFD13, status: 0 });
+    assert_eq!(parse(&p), Event::CommandStatus { cmd_opcode: 0xFD13, status: Status::SUCCESS });
     // A refusal: Command Disallowed.
     let p = [0x04, 0x0F, 0x04, 0x0C, 0x01, 0x9E, 0xFC];
-    assert_eq!(parse(&p), Event::CommandStatus { cmd_opcode: 0xFC9E, status: 0x0C });
+    assert_eq!(parse(&p), Event::CommandStatus { cmd_opcode: 0xFC9E, status: Status::new(0x0C) });
     // Without a status, or without the whole opcode.
     let short = shortened(&[0x04, 0x0E, 0x05, 0x01, 0x06, 0xFD, 0x00, 0xAA], 3);
     assert_eq!(parse(&short), Event::Malformed(&short));
@@ -162,24 +162,24 @@ fn enhanced_connection_complete() -> Vec<u8> {
 fn connection_complete_gives_handle_role_peer_interval_latency_and_timeout() {
     let p = connection_complete();
     assert_eq!(p.len(), 3 + 19);
-    let peer = Address { kind: 0, bytes: [0x11, 0x22, 0x33, 0x44, 0x55, 0x66] };
+    let peer = Address { kind: AddrKind::PUBLIC, bytes: [0x11, 0x22, 0x33, 0x44, 0x55, 0x66] };
     assert_eq!(
         parse(&p),
-        Event::LeConnectionComplete { handle: 0x0801, central: false, peer, conn_interval: Some((24, 0)), supervision_timeout: Some(500) }
+        Event::LeConnectionComplete { handle: 0x0801, role: LeConnRole::Peripheral, peer, conn_interval: Some((24, 0)), supervision_timeout: Some(500) }
     );
     let mut e = enhanced_connection_complete();
     assert_eq!(e.len(), 3 + 31);
-    let peer = Address { kind: 0, bytes: [0x11; 6] };
+    let peer = Address { kind: AddrKind::PUBLIC, bytes: [0x11; 6] };
     assert_eq!(
         parse(&e),
-        Event::LeConnectionComplete { handle: 0x0801, central: false, peer, conn_interval: Some((39, 0)), supervision_timeout: Some(500) }
+        Event::LeConnectionComplete { handle: 0x0801, role: LeConnRole::Peripheral, peer, conn_interval: Some((39, 0)), supervision_timeout: Some(500) }
     );
-    // The watch as the central (role 0), to a random address resolved (type 3).
+    // The local device as the central (role 0), to a random address resolved (type 3).
     e[7] = 0x00;
     e[8] = 0x03;
-    let Event::LeConnectionComplete { central, peer, .. } = parse(&e) else { panic!("not connected") };
-    assert!(central);
-    assert_eq!(peer.kind, 1);
+    let Event::LeConnectionComplete { role, peer, .. } = parse(&e) else { panic!("not connected") };
+    assert_eq!(role, LeConnRole::Central);
+    assert_eq!(peer.kind, AddrKind::RANDOM);
     // Short of the latency: the handle and peer still, no interval.
     for q in [shortened(&p, 15), shortened(&e, 27)] {
         assert!(matches!(parse(&q), Event::LeConnectionComplete { handle: 0x0801, conn_interval: None, .. }));
@@ -196,6 +196,7 @@ fn a_connection_that_never_formed_carries_its_status() {
     for (sub, status) in [(0x01, 0x3E), (0x0A, 0x3C)] {
         let mut p = if sub == 0x01 { connection_complete() } else { enhanced_connection_complete() };
         p[4] = status;
+        let status = Status::new(status);
         assert_eq!(parse(&p), Event::LeConnectionFailed { status });
         // The status is all it needs.
         assert_eq!(parse(&shortened(&p, 2)), Event::LeConnectionFailed { status });
@@ -215,6 +216,7 @@ fn connection_update_complete_succeeds_or_fails_with_its_handle() {
     for status in [0x3B, 0x1A, 0x22] {
         let mut f = p.clone();
         f[4] = status;
+        let status = Status::new(status);
         assert_eq!(parse(&f), Event::LeConnectionUpdateFailed { handle: 0x0801, status });
         assert_eq!(parse(&shortened(&f, 4)), Event::LeConnectionUpdateFailed { handle: 0x0801, status });
     }
@@ -251,21 +253,21 @@ fn data_length_change_carries_both_directions() {
 fn disconnection_complete_carries_handle_status_and_reason() {
     assert_eq!(
         parse(&hci_event(0x05, &[0x00, 0x01, 0x08, 0x13])),
-        Event::DisconnectionComplete { handle: 0x0801, status: 0, reason: 0x13 }
+        Event::DisconnectionComplete { handle: 0x0801, status: Status::SUCCESS, reason: Status::new(0x13) }
     );
     // Supervision timeout, and MIC failure.
     assert_eq!(
         parse(&hci_event(0x05, &[0x00, 0x02, 0x08, 0x08])),
-        Event::DisconnectionComplete { handle: 0x0802, status: 0, reason: 0x08 }
+        Event::DisconnectionComplete { handle: 0x0802, status: Status::SUCCESS, reason: Status::new(0x08) }
     );
     assert!(matches!(
         parse(&hci_event(0x05, &[0x00, 0x01, 0x08, 0x3D])),
-        Event::DisconnectionComplete { reason: 0x3D, .. }
+        Event::DisconnectionComplete { reason, .. } if reason == Status::new(0x3D)
     ));
     // A disconnection that failed: Command Disallowed, the link still up.
     assert_eq!(
         parse(&hci_event(0x05, &[0x0C, 0x01, 0x08, 0x00])),
-        Event::DisconnectionComplete { handle: 0x0801, status: 0x0C, reason: 0 }
+        Event::DisconnectionComplete { handle: 0x0801, status: Status::new(0x0C), reason: Status::new(0) }
     );
     let short = hci_event(0x05, &[0x00, 0x01, 0x08]);
     assert_eq!(parse(&short), Event::Malformed(&short));
@@ -275,12 +277,12 @@ fn disconnection_complete_carries_handle_status_and_reason() {
 fn encryption_change_carries_handle_status_and_state() {
     assert_eq!(
         parse(&hci_event(0x08, &[0x00, 0x01, 0x08, 0x01])),
-        Event::EncryptionChange { handle: 0x0801, status: 0, enabled: 1 }
+        Event::EncryptionChange { handle: 0x0801, status: Status::SUCCESS, enabled: EncryptionEnabledLevel::OnE0OrAesCcm }
     );
-    // The central's key was missing on the watch: PIN or Key Missing, encryption off.
+    // The central's key was missing on the local device: PIN or Key Missing, encryption off.
     assert_eq!(
         parse(&hci_event(0x08, &[0x06, 0x01, 0x08, 0x00])),
-        Event::EncryptionChange { handle: 0x0801, status: 0x06, enabled: 0 }
+        Event::EncryptionChange { handle: 0x0801, status: Status::new(0x06), enabled: EncryptionEnabledLevel::Off }
     );
     let short = hci_event(0x08, &[0x00, 0x01]);
     assert_eq!(parse(&short), Event::Malformed(&short));
@@ -330,7 +332,7 @@ fn a_packet_is_read_no_further_than_its_own_length() {
     // Two events in one read: the first only.
     let mut read = hci_event(0x05, &[0x00, 0x01, 0x08, 0x13]);
     read.extend(vendor_event(vendor::BLUE_INITIALIZED, &[0x01]));
-    assert_eq!(parse(&read), Event::DisconnectionComplete { handle: 0x0801, status: 0, reason: 0x13 });
+    assert_eq!(parse(&read), Event::DisconnectionComplete { handle: 0x0801, status: Status::SUCCESS, reason: Status::new(0x13) });
     let mut read = vendor_event(vendor::GATT_PROC_COMPLETE, &[0x01, 0x08, 0x00]);
     read.extend(hci_event(0x05, &[0x00, 0x01, 0x08, 0x13]));
     assert_eq!(parse(&read), Event::Vendor { code: vendor::GATT_PROC_COMPLETE, params: &[0x01, 0x08, 0x00] });
@@ -380,44 +382,26 @@ fn the_mtu_exchange_decodes() {
 }
 
 #[test]
-fn pairing_is_secure_connections_only_with_mitm_and_16_byte_keys() {
-    let p = bluenrg2::PAIRING.params();
-    // Bonding, MITM, SC only, no keypress, key 16 to 16, no fixed pin (the host is asked), pin 0,
-    // static random identity.
-    assert_eq!(p, [0x01, 0x01, 0x02, 0x00, 0x10, 0x10, 0x01, 0, 0, 0, 0, 0x01]);
-}
-
-#[test]
 fn a_fixed_pin_goes_little_endian_after_its_flag() {
-    let r = bluenrg2::AuthenticationRequirement { fixed_pin: Some(123_456), ..bluenrg2::PAIRING };
+    let r = bluenrg2::AuthenticationRequirement {
+        bonding: true,
+        mitm: true,
+        secure_connections: 2,
+        keypress_notifications: false,
+        min_key_size: 16,
+        max_key_size: 16,
+        fixed_pin: Some(123_456),
+        identity_address_type: bluenrg2::address::RANDOM,
+    };
     assert_eq!(r.params()[6..11], [0x00, 0x40, 0xE2, 0x01, 0x00]);
 }
 
 #[test]
-fn the_address_is_static_random_and_never_changes() {
-    use bluenrg2::{static_random, static_random_address};
-    // Pinned: a different address would orphan every bond.
-    let uid = [0x0034_0021, 0x3133_5111, 0x3039_3533];
-    assert_eq!(static_random_address(uid), static_random_address(uid));
-    assert_eq!(static_random_address(uid), [0x2B, 0x1E, 0xCE, 0x05, 0x69, 0xFF]);
-    for x in 0..1_000u32 {
-        let a = static_random_address([x, x.rotate_left(7) ^ 0x5A5A, !x]);
-        assert_eq!(a[5] & 0xC0, 0xC0, "{a:02X?}");
-    }
-    // The other 46 bits are never all zero or all one.
+fn a_static_random_address_has_its_top_bits_set_and_the_rest_never_all_zero_or_one() {
+    use bluenrg2::static_random;
     assert_eq!(static_random(0), [0x01, 0, 0, 0, 0, 0xC0]);
     assert_eq!(static_random(u64::MAX), [0xFE, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
     assert_eq!(static_random(0x0000_3FFF_FFFF_FFFF), [0xFE, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
-}
-
-#[test]
-fn neighbouring_dies_get_different_addresses() {
-    let mut seen = std::collections::HashSet::new();
-    for x in 0..64u32 {
-        for y in 0..64u32 {
-            assert!(seen.insert(bluenrg2::static_random_address([(x << 16) | y, 0x3133_5111, 0x3039_3533])));
-        }
-    }
 }
 
 fn strap_report() -> Vec<u8> {
@@ -440,12 +424,12 @@ fn advertising_reports_decode() {
     let all: Vec<_> = reports(data).collect();
     assert_eq!(all.len(), 2);
     let strap = all[0];
-    assert_eq!(strap.kind, 0);
-    assert_eq!(strap.address, Address { kind: 1, bytes: [0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xC6] });
+    assert_eq!(strap.kind, LeAdvEventKind::AdvInd);
+    assert_eq!(strap.address, Address { kind: AddrKind::RANDOM, bytes: [0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xC6] });
     assert_eq!(strap.rssi, -67);
     assert_eq!(ad_name(strap.data), Some(&b"H10 "[..]));
     assert_eq!(ad_uuid16s(strap.data).collect::<Vec<_>>(), [0x180D, 0x180F]);
-    assert_eq!(all[1].kind, 4);
+    assert_eq!(all[1].kind, LeAdvEventKind::ScanRsp);
     assert_eq!(ad_name(all[1].data), Some(&b"PM"[..]));
     assert_eq!(all[1].rssi, -80);
     // A count past what the event holds stops at the last whole report.
@@ -508,7 +492,7 @@ fn descriptors_service_range_and_values_decode() {
     assert_eq!(notification(&[0x01, 0x08, 8, 0, 9, 0x16]), Some((8, &[0x16][..])));
     assert_eq!(notification(&[0x01, 0x08, 8]), None);
     assert_eq!(gatt_error(&[0x01, 0x08, 0x0A, 0x0B, 0x00, 0x05]), Some((0x0A, 0x0B, 0x05)));
-    assert_eq!(gap_proc_complete(&[0x02, 0x00, 0x00]), Some((0x02, 0)));
+    assert_eq!(gap_proc_complete(&[0x02, 0x00, 0x00]), Some((0x02, Status::SUCCESS)));
 }
 
 #[test]
@@ -555,8 +539,8 @@ fn the_chip_says_why_it_started() {
 
 #[test]
 fn an_address_parses_into_the_chips_byte_order() {
-    let public = Address { kind: 0, bytes: [0x5F, 0x4E, 0x3D, 0x2C, 0x1B, 0x0A] };
-    let random = Address { kind: 1, ..public };
+    let public = Address { kind: AddrKind::PUBLIC, bytes: [0x5F, 0x4E, 0x3D, 0x2C, 0x1B, 0x0A] };
+    let random = Address { kind: AddrKind::RANDOM, ..public };
     assert_eq!(parse_address("0A:1B:2C:3D:4E:5F"), Some(public));
     assert_eq!(parse_address(" 0a-1b-2c-3d-4e-5f "), Some(public));
     assert_eq!(parse_address("0A:1B:2C:3D:4E:5F (random)"), Some(random));
@@ -571,86 +555,37 @@ fn an_address_parses_into_the_chips_byte_order() {
 fn an_address_is_written_with_its_type_and_reads_back() {
     use bluenrg2::ADDRESS_TEXT_MAX;
     let mut out = [0; ADDRESS_TEXT_MAX];
-    let public = Address { kind: 0, bytes: [0x5F, 0x4E, 0x3D, 0x2C, 0x1B, 0x0A] };
+    let public = Address { kind: AddrKind::PUBLIC, bytes: [0x5F, 0x4E, 0x3D, 0x2C, 0x1B, 0x0A] };
     assert_eq!(public.text(&mut out), "0A:1B:2C:3D:4E:5F");
-    assert_eq!(Address { kind: 1, ..public }.text(&mut out), "0A:1B:2C:3D:4E:5F (random)");
+    assert_eq!(Address { kind: AddrKind::RANDOM, ..public }.text(&mut out), "0A:1B:2C:3D:4E:5F (random)");
     proptest::proptest!(|(kind in 0u8..2, bytes: [u8; 6])| {
-        let a = Address { kind, bytes };
+        let a = Address { kind: AddrKind::new(kind), bytes };
         proptest::prop_assert_eq!(parse_address(a.text(&mut [0; ADDRESS_TEXT_MAX])), Some(a));
     });
 }
 
 #[test]
-fn only_another_bonds_identity_keeps_a_link_through_a_forget() {
-    use bluenrg2::{another_bond, Address};
-    let reply = [2, 1, 0xEB, 0xDA, 0xC9, 0xB8, 0xA7, 0xC6, 0, 0x5F, 0x4E, 0x3D, 0x2C, 0x1B, 0x0A];
-    let random = Address { kind: 1, bytes: [0xEB, 0xDA, 0xC9, 0xB8, 0xA7, 0xC6] };
-    let public = Address { kind: 0, bytes: [0x5F, 0x4E, 0x3D, 0x2C, 0x1B, 0x0A] };
-    assert!(another_bond(&reply, random, public));
-    assert!(!another_bond(&reply, public, public));
-    assert!(!another_bond(&reply, random, Address { kind: 1, ..public }));
-    // A resolvable private address, as a phone connects with.
-    assert!(!another_bond(&reply, random, Address { kind: 1, bytes: [1, 2, 3, 4, 5, 0x4A] }));
-    assert!(!another_bond(&[], random, public));
-    // Two bonds that share an address but not its type.
-    let twins = [2, 1, 0x5F, 0x4E, 0x3D, 0x2C, 0x1B, 0x0A, 0, 0x5F, 0x4E, 0x3D, 0x2C, 0x1B, 0x0A];
-    assert!(another_bond(&twins, Address { kind: 1, ..public }, public));
-}
-
-#[test]
-fn forget_takes_only_the_bond_of_the_type_given_and_names_one_of_another() {
-    use bluenrg2::{forget, Forget};
-    let random = Address { kind: 1, bytes: [0x5F, 0x4E, 0x3D, 0x2C, 0x1B, 0x0A] };
-    let public = Address { kind: 0, bytes: [0xEB, 0xDA, 0xC9, 0xB8, 0xA7, 0xC6] };
-    let reply = [2, 1, 0x5F, 0x4E, 0x3D, 0x2C, 0x1B, 0x0A, 0, 0xEB, 0xDA, 0xC9, 0xB8, 0xA7, 0xC6];
-    assert_eq!(forget(&reply, random), Forget::Bond);
-    assert_eq!(forget(&reply, public), Forget::Bond);
-    // Typed without its type, as `ble bonds` printed it before the type was added.
-    let bare = parse_address("0A:1B:2C:3D:4E:5F").unwrap();
-    let Forget::OtherType(bond) = forget(&reply, bare) else { panic!("{:?}", forget(&reply, bare)) };
-    assert_eq!(bond, random);
-    assert_eq!(bond.text(&mut [0; bluenrg2::ADDRESS_TEXT_MAX]), "0A:1B:2C:3D:4E:5F (random)");
-    assert_eq!(forget(&reply, Address { kind: 1, ..public }), Forget::OtherType(public));
-    assert_eq!(forget(&reply, Address { kind: 0, bytes: [1, 2, 3, 4, 5, 6] }), Forget::NotBonded);
-    assert_eq!(forget(&[], random), Forget::NotBonded);
-    // Two bonds that share an address but not its type: each type names its own.
-    let twins = [2, 1, 0x5F, 0x4E, 0x3D, 0x2C, 0x1B, 0x0A, 0, 0x5F, 0x4E, 0x3D, 0x2C, 0x1B, 0x0A];
-    assert_eq!(forget(&twins, random), Forget::Bond);
-    assert_eq!(forget(&twins, bare), Forget::Bond);
-}
-
-#[test]
-fn a_pairing_is_bonded_only_when_the_bond_list_shows_it() {
-    use bluenrg2::{bond_kept, Address};
-    let mac = [1, 0xEB, 0xDA, 0xC9, 0xB8, 0xA7, 0xC6];
-    let phone = [0, 0x5F, 0x4E, 0x3D, 0x2C, 0x1B, 0x0A];
-    let rpa = Address { kind: 1, bytes: [1, 2, 3, 4, 5, 0x4A] };
-    let one = [&[1u8][..], &phone].concat();
-    let two = [&[2u8][..], &phone, &mac].concat();
-    assert!(!bond_kept(&one, Some(1), rpa), "a pairing that kept no bond");
-    assert!(bond_kept(&two, Some(1), rpa), "a private address bonded under its identity");
-    assert!(!bond_kept(&two, Some(2), rpa), "a private address encrypting again proves nothing");
-    assert!(!bond_kept(&two, None, rpa));
-    assert!(bond_kept(&two, Some(2), Address { kind: 0, bytes: [0x5F, 0x4E, 0x3D, 0x2C, 0x1B, 0x0A] }));
-    assert!(!bond_kept(&one, Some(2), rpa), "one forgotten since");
-}
-
-#[test]
 fn bonded_devices_reads_each_entry_and_no_more_than_the_reply_holds() {
-    // Two bonds: a static random identity and a public one, as the watch's reply gave them.
+    // Two bonds: a static random identity and a public one, as a chip's reply gave them.
     let reply = [2, 1, 0xEB, 0xDA, 0xC9, 0xB8, 0xA7, 0xC6, 0, 0x5F, 0x4E, 0x3D, 0x2C, 0x1B, 0x0A];
     let all: Vec<_> = bonded_devices(&reply).collect();
-    assert_eq!(all, vec![(1, [0xEB, 0xDA, 0xC9, 0xB8, 0xA7, 0xC6]), (0, [0x5F, 0x4E, 0x3D, 0x2C, 0x1B, 0x0A])]);
+    assert_eq!(
+        all,
+        vec![
+            Address { kind: AddrKind::RANDOM, bytes: [0xEB, 0xDA, 0xC9, 0xB8, 0xA7, 0xC6] },
+            Address { kind: AddrKind::PUBLIC, bytes: [0x5F, 0x4E, 0x3D, 0x2C, 0x1B, 0x0A] }
+        ]
+    );
     // A count past the entries present stops at the last whole one.
     assert_eq!(bonded_devices(&[5, 0, 1, 2, 3, 4, 5, 6, 0, 1]).count(), 1);
     assert_eq!(bonded_devices(&[]).count(), 0);
     // A type past random reads as a peer's does, so the printed form finds the bond again.
-    for (raw, kind) in [(2, 0), (3, 1)] {
+    for (raw, kind) in [(2, AddrKind::PUBLIC), (3, AddrKind::RANDOM)] {
         let reply = [1, raw, 0xE6, 0xD5, 0xC4, 0xB3, 0xA2, 0xC1];
-        let (k, bytes) = bonded_devices(&reply).next().unwrap();
-        assert_eq!(k, kind);
-        let printed = parse_address(Address { kind: k, bytes }.text(&mut [0; bluenrg2::ADDRESS_TEXT_MAX])).unwrap();
-        assert!(bluenrg2::listed(&reply, printed), "{raw}");
+        let bond = bonded_devices(&reply).next().unwrap();
+        assert_eq!(bond.kind, kind);
+        let printed = parse_address(bond.text(&mut [0; bluenrg2::ADDRESS_TEXT_MAX])).unwrap();
+        assert!(bonded_devices(&reply).any(|bond| bond == printed), "{raw}");
     }
 }
 

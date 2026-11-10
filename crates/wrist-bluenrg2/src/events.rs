@@ -1,9 +1,9 @@
 //! What each packet from the BlueNRG-2 tells the core.
 
-use bluenrg2::{boot_reason, vendor, Event};
+use bluenrg2::{boot_reason, vendor, EncryptionEnabledLevel, Event};
 use wrist_ble::{
-    AddrKind, BdAddr, ChipInfo, ConnHandle, Failure, FailureKind, Interval, LeConnRole, LinkParams, PairingEvent, PairingStep, PeerAddr,
-    RadioEvent, ResetCause, Status, Timeout,
+    BdAddr, ChipInfo, ConnHandle, Failure, FailureKind, Interval, LeConnRole, LinkParams, PairingEvent, PairingStep, PeerAddr, RadioEvent,
+    ResetCause, Status, Timeout,
 };
 
 /// The chip's packets as the core's events. ST's bond-lost event names no link, so the
@@ -25,38 +25,37 @@ impl Translator {
     pub fn event(&mut self, packet: &[u8]) -> Option<RadioEvent> {
         let e = match bluenrg2::parse(packet) {
             Event::CommandComplete { .. } | Event::CommandStatus { .. } | Event::LeAdvertisingReport { .. } => return None,
-            Event::LeConnectionComplete { handle, central, peer, conn_interval: Some((interval, latency)), supervision_timeout: Some(timeout) } => {
+            Event::LeConnectionComplete { handle, role, peer, conn_interval: Some((interval, latency)), supervision_timeout: Some(timeout) } => {
                 let link = ConnHandle::new(handle);
-                let role = if central { LeConnRole::Central } else { LeConnRole::Peripheral };
                 if role == LeConnRole::Peripheral {
                     self.phone = Some(link);
                 }
-                let kind = if peer.kind == 0 { AddrKind::PUBLIC } else { AddrKind::RANDOM };
-                RadioEvent::LinkUp { link, role, peer: PeerAddr { kind, addr: BdAddr::new(peer.bytes) }, params: params(interval, latency, timeout) }
+                RadioEvent::LinkUp { link, role, peer: PeerAddr { kind: peer.kind, addr: BdAddr::new(peer.bytes) }, params: params(interval, latency, timeout) }
             }
             Event::LeConnectionUpdateComplete { handle, conn_interval, peripheral_latency, supervision_timeout } => {
                 RadioEvent::Params { link: ConnHandle::new(handle), result: Ok(params(conn_interval, peripheral_latency, supervision_timeout)) }
             }
             Event::LeConnectionUpdateFailed { handle, status } => {
-                RadioEvent::Params { link: ConnHandle::new(handle), result: Err(failure(FailureKind::PeerRejected, status)) }
+                RadioEvent::Params { link: ConnHandle::new(handle), result: Err(failure(FailureKind::PeerRejected, status.into_inner())) }
             }
-            Event::DisconnectionComplete { handle, status: 0, reason } => {
+            Event::DisconnectionComplete { handle, status: Status::SUCCESS, reason } => {
                 let link = ConnHandle::new(handle);
                 if self.phone == Some(link) {
                     self.phone = None;
                 }
-                RadioEvent::LinkDown { link, reason: Status::new(reason) }
+                RadioEvent::LinkDown { link, reason }
             }
-            Event::EncryptionChange { handle, status, enabled } => RadioEvent::Encryption { link: ConnHandle::new(handle), on: status == 0 && enabled != 0 },
+            Event::EncryptionChange { handle, status, enabled } => {
+                RadioEvent::Encryption { link: ConnHandle::new(handle), on: status == Status::SUCCESS && enabled != EncryptionEnabledLevel::Off }
+            }
             Event::LeDataLengthChange { handle, max_tx_octets, max_rx_octets, .. } => {
                 RadioEvent::DataLength { link: ConnHandle::new(handle), tx: max_tx_octets, rx: max_rx_octets }
             }
             Event::Vendor { code, params } => self.vendor(code, params)?,
             Event::LeUnknown { subevent_code } => RadioEvent::Unknown { raw_code: u16::from_be_bytes([0x3E, subevent_code]) },
             Event::Unknown { code } => RadioEvent::Unknown { raw_code: u16::from(code) },
-            Event::LeConnectionComplete { .. } | Event::LeConnectionFailed { .. } | Event::DisconnectionComplete { .. } | Event::Malformed(_) => {
-                RadioEvent::Unknown { raw_code: packet.get(1).map_or(0, |&c| u16::from(c)) }
-            }
+            // A link without its timing, a connection or disconnection that failed, a malformed packet.
+            _ => RadioEvent::Unknown { raw_code: packet.get(1).map_or(0, |&c| u16::from(c)) },
         };
         Some(e)
     }
