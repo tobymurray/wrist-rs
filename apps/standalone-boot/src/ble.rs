@@ -76,7 +76,7 @@ use bluenrg2::opcode::{
 };
 use bluenrg2::{
     address, boot_reason, config, event_code, evt_mask, permission, props, role, uuid_type, vendor, AddrKind, AttributeModified, EncryptionEnabledLevel, Event,
-    L2capUpdateResponse, Status, ADV_IND, ATT_HEADER_LEN, MAX_COMMAND, MIN_ENC_KEY_SIZE, NO_FILTER, PRIMARY_SERVICE,
+    BleStatus, L2capUpdateResponse, ADV_IND, ATT_HEADER_LEN, MAX_COMMAND, MIN_ENC_KEY_SIZE, NO_FILTER, PRIMARY_SERVICE,
     PRIVACY_DISABLED, RETURN_PARAMS_MAX, VARIABLE_LENGTH,
 };
 use wrist_pages::{OldKey, Pairing, Prompt};
@@ -1662,7 +1662,7 @@ impl Link<'_> {
                 LAST_UPDATE_FAILURE.store(status.into_inner(), Ordering::Relaxed);
             }
             Event::DisconnectionComplete { status, reason, .. } => {
-                if status != Status::SUCCESS {
+                if status != BleStatus::SUCCESS {
                     DISCONNECT_FAILURES.fetch_add(1, Ordering::Relaxed);
                 }
                 set_state(STATE_IDLE);
@@ -1673,7 +1673,7 @@ impl Link<'_> {
                 self.readvertise = true;
             }
             Event::EncryptionChange { status, enabled, .. } => {
-                if status != Status::SUCCESS {
+                if status != BleStatus::SUCCESS {
                     ENCRYPTION_FAILURES.fetch_add(1, Ordering::Relaxed);
                 }
                 let on = enabled != EncryptionEnabledLevel::Off;
@@ -1807,13 +1807,13 @@ impl Link<'_> {
         match ecode {
             vendor::BLUE_INITIALIZED => self.initialized(bluenrg2::blue_initialized(rest)),
             vendor::HAL_EVENTS_LOST => self.uart.write_line("[ble] the chip dropped events: the host read too slowly"),
-            vendor::GAP_PASS_KEY_REQ => {
+            vendor::GAP_PASS_KEY_REQ if handle(rest).is_some() => {
                 self.pair_ask.settled();
                 self.interval_ask.pairing();
-                self.passkey_for = Some(handle(rest));
+                self.passkey_for = handle(rest);
                 PROMPT.lock(|p| p.set(Prompt::Asked));
             }
-            vendor::GAP_NUMERIC_COMPARISON_VALUE if rest.len() >= 6 => {
+            vendor::GAP_NUMERIC_COMPARISON_VALUE if bluenrg2::numeric_comparison(rest).is_some() => {
                 self.pair_ask.settled();
                 self.interval_ask.pairing();
                 let (_, value) = bluenrg2::numeric_comparison(rest).unwrap_or_default();

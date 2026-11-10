@@ -12,9 +12,9 @@
 pub mod probe;
 
 pub use bt_hci;
-pub use bt_hci::param::{AddrKind, EncryptionEnabledLevel, LeAdvEventKind, LeConnRole, Status};
+pub use bt_hci::param::{AddrKind, EncryptionEnabledLevel, LeAdvEventKind, LeConnRole};
 
-use bt_hci::param::{BdAddr, ConnHandle};
+use bt_hci::param::{BdAddr, ConnHandle, Status};
 use bt_hci::FromHciBytes;
 
 /// The SPI header the host sends to write (`0A`) or read (`0B`); the chip
@@ -220,6 +220,35 @@ pub fn blue_initialized(params: &[u8]) -> u8 {
     params.first().copied().unwrap_or(0)
 }
 
+/// A status or reason as the chip gives it (ST's `tBleStatus`): HCI's error codes below 0x40,
+/// ST's own (`ble_status.h`) from 0x40, which bt-hci's `Status` would misname.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct BleStatus(u8);
+
+impl BleStatus {
+    pub const SUCCESS: Self = Self(0);
+
+    #[must_use]
+    pub const fn new(code: u8) -> Self {
+        Self(code)
+    }
+
+    #[must_use]
+    pub const fn into_inner(self) -> u8 {
+        self.0
+    }
+}
+
+impl core::fmt::Debug for BleStatus {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        if self.0 < 0x40 {
+            core::fmt::Debug::fmt(&Status::new(self.0), f)
+        } else {
+            write!(f, "BleStatus(0x{:02x})", self.0)
+        }
+    }
+}
+
 /// ST's command status codes (`ble_status.h`), HCI's among them.
 pub mod status {
     pub const COMMAND_DISALLOWED: u8 = 0x0C;
@@ -377,30 +406,30 @@ pub struct Address {
 }
 
 /// The event in one HCI packet, by section of the Core Specification, Vol 4 Part E, whose
-/// layouts ST's `bluenrg1_events.h` follows.
+/// layouts ST's `bluenrg1_events.h` follows. A connection handle above 0x0EFF makes it `Malformed`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Event<'a> {
     /// Command Complete (7.7.14): the opcode answered, its status, the return parameters.
-    CommandComplete { cmd_opcode: u16, status: Status, return_param_bytes: &'a [u8] },
+    CommandComplete { cmd_opcode: u16, status: BleStatus, return_param_bytes: &'a [u8] },
     /// Command Status (7.7.15): a command accepted or refused, results to follow.
-    CommandStatus { cmd_opcode: u16, status: Status },
+    CommandStatus { cmd_opcode: u16, status: BleStatus },
     /// LE (Enhanced) Connection Complete (7.7.65.1, 7.7.65.10) with success: the handle, the
     /// local device's role, the peer, and the interval (1.25 ms units), latency and supervision
     /// timeout (10 ms units) when the packet carries them.
     LeConnectionComplete { handle: u16, role: LeConnRole, peer: Address, conn_interval: Option<(u16, u16)>, supervision_timeout: Option<u16> },
     /// LE (Enhanced) Connection Complete with an error: no connection formed.
-    LeConnectionFailed { status: Status },
+    LeConnectionFailed { status: BleStatus },
     /// LE Connection Update Complete (7.7.65.3) with success: interval (1.25 ms units), latency,
     /// supervision timeout (10 ms units).
     LeConnectionUpdateComplete { handle: u16, conn_interval: u16, peripheral_latency: u16, supervision_timeout: u16 },
     /// LE Connection Update Complete with an error: the link keeps the parameters it had.
-    LeConnectionUpdateFailed { handle: u16, status: Status },
+    LeConnectionUpdateFailed { handle: u16, status: BleStatus },
     /// Disconnection Complete (7.7.5): a status other than success is a disconnection that
     /// failed, the link still up; else the reason.
-    DisconnectionComplete { handle: u16, status: Status, reason: Status },
+    DisconnectionComplete { handle: u16, status: BleStatus, reason: BleStatus },
     /// Encryption Change (7.7.8): a status other than success is a change that failed.
-    EncryptionChange { handle: u16, status: Status, enabled: EncryptionEnabledLevel },
+    EncryptionChange { handle: u16, status: BleStatus, enabled: EncryptionEnabledLevel },
     /// LE Data Length Change (7.7.65.7): the largest payload each way, octets and microseconds.
     LeDataLengthChange { handle: u16, max_tx_octets: u16, max_tx_time: u16, max_rx_octets: u16, max_rx_time: u16 },
     /// LE Advertising Report (7.7.65.2): one or more reports ([`reports`]).
@@ -441,20 +470,20 @@ fn standard(code: u8, params: &[u8]) -> Option<Event<'_>> {
     Some(match code {
         ev::COMMAND_COMPLETE => {
             let e: hci::CommandComplete = first(params)?;
-            let (status, return_param_bytes) = Status::from_hci_bytes(&params[params.len() - e.bytes.len()..]).ok()?;
-            Event::CommandComplete { cmd_opcode: e.cmd_opcode.to_raw(), status, return_param_bytes }
+            let (status, return_param_bytes) = u8::from_hci_bytes(&params[params.len() - e.bytes.len()..]).ok()?;
+            Event::CommandComplete { cmd_opcode: e.cmd_opcode.to_raw(), status: BleStatus(status), return_param_bytes }
         }
         ev::COMMAND_STATUS => {
             let e: hci::CommandStatus = first(params)?;
-            Event::CommandStatus { cmd_opcode: e.cmd_opcode.to_raw(), status: e.status }
+            Event::CommandStatus { cmd_opcode: e.cmd_opcode.to_raw(), status: ble(e.status) }
         }
         ev::DISCONNECTION_COMPLETE => {
             let e: hci::DisconnectionComplete = first(params)?;
-            Event::DisconnectionComplete { handle: e.handle.raw(), status: e.status, reason: e.reason }
+            Event::DisconnectionComplete { handle: link(e.handle)?, status: ble(e.status), reason: ble(e.reason) }
         }
         ev::ENCRYPTION_CHANGE => {
             let e: hci::EncryptionChangeV1 = first(params)?;
-            Event::EncryptionChange { handle: e.handle.raw(), status: e.status, enabled: e.enabled }
+            Event::EncryptionChange { handle: link(e.handle)?, status: ble(e.status), enabled: e.enabled }
         }
         ev::LE_META => le_meta(params)?,
         ev::VENDOR => {
@@ -477,20 +506,20 @@ fn le_meta(params: &[u8]) -> Option<Event<'_>> {
             if status == Status::SUCCESS {
                 let e: le::LeConnectionUpdateComplete = first(params)?;
                 Event::LeConnectionUpdateComplete {
-                    handle: e.handle.raw(),
+                    handle: link(e.handle)?,
                     conn_interval: e.conn_interval.as_u16(),
                     peripheral_latency: e.peripheral_latency,
                     supervision_timeout: e.supervision_timeout.as_u16(),
                 }
             } else {
                 // A failure's interval, latency and timeout mean nothing (Core Vol 4 Part E §7.7.65.3).
-                Event::LeConnectionUpdateFailed { handle: first::<ConnHandle>(rest)?.raw(), status }
+                Event::LeConnectionUpdateFailed { handle: link(first(rest)?)?, status: ble(status) }
             }
         }
         sub::DATA_LENGTH_CHANGE => {
             let e: le::LeDataLengthChange = first(params)?;
             Event::LeDataLengthChange {
-                handle: e.handle.raw(),
+                handle: link(e.handle)?,
                 max_tx_octets: e.max_tx_octets,
                 max_tx_time: e.max_tx_time,
                 max_rx_octets: e.max_rx_octets,
@@ -512,7 +541,7 @@ fn connection_complete(code: u8, params: &[u8]) -> Option<Event<'_>> {
     let (status, rest) = Status::from_hci_bytes(params).ok()?;
     if status != Status::SUCCESS {
         // No connection formed, so the other fields mean nothing (Core Vol 4 Part E §7.7.65.1).
-        return Some(Event::LeConnectionFailed { status });
+        return Some(Event::LeConnectionFailed { status: ble(status) });
     }
     // The link exists on the chip even when the rest is short or reserved, so it is still taken.
     let (handle, rest) = ConnHandle::from_hci_bytes(rest).ok()?;
@@ -525,7 +554,7 @@ fn connection_complete(code: u8, params: &[u8]) -> Option<Event<'_>> {
         first::<le::LeEnhancedConnectionComplete>(params).map(|e| (e.conn_interval.as_u16(), e.peripheral_latency, e.supervision_timeout.as_u16()))
     };
     Some(Event::LeConnectionComplete {
-        handle: handle.raw(),
+        handle: link(handle)?,
         role: if role == 0 { LeConnRole::Central } else { LeConnRole::Peripheral },
         // An Enhanced event says 2 or 3 for an identity it resolved: still public or random.
         peer: Address { kind: AddrKind::new(kind.as_raw() & 0x01), bytes: peer.into_inner() },
@@ -609,10 +638,19 @@ pub fn ad_uuid128s(data: &[u8]) -> impl Iterator<Item = &[u8; 16]> + '_ {
         .flat_map(|(_, v)| v.as_chunks::<16>().0.iter())
 }
 
-/// The connection handle that starts most vendor events (0 if short).
+/// The connection handle that starts most vendor events; `None` if short or above 0x0EFF.
 #[must_use]
-pub fn connection_handle(params: &[u8]) -> u16 {
-    u16::from_le_bytes([params.first().copied().unwrap_or(0), params.get(1).copied().unwrap_or(0)])
+pub fn connection_handle(params: &[u8]) -> Option<u16> {
+    link(first(params)?)
+}
+
+fn ble(status: Status) -> BleStatus {
+    BleStatus(status.into_inner())
+}
+
+/// A connection handle, which is at most 0x0EFF (Core Vol 4 Part E 5.4.2).
+fn link(handle: ConnHandle) -> Option<u16> {
+    Some(handle.raw()).filter(|&h| h <= 0x0EFF)
 }
 
 /// `GATT_ATTRIBUTE_MODIFIED`: a peer wrote one of our attributes.
@@ -645,7 +683,7 @@ impl<'a> AttributeModified<'a> {
 #[must_use]
 pub fn numeric_comparison(params: &[u8]) -> Option<(u16, u32)> {
     let v = params.get(2..6)?;
-    Some((connection_handle(params), u32::from_le_bytes([v[0], v[1], v[2], v[3]])))
+    Some((connection_handle(params)?, u32::from_le_bytes([v[0], v[1], v[2], v[3]])))
 }
 
 /// The most a Command Complete carries after its status: an event's 255 parameter bytes less the
@@ -856,14 +894,14 @@ pub fn gatt_error(params: &[u8]) -> Option<(u8, u16, u8)> {
 
 /// `GATT_PROC_COMPLETE`: success, or the procedure's error.
 #[must_use]
-pub fn proc_complete(params: &[u8]) -> Option<Status> {
-    params.get(2).copied().map(Status::new)
+pub fn proc_complete(params: &[u8]) -> Option<BleStatus> {
+    params.get(2).copied().map(BleStatus)
 }
 
 /// `GAP_PROC_COMPLETE`: the procedure's code and its status.
 #[must_use]
-pub fn gap_proc_complete(params: &[u8]) -> Option<(u8, Status)> {
-    Some((*params.first()?, Status::new(*params.get(1)?)))
+pub fn gap_proc_complete(params: &[u8]) -> Option<(u8, BleStatus)> {
+    Some((*params.first()?, BleStatus(*params.get(1)?)))
 }
 
 /// `L2CAP_CONNECTION_UPDATE_REQ`: a peripheral asks the central for an interval range, a
@@ -885,7 +923,7 @@ impl L2capUpdateRequest {
     pub fn decode(params: &[u8]) -> Option<Self> {
         let p = params.get(..13)?;
         let at = |i: usize| u16::from_le_bytes([p[i], p[i + 1]]);
-        Some(Self { handle: at(0), identifier: p[2], interval_min: at(5), interval_max: at(7), latency: at(9), timeout: at(11) })
+        Some(Self { handle: connection_handle(p)?, identifier: p[2], interval_min: at(5), interval_max: at(7), latency: at(9), timeout: at(11) })
     }
 }
 
@@ -902,7 +940,7 @@ impl L2capUpdateResponse {
     #[must_use]
     pub fn decode(params: &[u8]) -> Option<Self> {
         let p = params.get(..4)?;
-        Some(Self { handle: u16::from_le_bytes([p[0], p[1]]), result: u16::from_le_bytes([p[2], p[3]]) })
+        Some(Self { handle: connection_handle(p)?, result: u16::from_le_bytes([p[2], p[3]]) })
     }
 
     /// Result 0; anything else is a refusal.

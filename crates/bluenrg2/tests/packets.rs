@@ -5,7 +5,7 @@ use bluenrg2::{
     ad_name, bonded_devices, parse_address, ad_uuid128s, ad_uuid16s, att_mtu, characteristics, command, descriptors, gap_proc_complete, gatt_error,
     header_sizes, notification, numeric_comparison, packet_len, packet_whole, pairing_complete, parse, read_value,
     reports, service_range, services, vendor, Address, AttributeModified, Characteristic, Event, L2capUpdateRequest,
-    L2capUpdateResponse, Service, Uuid, AddrKind, EncryptionEnabledLevel, LeAdvEventKind, LeConnRole, Status,
+    L2capUpdateResponse, Service, Uuid, AddrKind, EncryptionEnabledLevel, LeAdvEventKind, LeConnRole, BleStatus,
 };
 
 /// A vendor event packet: `04 FF len code params`.
@@ -130,12 +130,12 @@ fn shortened(p: &[u8], n: usize) -> Vec<u8> {
 #[test]
 fn command_complete_and_status() {
     let p = [0x04, 0x0E, 0x05, 0x01, 0x06, 0xFD, 0x00, 0xAA];
-    assert_eq!(parse(&p), Event::CommandComplete { cmd_opcode: 0xFD06, status: Status::SUCCESS, return_param_bytes: &[0xAA] });
+    assert_eq!(parse(&p), Event::CommandComplete { cmd_opcode: 0xFD06, status: BleStatus::SUCCESS, return_param_bytes: &[0xAA] });
     let p = [0x04, 0x0F, 0x04, 0x00, 0x01, 0x13, 0xFD];
-    assert_eq!(parse(&p), Event::CommandStatus { cmd_opcode: 0xFD13, status: Status::SUCCESS });
+    assert_eq!(parse(&p), Event::CommandStatus { cmd_opcode: 0xFD13, status: BleStatus::SUCCESS });
     // A refusal: Command Disallowed.
     let p = [0x04, 0x0F, 0x04, 0x0C, 0x01, 0x9E, 0xFC];
-    assert_eq!(parse(&p), Event::CommandStatus { cmd_opcode: 0xFC9E, status: Status::new(0x0C) });
+    assert_eq!(parse(&p), Event::CommandStatus { cmd_opcode: 0xFC9E, status: BleStatus::new(0x0C) });
     // Without a status, or without the whole opcode.
     let short = shortened(&[0x04, 0x0E, 0x05, 0x01, 0x06, 0xFD, 0x00, 0xAA], 3);
     assert_eq!(parse(&short), Event::Malformed(&short));
@@ -196,7 +196,7 @@ fn a_connection_that_never_formed_carries_its_status() {
     for (sub, status) in [(0x01, 0x3E), (0x0A, 0x3C)] {
         let mut p = if sub == 0x01 { connection_complete() } else { enhanced_connection_complete() };
         p[4] = status;
-        let status = Status::new(status);
+        let status = BleStatus::new(status);
         assert_eq!(parse(&p), Event::LeConnectionFailed { status });
         // The status is all it needs.
         assert_eq!(parse(&shortened(&p, 2)), Event::LeConnectionFailed { status });
@@ -216,7 +216,7 @@ fn connection_update_complete_succeeds_or_fails_with_its_handle() {
     for status in [0x3B, 0x1A, 0x22] {
         let mut f = p.clone();
         f[4] = status;
-        let status = Status::new(status);
+        let status = BleStatus::new(status);
         assert_eq!(parse(&f), Event::LeConnectionUpdateFailed { handle: 0x0801, status });
         assert_eq!(parse(&shortened(&f, 4)), Event::LeConnectionUpdateFailed { handle: 0x0801, status });
     }
@@ -253,21 +253,21 @@ fn data_length_change_carries_both_directions() {
 fn disconnection_complete_carries_handle_status_and_reason() {
     assert_eq!(
         parse(&hci_event(0x05, &[0x00, 0x01, 0x08, 0x13])),
-        Event::DisconnectionComplete { handle: 0x0801, status: Status::SUCCESS, reason: Status::new(0x13) }
+        Event::DisconnectionComplete { handle: 0x0801, status: BleStatus::SUCCESS, reason: BleStatus::new(0x13) }
     );
     // Supervision timeout, and MIC failure.
     assert_eq!(
         parse(&hci_event(0x05, &[0x00, 0x02, 0x08, 0x08])),
-        Event::DisconnectionComplete { handle: 0x0802, status: Status::SUCCESS, reason: Status::new(0x08) }
+        Event::DisconnectionComplete { handle: 0x0802, status: BleStatus::SUCCESS, reason: BleStatus::new(0x08) }
     );
     assert!(matches!(
         parse(&hci_event(0x05, &[0x00, 0x01, 0x08, 0x3D])),
-        Event::DisconnectionComplete { reason, .. } if reason == Status::new(0x3D)
+        Event::DisconnectionComplete { reason, .. } if reason == BleStatus::new(0x3D)
     ));
     // A disconnection that failed: Command Disallowed, the link still up.
     assert_eq!(
         parse(&hci_event(0x05, &[0x0C, 0x01, 0x08, 0x00])),
-        Event::DisconnectionComplete { handle: 0x0801, status: Status::new(0x0C), reason: Status::new(0) }
+        Event::DisconnectionComplete { handle: 0x0801, status: BleStatus::new(0x0C), reason: BleStatus::new(0) }
     );
     let short = hci_event(0x05, &[0x00, 0x01, 0x08]);
     assert_eq!(parse(&short), Event::Malformed(&short));
@@ -277,12 +277,12 @@ fn disconnection_complete_carries_handle_status_and_reason() {
 fn encryption_change_carries_handle_status_and_state() {
     assert_eq!(
         parse(&hci_event(0x08, &[0x00, 0x01, 0x08, 0x01])),
-        Event::EncryptionChange { handle: 0x0801, status: Status::SUCCESS, enabled: EncryptionEnabledLevel::OnE0OrAesCcm }
+        Event::EncryptionChange { handle: 0x0801, status: BleStatus::SUCCESS, enabled: EncryptionEnabledLevel::OnE0OrAesCcm }
     );
     // The central's key was missing on the local device: PIN or Key Missing, encryption off.
     assert_eq!(
         parse(&hci_event(0x08, &[0x06, 0x01, 0x08, 0x00])),
-        Event::EncryptionChange { handle: 0x0801, status: Status::new(0x06), enabled: EncryptionEnabledLevel::Off }
+        Event::EncryptionChange { handle: 0x0801, status: BleStatus::new(0x06), enabled: EncryptionEnabledLevel::Off }
     );
     let short = hci_event(0x08, &[0x00, 0x01]);
     assert_eq!(parse(&short), Event::Malformed(&short));
@@ -332,7 +332,7 @@ fn a_packet_is_read_no_further_than_its_own_length() {
     // Two events in one read: the first only.
     let mut read = hci_event(0x05, &[0x00, 0x01, 0x08, 0x13]);
     read.extend(vendor_event(vendor::BLUE_INITIALIZED, &[0x01]));
-    assert_eq!(parse(&read), Event::DisconnectionComplete { handle: 0x0801, status: Status::SUCCESS, reason: Status::new(0x13) });
+    assert_eq!(parse(&read), Event::DisconnectionComplete { handle: 0x0801, status: BleStatus::SUCCESS, reason: BleStatus::new(0x13) });
     let mut read = vendor_event(vendor::GATT_PROC_COMPLETE, &[0x01, 0x08, 0x00]);
     read.extend(hci_event(0x05, &[0x00, 0x01, 0x08, 0x13]));
     assert_eq!(parse(&read), Event::Vendor { code: vendor::GATT_PROC_COMPLETE, params: &[0x01, 0x08, 0x00] });
@@ -492,7 +492,7 @@ fn descriptors_service_range_and_values_decode() {
     assert_eq!(notification(&[0x01, 0x08, 8, 0, 9, 0x16]), Some((8, &[0x16][..])));
     assert_eq!(notification(&[0x01, 0x08, 8]), None);
     assert_eq!(gatt_error(&[0x01, 0x08, 0x0A, 0x0B, 0x00, 0x05]), Some((0x0A, 0x0B, 0x05)));
-    assert_eq!(gap_proc_complete(&[0x02, 0x00, 0x00]), Some((0x02, Status::SUCCESS)));
+    assert_eq!(gap_proc_complete(&[0x02, 0x00, 0x00]), Some((0x02, BleStatus::SUCCESS)));
 }
 
 #[test]
@@ -599,4 +599,44 @@ fn the_largest_bonded_devices_reply_fits_the_return_parameters() {
     let Event::CommandComplete { return_param_bytes, .. } = parse(&p) else { panic!() };
     assert_eq!(return_param_bytes.len(), RETURN_PARAMS_MAX);
     assert_eq!(bonded_devices(return_param_bytes).count(), 35);
+}
+
+#[test]
+fn an_st_status_is_not_named_as_an_hci_error() {
+    // HARDWARE.md: `ACI_GATT_ADD_SERVICE` refused with ST's 0x48, out of memory.
+    let named = [
+        format!("{:?}", parse(&[0x04, 0x0E, 0x04, 0x01, 0x02, 0xFD, 0x48])),
+        format!("{:?}", parse(&[0x04, 0x0F, 0x04, 0x48, 0x01, 0x02, 0xFD])),
+        format!("{:?}", bluenrg2::proc_complete(&[0x01, 0x08, 0x48])),
+        format!("{:?}", gap_proc_complete(&[0x02, 0x48])),
+        format!("{:?}", parse(&[0x04, 0x05, 0x04, 0x48, 0x01, 0x08, 0x13])),
+        format!("{:?}", parse(&[0x04, 0x05, 0x04, 0x00, 0x01, 0x08, 0x48])),
+        format!("{:?}", parse(&[0x04, 0x08, 0x04, 0x48, 0x01, 0x08, 0x00])),
+        format!("{:?}", parse(&[0x04, 0x3E, 0x13, 0x01, 0x48, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])),
+        format!("{:?}", parse(&[0x04, 0x3E, 0x0A, 0x03, 0x48, 0x01, 0x08, 0, 0, 0, 0, 0, 0])),
+    ];
+    for text in named {
+        assert!(!text.contains("Insufficient Channels"), "{text}");
+    }
+}
+
+#[test]
+fn a_handle_above_0x0eff_is_malformed() {
+    let h = [0x00, 0x0F];
+    let events: [&[u8]; 6] = [
+        &[0x04, 0x05, 0x04, 0x00, h[0], h[1], 0x13],
+        &[0x04, 0x08, 0x04, 0x00, h[0], h[1], 0x01],
+        &[0x04, 0x3E, 0x13, 0x01, 0x00, h[0], h[1], 0x01, 0x00, 1, 2, 3, 4, 5, 6, 24, 0, 0, 0, 0xF4, 0x01, 0x00],
+        &[0x04, 0x3E, 0x0A, 0x03, 0x00, h[0], h[1], 24, 0, 0, 0, 0xF4, 0x01],
+        &[0x04, 0x3E, 0x0A, 0x03, 0x3B, h[0], h[1], 0, 0, 0, 0, 0, 0],
+        &[0x04, 0x3E, 0x0B, 0x07, h[0], h[1], 27, 0, 0x48, 0x01, 27, 0, 0x48, 0x01],
+    ];
+    for p in events {
+        assert!(matches!(parse(p), Event::Malformed(_)), "{p:02x?}: {:?}", parse(p));
+    }
+    assert_eq!(bluenrg2::connection_handle(&h), None);
+    assert_eq!(bluenrg2::connection_handle(&[0x01]), None);
+    assert_eq!(numeric_comparison(&[h[0], h[1], 1, 2, 3, 4]), None);
+    assert_eq!(L2capUpdateResponse::decode(&[h[0], h[1], 0, 0]), None);
+    assert_eq!(L2capUpdateRequest::decode(&[h[0], h[1], 1, 10, 0, 6, 0, 12, 0, 0, 0, 0xF4, 0x01]), None);
 }

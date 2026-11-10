@@ -4,7 +4,7 @@ use core::sync::atomic::Ordering;
 
 use embassy_time::{Duration, Instant};
 use bluenrg2::opcode::{ACI_GAP_SET_NON_DISCOVERABLE, ACI_GAP_START_GENERAL_DISCOVERY_PROC, ACI_GAP_TERMINATE_GAP_PROC};
-use bluenrg2::{address, gap_proc, Address, LeAdvEventKind, Status, Uuid, FILTER_DUPLICATES};
+use bluenrg2::{address, gap_proc, Address, BleStatus, LeAdvEventKind, Uuid, FILTER_DUPLICATES};
 use wrist_wake::ble::{scan, Scan};
 
 use super::{power, write_address, Link, Request, STATE, STATE_ADVERTISING, STATE_IDLE};
@@ -159,9 +159,9 @@ impl Scanner {
     }
 
     /// The chip ended the scan, unless the watch's own end at its time took it first.
-    pub(super) fn gap_proc_complete(&mut self, code: u8, status: Status, uart: Uart) {
+    pub(super) fn gap_proc_complete(&mut self, code: u8, status: BleStatus, uart: Uart) {
         if code == gap_proc::GENERAL_DISCOVERY && self.scan.is_some() {
-            if status != Status::SUCCESS {
+            if status != BleStatus::SUCCESS {
                 uart.write_str("[ble] the chip ended the scan, status ");
                 uart.write_hex8(status.into_inner());
                 uart.write_line("");

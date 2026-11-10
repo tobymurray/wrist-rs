@@ -1,6 +1,6 @@
 //! What each packet from the BlueNRG-2 tells the core.
 
-use bluenrg2::{boot_reason, vendor, EncryptionEnabledLevel, Event};
+use bluenrg2::{boot_reason, vendor, BleStatus, EncryptionEnabledLevel, Event};
 use wrist_ble::{
     BdAddr, ChipInfo, ConnHandle, Failure, FailureKind, Interval, LeConnRole, LinkParams, PairingEvent, PairingStep, PeerAddr, RadioEvent,
     ResetCause, Status, Timeout,
@@ -38,15 +38,15 @@ impl Translator {
             Event::LeConnectionUpdateFailed { handle, status } => {
                 RadioEvent::Params { link: ConnHandle::new(handle), result: Err(failure(FailureKind::PeerRejected, status.into_inner())) }
             }
-            Event::DisconnectionComplete { handle, status: Status::SUCCESS, reason } => {
+            Event::DisconnectionComplete { handle, status: BleStatus::SUCCESS, reason } => {
                 let link = ConnHandle::new(handle);
                 if self.phone == Some(link) {
                     self.phone = None;
                 }
-                RadioEvent::LinkDown { link, reason }
+                RadioEvent::LinkDown { link, reason: Status::new(reason.into_inner()) }
             }
             Event::EncryptionChange { handle, status, enabled } => {
-                RadioEvent::Encryption { link: ConnHandle::new(handle), on: status == Status::SUCCESS && enabled != EncryptionEnabledLevel::Off }
+                RadioEvent::Encryption { link: ConnHandle::new(handle), on: status == BleStatus::SUCCESS && enabled != EncryptionEnabledLevel::Off }
             }
             Event::LeDataLengthChange { handle, max_tx_octets, max_rx_octets, .. } => {
                 RadioEvent::DataLength { link: ConnHandle::new(handle), tx: max_tx_octets, rx: max_rx_octets }
@@ -60,7 +60,7 @@ impl Translator {
     }
 
     fn vendor(&mut self, code: u16, params: &[u8]) -> Option<RadioEvent> {
-        let link = || ConnHandle::new(bluenrg2::connection_handle(params));
+        let link = bluenrg2::connection_handle(params).map(ConnHandle::new);
         Some(match code {
             // Whatever the reason, the chip's links are gone. A start's own boot never comes
             // here: the driver's `start()` consumes it (`wrist_ble::Radio::start`).
@@ -81,20 +81,20 @@ impl Translator {
                 let (conn, value) = bluenrg2::numeric_comparison(params)?;
                 RadioEvent::Pairing(PairingEvent { link: ConnHandle::new(conn), step: PairingStep::Numeric(value) })
             }
-            vendor::GAP_PASS_KEY_REQ => RadioEvent::Pairing(PairingEvent { link: link(), step: PairingStep::PasskeyWanted }),
+            vendor::GAP_PASS_KEY_REQ => RadioEvent::Pairing(PairingEvent { link: link?, step: PairingStep::PasskeyWanted }),
             vendor::GAP_PAIRING_COMPLETE => {
                 let (status, _) = bluenrg2::pairing_complete(params)?;
                 let step = if status == 0 { PairingStep::Complete } else { PairingStep::Failed };
-                RadioEvent::Pairing(PairingEvent { link: link(), step })
+                RadioEvent::Pairing(PairingEvent { link: link?, step })
             }
             vendor::GAP_BOND_LOST => RadioEvent::BondLost(self.phone?),
-            vendor::ATT_EXCHANGE_MTU_RESP => RadioEvent::Mtu(link(), bluenrg2::att_mtu(params)?),
+            vendor::ATT_EXCHANGE_MTU_RESP => RadioEvent::Mtu(link?, bluenrg2::att_mtu(params)?),
             vendor::L2CAP_CONNECTION_UPDATE_RESP => {
                 let r = bluenrg2::L2capUpdateResponse::decode(params)?;
                 if r.accepted() {
                     return None;
                 }
-                RadioEvent::Params { link: link(), result: Err(failure(FailureKind::PeerRejected, 0)) }
+                RadioEvent::Params { link: link?, result: Err(failure(FailureKind::PeerRejected, 0)) }
             }
             vendor::GAP_SLAVE_SECURITY_INITIATED
             | vendor::GAP_PROC_COMPLETE

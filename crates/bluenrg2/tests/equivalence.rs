@@ -8,11 +8,28 @@ use proptest::prelude::*;
 /// The hand decoder, as it was but for its types.
 mod hand {
     use bluenrg2::bt_hci::FromHciBytes;
-    use bluenrg2::{event_code, le_subevent, packet, packet_len, packet_whole, AddrKind, Address, EncryptionEnabledLevel, Event, LeConnRole, Status};
+    use bluenrg2::{event_code, le_subevent, packet, packet_len, packet_whole, AddrKind, Address, EncryptionEnabledLevel, Event, LeConnRole, BleStatus};
 
-    /// The event in one HCI packet, read no further than the packet's own length.
+    /// The event in one HCI packet, read no further than the packet's own length, with no
+    /// connection handle above 0x0EFF.
     #[must_use]
     pub fn parse(p: &[u8]) -> Event<'_> {
+        match any_handle(p) {
+            Event::LeConnectionComplete { handle, .. }
+            | Event::LeConnectionUpdateComplete { handle, .. }
+            | Event::LeConnectionUpdateFailed { handle, .. }
+            | Event::DisconnectionComplete { handle, .. }
+            | Event::EncryptionChange { handle, .. }
+            | Event::LeDataLengthChange { handle, .. }
+                if handle > 0x0EFF =>
+            {
+                Event::Malformed(&p[..packet_len(p)])
+            }
+            e => e,
+        }
+    }
+
+    fn any_handle(p: &[u8]) -> Event<'_> {
         // The interval after the peer's address; the Enhanced event puts two more addresses first.
         const LEGACY_INTERVAL_AT: usize = 15;
         use event_code as ev;
@@ -26,18 +43,18 @@ mod hand {
         match p {
             [EVENT, ev::COMMAND_COMPLETE, _, _num, lo, hi, status, return_param_bytes @ ..] => Event::CommandComplete {
                 cmd_opcode: u16::from_le_bytes([*lo, *hi]),
-                status: Status::new(*status),
+                status: BleStatus::new(*status),
                 return_param_bytes,
             },
             [EVENT, ev::COMMAND_STATUS, _, status, _num, lo, hi, ..] => {
-                Event::CommandStatus { cmd_opcode: u16::from_le_bytes([*lo, *hi]), status: Status::new(*status) }
+                Event::CommandStatus { cmd_opcode: u16::from_le_bytes([*lo, *hi]), status: BleStatus::new(*status) }
             }
             [EVENT, ev::DISCONNECTION_COMPLETE, _, status, _, _, reason, ..] => {
-                Event::DisconnectionComplete { handle: u16_at(4), status: Status::new(*status), reason: Status::new(*reason) }
+                Event::DisconnectionComplete { handle: u16_at(4), status: BleStatus::new(*status), reason: BleStatus::new(*reason) }
             }
             // A reserved Encryption_Enabled (Core Vol 4 Part E §7.7.8) has no `EncryptionEnabledLevel`.
             [EVENT, ev::ENCRYPTION_CHANGE, _, status, _, _, enabled, ..] => match EncryptionEnabledLevel::from_hci_bytes(&[*enabled]) {
-                Ok((enabled, _)) => Event::EncryptionChange { handle: u16_at(4), status: Status::new(*status), enabled },
+                Ok((enabled, _)) => Event::EncryptionChange { handle: u16_at(4), status: BleStatus::new(*status), enabled },
                 Err(_) => Event::Malformed(p),
             },
             // Status, handle, role, peer address type and address, then (Enhanced) two resolvable
@@ -55,7 +72,7 @@ mod hand {
                     supervision_timeout: p.get(at + 4..at + 6).map(|v| u16::from_le_bytes([v[0], v[1]])),
                 }
             }
-            [EVENT, ev::LE_META, _, le::CONNECTION_COMPLETE | le::ENHANCED_CONNECTION_COMPLETE, status @ 0x01..=0xFF, ..] => Event::LeConnectionFailed { status: Status::new(*status) },
+            [EVENT, ev::LE_META, _, le::CONNECTION_COMPLETE | le::ENHANCED_CONNECTION_COMPLETE, status @ 0x01..=0xFF, ..] => Event::LeConnectionFailed { status: BleStatus::new(*status) },
             [EVENT, ev::LE_META, _, le::CONNECTION_UPDATE_COMPLETE, 0x00, _, _, _, _, _, _, ..] => Event::LeConnectionUpdateComplete {
                 handle: u16_at(5),
                 conn_interval: u16_at(7),
@@ -64,7 +81,7 @@ mod hand {
                 supervision_timeout: p.get(11..13).map_or(0, |v| u16::from_le_bytes([v[0], v[1]])),
             },
             [EVENT, ev::LE_META, _, le::CONNECTION_UPDATE_COMPLETE, status @ 0x01..=0xFF, _, _, ..] => {
-                Event::LeConnectionUpdateFailed { handle: u16_at(5), status: Status::new(*status) }
+                Event::LeConnectionUpdateFailed { handle: u16_at(5), status: BleStatus::new(*status) }
             }
             [EVENT, ev::LE_META, _, le::DATA_LENGTH_CHANGE, _, _, _, _, _, _, _, _, _, _, ..] => Event::LeDataLengthChange {
                 handle: u16_at(4),

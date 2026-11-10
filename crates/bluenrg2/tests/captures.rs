@@ -2,7 +2,7 @@
 
 use std::fmt::Write;
 
-use bluenrg2::{parse, EncryptionEnabledLevel, Event, LeConnRole, Status};
+use bluenrg2::{parse, BleStatus, EncryptionEnabledLevel, Event, LeConnRole};
 
 fn packets() -> Vec<Vec<u8>> {
     decode(include_str!("captures/bluez-reconnect.hex"))
@@ -32,11 +32,11 @@ fn a_captured_connection_decodes_whole() {
     assert_eq!(events[1], Event::LeUnknown { subevent_code: 0x14 });
     assert_eq!(events[2], Event::LeUnknown { subevent_code: 0x04 });
     assert_eq!(events[3], Event::LeDataLengthChange { handle, max_tx_octets: 251, max_tx_time: 2120, max_rx_octets: 27, max_rx_time: 328 });
-    assert_eq!(events[4], Event::EncryptionChange { handle, status: Status::SUCCESS, enabled: EncryptionEnabledLevel::OnE0OrAesCcm });
+    assert_eq!(events[4], Event::EncryptionChange { handle, status: BleStatus::SUCCESS, enabled: EncryptionEnabledLevel::OnE0OrAesCcm });
     assert_eq!(events[5], Event::LeConnectionUpdateComplete { handle, conn_interval: 24, peripheral_latency: 0, supervision_timeout: 500 });
-    assert_eq!(events[6], Event::DisconnectionComplete { handle, status: Status::SUCCESS, reason: Status::new(0x16) });
+    assert_eq!(events[6], Event::DisconnectionComplete { handle, status: BleStatus::SUCCESS, reason: BleStatus::new(0x16) });
     assert!(matches!(events[7], Event::LeConnectionComplete { .. }));
-    assert_eq!(events.last(), Some(&Event::DisconnectionComplete { handle, status: Status::SUCCESS, reason: Status::new(0x3E) }));
+    assert_eq!(events.last(), Some(&Event::DisconnectionComplete { handle, status: BleStatus::SUCCESS, reason: BleStatus::new(0x3E) }));
 }
 
 /// A kept event's parameter length, and where it holds an address as ranges of its parameters
