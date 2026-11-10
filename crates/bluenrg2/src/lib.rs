@@ -299,6 +299,7 @@ pub mod event_code {
     pub const ENCRYPTION_CHANGE: u8 = 0x08;
     pub const COMMAND_COMPLETE: u8 = 0x0E;
     pub const COMMAND_STATUS: u8 = 0x0F;
+    pub const ENCRYPTION_KEY_REFRESH_COMPLETE: u8 = 0x30;
     pub const LE_META: u8 = 0x3E;
     pub const VENDOR: u8 = 0xFF;
 }
@@ -430,6 +431,9 @@ pub enum Event<'a> {
     DisconnectionComplete { handle: u16, status: BleStatus, reason: BleStatus },
     /// Encryption Change (7.7.8): a status other than success is a change that failed.
     EncryptionChange { handle: u16, status: BleStatus, enabled: EncryptionEnabledLevel },
+    /// Encryption Key Refresh Complete (7.7.39): an encrypted link encrypted again, a status
+    /// other than success a refresh that failed.
+    EncryptionKeyRefresh { handle: u16, status: BleStatus },
     /// LE Data Length Change (7.7.65.7): the largest payload each way, octets and microseconds.
     LeDataLengthChange { handle: u16, max_tx_octets: u16, max_tx_time: u16, max_rx_octets: u16, max_rx_time: u16 },
     /// LE Advertising Report (7.7.65.2): one or more reports ([`reports`]).
@@ -484,6 +488,10 @@ fn standard(code: u8, params: &[u8]) -> Option<Event<'_>> {
         ev::ENCRYPTION_CHANGE => {
             let e: hci::EncryptionChangeV1 = first(params)?;
             Event::EncryptionChange { handle: link(e.handle)?, status: ble(e.status), enabled: e.enabled }
+        }
+        ev::ENCRYPTION_KEY_REFRESH_COMPLETE => {
+            let e: hci::EncryptionKeyRefreshComplete = first(params)?;
+            Event::EncryptionKeyRefresh { handle: link(e.handle)?, status: ble(e.status) }
         }
         ev::LE_META => le_meta(params)?,
         ev::VENDOR => {

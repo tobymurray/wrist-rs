@@ -48,6 +48,9 @@ impl Translator {
             Event::EncryptionChange { handle, status, enabled } => {
                 RadioEvent::Encryption { link: ConnHandle::new(handle), on: status == BleStatus::SUCCESS && enabled != EncryptionEnabledLevel::Off }
             }
+            Event::EncryptionKeyRefresh { handle, status } => {
+                RadioEvent::Encryption { link: ConnHandle::new(handle), on: status == BleStatus::SUCCESS }
+            }
             Event::LeDataLengthChange { handle, max_tx_octets, max_rx_octets, .. } => {
                 RadioEvent::DataLength { link: ConnHandle::new(handle), tx: max_tx_octets, rx: max_rx_octets }
             }
