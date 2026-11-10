@@ -1,12 +1,12 @@
-//! [`parse`] against the hand decoder it replaced, kept here as it was but for its types, over
+//! [`parse`] against a reference decoder written as slice patterns over the packet, over
 //! every packet the other tests use, each cut and each byte changed, every status of the LE
 //! events, and generated packets.
 
 use bluenrg2::{packet_len, parse, vendor, AddrKind, Address, ConnHandle, ConnTiming, Event, LeConnRole};
 use proptest::prelude::*;
 
-/// The hand decoder, as it was but for its types.
-mod hand {
+/// The reference decoder.
+mod reference {
     use bluenrg2::bt_hci::FromHciBytes;
     use bluenrg2::{event_code, le_subevent, packet, packet_len, packet_whole, AddrKind, Address, ConnHandle, ConnTiming, EncryptionEnabledLevel, Event, LeConnRole, BleStatus};
 
@@ -128,13 +128,13 @@ mod hand {
     }
 }
 
-/// What [`parse`] must give: the hand decoder's event, except where the hand decoder took a
+/// What [`parse`] must give: the reference's event, except where the reference takes a
 /// packet the Core Specification's layout does not allow.
 fn expected(p: &[u8]) -> Event<'_> {
-    let hand = hand::parse(p);
+    let reference = reference::parse(p);
     let whole = &p[..packet_len(p)];
     let params = whole.get(3..).unwrap_or_default();
-    match hand {
+    match reference {
         // Num_Reports starts an advertising report (Core Vol 4 Part E §7.7.65.2).
         Event::LeAdvertisingReport { data: [] } => Event::Malformed(whole),
         // Supervision_Timeout ends a success (Core Vol 4 Part E §7.7.65.3).
@@ -203,8 +203,8 @@ fn corpus() -> Vec<Vec<u8>> {
     reports.extend([0x04, 0x00, 1, 2, 3, 4, 5, 6, 4, 3, 0x08, b'P', b'M', 0xB0]);
     reports[2] = u8::try_from(reports.len() - 3).unwrap();
 
-    let mut console = vec![0x01, 0x08, 0x19, 0x00, 0x00, 0x00, 217, 0x00];
-    console.extend((0..217u8).map(|i| i.wrapping_mul(7)));
+    let mut long_write = vec![0x01, 0x08, 0x19, 0x00, 0x00, 0x00, 217, 0x00];
+    long_write.extend((0..217u8).map(|i| i.wrapping_mul(7)));
     let mut acl = vec![0x02, 0x01, 0x20, 0x02, 0x01];
     acl.extend([0x5A; 258]);
     acl.extend(vendor_event(vendor::GATT_PROC_COMPLETE, &[0x01, 0x08, 0x00]));
@@ -240,7 +240,7 @@ fn corpus() -> Vec<Vec<u8>> {
         vendor_event(vendor::GATT_PROC_COMPLETE, &[0x01, 0x08, 0x00]),
         vendor_event(vendor::ATT_EXCHANGE_MTU_RESP, &[0x01, 0x08, 0xDC, 0x00]),
         vendor_event(vendor::GATT_ATTRIBUTE_MODIFIED, &[0u8; 225]),
-        vendor_event(vendor::GATT_ATTRIBUTE_MODIFIED, &console),
+        vendor_event(vendor::GATT_ATTRIBUTE_MODIFIED, &long_write),
         vendor_event(vendor::GAP_SLAVE_SECURITY_INITIATED, &[]),
         vendor_event(vendor::L2CAP_CONNECTION_UPDATE_RESP, &[0x01, 0x08, 0x00, 0x00]),
         vendor_event(vendor::L2CAP_CONNECTION_UPDATE_RESP, &[0x01, 0x08, 0x01, 0x00]),
@@ -276,17 +276,17 @@ fn shortened(p: &[u8], n: usize) -> Vec<u8> {
 }
 
 #[test]
-fn where_the_hand_decoder_took_what_the_layout_does_not_allow() {
+fn where_the_reference_takes_what_the_layout_does_not_allow() {
     let peer = Address { kind: AddrKind::PUBLIC, bytes: [0x11, 0x22, 0x33, 0x44, 0x55, 0x66] };
     let connection = le_event(0x01, &le_full(0x01));
     let mut reserved_role = connection.clone();
     reserved_role[7] = 0x02;
     let mut reserved_accuracy = connection.clone();
     reserved_accuracy[21] = 0x08;
-    assert!(matches!(hand::parse(&reserved_role), Event::LeConnectionComplete { role: LeConnRole::Peripheral, .. }));
+    assert!(matches!(reference::parse(&reserved_role), Event::LeConnectionComplete { role: LeConnRole::Peripheral, .. }));
     assert_eq!(parse(&reserved_role), Event::Malformed(&reserved_role));
     for p in [shortened(&connection, 18), reserved_accuracy] {
-        assert!(matches!(hand::parse(&p), Event::LeConnectionComplete { handle, timing: Some(ConnTiming { conn_interval: 24, .. }), .. } if handle == ConnHandle::new(0x0801)));
+        assert!(matches!(reference::parse(&p), Event::LeConnectionComplete { handle, timing: Some(ConnTiming { conn_interval: 24, .. }), .. } if handle == ConnHandle::new(0x0801)));
         assert_eq!(
             parse(&p),
             Event::LeConnectionComplete { handle: ConnHandle::new(0x0801), role: LeConnRole::Peripheral, peer, timing: None }
@@ -295,10 +295,10 @@ fn where_the_hand_decoder_took_what_the_layout_does_not_allow() {
     let encryption = hci_event(0x08, &[0x00, 0x01, 0x08, 0x03]);
     assert_eq!(parse(&encryption), Event::Malformed(&encryption));
     let update = shortened(&le_event(0x03, &le_full(0x03)), 8);
-    assert!(matches!(hand::parse(&update), Event::LeConnectionUpdateComplete { .. }));
+    assert!(matches!(reference::parse(&update), Event::LeConnectionUpdateComplete { .. }));
     assert_eq!(parse(&update), Event::Malformed(&update));
     let reports = le_event(0x02, &[]);
-    assert_eq!(hand::parse(&reports), Event::LeAdvertisingReport { data: &[] });
+    assert_eq!(reference::parse(&reports), Event::LeAdvertisingReport { data: &[] });
     assert_eq!(parse(&reports), Event::Malformed(&reports));
 }
 

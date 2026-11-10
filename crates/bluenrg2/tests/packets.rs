@@ -1,5 +1,5 @@
-//! Packets as the BlueNRG-2 sends them, in the shapes installs 40 to 51 met:
-//! the 217-byte console write, two events in one read, a read cut short.
+//! Packets as the BlueNRG-2 sends them: a 217-byte attribute write, two events in one read, a
+//! read cut short.
 
 use bluenrg2::{
     ad_name, bonded_devices, parse_address, ad_uuid128s, ad_uuid16s, att_mtu, characteristics, command, descriptors, gap_proc_complete, gatt_error,
@@ -28,7 +28,7 @@ fn vendor_event(code: u16, params: &[u8]) -> Vec<u8> {
 
 #[test]
 fn header_sizes_read_both_fields() {
-    // Install 40: a write header answered with 265 bytes of room.
+    // A write header answered with 265 bytes of room.
     assert_eq!(header_sizes(&[0x00, 0x09, 0x01, 0x00, 0x00]), (265, 0));
     assert_eq!(header_sizes(&[0x00, 0x09, 0x01, 0xE6, 0x00]), (265, 230));
 }
@@ -95,12 +95,12 @@ fn an_acl_packet_is_measured_by_its_16_bit_length() {
 }
 
 #[test]
-fn a_217_byte_console_write_decodes() {
-    // Connection 0x0801, attribute 0x0019 (NUS RX value), offset 0, 217 bytes.
+fn a_217_byte_attribute_write_decodes() {
+    // Connection 0x0801, attribute 0x0019, offset 0, 217 bytes.
     let mut params = vec![0x01, 0x08, 0x19, 0x00, 0x00, 0x00, 217, 0x00];
     params.extend((0..217u8).map(|i| i.wrapping_mul(7)));
     let p = vendor_event(vendor::GATT_ATTRIBUTE_MODIFIED, &params);
-    assert_eq!(p.len(), 230); // two of these overflow the old 260-byte buffer
+    assert_eq!(p.len(), 230);
     let Event::Vendor { code, params } = parse(&p) else { panic!("not vendor") };
     assert_eq!(code, vendor::GATT_ATTRIBUTE_MODIFIED);
     let w = AttributeModified::decode(params).unwrap();
@@ -229,7 +229,7 @@ fn a_connection_that_never_formed_carries_its_status() {
 
 #[test]
 fn connection_update_complete_succeeds_or_fails_with_its_handle() {
-    // Install 48: BlueZ moved to 15 ms (12 units) on request.
+    // A move to 15 ms (12 units).
     let p = le_event(0x03, &[0x00, 0x01, 0x08, 12, 0, 0, 0, 0xF4, 0x01]);
     assert_eq!(
         parse(&p),
@@ -332,7 +332,7 @@ fn a_link_is_encrypted_only_after_a_change_or_refresh_that_succeeded() {
 }
 
 #[test]
-fn events_the_image_does_not_decode_are_named() {
+fn events_the_crate_does_not_decode_are_named() {
     // LE: Read Remote Features Complete, PHY Update Complete.
     for sub in [0x04, 0x0C] {
         assert_eq!(parse(&le_event(sub, &[0x00, 0x01, 0x08])), Event::LeUnknown { subevent_code: sub });
@@ -566,7 +566,7 @@ fn the_centrals_answer_to_a_parameter_request_decodes() {
     assert_eq!(L2capUpdateResponse::decode(params), None);
 }
 
-/// The updater-by-command start Linux check 8 met (install 252): `04 FF 03 01 00 02`.
+/// The start stack build 2353 reported after `ACI_UPDATER_START`: `04 FF 03 01 00 02`.
 #[test]
 fn the_chip_says_why_it_started() {
     use bluenrg2::{blue_initialized, boot_reason};
@@ -650,7 +650,7 @@ fn the_largest_bonded_devices_reply_fits_the_return_parameters() {
 
 #[test]
 fn an_st_status_is_not_named_as_an_hci_error() {
-    // HARDWARE.md: `ACI_GATT_ADD_SERVICE` refused with ST's 0x48, out of memory.
+    // ST's 0x48, out of memory, as stack build 2353 refused an `ACI_GATT_ADD_SERVICE`.
     let named = [
         format!("{:?}", parse(&[0x04, 0x0E, 0x04, 0x01, 0x02, 0xFD, 0x48])),
         format!("{:?}", parse(&[0x04, 0x0F, 0x04, 0x48, 0x01, 0x02, 0xFD])),
