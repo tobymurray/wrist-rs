@@ -75,7 +75,7 @@ use bluenrg2::opcode::{
     ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_REQ, HCI_LE_RAND, HCI_READ_LOCAL_VERSION, HCI_SET_EVENT_MASK,
 };
 use bluenrg2::{
-    address, boot_reason, config, event_code, evt_mask, permission, props, role, uuid_type, vendor, AddrKind, AttributeModified, EncryptionEnabledLevel, Event,
+    address, boot_reason, config, event_code, evt_mask, permission, props, role, uuid_type, vendor, AddrKind, AttributeModified, Event,
     BleStatus, L2capUpdateResponse, ADV_IND, ATT_HEADER_LEN, MAX_COMMAND, MIN_ENC_KEY_SIZE, NO_FILTER, PRIMARY_SERVICE,
     PRIVACY_DISABLED, RETURN_PARAMS_MAX, VARIABLE_LENGTH,
 };
@@ -1672,11 +1672,11 @@ impl Link<'_> {
                 self.uart.write_line(" (13 = the central hung up)");
                 self.readvertise = true;
             }
-            Event::EncryptionChange { status, enabled, .. } => {
+            e @ Event::EncryptionChange { status, .. } => {
                 if status != BleStatus::SUCCESS {
                     ENCRYPTION_FAILURES.fetch_add(1, Ordering::Relaxed);
                 }
-                let on = enabled != EncryptionEnabledLevel::Off;
+                let on = matches!(e.encryption(), Some((_, true)));
                 set_encrypted(on);
                 if on {
                     self.pair_ask.settled();
@@ -1688,11 +1688,13 @@ impl Link<'_> {
                 self.uart.write_line(if on { "[ble] link encrypted" } else { "[ble] link encryption off" });
                 self.set_mirror();
             }
-            Event::EncryptionKeyRefresh { status, .. } => {
+            e @ Event::EncryptionKeyRefresh { status, .. } => {
                 if status != BleStatus::SUCCESS {
                     ENCRYPTION_FAILURES.fetch_add(1, Ordering::Relaxed);
                 }
+                set_encrypted(matches!(e.encryption(), Some((_, true))));
                 self.uart.write_line(if status == BleStatus::SUCCESS { "[ble] link keys refreshed" } else { "[ble] link key refresh failed" });
+                self.set_mirror();
             }
             Event::LeDataLengthChange { max_tx_octets, max_tx_time, max_rx_octets, max_rx_time, .. } => {
                 self.data_length((max_tx_octets, max_tx_time), (max_rx_octets, max_rx_time));

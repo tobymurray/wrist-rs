@@ -448,6 +448,19 @@ pub enum Event<'a> {
     Malformed(&'a [u8]),
 }
 
+impl Event<'_> {
+    /// For an Encryption Change or Key Refresh Complete, the link's handle and whether it is
+    /// encrypted now: only on success, with encryption on.
+    #[must_use]
+    pub fn encryption(&self) -> Option<(u16, bool)> {
+        match *self {
+            Event::EncryptionChange { handle, status, enabled } => Some((handle, status == BleStatus::SUCCESS && enabled != EncryptionEnabledLevel::Off)),
+            Event::EncryptionKeyRefresh { handle, status } => Some((handle, status == BleStatus::SUCCESS)),
+            _ => None,
+        }
+    }
+}
+
 /// The event in one HCI packet, read no further than the packet's own length.
 #[must_use]
 pub fn parse(p: &[u8]) -> Event<'_> {

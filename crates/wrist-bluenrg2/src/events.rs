@@ -1,6 +1,6 @@
 //! What each packet from the BlueNRG-2 tells the core.
 
-use bluenrg2::{boot_reason, vendor, BleStatus, EncryptionEnabledLevel, Event};
+use bluenrg2::{boot_reason, vendor, BleStatus, Event};
 use wrist_ble::{
     BdAddr, ChipInfo, ConnHandle, Failure, FailureKind, Interval, LeConnRole, LinkParams, PairingEvent, PairingStep, PeerAddr, RadioEvent,
     ResetCause, Status, Timeout,
@@ -45,11 +45,9 @@ impl Translator {
                 }
                 RadioEvent::LinkDown { link, reason: Status::new(reason.into_inner()) }
             }
-            Event::EncryptionChange { handle, status, enabled } => {
-                RadioEvent::Encryption { link: ConnHandle::new(handle), on: status == BleStatus::SUCCESS && enabled != EncryptionEnabledLevel::Off }
-            }
-            Event::EncryptionKeyRefresh { handle, status } => {
-                RadioEvent::Encryption { link: ConnHandle::new(handle), on: status == BleStatus::SUCCESS }
+            e @ (Event::EncryptionChange { .. } | Event::EncryptionKeyRefresh { .. }) => {
+                let (handle, on) = e.encryption()?;
+                RadioEvent::Encryption { link: ConnHandle::new(handle), on }
             }
             Event::LeDataLengthChange { handle, max_tx_octets, max_rx_octets, .. } => {
                 RadioEvent::DataLength { link: ConnHandle::new(handle), tx: max_tx_octets, rx: max_rx_octets }

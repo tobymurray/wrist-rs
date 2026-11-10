@@ -297,6 +297,17 @@ fn a_key_refresh_carries_handle_and_status() {
 }
 
 #[test]
+fn a_link_is_encrypted_only_after_a_change_or_refresh_that_succeeded() {
+    let encryption = |code, params: &[u8]| parse(&hci_event(code, params)).encryption();
+    assert_eq!(encryption(0x08, &[0x00, 0x01, 0x08, 0x01]), Some((0x0801, true)));
+    assert_eq!(encryption(0x08, &[0x06, 0x01, 0x08, 0x01]), Some((0x0801, false)));
+    assert_eq!(encryption(0x08, &[0x00, 0x01, 0x08, 0x00]), Some((0x0801, false)));
+    assert_eq!(encryption(0x30, &[0x00, 0x01, 0x08]), Some((0x0801, true)));
+    assert_eq!(encryption(0x30, &[0x06, 0x01, 0x08]), Some((0x0801, false)));
+    assert_eq!(encryption(0x05, &[0x00, 0x01, 0x08, 0x13]), None);
+}
+
+#[test]
 fn events_the_image_does_not_decode_are_named() {
     // LE: Read Remote Features Complete, PHY Update Complete.
     for sub in [0x04, 0x0C] {
