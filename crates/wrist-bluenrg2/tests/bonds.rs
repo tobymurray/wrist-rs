@@ -1,6 +1,6 @@
 //! The watch's pairing and address, and the bond list read for `ble forget` and after a pairing.
 
-use bluenrg2::{parse_address, AddrKind, Address, ADDRESS_TEXT_MAX};
+use bluenrg2::{parse_address, AddrKind, Address};
 use wrist_bluenrg2::bonds::{another_bond, bond_kept, forget, static_random_address, Forget, PAIRING};
 
 #[test]
@@ -60,7 +60,7 @@ fn forget_takes_only_the_bond_of_the_type_given_and_names_one_of_another() {
     let bare = parse_address("0A:1B:2C:3D:4E:5F").unwrap();
     let Forget::OtherType(bond) = forget(&reply, bare) else { panic!("{:?}", forget(&reply, bare)) };
     assert_eq!(bond, random);
-    assert_eq!(bond.text(&mut [0; ADDRESS_TEXT_MAX]), "0A:1B:2C:3D:4E:5F (random)");
+    assert_eq!(bond.to_string(), "0A:1B:2C:3D:4E:5F (random)");
     assert_eq!(forget(&reply, Address { kind: AddrKind::RANDOM, ..public }), Forget::OtherType(public));
     assert_eq!(forget(&reply, Address { kind: AddrKind::PUBLIC, bytes: [1, 2, 3, 4, 5, 6] }), Forget::NotBonded);
     assert_eq!(forget(&[], random), Forget::NotBonded);

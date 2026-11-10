@@ -1946,7 +1946,15 @@ fn redraw() {
 }
 
 fn write_address(uart: Uart, a: bluenrg2::Address) {
-    uart.write_str(a.text(&mut [0; bluenrg2::ADDRESS_TEXT_MAX]));
+    use core::fmt::Write;
+    struct Out(Uart);
+    impl Write for Out {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            self.0.write_str(s);
+            Ok(())
+        }
+    }
+    let _ = write!(Out(uart), "{a}");
 }
 
 fn clear_prompt() {

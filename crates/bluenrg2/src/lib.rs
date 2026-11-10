@@ -196,7 +196,7 @@ pub mod boot_reason {
         matches!(reason, UPDATER_BY_COMMAND | UPDATER_BAD_FLAG | UPDATER_BY_PIN)
     }
 
-    /// A few words for the console.
+    /// What the reason says of the chip's last start, in a few words.
     #[must_use]
     pub const fn describe(reason: u8) -> &'static str {
         match reason {
@@ -735,28 +735,20 @@ pub fn bonded_devices(params: &[u8]) -> impl Iterator<Item = Address> + '_ {
     })
 }
 
-/// The longest [`Address::text`].
-pub const ADDRESS_TEXT_MAX: usize = 26;
-
-impl Address {
-    /// `0A:1B:2C:3D:4E:5F`, then ` (random)` for a random one, resolved (3) or not.
-    pub fn text(self, out: &mut [u8; ADDRESS_TEXT_MAX]) -> &str {
-        const HEX: &[u8; 16] = b"0123456789ABCDEF";
-        for (i, b) in self.bytes.iter().rev().enumerate() {
-            out[3 * i] = HEX[usize::from(b >> 4)];
-            out[3 * i + 1] = HEX[usize::from(b & 0x0F)];
-            out[3 * i + 2] = b':';
-        }
-        let mut len = 17;
+/// `0A:1B:2C:3D:4E:5F`, the most significant byte first, then ` (random)` for a random address,
+/// resolved (3) or not. [`parse_address`] reads it back.
+impl core::fmt::Display for Address {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let [b0, b1, b2, b3, b4, b5] = self.bytes;
+        write!(f, "{b5:02X}:{b4:02X}:{b3:02X}:{b2:02X}:{b1:02X}:{b0:02X}")?;
         if self.kind.as_raw() & 0x01 != 0 {
-            out[len..].copy_from_slice(b" (random)");
-            len = ADDRESS_TEXT_MAX;
+            f.write_str(" (random)")?;
         }
-        core::str::from_utf8(&out[..len]).unwrap_or_default()
+        Ok(())
     }
 }
 
-/// An [`Address::text`] read back, colons or dashes, either case.
+/// An [`Address`] as its `Display` writes it, read back: colons or dashes, either case.
 #[must_use]
 pub fn parse_address(text: &str) -> Option<Address> {
     let text = text.trim();

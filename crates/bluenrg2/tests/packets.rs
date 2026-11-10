@@ -597,19 +597,17 @@ fn an_address_parses_into_the_chips_byte_order() {
 
 #[test]
 fn an_address_is_written_with_its_type_and_reads_back() {
-    use bluenrg2::ADDRESS_TEXT_MAX;
-    let mut out = [0; ADDRESS_TEXT_MAX];
     let public = Address { kind: AddrKind::PUBLIC, bytes: [0x5F, 0x4E, 0x3D, 0x2C, 0x1B, 0x0A] };
-    assert_eq!(public.text(&mut out), "0A:1B:2C:3D:4E:5F");
-    assert_eq!(Address { kind: AddrKind::RANDOM, ..public }.text(&mut out), "0A:1B:2C:3D:4E:5F (random)");
+    assert_eq!(public.to_string(), "0A:1B:2C:3D:4E:5F");
+    assert_eq!(Address { kind: AddrKind::RANDOM, ..public }.to_string(), "0A:1B:2C:3D:4E:5F (random)");
     // A resolved identity's type prints as public or random.
     for (raw, kind) in [(2, AddrKind::PUBLIC), (3, AddrKind::RANDOM)] {
         let a = Address { kind: AddrKind::new(raw), ..public };
-        assert_eq!(parse_address(a.text(&mut out)), Some(Address { kind, ..public }), "{raw}");
+        assert_eq!(parse_address(&a.to_string()), Some(Address { kind, ..public }), "{raw}");
     }
     proptest::proptest!(|(kind in 0u8..2, bytes: [u8; 6])| {
         let a = Address { kind: AddrKind::new(kind), bytes };
-        proptest::prop_assert_eq!(parse_address(a.text(&mut [0; ADDRESS_TEXT_MAX])), Some(a));
+        proptest::prop_assert_eq!(parse_address(&a.to_string()), Some(a));
     });
 }
 
@@ -633,7 +631,7 @@ fn bonded_devices_reads_each_entry_and_no_more_than_the_reply_holds() {
         let reply = [1, raw, 0xE6, 0xD5, 0xC4, 0xB3, 0xA2, 0xC1];
         let bond = bonded_devices(&reply).next().unwrap();
         assert_eq!(bond.kind, kind);
-        let printed = parse_address(bond.text(&mut [0; bluenrg2::ADDRESS_TEXT_MAX])).unwrap();
+        let printed = parse_address(&bond.to_string()).unwrap();
         assert!(bonded_devices(&reply).any(|bond| bond == printed), "{raw}");
     }
 }
