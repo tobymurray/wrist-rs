@@ -20,6 +20,7 @@ mod hand {
             | Event::LeConnectionUpdateFailed { handle, .. }
             | Event::DisconnectionComplete { handle, .. }
             | Event::EncryptionChange { handle, .. }
+            | Event::EncryptionKeyRefresh { handle, .. }
             | Event::LeDataLengthChange { handle, .. }
                 if handle > 0x0EFF =>
             {
@@ -57,6 +58,9 @@ mod hand {
                 Ok((enabled, _)) => Event::EncryptionChange { handle: u16_at(4), status: BleStatus::new(*status), enabled },
                 Err(_) => Event::Malformed(p),
             },
+            [EVENT, ev::ENCRYPTION_KEY_REFRESH_COMPLETE, _, status, _, _, ..] => {
+                Event::EncryptionKeyRefresh { handle: u16_at(4), status: BleStatus::new(*status) }
+            }
             // Status, handle, role, peer address type and address, then (Enhanced) two resolvable
             // addresses, then interval and latency.
             [EVENT, ev::LE_META, _, sub @ (le::CONNECTION_COMPLETE | le::ENHANCED_CONNECTION_COMPLETE), 0x00, _, _, role, kind, a0, a1, a2, a3, a4, a5, ..] => {
@@ -105,6 +109,7 @@ mod hand {
                     *code,
                     ev::DISCONNECTION_COMPLETE
                         | ev::ENCRYPTION_CHANGE
+                        | ev::ENCRYPTION_KEY_REFRESH_COMPLETE
                         | ev::COMMAND_COMPLETE
                         | ev::COMMAND_STATUS
                         | ev::LE_META

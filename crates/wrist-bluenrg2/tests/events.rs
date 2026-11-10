@@ -95,6 +95,12 @@ fn encryption_is_on_only_when_it_succeeded_and_was_enabled() {
 }
 
 #[test]
+fn a_key_refresh_says_the_link_is_encrypted_only_when_it_succeeded() {
+    assert_eq!(one(&hci(0x30, &[0x00, 0x01, 0x08])), Some(RadioEvent::Encryption { link: link(), on: true }));
+    assert_eq!(one(&hci(0x30, &[0x06, 0x01, 0x08])), Some(RadioEvent::Encryption { link: link(), on: false }));
+}
+
+#[test]
 fn a_data_length_change_gives_the_octets_each_way() {
     let p = le(0x07, &[0x01, 0x08, 251, 0, 0x48, 0x08, 27, 0, 0x48, 0x01]);
     assert_eq!(one(&p), Some(RadioEvent::DataLength { link: link(), tx: 251, rx: 27 }));
@@ -180,7 +186,7 @@ fn replies_reports_and_events_the_core_has_no_use_for_are_none() {
 fn anything_else_is_unknown_by_its_code() {
     assert_eq!(one(&vendor(0x0C0F, &[0x01, 0x08])), Some(RadioEvent::Unknown { raw_code: 0x0C0F }));
     assert_eq!(one(&le(0x14, &[0x01, 0x08, 0x01])), Some(RadioEvent::Unknown { raw_code: 0x3E14 }));
-    assert_eq!(one(&hci(0x30, &[0x00, 0x01, 0x08])), Some(RadioEvent::Unknown { raw_code: 0x30 }));
+    assert_eq!(one(&hci(0x1A, &[0x01])), Some(RadioEvent::Unknown { raw_code: 0x1A }));
     assert_eq!(one(&[0x04, 0x05]), Some(RadioEvent::Unknown { raw_code: 0x05 }));
 }
 

@@ -289,13 +289,21 @@ fn encryption_change_carries_handle_status_and_state() {
 }
 
 #[test]
+fn a_key_refresh_carries_handle_and_status() {
+    assert_eq!(parse(&hci_event(0x30, &[0x00, 0x01, 0x08])), Event::EncryptionKeyRefresh { handle: 0x0801, status: BleStatus::SUCCESS });
+    assert_eq!(parse(&hci_event(0x30, &[0x06, 0x01, 0x08])), Event::EncryptionKeyRefresh { handle: 0x0801, status: BleStatus::new(0x06) });
+    let short = hci_event(0x30, &[0x00, 0x01]);
+    assert_eq!(parse(&short), Event::Malformed(&short));
+}
+
+#[test]
 fn events_the_image_does_not_decode_are_named() {
     // LE: Read Remote Features Complete, PHY Update Complete.
     for sub in [0x04, 0x0C] {
         assert_eq!(parse(&le_event(sub, &[0x00, 0x01, 0x08])), Event::LeUnknown { subevent_code: sub });
     }
-    // Hardware Error, Number Of Completed Packets, Data Buffer Overflow, Encryption Key Refresh Complete.
-    for code in [0x10, 0x13, 0x1A, 0x30] {
+    // Hardware Error, Number Of Completed Packets, Data Buffer Overflow.
+    for code in [0x10, 0x13, 0x1A] {
         assert_eq!(parse(&hci_event(code, &[0x00, 0x01, 0x08])), Event::Unknown { code });
         assert_eq!(parse(&hci_event(code, &[])), Event::Unknown { code });
     }

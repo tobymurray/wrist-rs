@@ -1688,6 +1688,12 @@ impl Link<'_> {
                 self.uart.write_line(if on { "[ble] link encrypted" } else { "[ble] link encryption off" });
                 self.set_mirror();
             }
+            Event::EncryptionKeyRefresh { status, .. } => {
+                if status != BleStatus::SUCCESS {
+                    ENCRYPTION_FAILURES.fetch_add(1, Ordering::Relaxed);
+                }
+                self.uart.write_line(if status == BleStatus::SUCCESS { "[ble] link keys refreshed" } else { "[ble] link key refresh failed" });
+            }
             Event::LeDataLengthChange { max_tx_octets, max_tx_time, max_rx_octets, max_rx_time, .. } => {
                 self.data_length((max_tx_octets, max_tx_time), (max_rx_octets, max_rx_time));
             }
