@@ -928,6 +928,7 @@ dependencies = [
  "cortex-m-rt",
  "critical-section",
  "embassy-boot-stm32",
+ "embassy-embedded-hal",
  "embassy-executor",
  "embassy-futures",
  "embassy-stm32",
@@ -1169,6 +1170,9 @@ name = "wrist-bluenrg2"
 version = "0.0.0"
 dependencies = [
  "bluenrg2",
+ "embassy-futures",
+ "embedded-hal 1.0.0",
+ "embedded-hal-async",
  "wrist-ble",
 ]
 

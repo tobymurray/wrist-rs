@@ -26,12 +26,7 @@
 //! "data ready / slave ready" line and the bootloader-entry pin if high at reset, so it is an
 //! input with a pull-down and never driven. SPI1, CS and IRQ exist only while the radio is on.
 //!
-//! The transport (ST's X-CUBE-BLE2 `hci_tl_interface.c`, for the handshake only; SPI mode 1):
-//! to **send**, pull CS low, wait for IRQ high, clock `0A 00 00 00 00` and read the slave's
-//! header back, bytes 1..2 little-endian being how much it can take; if enough, clock the
-//! packet; CS high; wait for IRQ low. To **receive**, CS low, clock `0B 00 00 00 00`, bytes
-//! 3..4 of the reply say how many bytes wait, clock that many zeros, wait for IRQ low, CS high.
-//! IRQ high with CS high means an event is waiting. Reset is CS high, reset low 5 ms, high;
+//! The SPI handshake is `wrist_bluenrg2::transport`. Reset is CS high, reset low 5 ms, high;
 //! the stack announces `ACI_BLUE_INITIALIZED` about 2 s later, and until then MISO only
 //! echoes MOSI.
 //!
@@ -52,6 +47,7 @@ mod scan;
 use core::cell::{Cell, RefCell};
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU8, Ordering};
 
+use embassy_embedded_hal::adapter::BlockingAsync;
 use embassy_futures::select::{select, select4, Either4};
 use embassy_stm32::exti::{self, ExtiInput};
 use embassy_stm32::gpio::{Level, Output, Pull, Speed};
@@ -64,7 +60,7 @@ use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::channel::Channel;
 use embassy_sync::pipe::Pipe;
 use embassy_sync::signal::Signal;
-use embassy_time::{with_timeout, Duration, Instant, Timer};
+use embassy_time::{Delay, Duration, Instant, Timer};
 use bluenrg2::opcode::{
     ACI_GAP_ALLOW_REBOND, ACI_GAP_CLEAR_SECURITY_DB, ACI_GAP_GET_BONDED_DEVICES, ACI_GAP_REMOVE_BONDED_DEVICE, ACI_GAP_INIT,
     ACI_GAP_NUMERIC_COMPARISON_CONFIRM, ACI_GAP_PASS_KEY_RESP,
@@ -79,6 +75,7 @@ use bluenrg2::{
     uuid_type, value_length, vendor, AddrKind, AttributeModified, Event, BleStatus, L2capUpdateResponse, ATT_HEADER_LEN,
     MAX_COMMAND, RETURN_PARAMS_MAX,
 };
+use wrist_bluenrg2::transport::{self, Counts, Read, Transport};
 use wrist_pages::{OldKey, Pairing, Prompt};
 use wrist_wake::ble::restart::{Boot, Restarts};
 use wrist_wake::ble::{timing, IntervalAsk, Lines, Outbox, PairAsk, Power, Radio, Scan, Sink, Timing};
@@ -102,15 +99,10 @@ pub struct Pins {
     pub rst: Peri<'static, peripherals::PA8>,
 }
 
-const SLAVE_READY_TIMEOUT: Duration = Duration::from_millis(100);
-const IRQ_LOW_TIMEOUT: Duration = Duration::from_millis(1000);
 const BOOT_TIMEOUT: Duration = Duration::from_millis(3000);
 const REPLY_TIMEOUT: Duration = Duration::from_millis(1000);
 /// A transfer with no bytes for this long is abandoned, as over USB.
 const TRANSFER_IDLE: Duration = Duration::from_secs(5);
-/// One SPI read. The chip queues events back to back and announces them all in one count,
-/// which passes 260 with two 217-byte console writes waiting.
-const MAX_PACKET: usize = 1024;
 
 const DEVICE_NAME: &[u8] = b"UNA";
 /// `ACI_GAP_INIT`'s `device_name_char_len`.
@@ -204,9 +196,8 @@ static ENCRYPTED: AtomicBool = AtomicBool::new(false);
 /// An encrypted link was up at some point this boot: a way to send the next image.
 static PROVEN: AtomicBool = AtomicBool::new(false);
 static CONN_HANDLE: AtomicU16 = AtomicU16::new(0);
-static EVENTS: AtomicU32 = AtomicU32::new(0);
-/// Packets cut short by the end of a read, dropped rather than handled.
-static CUT_SHORT: AtomicU32 = AtomicU32::new(0);
+/// Reads, packets cut short and IRQ stuck, as the transport counts them.
+static TRANSPORT: Counts = Counts::new();
 /// Console writes that arrived with a nonzero offset (fragments).
 static FRAGMENTS: AtomicU32 = AtomicU32::new(0);
 /// Writes dropped because the link was not encrypted.
@@ -216,9 +207,6 @@ static INTERVAL: AtomicU16 = AtomicU16::new(0);
 static LATENCY: AtomicU16 = AtomicU16::new(0);
 /// Console writes identical to the one before (a write delivered twice).
 static REPEATS: AtomicU32 = AtomicU32::new(0);
-/// Reads and writes after which IRQ did not fall within `IRQ_LOW_TIMEOUT`.
-static IRQ_STUCK_READ: AtomicU32 = AtomicU32::new(0);
-static IRQ_STUCK_WRITE: AtomicU32 = AtomicU32::new(0);
 /// Events that carried an error status, and the last update failure's status.
 static CONNECT_FAILURES: AtomicU32 = AtomicU32::new(0);
 static UPDATE_FAILURES: AtomicU32 = AtomicU32::new(0);
@@ -414,14 +402,14 @@ pub fn write_status(uart: Uart) {
         uart.write_str(label);
         uart.write_u32(v.load(Ordering::Relaxed));
     };
-    n(", events ", &EVENTS);
-    n(", cut short ", &CUT_SHORT);
+    n(", events ", &TRANSPORT.reads);
+    n(", cut short ", &TRANSPORT.cut_short);
     n(", fragments ", &FRAGMENTS);
     n(", repeats ", &REPEATS);
     n(", mirror lines dropped ", &LINES_DROPPED);
     n(", unsecured writes dropped ", &UNSECURED);
-    n(", irq stuck after read ", &IRQ_STUCK_READ);
-    n(" write ", &IRQ_STUCK_WRITE);
+    n(", irq stuck after read ", &TRANSPORT.irq_stuck_read);
+    n(" write ", &TRANSPORT.irq_stuck_write);
     n(", connect failures ", &CONNECT_FAILURES);
     n(", update failures ", &UPDATE_FAILURES);
     if UPDATE_FAILURES.load(Ordering::Relaxed) > 0 {
@@ -592,19 +580,14 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
             continue;
         }
         crate::rtc::set_radio_wanted(true);
-        let mut config = spi::Config::default();
-        config.frequency = Hertz(1_000_000);
-        // ST's own bus setup for the BlueNRG-2: clock idle low, data sampled on the second
-        // edge (X-CUBE-BLE2). Mode 0 gave bit-slipped headers.
-        config.mode = spi::MODE_1;
         let mut link = Link {
-            spi: Spi::new_blocking(pins.spi.reborrow(), pins.sck.reborrow(), pins.mosi.reborrow(), pins.miso.reborrow(), config),
-            cs: Output::new(pins.cs.reborrow(), Level::High, Speed::VeryHigh),
-            irq: ExtiInput::new(pins.irq.reborrow(), pins.irq_exti.reborrow(), Pull::Down, Irqs),
+            chip: bus(
+                (pins.spi.reborrow(), pins.sck.reborrow(), pins.miso.reborrow(), pins.mosi.reborrow()),
+                (pins.cs.reborrow(), pins.irq.reborrow(), pins.irq_exti.reborrow()),
+            ),
             rst: &mut rst,
             uart,
             flash,
-            junk: 0,
             last_rx: 0,
             waiting_for: None,
             reply: None,
@@ -658,17 +641,34 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
     }
 }
 
+type Bus<'d> = Transport<'static, BlockingAsync<Spi<'d, Blocking, spi::mode::Master>>, Output<'d>, ExtiInput<'d, Async>, Delay>;
+
+/// SPI1, CS and IRQ while the radio is on.
+fn bus<'d>(
+    (spi, sck, miso, mosi): (Peri<'d, peripherals::SPI1>, Peri<'d, peripherals::PG2>, Peri<'d, peripherals::PG3>, Peri<'d, peripherals::PB5>),
+    (cs, irq, irq_exti): (Peri<'d, peripherals::PA15>, Peri<'d, peripherals::PA9>, Peri<'d, peripherals::EXTI9>),
+) -> Bus<'d> {
+    let mut config = spi::Config::default();
+    config.frequency = Hertz(1_000_000);
+    // ST's own bus setup for the BlueNRG-2: clock idle low, data sampled on the second
+    // edge (X-CUBE-BLE2). Mode 0 gave bit-slipped headers.
+    config.mode = spi::MODE_1;
+    Transport::new(
+        BlockingAsync::new(Spi::new_blocking(spi, sck, mosi, miso, config)),
+        Output::new(cs, Level::High, Speed::VeryHigh),
+        ExtiInput::new(irq, irq_exti, Pull::Down, Irqs),
+        Delay,
+        &TRANSPORT,
+    )
+}
+
 // Each flag is one piece of work an event left for the loop.
 #[allow(clippy::struct_excessive_bools)]
 struct Link<'d> {
-    spi: Spi<'d, Blocking, spi::mode::Master>,
-    cs: Output<'d>,
-    irq: ExtiInput<'d, Async>,
+    chip: Bus<'d>,
     rst: &'d mut Output<'static>,
     uart: Uart,
     flash: &'static FlashMutex,
-    /// Consecutive unreadable headers: a stuck IRQ must not flood the log.
-    junk: u32,
     /// CRC of the last console write, to spot one delivered twice.
     last_rx: u32,
     /// The opcode whose reply [`Link::command`] is waiting for, and the reply.
@@ -761,7 +761,7 @@ impl Link<'_> {
                     None => core::future::pending::<()>().await,
                 }
             };
-            match select4(REQUESTS.receive(), self.irq.wait_for_high(), timer, select(WAKE.wait(), power_changed)).await {
+            match select4(REQUESTS.receive(), self.chip.wait_pending(), timer, select(WAKE.wait(), power_changed)).await {
                 Either4::First(Request::Off) => {
                     if let Some(session) = self.transfer.take() {
                         crate::update::abort(session);
@@ -774,7 +774,7 @@ impl Link<'_> {
                     self.drain().await;
                     // Unreadable headers with IRQ high: one read per 500 ms (the IRQ is still
                     // high, so the next wait returns at once).
-                    if self.junk >= 3 {
+                    if self.chip.backing_off() {
                         Timer::after_millis(500).await;
                     }
                 }
@@ -1475,7 +1475,7 @@ impl Link<'_> {
     async fn reset(&mut self) {
         #[cfg(feature = "ble-trace")]
         trace::packet(trace::Dir::Reset, &[]);
-        self.cs.set_high();
+        self.chip.deselect();
         self.rst.set_low();
         Timer::after_millis(5).await;
         self.rst.set_high();
@@ -1487,7 +1487,7 @@ impl Link<'_> {
         CONN_HANDLE.store(0, Ordering::Relaxed);
         // The stack announces itself about 2 s later; until then MISO only echoes MOSI, so
         // wait for the event before any command.
-        if with_timeout(BOOT_TIMEOUT, self.irq.wait_for_high()).await.is_ok() {
+        if self.chip.wait_pending_within(micros(BOOT_TIMEOUT)).await {
             self.drain().await;
         } else {
             self.uart.write_line("[ble] no sign of life after reset (no module, or not ST's firmware)");
@@ -1509,7 +1509,7 @@ impl Link<'_> {
         trace::packet(trace::Dir::ToChip, &packet[..n]);
         self.waiting_for = Some(opcode);
         self.reply = None;
-        if !self.send(&packet[..n]).await {
+        if !self.chip.write(&packet[..n]).await {
             self.waiting_for = None;
             return Err("the chip did not take the command");
         }
@@ -1519,7 +1519,7 @@ impl Link<'_> {
             if left == Duration::from_ticks(0) {
                 break;
             }
-            if with_timeout(left, self.irq.wait_for_high()).await.is_err() {
+            if !self.chip.wait_pending_within(micros(left)).await {
                 break;
             }
             self.drain().await;
@@ -1531,54 +1531,24 @@ impl Link<'_> {
     /// Every event waiting, one `0B` read each, while IRQ stays high.
     async fn drain(&mut self) {
         let mut rounds = 0;
-        while self.irq.is_high() && rounds < 8 {
+        while self.chip.pending() && rounds < 8 {
             rounds += 1;
-            let mut buf = [0u8; MAX_PACKET];
-            let mut header = bluenrg2::HEADER_READ;
-            self.cs.set_low();
-            let _ = self.spi.blocking_transfer_in_place(&mut header);
-            let (wbuf, announced) = bluenrg2::header_sizes(&header);
-            let count = announced.min(MAX_PACKET);
-            if count > 0 {
-                let _ = self.spi.blocking_transfer_in_place(&mut buf[..count]);
-            }
-            if with_timeout(IRQ_LOW_TIMEOUT, self.irq.wait_for_low()).await.is_err() {
-                IRQ_STUCK_READ.fetch_add(1, Ordering::Relaxed);
-            }
-            self.cs.set_high();
-            if (1..=1024).contains(&wbuf) && count <= MAX_PACKET {
-                self.junk = 0;
-            } else {
-                self.junk += 1;
-                if self.junk == 3 {
-                    self.uart.write_str("[ble] headers unreadable with IRQ high, last ");
-                    write_hex(self.uart, &header);
-                    self.uart.write_line("; backing off to one read per 500 ms");
+            let mut buf = [0u8; transport::MAX_READ];
+            match self.chip.read(&mut buf).await {
+                Read::Bytes(count) => {
+                    for packet in transport::packets(&buf[..count], &TRANSPORT) {
+                        self.handle(packet);
+                    }
                 }
-                if self.junk >= 3 {
+                Read::Empty => continue,
+                Read::Unreadable { header, first } => {
+                    if first {
+                        self.uart.write_str("[ble] headers unreadable with IRQ high, last ");
+                        write_hex(self.uart, &header);
+                        self.uart.write_line("; backing off to one read per 500 ms");
+                    }
                     return;
                 }
-            }
-            if count == 0 {
-                Timer::after_millis(10).await;
-                continue;
-            }
-            EVENTS.fetch_add(1, Ordering::Relaxed);
-            // The read may hold several packets back to back.
-            let mut at = 0;
-            while at < count {
-                let len = bluenrg2::packet_len(&buf[at..count]);
-                if len == 0 {
-                    break;
-                }
-                if !bluenrg2::packet_whole(&buf[at..count]) {
-                    // Half an event handled would feed half a console write into a transfer,
-                    // and the rest would never come.
-                    CUT_SHORT.fetch_add(1, Ordering::Relaxed);
-                    break;
-                }
-                self.handle(&buf[at..at + len]);
-                at += len;
             }
             embassy_futures::yield_now().await;
         }
@@ -1782,7 +1752,7 @@ impl Link<'_> {
             if data.len() > DEFAULT_VALUE_LEN && crc == self.last_rx {
                 REPEATS.fetch_add(1, Ordering::Relaxed);
                 self.uart.write_str("[ble] console write repeated, events ");
-                self.uart.write_u32(EVENTS.load(Ordering::Relaxed));
+                self.uart.write_u32(TRANSPORT.reads.load(Ordering::Relaxed));
                 self.uart.write_line("");
             }
             self.last_rx = crc;
@@ -1868,38 +1838,6 @@ impl Link<'_> {
             }
         }
     }
-
-    /// The `0A` handshake; true when the chip took the packet.
-    async fn send(&mut self, packet: &[u8]) -> bool {
-        for _attempt in 0..5 {
-            self.cs.set_low();
-            if with_timeout(SLAVE_READY_TIMEOUT, self.irq.wait_for_high()).await.is_err() {
-                self.cs.set_high();
-                Timer::after_millis(10).await;
-                continue;
-            }
-            let mut header = bluenrg2::HEADER_WRITE;
-            let _ = self.spi.blocking_transfer_in_place(&mut header);
-            let (wbuf, _) = bluenrg2::header_sizes(&header);
-            // The BlueNRG-2 sends no ready byte, only buffer sizes; ST checks the size alone,
-            // so do we.
-            let accepted = (1..=1024).contains(&wbuf) && wbuf >= packet.len();
-            if accepted {
-                let mut out = [0u8; MAX_COMMAND];
-                out[..packet.len()].copy_from_slice(packet);
-                let _ = self.spi.blocking_transfer_in_place(&mut out[..packet.len()]);
-            }
-            self.cs.set_high();
-            if accepted {
-                if with_timeout(IRQ_LOW_TIMEOUT, self.irq.wait_for_low()).await.is_err() {
-                    IRQ_STUCK_WRITE.fetch_add(1, Ordering::Relaxed);
-                }
-                return true;
-            }
-            Timer::after_millis(10).await;
-        }
-        false
-    }
 }
 
 fn set_state(state: u8) {
@@ -1917,6 +1855,10 @@ fn set_encrypted(on: bool) {
 /// The page redrawn, if up, for a change it shows.
 fn redraw() {
     crate::redraw(wrist_pages::Page::Bluetooth);
+}
+
+fn micros(d: Duration) -> u32 {
+    u32::try_from(d.as_micros()).unwrap_or(u32::MAX)
 }
 
 fn write_address(uart: Uart, a: bluenrg2::Address) {

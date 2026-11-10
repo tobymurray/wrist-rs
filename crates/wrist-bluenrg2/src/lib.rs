@@ -1,12 +1,14 @@
 #![no_std]
 
 //! The BlueNRG-2 as the Bluetooth core sees it: what it can do, the link-layer scheduler ST
-//! documents in PM0257 Rev 4 §4, and the codes it refuses with.
+//! documents in PM0257 Rev 4 §4, the codes it refuses with, and the SPI handshake its packets
+//! travel by.
 
 pub mod bonds;
 pub mod commands;
 pub mod events;
 pub mod probe;
+pub mod transport;
 
 use wrist_ble::{
     Activities, AdvParams, Admitted, Anchor, Capabilities, CentralSlot, Change, ConnParams, Duration, Exclusion, GattLimits, Interval, Micros,
