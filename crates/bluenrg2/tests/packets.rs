@@ -575,7 +575,8 @@ fn an_address_parses_into_the_chips_byte_order() {
     assert_eq!(parse_address("0A:1B:2C:3D:4E:5F (random)"), Some(random));
     assert_eq!(parse_address("0a-1b-2c-3d-4e-5f(random) "), Some(random));
     for bad in ["", "0A:1B:2C:3D:4E", "0A:1B:2C:3D:4E:5F:00", "0A:1B:2C:3D:4E:5", "0A:1B:2C:3D:4E:5G", "0A1B2C3D4E5F", "(random)",
-        "0A:1B:2C:3D:4E:5F (public)", "0A:1B:2C:3D:4E:5F random", "0A:1B:2C:3D:4E:5F (random) (random)"] {
+        "0A:1B:2C:3D:4E:5F (public)", "0A:1B:2C:3D:4E:5F random", "0A:1B:2C:3D:4E:5F (random) (random)", "+A:1B:2C:3D:4E:5F",
+        "+1:+2:+3:+4:+5:+6", "0A:1B:2C:3D:4E: F"] {
         assert_eq!(parse_address(bad), None, "{bad:?}");
     }
 }

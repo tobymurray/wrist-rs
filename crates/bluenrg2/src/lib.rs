@@ -764,7 +764,7 @@ pub fn parse_address(text: &str) -> Option<Address> {
     let mut parts = text.split([':', '-']);
     for i in (0..6).rev() {
         let part = parts.next()?;
-        if part.len() != 2 {
+        if part.len() != 2 || !part.bytes().all(|b| b.is_ascii_hexdigit()) {
             return None;
         }
         bytes[i] = u8::from_str_radix(part, 16).ok()?;
