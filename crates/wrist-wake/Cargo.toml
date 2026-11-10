@@ -4,10 +4,11 @@ version = "0.0.0"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 publish = false
-description = "The BLE task's decisions without hardware: when it next has timed work, the radio's timing, its states and the console's notifications"
+description = "The BLE task's decisions without hardware: when it next has timed work, the radio's timing, its states, its GATT server and the console's notifications"
 
 [dependencies]
 bluenrg2 = "0.1.0"
+wrist-ble = { path = "../wrist-ble" }
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
