@@ -223,7 +223,7 @@ fn a_phone_connecting_ends_advertising() {
     assert!(connect(&a, link(50.0, 50.0, 4)).is_ok());
 }
 
-/// PM0257 §4.3: advertising whose period is a multiple of the scan's runs beside it, as the watch
+/// PM0257 §4.2.3: advertising whose period is a multiple of the scan's runs beside it, as the watch
 /// does (HARDWARE.md, a scan beside advertising every 995 ms heard one window per period).
 #[test]
 fn advertising_a_multiple_of_a_scan_runs_beside_it() {
@@ -232,7 +232,7 @@ fn advertising_a_multiple_of_a_scan_runs_beside_it() {
 }
 
 /// PM0257 §4.2.3, `ble_status.h`'s names: advertising shorter than the anchor fails as a new
-/// interval, longer as too large. The short case is unmeasured, a probe cell.
+/// interval, longer as too large. The short case is unmeasured.
 #[test]
 fn advertising_shorter_than_the_anchor_is_a_new_interval_refused() {
     let at_500 = connect(&Activities::IDLE, link(500.0, 500.0, 4)).unwrap();
@@ -251,7 +251,7 @@ fn closing_one_link_keeps_the_anchor_it_set() {
     assert_eq!(anchor(&a), Some(100 * MS));
 }
 
-/// The chip holds eight links in all (`CAPABILITIES.max_links`), the phone's among them.
+/// The chip holds eight links in all, the phone's among them (PM0257 §4.4).
 #[test]
 fn a_phone_beside_seven_centrals_is_the_ninth_link_refused() {
     let mut a = Activities { peripheral: 1, ..Activities::IDLE };
@@ -281,8 +281,8 @@ fn a_slot_ending_with_its_guard_at_the_period_still_fits() {
     assert_eq!(b.central[1].map(|s| s.offset.0), Some(20_250));
 }
 
-/// PM0257 §4.2.2: a link asked for with no event length is given the free space, after the last
-/// slot, never a gap of nothing.
+/// Unmeasured: the model gives a link asked for with no event length the free space after the
+/// last slot. PM0257 §4.2.2 says only that a slot gets the length asked for or the free space.
 #[test]
 fn a_link_with_no_length_takes_the_room_after_the_last_slot() {
     let mut a = Activities::IDLE;
@@ -296,8 +296,8 @@ fn a_link_with_no_length_takes_the_room_after_the_last_slot() {
     assert!(s.ce_len.as_u16() > 0);
 }
 
-/// Core Specification Vol 4 Part E §7.8.12: the interval's minimum is at most its maximum, and
-/// not zero. The chip's code for either is unmeasured (F33).
+/// Core Specification Vol 4 Part E §7.8.12: the interval's minimum is at most its maximum. The
+/// specification's floor is 7.5 ms, but the model refuses only zero; the chip's codes are unmeasured.
 #[test]
 fn an_interval_range_upside_down_or_from_zero_is_refused() {
     assert!(connect(&Activities::IDLE, link(50.0, 30.0, 4)).is_err());
@@ -309,7 +309,8 @@ fn an_interval_range_upside_down_or_from_zero_is_refused() {
 #[test]
 fn a_period_off_the_interval_grid_is_never_a_links_interval() {
     let a = Activities { advertising: Some(adv(161)), ..Activities::IDLE };
-    assert_eq!(connect(&a, link(100.0, 110.0, 4)), Err(SchedKind::NewIntervalFailed));
+    // Which code the chip gives for a range holding the period is unmeasured.
+    assert!(connect(&a, link(100.0, 110.0, 4)).is_err());
     // §4.2.2: a multiple of it can be, with that many periods' latency.
     let b = connect(&a, link(200.0, 250.0, 4)).unwrap().central[0].unwrap();
     assert_eq!((interval_ms(b), b.latency), (211.25, 2));
