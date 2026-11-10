@@ -220,6 +220,9 @@ fn interval_ms(p: LinkParams) -> u32 {
     u32::try_from(interval_ns(p.interval) / 1_000_000).unwrap_or(u32::MAX).max(1)
 }
 
+/// ST's `BLE_STATUS_NOT_ALLOWED`.
+const NOT_ALLOWED: u16 = 0x46;
+
 fn failure(kind: FailureKind, native: u16) -> Failure {
     Failure { kind, native }
 }
@@ -480,6 +483,11 @@ impl Fake {
         }
         match op {
             Op::Advertise(p) => {
+                // `ACI_GAP_SET_DISCOVERABLE` while advertising is refused `BLE_STATUS_NOT_ALLOWED`,
+                // at a new interval or the same, and the advertising goes on unchanged (HARDWARE.md).
+                if p.is_some() && self.acts.get().advertising.is_some() {
+                    return Err(failure(FailureKind::ModeExclusion, NOT_ALLOWED));
+                }
                 self.admit(Change::Advertise(p))?;
                 let id = self.accept(op);
                 self.set_adv(p);

@@ -19,6 +19,12 @@ const fn link(min: u16, max: u16, latency: u16, timeout: u16) -> ConnParams {
     ConnParams { interval_min: Duration::from_u16(min), interval_max: Duration::from_u16(max), latency, timeout: Duration::from_u16(timeout), ce_len: Duration::from_u16(4) }
 }
 
+/// `ble interval now <min> <max>`'s ask, at the driver's latency and supervision timeout.
+#[must_use]
+pub const fn interval_now(min: u16, max: u16) -> ConnParams {
+    link(min, max, wake::NOW_LATENCY, wake::NOW_TIMEOUT)
+}
+
 /// The phone link a [`Timing`] asks for.
 const fn ask(t: Timing) -> ConnParams {
     link(t.interval_min, t.interval_max, t.latency, t.timeout)

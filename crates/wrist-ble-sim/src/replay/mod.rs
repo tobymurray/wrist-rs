@@ -16,7 +16,7 @@ use wrist_bluenrg2::{Scheduler, CAPABILITIES};
 mod agree;
 
 use crate::fake::INFO;
-use crate::menu::MENU;
+use crate::menu::{interval_now, MENU};
 
 /// One line of the replay's timeline.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -289,14 +289,23 @@ impl Replay<'_> {
                     self.goals();
                 }
                 "ble profile battery" => {
+                    self.goals.phone_params = None;
                     self.goals.power = Power::Battery;
                     self.goals();
                 }
                 "ble profile cable" | "ble profile auto" => {
+                    self.goals.phone_params = None;
                     self.goals.power = Power::Cable;
                     self.goals();
                 }
                 "ble disconnect" => self.report.operator_disconnects.push(self.now.0),
+                c if c.starts_with("ble interval now ") => {
+                    let mut units = c[17..].split_whitespace().filter_map(|w| w.parse::<u16>().ok());
+                    if let (Some(min), Some(max)) = (units.next(), units.next()) {
+                        self.goals.phone_params = Some(interval_now(min, max));
+                        self.goals();
+                    }
+                }
                 "ble yes" => self.feed(Input::Answer(true)),
                 "ble no" => self.feed(Input::Answer(false)),
                 _ => {}
@@ -338,6 +347,16 @@ impl Replay<'_> {
                         DriverOp::AskParams(min, max, latency) => format!(" {min}-{max} units, latency {latency}, timeout {}", at(12)),
                         _ => String::new(),
                     };
+                    // An ask the menu never makes is the console's `ble interval now`, over USB or
+                    // over the air (which the trace does not show): the core is given it as a goal.
+                    if let DriverOp::AskParams(min, max, latency) = op {
+                        let menu = MENU.phone.iter().any(|c| (c.params.interval_min.as_u16(), c.params.interval_max.as_u16(), c.params.latency) == (min, max, latency));
+                        let now = interval_now(min, max);
+                        if !menu && self.goals.phone_params != Some(now) {
+                            self.goals.phone_params = Some(now);
+                            self.goals();
+                        }
+                    }
                     self.report.driver_ops.push((self.now.0, op));
                     self.push(Who::Driver, format!("{what}{detail}"));
                     self.report.tally.entry(format!("{kind:?}")).or_default().0 += 1;
@@ -374,6 +393,10 @@ impl Replay<'_> {
                     match (e, self.core.state.chip.starting()) {
                         (RadioEvent::Ready(info), Some(id)) => self.feed(Input::Started(id, Ok(info))),
                         _ => self.feed(Input::Radio(e)),
+                    }
+                    // The driver's `ble interval now` is for its link only, once the core has seen it end.
+                    if matches!(e, RadioEvent::LinkDown { .. }) && self.phone.is_none() && self.goals.phone_params.take().is_some() {
+                        self.goals();
                     }
                 }
             }

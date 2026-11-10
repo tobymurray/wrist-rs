@@ -23,14 +23,24 @@ fn actions(p: Phone, at: u64, e: phone::Event) -> (Phone, Vec<Action>) {
 #[test]
 fn phone_asks_an_unencrypted_link_to_pair_once() {
     let p = up(0);
-    assert_eq!(p.deadline(), Some(t(1_500)));
+    assert_eq!(p.deadline(), Some(t(5_000)));
     let (p, a) = actions(p, 1_500, phone::Event::Tick);
     assert_eq!(a, NONE);
-    assert!(p.may_ask_params(t(1_500)));
     let (p, a) = actions(p, 5_000, phone::Event::Tick);
     assert_eq!(a, [Action::RequestSecurity(phone())]);
     assert_eq!(p.deadline(), None);
     assert_eq!(actions(p, 9_000, phone::Event::Tick).1, NONE);
+}
+
+/// No parameter ask before encryption, however long the link has been up unencrypted.
+#[test]
+fn phone_parameters_wait_for_encryption() {
+    let p = up(0);
+    assert!(!p.may_ask_params(t(1_500)));
+    let (p, _) = actions(p, 5_000, phone::Event::Tick);
+    assert!(!p.may_ask_params(t(60_000)));
+    let (p, _) = actions(p, 60_000, phone::Event::Encryption(phone(), true));
+    assert!(p.may_ask_params(t(60_000)));
 }
 
 #[test]

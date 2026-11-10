@@ -230,7 +230,8 @@ fn done(id: u16) -> Input {
     Input::Radio(RadioEvent::Done(OpId(id), Ok(wrist_ble::Outcome::Done)))
 }
 
-/// A core advertising on battery, then asked to advertise at the cable interval, that op accepted as `OpId(2)`.
+/// A core advertising on battery, then asked to advertise at the cable interval: the stop
+/// (`OpId(2)`) done, and the start at the new interval accepted as `OpId(3)`.
 fn retiming_advertising() -> Core<'static> {
     let mut core = Core::new(&CAPABILITIES, &Scheduler, &MENU);
     core.step(Instant(0), Input::Goals(Goals { radio_on: true, ..Goals::OFF }));
@@ -238,9 +239,20 @@ fn retiming_advertising() -> Core<'static> {
     core.step(Instant(0), Input::Submitted(Ok(OpId(1))));
     core.step(Instant(1), done(1));
     let out = core.step(Instant(1_000), Input::Goals(Goals { radio_on: true, power: Power::Cable, ..Goals::OFF }));
-    assert!(matches!(out.op, Some(Op::Advertise(Some(_)))), "{out:?}");
+    assert!(matches!(out.op, Some(Op::Advertise(None))), "{out:?}");
     core.step(Instant(1_000), Input::Submitted(Ok(OpId(2))));
+    let out = core.step(Instant(1_000), done(2));
+    assert!(matches!(out.op, Some(Op::Advertise(Some(_)))), "{out:?}");
+    core.step(Instant(1_000), Input::Submitted(Ok(OpId(3))));
     core
+}
+
+/// The chip refuses advertising over advertising (HARDWARE.md), so a new interval is a stop
+/// and then a start.
+#[test]
+fn a_new_advertising_interval_is_a_stop_then_a_start() {
+    let core = retiming_advertising();
+    assert!(matches!(core.pending().map(|p| p.op), Some(Op::Advertise(Some(_)))));
 }
 
 fn snapshot_with(link: ConnHandle) -> wrist_ble::Snapshot {
@@ -254,7 +266,7 @@ fn advertising_done_after_the_phone_connects_stays_ended() {
     let mut core = retiming_advertising();
     let link = ConnHandle::new(0x801);
     core.step(Instant(1_001), Input::Radio(RadioEvent::LinkUp { link, role: LeConnRole::Peripheral, peer: phone_addr(), params: PHONE }));
-    core.step(Instant(1_001), done(2));
+    core.step(Instant(1_001), done(3));
     assert_eq!(core.state.radio.advertising, None);
 }
 
@@ -263,7 +275,7 @@ fn advertising_done_after_a_resync_finds_the_phone_stays_ended() {
     let mut core = retiming_advertising();
     core.step(Instant(1_001), Input::Radio(RadioEvent::EventsLost));
     core.step(Instant(1_002), Input::Snapshot(Ok(snapshot_with(ConnHandle::new(0x801)))));
-    core.step(Instant(1_003), done(2));
+    core.step(Instant(1_003), done(3));
     assert_eq!(core.state.radio.advertising, None);
 }
 
@@ -272,13 +284,15 @@ fn a_phone_link_found_by_resync_is_asked_for_its_parameters() {
     let mut h = Harness::new(Goals { radio_on: true, ..Goals::OFF });
     let old = ConnHandle::new(0x801);
     phone_up(&mut h, 0, old);
-    h.at(1_500, Input::Tick);
+    h.at(1_500, Input::Radio(RadioEvent::Encryption { link: old, on: true }));
     assert!(matches!(h.ops.last(), Some(Op::UpdateParams(l, _)) if *l == old), "{:?}", h.ops);
     let fits = LinkParams { interval: Duration::from_u16(120), latency: 4, timeout: Duration::from_u16(600) };
     h.at(1_600, Input::Radio(RadioEvent::Params { link: old, result: Ok(fits) }));
     let new = ConnHandle::new(0x802);
     h.at(10_000, Input::Radio(RadioEvent::EventsLost));
     h.at(10_000, Input::Snapshot(Ok(snapshot_with(new))));
+    // A link the resync found is asked once it is encrypted, as any other.
+    h.at(10_500, Input::Radio(RadioEvent::Encryption { link: new, on: true }));
     while h.now < Instant(12_000) {
         let next = h.next().unwrap();
         h.at(next.0, Input::Tick);
@@ -411,13 +425,14 @@ fn a_centrals_acceptance_ends_the_request_though_nothing_changes() {
     let mut h = Harness::new(Goals { radio_on: true, ..Goals::OFF });
     let link = ConnHandle::new(0x801);
     phone_up(&mut h, 0, link);
-    h.at(1_500, Input::Tick);
+    h.at(1_500, Input::Radio(RadioEvent::Encryption { link, on: true }));
     assert!(matches!(h.ops.last(), Some(Op::UpdateParams(..))), "{:?}", h.ops);
     let asked = h.next_id - 1;
     h.at(1_800, done(asked));
-    while h.now < Instant(6_000) {
-        let next = h.next().unwrap();
-        h.at(next.0, Input::Tick);
-    }
-    assert!(h.ops.iter().any(|op| matches!(op, Op::RequestSecurity(l) if *l == link)), "{:?}", h.ops);
+    // Nothing is left pending: the console's own ask goes out at once.
+    assert!(h.core.pending().is_none());
+    let now = wrist_ble_sim::menu::interval_now(6, 6);
+    h.at(2_000, Input::Goals(Goals { radio_on: true, phone_params: Some(now), ..Goals::OFF }));
+    let asks = h.ops.iter().filter(|op| matches!(op, Op::UpdateParams(l, _) if *l == link)).count();
+    assert_eq!(asks, 2, "{:?}", h.ops);
 }

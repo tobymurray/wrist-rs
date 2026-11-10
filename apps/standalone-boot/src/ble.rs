@@ -172,7 +172,17 @@ enum Request {
     /// updater's command.
     #[cfg(feature = "ble-probe")]
     Restart(bool),
+    /// `ble probe adv`: `ACI_GAP_SET_DISCOVERABLE` sent while already advertising.
+    #[cfg(feature = "ble-probe")]
+    ProbeAdvertising,
+    /// `ble probe drop <hex>`: `ACI_GAP_TERMINATE` with this reason.
+    #[cfg(feature = "ble-probe")]
+    ProbeDrop(u8),
 }
+
+/// `ble probe hold on`: no interval ask on a link before it is encrypted or its pairing fails.
+#[cfg(feature = "ble-probe")]
+static HOLD_ASK: AtomicBool = AtomicBool::new(false);
 
 static REQUESTS: Channel<CriticalSectionRawMutex, Request, 4> = Channel::new();
 /// Raised by other tasks that leave the loop work it cannot see coming: console output for a
@@ -330,6 +340,29 @@ pub fn command(args: &[u8], uart: Uart) {
         b"restart" => Request::Restart(false),
         #[cfg(feature = "ble-probe")]
         b"restart updater" => Request::Restart(true),
+        #[cfg(feature = "ble-probe")]
+        b"probe adv" => Request::ProbeAdvertising,
+        #[cfg(feature = "ble-probe")]
+        rest if rest.starts_with(b"probe drop ") => {
+            match core::str::from_utf8(&rest[11..]).ok().and_then(|t| u8::from_str_radix(t.trim(), 16).ok()) {
+                Some(reason) => Request::ProbeDrop(reason),
+                None => return uart.write_line("[ble] usage: ble probe drop <reason, hex>"),
+            }
+        }
+        #[cfg(feature = "ble-probe")]
+        rest if rest.starts_with(b"probe hold ") => {
+            let on = match &rest[11..] {
+                b"on" => true,
+                b"off" => false,
+                _ => return uart.write_line("[ble] usage: ble probe hold on|off"),
+            };
+            HOLD_ASK.store(on, Ordering::Relaxed);
+            return uart.write_line(if on {
+                "[ble] probe: the interval ask waits for encryption (or a failed pairing)"
+            } else {
+                "[ble] probe: the interval ask as built (1.5 s, or encryption)"
+            });
+        }
         rest if rest.starts_with(b"profile") => {
             let (code, word) = match &rest[7..] {
                 b" auto" => (0, "follows the power source"),
@@ -565,7 +598,9 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
                     uart.write_line("[ble] off; `ble on` starts it");
                 }
                 #[cfg(feature = "ble-probe")]
-                Request::Probe | Request::ProbeGatt(_) | Request::Restart(_) => uart.write_line("[ble] off; `ble on` starts it"),
+                Request::Probe | Request::ProbeGatt(_) | Request::Restart(_) | Request::ProbeAdvertising | Request::ProbeDrop(_) => {
+                    uart.write_line("[ble] off; `ble on` starts it");
+                }
                 Request::Off => {
                     set_state(STATE_OFF);
                     crate::rtc::set_radio_wanted(false);
@@ -836,6 +871,10 @@ impl Link<'_> {
             Request::ProbeGatt(what) => self.probe_gatt(what).await,
             #[cfg(feature = "ble-probe")]
             Request::Restart(updater) => self.restart_chip(updater).await,
+            #[cfg(feature = "ble-probe")]
+            Request::ProbeAdvertising => self.probe_advertising().await,
+            #[cfg(feature = "ble-probe")]
+            Request::ProbeDrop(reason) => self.probe_drop(reason).await,
         }
     }
 
@@ -1591,6 +1630,10 @@ impl Link<'_> {
                 self.peer = Some(peer);
                 self.pair_ask.connected(Instant::now().as_ticks(), embassy_time::TICK_HZ);
                 self.interval_ask.connected(Instant::now().as_ticks(), embassy_time::TICK_HZ);
+                #[cfg(feature = "ble-probe")]
+                if HOLD_ASK.load(Ordering::Relaxed) {
+                    self.interval_ask.pairing();
+                }
                 if let Some((iv, lat)) = conn_interval {
                     INTERVAL.store(iv, Ordering::Relaxed);
                     LATENCY.store(lat, Ordering::Relaxed);
