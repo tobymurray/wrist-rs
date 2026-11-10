@@ -2,8 +2,8 @@
 
 use std::collections::HashMap;
 
-use wrist_ble::{Activities, AdvParams, Duration};
-use wrist_bluenrg2::anchor_reading;
+use wrist_ble::{Activities, AdvParams, Change, ConnParams, Duration};
+use wrist_bluenrg2::{anchor_reading, Scheduler};
 
 /// Each reading in the fixture, and what the model says the chip reads beside the same activity.
 #[test]
@@ -28,4 +28,26 @@ fn the_model_reads_the_anchor_the_chip_reported() {
         seen += 1;
     }
     assert_eq!(seen, 3);
+}
+
+/// Beside central links the reading is the longest slot a new link is given, wherever the gaps fall.
+#[test]
+fn the_free_slot_is_the_longest_a_new_link_gets() {
+    let link = |ce| {
+        let u = Duration::from_u16(40);
+        ConnParams { interval_min: u, interval_max: u, latency: 0, timeout: Duration::from_u16(600), ce_len: Duration::from_u16(ce) }
+    };
+    let connect = |a: &Activities, ce| a.walk(&Scheduler, &[Change::Initiate(Some(link(ce))), Change::Connected]);
+    let a = connect(&Activities::IDLE, 4).unwrap();
+    let a = connect(&a, 4).unwrap().walk(&Scheduler, &[Change::Close { slot: 0 }]).unwrap();
+    let r = anchor_reading(&a).unwrap();
+    assert_eq!((r.period.0, r.max_free_slot.0), (50_000, 40_000));
+    let slots = u16::try_from(r.max_free_slot.0 / 625).unwrap();
+    assert!(connect(&a, slots).is_ok());
+    assert!(connect(&a, slots + 1).is_err());
+    let a = [4, 40, 4].iter().fold(Activities::IDLE, |a, &ce| connect(&a, ce).unwrap());
+    let a = a.walk(&Scheduler, &[Change::Close { slot: 1 }]).unwrap();
+    assert_eq!(anchor_reading(&a).map(|r| r.max_free_slot.0), Some(25_000));
+    assert!(connect(&a, 40).is_ok());
+    assert!(connect(&a, 41).is_err());
 }
