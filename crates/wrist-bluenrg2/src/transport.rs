@@ -1,10 +1,4 @@
-//! The SPI handshake to the BlueNRG-2 (ST's X-CUBE-BLE2 `hci_tl_interface.c`, SPI mode 1), over
-//! any bus, chip select, IRQ line and delay.
-//!
-//! To send: CS low, wait for IRQ high, clock the write header and read the chip's room back; if
-//! the packet fits, clock it; CS high; wait for IRQ low. To read: CS low, clock the read header,
-//! whose reply says how many bytes wait, clock that many, wait for IRQ low, CS high. IRQ high with
-//! CS high means a read is waiting.
+//! The SPI handshake to the BlueNRG-2, after ST's X-CUBE-BLE2 `hci_tl_interface.c`.
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -14,8 +8,7 @@ use embedded_hal_async::delay::DelayNs;
 use embedded_hal_async::digital::Wait;
 use embedded_hal_async::spi::SpiBus;
 
-/// The most one read takes. The chip announces every event queued in one count, which passes
-/// 260 bytes with two full console writes waiting.
+/// The most one read takes; the chip announces every queued event in one count.
 pub const MAX_READ: usize = 1024;
 /// The most the chip's own buffers hold; a header naming more is unreadable.
 const MAX_ROOM: usize = 1024;
@@ -25,7 +18,6 @@ pub const READY_WITHIN_MS: u32 = 100;
 pub const IRQ_LOW_WITHIN_MS: u32 = 1_000;
 /// Between attempts at a write the chip had no room for, and after an empty read.
 pub const RETRY_MS: u32 = 10;
-/// Attempts at one write.
 pub const WRITE_ATTEMPTS: u32 = 5;
 /// Unreadable headers in a row before the transport says so and stops reading packets.
 pub const UNREADABLE_RUN: u32 = 3;
@@ -200,7 +192,6 @@ pub fn packets<'a>(read: &'a [u8], counts: &'a Counts) -> impl Iterator<Item = &
             return None;
         }
         if !bluenrg2::packet_whole(rest) {
-            // Half an event handled would feed half a console write into a transfer.
             bump(&counts.cut_short);
             at = read.len();
             return None;

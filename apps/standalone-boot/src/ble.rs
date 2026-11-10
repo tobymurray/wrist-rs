@@ -26,9 +26,7 @@
 //! "data ready / slave ready" line and the bootloader-entry pin if high at reset, so it is an
 //! input with a pull-down and never driven. SPI1, CS and IRQ exist only while the radio is on.
 //!
-//! The SPI handshake is `wrist_bluenrg2::transport`. Reset is CS high, reset low 5 ms, high;
-//! the stack announces `ACI_BLUE_INITIALIZED` about 2 s later, and until then MISO only
-//! echoes MOSI.
+//! The SPI handshake is `wrist_bluenrg2::transport`.
 //!
 //! Restarts. The chip sends that event after any reset, and one the driver's start did not ask
 //! for means it restarted by itself (`wrist_wake::ble::restart`): the link and everything on it
@@ -196,7 +194,6 @@ static ENCRYPTED: AtomicBool = AtomicBool::new(false);
 /// An encrypted link was up at some point this boot: a way to send the next image.
 static PROVEN: AtomicBool = AtomicBool::new(false);
 static CONN_HANDLE: AtomicU16 = AtomicU16::new(0);
-/// Reads, packets cut short and IRQ stuck, as the transport counts them.
 static TRANSPORT: Counts = Counts::new();
 /// Console writes that arrived with a nonzero offset (fragments).
 static FRAGMENTS: AtomicU32 = AtomicU32::new(0);
@@ -650,8 +647,7 @@ fn bus<'d>(
 ) -> Bus<'d> {
     let mut config = spi::Config::default();
     config.frequency = Hertz(1_000_000);
-    // ST's own bus setup for the BlueNRG-2: clock idle low, data sampled on the second
-    // edge (X-CUBE-BLE2). Mode 0 gave bit-slipped headers.
+    // ST's bus setup for the BlueNRG-2 in X-CUBE-BLE2.
     config.mode = spi::MODE_1;
     Transport::new(
         BlockingAsync::new(Spi::new_blocking(spi, sck, mosi, miso, config)),
@@ -772,8 +768,7 @@ impl Link<'_> {
                 Either4::First(req) => self.request(req).await,
                 Either4::Second(()) => {
                     self.drain().await;
-                    // Unreadable headers with IRQ high: one read per 500 ms (the IRQ is still
-                    // high, so the next wait returns at once).
+                    // IRQ stays high through unreadable headers, so the next wait returns at once.
                     if self.chip.backing_off() {
                         Timer::after_millis(500).await;
                     }
@@ -1485,8 +1480,7 @@ impl Link<'_> {
         self.boot = None;
         self.booting = true;
         CONN_HANDLE.store(0, Ordering::Relaxed);
-        // The stack announces itself about 2 s later; until then MISO only echoes MOSI, so
-        // wait for the event before any command.
+        // The chip takes no command until its stack announces itself.
         if self.chip.wait_pending_within(micros(BOOT_TIMEOUT)).await {
             self.drain().await;
         } else {
