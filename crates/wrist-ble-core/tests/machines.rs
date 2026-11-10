@@ -122,6 +122,28 @@ fn phone_bond_lost_is_told_in_either_order() {
 }
 
 #[test]
+fn phone_comparison_outlasts_a_resync_that_cannot_tell() {
+    let (p, _) = actions(up(0), 1_000, phone::Event::Pairing(phone(), PairingStep::Numeric(42)));
+    let (p, _) = actions(p, 2_000, phone::Event::Resynced(phone(), None));
+    assert_eq!(actions(p, 5_000, phone::Event::Answer(true)).1, [Action::ConfirmNumeric(phone(), true)]);
+}
+
+#[test]
+fn phone_link_found_unencrypted_after_encryption_starts_afresh() {
+    let (p, _) = actions(up(0), 100, phone::Event::BondLost(phone()));
+    let (p, a) = actions(p, 200, phone::Event::Pairing(phone(), PairingStep::Failed));
+    assert_eq!(a, [Action::TellBondLost(phone())]);
+    let (p, _) = actions(p, 300, phone::Event::Encryption(phone(), true));
+    let (p, _) = actions(p, 100_000, phone::Event::Resynced(phone(), Some(false)));
+    assert!(matches!(p, Phone::Up(l) if l.since == t(100_000) && l.security == Security::Unsecured), "{p:?}");
+    assert!(!p.may_ask_params(t(100_000)));
+    assert_eq!((p.deadline(), p.settled_at()), (Some(t(105_000)), Some(t(103_000))));
+    let (p, a) = actions(p, 101_000, phone::Event::BondLost(phone()));
+    assert_eq!(a, [Action::AllowRebond(phone())]);
+    assert_eq!(actions(p, 102_000, phone::Event::Pairing(phone(), PairingStep::Failed)).1, [Action::TellBondLost(phone())]);
+}
+
+#[test]
 fn phone_settles_after_connecting_and_each_update() {
     let p = up(0);
     assert_eq!(p.settled_at(), Some(t(3_000)));

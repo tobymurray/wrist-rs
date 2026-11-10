@@ -255,9 +255,9 @@ fn a_new_advertising_interval_is_a_stop_then_a_start() {
     assert!(matches!(core.pending().map(|p| p.op), Some(Op::Advertise(Some(_)))));
 }
 
-fn snapshot_with(link: ConnHandle) -> wrist_ble::Snapshot {
+fn snapshot_with(link: ConnHandle, encrypted: Option<bool>) -> wrist_ble::Snapshot {
     let mut links = [None; wrist_ble::MAX_LINKS];
-    links[0] = Some(wrist_ble::LinkStatus { link, role: LeConnRole::Peripheral, peer: phone_addr() });
+    links[0] = Some(wrist_ble::LinkStatus { link, role: LeConnRole::Peripheral, peer: phone_addr(), encrypted });
     wrist_ble::Snapshot { at: Instant(0), links, advertising: false, scanning: false, initiating: false, anchor: None }
 }
 
@@ -274,7 +274,7 @@ fn advertising_done_after_the_phone_connects_stays_ended() {
 fn advertising_done_after_a_resync_finds_the_phone_stays_ended() {
     let mut core = retiming_advertising();
     core.step(Instant(1_001), Input::Radio(RadioEvent::EventsLost));
-    core.step(Instant(1_002), Input::Snapshot(Ok(snapshot_with(ConnHandle::new(0x801)))));
+    core.step(Instant(1_002), Input::Snapshot(Ok(snapshot_with(ConnHandle::new(0x801), Some(false)))));
     core.step(Instant(1_003), done(3));
     assert_eq!(core.state.radio.advertising, None);
 }
@@ -300,7 +300,7 @@ fn a_phone_link_found_by_resync_is_asked_for_its_parameters() {
     h.at(1_600, Input::Radio(RadioEvent::Params { link: old, result: Ok(fits) }));
     let new = ConnHandle::new(0x802);
     h.at(10_000, Input::Radio(RadioEvent::EventsLost));
-    h.at(10_000, Input::Snapshot(Ok(snapshot_with(new))));
+    h.at(10_000, Input::Snapshot(Ok(snapshot_with(new, Some(false)))));
     // A link the resync found is asked once it is encrypted, as any other.
     h.at(10_500, Input::Radio(RadioEvent::Encryption { link: new, on: true }));
     while h.now < Instant(12_000) {
@@ -308,6 +308,66 @@ fn a_phone_link_found_by_resync_is_asked_for_its_parameters() {
         h.at(next.0, Input::Tick);
     }
     assert!(h.ops.iter().any(|op| matches!(op, Op::UpdateParams(l, _) if *l == new)), "{:?}", h.ops);
+}
+
+/// A phone link secured and fitting its ask, then found again by a resync as `found`.
+fn resynced(found: ConnHandle, encrypted: Option<bool>) -> (Harness, usize) {
+    let mut h = Harness::new(Goals { radio_on: true, ..Goals::OFF });
+    let old = ConnHandle::new(0x801);
+    phone_up(&mut h, 1_000, old);
+    h.at(1_500, Input::Radio(RadioEvent::Encryption { link: old, on: true }));
+    let fits = LinkParams { interval: Duration::from_u16(120), latency: 4, timeout: Duration::from_u16(600) };
+    h.at(1_600, Input::Radio(RadioEvent::Params { link: old, result: Ok(fits) }));
+    h.at(10_000, Input::Radio(RadioEvent::EventsLost));
+    let before = h.ops.len();
+    h.at(10_000, Input::Snapshot(Ok(snapshot_with(found, encrypted))));
+    (h, before)
+}
+
+fn run_to(h: &mut Harness, until: u64) {
+    while h.now.0 < until {
+        let next = h.next().map_or(until, |t| t.0.max(h.now.0 + 1).min(until));
+        h.at(next, Input::Tick);
+    }
+}
+
+fn asked(ops: &[Op]) -> bool {
+    ops.iter().any(|op| matches!(op, Op::UpdateParams(..)))
+}
+
+fn asked_to_pair(ops: &[Op]) -> bool {
+    ops.iter().any(|op| matches!(op, Op::RequestSecurity(_)))
+}
+
+#[test]
+fn a_link_a_resync_finds_encrypted_is_asked_and_not_asked_to_pair() {
+    for found in [ConnHandle::new(0x801), ConnHandle::new(0x802)] {
+        let (mut h, before) = resynced(found, Some(true));
+        run_to(&mut h, 70_000);
+        assert!(asked(&h.ops[before..]), "{found:?}: {:?}", &h.ops[before..]);
+        assert!(!asked_to_pair(&h.ops[before..]), "{found:?}: {:?}", &h.ops[before..]);
+    }
+}
+
+#[test]
+fn a_link_whose_security_a_resync_cannot_tell_is_left_alone_until_an_event_tells() {
+    for found in [ConnHandle::new(0x801), ConnHandle::new(0x802)] {
+        let (mut h, before) = resynced(found, None);
+        run_to(&mut h, 70_000);
+        assert!(!asked(&h.ops[before..]), "{found:?}: {:?}", &h.ops[before..]);
+        assert!(!asked_to_pair(&h.ops[before..]), "{found:?}: {:?}", &h.ops[before..]);
+        h.at(70_000, Input::Radio(RadioEvent::Encryption { link: found, on: true }));
+        assert!(asked(&h.ops[before..]), "{found:?}: {:?}", &h.ops[before..]);
+    }
+}
+
+#[test]
+fn a_secure_link_a_resync_finds_unencrypted_is_held_and_asked_to_pair() {
+    let link = ConnHandle::new(0x801);
+    let (mut h, before) = resynced(link, Some(false));
+    run_to(&mut h, 10_001 + u64::from(ASK_TO_PAIR_AFTER.0));
+    assert!(!asked(&h.ops[before..]), "{:?}", &h.ops[before..]);
+    assert_eq!(&h.ops[before..], [Op::RequestSecurity(link)]);
 }
 
 #[test]

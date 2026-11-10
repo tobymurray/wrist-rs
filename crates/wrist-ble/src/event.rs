@@ -92,6 +92,8 @@ pub struct LinkStatus {
     pub link: ConnHandle,
     pub role: LeConnRole,
     pub peer: PeerAddr,
+    /// Whether the link is encrypted, from chips that report it.
+    pub encrypted: Option<bool>,
 }
 
 /// The central time base, from chips that report it.

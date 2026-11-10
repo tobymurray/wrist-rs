@@ -258,7 +258,7 @@ fn an_occasional_busy_refusal_is_only_retried() {
 }
 
 /// A snapshot cannot show the same handle ended and made again behind lost events: what was known
-/// of the link's parameters is let go, and it is judged afresh.
+/// of the encrypted link's parameters is let go, and it is judged afresh.
 #[test]
 fn a_link_a_resync_finds_again_is_judged_afresh() {
     let mut b = Bench::new(Goals { radio_on: true, power: Power::Cable, ..Goals::OFF });
@@ -268,7 +268,7 @@ fn a_link_a_resync_finds_again_is_judged_afresh() {
     let out = b.at(2_000, Input::Radio(RadioEvent::EventsLost));
     assert!(out.snapshot);
     let mut links = [None; MAX_LINKS];
-    links[0] = Some(wrist_ble::LinkStatus { link: link(), role: LeConnRole::Peripheral, peer: phone() });
+    links[0] = Some(wrist_ble::LinkStatus { link: link(), role: LeConnRole::Peripheral, peer: phone(), encrypted: Some(true) });
     let snap = Snapshot { at: Instant(2_001), links, advertising: false, scanning: false, initiating: false, anchor: None };
     let out = b.at(2_001, Input::Snapshot(Ok(snap)));
     assert!(matches!(out.op, Some(Op::UpdateParams(l, _)) if l == link()), "{out:?}");
