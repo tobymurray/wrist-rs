@@ -7,17 +7,15 @@ use core::sync::atomic::Ordering;
 
 use bluenrg2::opcode::{
     ACI_GAP_SET_DISCOVERABLE, ACI_GAP_SET_NON_DISCOVERABLE, ACI_GAP_TERMINATE, ACI_GATT_ADD_CHAR, ACI_GATT_ADD_SERVICE, ACI_HAL_GET_ANCHOR_PERIOD,
+    ACI_UPDATER_START,
 };
-use bluenrg2::{ad, address, evt_mask, permission, props, uuid_type, ADV_IND, MIN_ENC_KEY_SIZE, NO_FILTER, PRIMARY_SERVICE};
+use bluenrg2::{ad, adv_filter_policy, adv_type, enc_key_size, evt_mask, permission, props, service_type, uuid_type, value_length, AddrKind};
 use wrist_bluenrg2::probe::{Beside, Line, Probe};
 
 use embassy_time::Timer;
 
 use super::{Link, CONN_HANDLE, DEVICE_NAME, INTERVAL, LATENCY, STATE, STATE_ADVERTISING, STATE_CONNECTED, STATE_IDLE};
 use crate::uart::Uart;
-
-/// Starts the chip's updater on firmware 2353 (HARDWARE.md); only this debug command sends it.
-const UPDATER_START: u16 = 0xFC20;
 
 /// `ble probe adv`'s steps: the interval (0.625 ms units) each `ACI_GAP_SET_DISCOVERABLE` asks
 /// for, and whether `ACI_GAP_SET_NON_DISCOVERABLE` goes first.
@@ -49,7 +47,6 @@ pub(super) enum Gatt {
 
 /// Test UUIDs, not assigned to any service or characteristic.
 const PROBE_UUID: u16 = 0xFF00;
-const FIXED_LENGTH: u8 = 0x00;
 
 impl Link<'_> {
     pub(super) async fn probe_gatt(&mut self, what: Gatt) {
@@ -156,7 +153,7 @@ impl Link<'_> {
     /// A primary service with a 16-bit UUID: its handle, or the chip's refusal (0xFF unanswered).
     async fn probe_service(&mut self, uuid: u16, records: u8) -> Result<u16, u8> {
         let u = uuid.to_le_bytes();
-        match self.command(ACI_GATT_ADD_SERVICE, &[uuid_type::U16, u[0], u[1], PRIMARY_SERVICE, records]).await {
+        match self.command(ACI_GATT_ADD_SERVICE, &[uuid_type::U16, u[0], u[1], service_type::PRIMARY, records]).await {
             Ok(r) if r.status == 0 && r.len >= 2 => Ok(u16::from_le_bytes([r.params[0], r.params[1]])),
             Ok(r) => Err(if r.status == 0 { 0xFE } else { r.status }),
             Err(_) => Err(0xFF),
@@ -169,8 +166,8 @@ impl Link<'_> {
         let u = uuid.to_le_bytes();
         let l = len.to_le_bytes();
         let p = [
-            sv[0], sv[1], uuid_type::U16, u[0], u[1], l[0], l[1], props::READ, permission::NONE, evt_mask::NONE, MIN_ENC_KEY_SIZE,
-            FIXED_LENGTH,
+            sv[0], sv[1], uuid_type::U16, u[0], u[1], l[0], l[1], props::READ, permission::NONE, evt_mask::NONE, enc_key_size::MIN,
+            value_length::CONSTANT,
         ];
         match self.command(ACI_GATT_ADD_CHAR, &p).await {
             Ok(r) if r.status == 0 => Ok(()),
@@ -210,7 +207,7 @@ impl Link<'_> {
     /// next `ACI_BLUE_INITIALIZED` is one the driver did not ask for.
     pub(super) async fn restart_chip(&mut self, updater: bool) {
         if updater {
-            let status = self.command(UPDATER_START, &[]).await.map(|r| r.status);
+            let status = self.command(ACI_UPDATER_START, &[]).await.map(|r| r.status);
             self.uart.write_str("[ble] probe: updater start sent, status ");
             match status {
                 Ok(s) => self.uart.write_hex8(s),
@@ -303,11 +300,11 @@ impl Link<'_> {
     /// `ACI_GAP_SET_DISCOVERABLE` as `advertise` sends it, at `interval`; the chip's status.
     async fn discoverable(&mut self, interval: u16) -> Result<u8, &'static str> {
         let mut p = [0u8; 20];
-        p[0] = ADV_IND;
+        p[0] = adv_type::ADV_IND;
         p[1..3].copy_from_slice(&interval.to_le_bytes());
         p[3..5].copy_from_slice(&interval.to_le_bytes());
-        p[5] = address::RANDOM;
-        p[6] = NO_FILTER;
+        p[5] = AddrKind::RANDOM.as_raw();
+        p[6] = adv_filter_policy::NO_FILTER;
         p[7] = u8::try_from(1 + DEVICE_NAME.len()).unwrap_or(0);
         p[8] = ad::NAME_COMPLETE;
         p[9..9 + DEVICE_NAME.len()].copy_from_slice(DEVICE_NAME);

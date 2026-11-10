@@ -4,7 +4,7 @@ use core::sync::atomic::Ordering;
 
 use embassy_time::{Duration, Instant};
 use bluenrg2::opcode::{ACI_GAP_SET_NON_DISCOVERABLE, ACI_GAP_START_GENERAL_DISCOVERY_PROC, ACI_GAP_TERMINATE_GAP_PROC};
-use bluenrg2::{address, gap_proc, Address, BleStatus, LeAdvEventKind, Uuid, FILTER_DUPLICATES};
+use bluenrg2::{filter_duplicates, gap_proc, AddrKind, Address, BleStatus, LeAdvEventKind, Uuid};
 use wrist_wake::ble::{scan, Scan};
 
 use super::{power, write_address, Link, Request, STATE, STATE_ADVERTISING, STATE_IDLE};
@@ -211,8 +211,8 @@ impl Link<'_> {
         let mut p = [0u8; 6];
         p[0..2].copy_from_slice(&s.interval.to_le_bytes());
         p[2..4].copy_from_slice(&s.window.to_le_bytes());
-        p[4] = address::RANDOM;
-        p[5] = FILTER_DUPLICATES;
+        p[4] = AddrKind::RANDOM.as_raw();
+        p[5] = filter_duplicates::ENABLED;
         match self.while_advertising(ACI_GAP_START_GENERAL_DISCOVERY_PROC, &p).await {
             Ok(0) => {
                 self.scanner.scan = Some((Instant::now() + Duration::from_secs(u64::from(seconds)), 0, 0));

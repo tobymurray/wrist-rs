@@ -20,7 +20,7 @@ fn command_complete(opcode: u16, status: u8, params: &[u8]) -> Vec<u8> {
 
 /// The line the image prints for a reply packet.
 fn line(probe: Probe, packet: &[u8]) -> String {
-    let Event::CommandComplete { cmd_opcode, status, return_param_bytes } = parse(packet) else {
+    let Event::CommandComplete { cmd_opcode, status: Some(status), return_param_bytes } = parse(packet) else {
         panic!("not a Command Complete");
     };
     assert_eq!(cmd_opcode, probe.opcode());

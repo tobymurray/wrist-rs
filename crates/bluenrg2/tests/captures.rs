@@ -2,7 +2,7 @@
 
 use std::fmt::Write;
 
-use bluenrg2::{parse, BleStatus, EncryptionEnabledLevel, Event, LeConnRole};
+use bluenrg2::{parse, BleStatus, ConnHandle, ConnTiming, EncryptionEnabledLevel, Event, LeConnRole};
 
 fn packets() -> Vec<Vec<u8>> {
     decode(include_str!("captures/bluez-reconnect.hex"))
@@ -27,8 +27,8 @@ fn a_captured_connection_decodes_whole() {
     let packets = packets();
     let events: Vec<Event<'_>> = packets.iter().map(|p| parse(p)).collect();
     assert!(!events.iter().any(|e| matches!(e, Event::Malformed(_) | Event::Unknown { .. })), "{events:?}");
-    let handle = 0x0E01;
-    assert!(matches!(events[0], Event::LeConnectionComplete { handle: h, role: LeConnRole::Central, conn_interval: Some((24, 0)), .. } if h == handle));
+    let handle = ConnHandle::new(0x0E01);
+    assert!(matches!(events[0], Event::LeConnectionComplete { handle: h, role: LeConnRole::Central, timing: Some(ConnTiming { conn_interval: 24, peripheral_latency: 0, .. }), .. } if h == handle));
     assert_eq!(events[1], Event::LeUnknown { subevent_code: 0x14 });
     assert_eq!(events[2], Event::LeUnknown { subevent_code: 0x04 });
     assert_eq!(events[3], Event::LeDataLengthChange { handle, max_tx_octets: 251, max_tx_time: 2120, max_rx_octets: 27, max_rx_time: 328 });

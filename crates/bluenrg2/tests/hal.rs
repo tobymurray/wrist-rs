@@ -1,6 +1,6 @@
 //! The `ACI_HAL` reads' return parameters, decoded.
 
-use bluenrg2::probe::{updater_version, AnchorPeriod, FirmwareDetails};
+use bluenrg2::hal::{updater_version, AnchorPeriod, FirmwareDetails};
 
 const FIRMWARE: [u8; 14] = [2, 1, 0, 0x02, 0x34, 0x12, 2, 2, 1, 0, 0x0F, 0x00, 0x31, 0x09];
 

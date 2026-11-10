@@ -1,12 +1,19 @@
-//! Packets as the BlueNRG-2 sends them, in the shapes installs 40 to 51 met:
-//! the 217-byte console write, two events in one read, a read cut short.
+//! Packets as the BlueNRG-2 sends them.
 
 use bluenrg2::{
     ad_name, bonded_devices, parse_address, ad_uuid128s, ad_uuid16s, att_mtu, characteristics, command, descriptors, gap_proc_complete, gatt_error,
     header_sizes, notification, numeric_comparison, packet_len, packet_whole, pairing_complete, parse, read_value,
     reports, service_range, services, vendor, Address, AttributeModified, Characteristic, Event, L2capUpdateRequest,
-    L2capUpdateResponse, Service, Uuid, AddrKind, EncryptionEnabledLevel, LeAdvEventKind, LeConnRole, BleStatus,
+    L2capUpdateResponse, Service, Uuid, AddrKind, ConnHandle, ConnTiming, EncryptionEnabledLevel, LeAdvEventKind, LeConnRole, BleStatus,
 };
+
+fn link() -> ConnHandle {
+    ConnHandle::new(0x0801)
+}
+
+fn timing(conn_interval: u16) -> ConnTiming {
+    ConnTiming { conn_interval, peripheral_latency: 0, supervision_timeout: 500 }
+}
 
 /// A vendor event packet: `04 FF len code params`.
 fn vendor_event(code: u16, params: &[u8]) -> Vec<u8> {
@@ -18,7 +25,7 @@ fn vendor_event(code: u16, params: &[u8]) -> Vec<u8> {
 
 #[test]
 fn header_sizes_read_both_fields() {
-    // Install 40: a write header answered with 265 bytes of room.
+    // A write header answered with 265 bytes of room.
     assert_eq!(header_sizes(&[0x00, 0x09, 0x01, 0x00, 0x00]), (265, 0));
     assert_eq!(header_sizes(&[0x00, 0x09, 0x01, 0xE6, 0x00]), (265, 230));
 }
@@ -85,12 +92,12 @@ fn an_acl_packet_is_measured_by_its_16_bit_length() {
 }
 
 #[test]
-fn a_217_byte_console_write_decodes() {
-    // Connection 0x0801, attribute 0x0019 (NUS RX value), offset 0, 217 bytes.
+fn a_217_byte_attribute_write_decodes() {
+    // Connection 0x0801, attribute 0x0019, offset 0, 217 bytes.
     let mut params = vec![0x01, 0x08, 0x19, 0x00, 0x00, 0x00, 217, 0x00];
     params.extend((0..217u8).map(|i| i.wrapping_mul(7)));
     let p = vendor_event(vendor::GATT_ATTRIBUTE_MODIFIED, &params);
-    assert_eq!(p.len(), 230); // two of these overflow the old 260-byte buffer
+    assert_eq!(p.len(), 230);
     let Event::Vendor { code, params } = parse(&p) else { panic!("not vendor") };
     assert_eq!(code, vendor::GATT_ATTRIBUTE_MODIFIED);
     let w = AttributeModified::decode(params).unwrap();
@@ -130,14 +137,17 @@ fn shortened(p: &[u8], n: usize) -> Vec<u8> {
 #[test]
 fn command_complete_and_status() {
     let p = [0x04, 0x0E, 0x05, 0x01, 0x06, 0xFD, 0x00, 0xAA];
-    assert_eq!(parse(&p), Event::CommandComplete { cmd_opcode: 0xFD06, status: BleStatus::SUCCESS, return_param_bytes: &[0xAA] });
+    assert_eq!(parse(&p), Event::CommandComplete { cmd_opcode: 0xFD06, status: Some(BleStatus::SUCCESS), return_param_bytes: &[0xAA] });
+    // No Operation: credits only, no return parameters and so no status.
+    let p = [0x04, 0x0E, 0x03, 0x01, 0x00, 0x00];
+    assert_eq!(parse(&p), Event::CommandComplete { cmd_opcode: 0x0000, status: None, return_param_bytes: &[] });
     let p = [0x04, 0x0F, 0x04, 0x00, 0x01, 0x13, 0xFD];
     assert_eq!(parse(&p), Event::CommandStatus { cmd_opcode: 0xFD13, status: BleStatus::SUCCESS });
     // A refusal: Command Disallowed.
     let p = [0x04, 0x0F, 0x04, 0x0C, 0x01, 0x9E, 0xFC];
     assert_eq!(parse(&p), Event::CommandStatus { cmd_opcode: 0xFC9E, status: BleStatus::new(0x0C) });
-    // Without a status, or without the whole opcode.
-    let short = shortened(&[0x04, 0x0E, 0x05, 0x01, 0x06, 0xFD, 0x00, 0xAA], 3);
+    // Without the whole opcode, or a Command Status without its status.
+    let short = shortened(&[0x04, 0x0E, 0x05, 0x01, 0x06, 0xFD, 0x00, 0xAA], 2);
     assert_eq!(parse(&short), Event::Malformed(&short));
     let short = shortened(&[0x04, 0x0F, 0x04, 0x00, 0x01, 0x13, 0xFD], 3);
     assert_eq!(parse(&short), Event::Malformed(&short));
@@ -165,14 +175,14 @@ fn connection_complete_gives_handle_role_peer_interval_latency_and_timeout() {
     let peer = Address { kind: AddrKind::PUBLIC, bytes: [0x11, 0x22, 0x33, 0x44, 0x55, 0x66] };
     assert_eq!(
         parse(&p),
-        Event::LeConnectionComplete { handle: 0x0801, role: LeConnRole::Peripheral, peer, conn_interval: Some((24, 0)), supervision_timeout: Some(500) }
+        Event::LeConnectionComplete { handle: link(), role: LeConnRole::Peripheral, peer, timing: Some(timing(24)) }
     );
     let mut e = enhanced_connection_complete();
     assert_eq!(e.len(), 3 + 31);
     let peer = Address { kind: AddrKind::PUBLIC, bytes: [0x11; 6] };
     assert_eq!(
         parse(&e),
-        Event::LeConnectionComplete { handle: 0x0801, role: LeConnRole::Peripheral, peer, conn_interval: Some((39, 0)), supervision_timeout: Some(500) }
+        Event::LeConnectionComplete { handle: link(), role: LeConnRole::Peripheral, peer, timing: Some(timing(39)) }
     );
     // The local device as the central (role 0), to a random address resolved (type 3).
     e[7] = 0x00;
@@ -182,11 +192,22 @@ fn connection_complete_gives_handle_role_peer_interval_latency_and_timeout() {
     assert_eq!(peer.kind, AddrKind::RANDOM);
     // Short of the latency: the handle and peer still, no interval.
     for q in [shortened(&p, 15), shortened(&e, 27)] {
-        assert!(matches!(parse(&q), Event::LeConnectionComplete { handle: 0x0801, conn_interval: None, .. }));
+        assert!(matches!(parse(&q), Event::LeConnectionComplete { handle, timing: None, .. } if handle == link()));
     }
     // Short of the peer's address: nothing to act on.
     for q in [shortened(&p, 11), shortened(&e, 11), shortened(&p, 1)] {
         assert_eq!(parse(&q), Event::Malformed(&q));
+    }
+}
+
+#[test]
+fn a_reserved_role_is_malformed_and_a_reserved_clock_accuracy_drops_only_the_timing() {
+    for (mut p, accuracy_at) in [(connection_complete(), 21), (enhanced_connection_complete(), 33)] {
+        let mut role = p.clone();
+        role[7] = 0x02;
+        assert_eq!(parse(&role), Event::Malformed(&role));
+        p[accuracy_at] = 0x08;
+        assert!(matches!(parse(&p), Event::LeConnectionComplete { role: LeConnRole::Peripheral, timing: None, .. }));
     }
 }
 
@@ -205,11 +226,11 @@ fn a_connection_that_never_formed_carries_its_status() {
 
 #[test]
 fn connection_update_complete_succeeds_or_fails_with_its_handle() {
-    // Install 48: BlueZ moved to 15 ms (12 units) on request.
+    // A move to 15 ms (12 units).
     let p = le_event(0x03, &[0x00, 0x01, 0x08, 12, 0, 0, 0, 0xF4, 0x01]);
     assert_eq!(
         parse(&p),
-        Event::LeConnectionUpdateComplete { handle: 0x0801, conn_interval: 12, peripheral_latency: 0, supervision_timeout: 500 }
+        Event::LeConnectionUpdateComplete { handle: link(), conn_interval: 12, peripheral_latency: 0, supervision_timeout: 500 }
     );
     // Unacceptable Connection Parameters, Unsupported Remote Feature, LL Response Timeout:
     // the interval and latency fields mean nothing then.
@@ -217,8 +238,8 @@ fn connection_update_complete_succeeds_or_fails_with_its_handle() {
         let mut f = p.clone();
         f[4] = status;
         let status = BleStatus::new(status);
-        assert_eq!(parse(&f), Event::LeConnectionUpdateFailed { handle: 0x0801, status });
-        assert_eq!(parse(&shortened(&f, 4)), Event::LeConnectionUpdateFailed { handle: 0x0801, status });
+        assert_eq!(parse(&f), Event::LeConnectionUpdateFailed { handle: link(), status });
+        assert_eq!(parse(&shortened(&f, 4)), Event::LeConnectionUpdateFailed { handle: link(), status });
     }
     // A failure short of its handle, and a success short of its latency.
     let mut f = p.clone();
@@ -236,7 +257,7 @@ fn data_length_change_carries_both_directions() {
     assert_eq!(
         parse(&p),
         Event::LeDataLengthChange {
-            handle: 0x0801,
+            handle: link(),
             max_tx_octets: 251,
             max_tx_time: 2120,
             max_rx_octets: 27,
@@ -253,12 +274,12 @@ fn data_length_change_carries_both_directions() {
 fn disconnection_complete_carries_handle_status_and_reason() {
     assert_eq!(
         parse(&hci_event(0x05, &[0x00, 0x01, 0x08, 0x13])),
-        Event::DisconnectionComplete { handle: 0x0801, status: BleStatus::SUCCESS, reason: BleStatus::new(0x13) }
+        Event::DisconnectionComplete { handle: link(), status: BleStatus::SUCCESS, reason: BleStatus::new(0x13) }
     );
     // Supervision timeout, and MIC failure.
     assert_eq!(
         parse(&hci_event(0x05, &[0x00, 0x02, 0x08, 0x08])),
-        Event::DisconnectionComplete { handle: 0x0802, status: BleStatus::SUCCESS, reason: BleStatus::new(0x08) }
+        Event::DisconnectionComplete { handle: ConnHandle::new(0x0802), status: BleStatus::SUCCESS, reason: BleStatus::new(0x08) }
     );
     assert!(matches!(
         parse(&hci_event(0x05, &[0x00, 0x01, 0x08, 0x3D])),
@@ -267,7 +288,7 @@ fn disconnection_complete_carries_handle_status_and_reason() {
     // A disconnection that failed: Command Disallowed, the link still up.
     assert_eq!(
         parse(&hci_event(0x05, &[0x0C, 0x01, 0x08, 0x00])),
-        Event::DisconnectionComplete { handle: 0x0801, status: BleStatus::new(0x0C), reason: BleStatus::new(0) }
+        Event::DisconnectionComplete { handle: link(), status: BleStatus::new(0x0C), reason: BleStatus::new(0) }
     );
     let short = hci_event(0x05, &[0x00, 0x01, 0x08]);
     assert_eq!(parse(&short), Event::Malformed(&short));
@@ -277,12 +298,12 @@ fn disconnection_complete_carries_handle_status_and_reason() {
 fn encryption_change_carries_handle_status_and_state() {
     assert_eq!(
         parse(&hci_event(0x08, &[0x00, 0x01, 0x08, 0x01])),
-        Event::EncryptionChange { handle: 0x0801, status: BleStatus::SUCCESS, enabled: EncryptionEnabledLevel::OnE0OrAesCcm }
+        Event::EncryptionChange { handle: link(), status: BleStatus::SUCCESS, enabled: EncryptionEnabledLevel::OnE0OrAesCcm }
     );
     // The central's key was missing on the local device: PIN or Key Missing, encryption off.
     assert_eq!(
         parse(&hci_event(0x08, &[0x06, 0x01, 0x08, 0x00])),
-        Event::EncryptionChange { handle: 0x0801, status: BleStatus::new(0x06), enabled: EncryptionEnabledLevel::Off }
+        Event::EncryptionChange { handle: link(), status: BleStatus::new(0x06), enabled: EncryptionEnabledLevel::Off }
     );
     let short = hci_event(0x08, &[0x00, 0x01]);
     assert_eq!(parse(&short), Event::Malformed(&short));
@@ -290,8 +311,8 @@ fn encryption_change_carries_handle_status_and_state() {
 
 #[test]
 fn a_key_refresh_carries_handle_and_status() {
-    assert_eq!(parse(&hci_event(0x30, &[0x00, 0x01, 0x08])), Event::EncryptionKeyRefresh { handle: 0x0801, status: BleStatus::SUCCESS });
-    assert_eq!(parse(&hci_event(0x30, &[0x06, 0x01, 0x08])), Event::EncryptionKeyRefresh { handle: 0x0801, status: BleStatus::new(0x06) });
+    assert_eq!(parse(&hci_event(0x30, &[0x00, 0x01, 0x08])), Event::EncryptionKeyRefresh { handle: link(), status: BleStatus::SUCCESS });
+    assert_eq!(parse(&hci_event(0x30, &[0x06, 0x01, 0x08])), Event::EncryptionKeyRefresh { handle: link(), status: BleStatus::new(0x06) });
     let short = hci_event(0x30, &[0x00, 0x01]);
     assert_eq!(parse(&short), Event::Malformed(&short));
 }
@@ -299,16 +320,16 @@ fn a_key_refresh_carries_handle_and_status() {
 #[test]
 fn a_link_is_encrypted_only_after_a_change_or_refresh_that_succeeded() {
     let encryption = |code, params: &[u8]| parse(&hci_event(code, params)).encryption();
-    assert_eq!(encryption(0x08, &[0x00, 0x01, 0x08, 0x01]), Some((0x0801, true)));
-    assert_eq!(encryption(0x08, &[0x06, 0x01, 0x08, 0x01]), Some((0x0801, false)));
-    assert_eq!(encryption(0x08, &[0x00, 0x01, 0x08, 0x00]), Some((0x0801, false)));
-    assert_eq!(encryption(0x30, &[0x00, 0x01, 0x08]), Some((0x0801, true)));
-    assert_eq!(encryption(0x30, &[0x06, 0x01, 0x08]), Some((0x0801, false)));
+    assert_eq!(encryption(0x08, &[0x00, 0x01, 0x08, 0x01]), Some((link(), true)));
+    assert_eq!(encryption(0x08, &[0x06, 0x01, 0x08, 0x01]), Some((link(), false)));
+    assert_eq!(encryption(0x08, &[0x00, 0x01, 0x08, 0x00]), Some((link(), false)));
+    assert_eq!(encryption(0x30, &[0x00, 0x01, 0x08]), Some((link(), true)));
+    assert_eq!(encryption(0x30, &[0x06, 0x01, 0x08]), Some((link(), false)));
     assert_eq!(encryption(0x05, &[0x00, 0x01, 0x08, 0x13]), None);
 }
 
 #[test]
-fn events_the_image_does_not_decode_are_named() {
+fn events_the_crate_does_not_decode_are_named() {
     // LE: Read Remote Features Complete, PHY Update Complete.
     for sub in [0x04, 0x0C] {
         assert_eq!(parse(&le_event(sub, &[0x00, 0x01, 0x08])), Event::LeUnknown { subevent_code: sub });
@@ -351,7 +372,7 @@ fn a_packet_is_read_no_further_than_its_own_length() {
     // Two events in one read: the first only.
     let mut read = hci_event(0x05, &[0x00, 0x01, 0x08, 0x13]);
     read.extend(vendor_event(vendor::BLUE_INITIALIZED, &[0x01]));
-    assert_eq!(parse(&read), Event::DisconnectionComplete { handle: 0x0801, status: BleStatus::SUCCESS, reason: BleStatus::new(0x13) });
+    assert_eq!(parse(&read), Event::DisconnectionComplete { handle: link(), status: BleStatus::SUCCESS, reason: BleStatus::new(0x13) });
     let mut read = vendor_event(vendor::GATT_PROC_COMPLETE, &[0x01, 0x08, 0x00]);
     read.extend(hci_event(0x05, &[0x00, 0x01, 0x08, 0x13]));
     assert_eq!(parse(&read), Event::Vendor { code: vendor::GATT_PROC_COMPLETE, params: &[0x01, 0x08, 0x00] });
@@ -389,7 +410,7 @@ fn gap_events_decode() {
     // Pairing: connection 0x0801, number 123456.
     let mut params = vec![0x01, 0x08];
     params.extend(123_456u32.to_le_bytes());
-    assert_eq!(numeric_comparison(&params), Some((0x0801, 123_456)));
+    assert_eq!(numeric_comparison(&params), Some((link(), 123_456)));
     assert_eq!(pairing_complete(&[0x01, 0x08, 0x00, 0x00]), Some((0, 0)));
     assert_eq!(pairing_complete(&[0x01, 0x08, 0x02]), None);
 }
@@ -410,7 +431,7 @@ fn a_fixed_pin_goes_little_endian_after_its_flag() {
         min_key_size: 16,
         max_key_size: 16,
         fixed_pin: Some(123_456),
-        identity_address_type: bluenrg2::address::RANDOM,
+        identity_address_type: AddrKind::RANDOM,
     };
     assert_eq!(r.params()[6..11], [0x00, 0x40, 0xE2, 0x01, 0x00]);
 }
@@ -520,7 +541,7 @@ fn a_peripherals_parameter_request_decodes() {
     let p = [0x01, 0x08, 7, 8, 0, 0x40, 0x01, 0x80, 0x02, 0, 0, 0x58, 0x02];
     assert_eq!(
         L2capUpdateRequest::decode(&p),
-        Some(L2capUpdateRequest { handle: 0x0801, identifier: 7, interval_min: 320, interval_max: 640, latency: 0, timeout: 600 })
+        Some(L2capUpdateRequest { handle: link(), identifier: 7, interval_min: 320, interval_max: 640, latency: 0, timeout: 600 })
     );
     assert_eq!(L2capUpdateRequest::decode(&p[..12]), None);
 }
@@ -533,7 +554,7 @@ fn the_centrals_answer_to_a_parameter_request_decodes() {
         let Event::Vendor { code, params } = parse(p) else { panic!("{p:02X?}") };
         assert_eq!(code, 0x0800);
         let r = L2capUpdateResponse::decode(params).unwrap();
-        assert_eq!(r, L2capUpdateResponse { handle: 0x0801, result });
+        assert_eq!(r, L2capUpdateResponse { handle: link(), result });
         assert_eq!(r.accepted(), result == 0);
     }
     assert_eq!(L2capUpdateResponse::decode(&[0x01, 0x08, 0x01]), None);
@@ -542,7 +563,7 @@ fn the_centrals_answer_to_a_parameter_request_decodes() {
     assert_eq!(L2capUpdateResponse::decode(params), None);
 }
 
-/// The updater-by-command start Linux check 8 met (install 252): `04 FF 03 01 00 02`.
+/// The start the chip reports after `ACI_UPDATER_START`.
 #[test]
 fn the_chip_says_why_it_started() {
     use bluenrg2::{blue_initialized, boot_reason};
@@ -565,21 +586,25 @@ fn an_address_parses_into_the_chips_byte_order() {
     assert_eq!(parse_address("0A:1B:2C:3D:4E:5F (random)"), Some(random));
     assert_eq!(parse_address("0a-1b-2c-3d-4e-5f(random) "), Some(random));
     for bad in ["", "0A:1B:2C:3D:4E", "0A:1B:2C:3D:4E:5F:00", "0A:1B:2C:3D:4E:5", "0A:1B:2C:3D:4E:5G", "0A1B2C3D4E5F", "(random)",
-        "0A:1B:2C:3D:4E:5F (public)", "0A:1B:2C:3D:4E:5F random", "0A:1B:2C:3D:4E:5F (random) (random)"] {
+        "0A:1B:2C:3D:4E:5F (public)", "0A:1B:2C:3D:4E:5F random", "0A:1B:2C:3D:4E:5F (random) (random)", "+A:1B:2C:3D:4E:5F",
+        "+1:+2:+3:+4:+5:+6", "0A:1B:2C:3D:4E: F"] {
         assert_eq!(parse_address(bad), None, "{bad:?}");
     }
 }
 
 #[test]
 fn an_address_is_written_with_its_type_and_reads_back() {
-    use bluenrg2::ADDRESS_TEXT_MAX;
-    let mut out = [0; ADDRESS_TEXT_MAX];
     let public = Address { kind: AddrKind::PUBLIC, bytes: [0x5F, 0x4E, 0x3D, 0x2C, 0x1B, 0x0A] };
-    assert_eq!(public.text(&mut out), "0A:1B:2C:3D:4E:5F");
-    assert_eq!(Address { kind: AddrKind::RANDOM, ..public }.text(&mut out), "0A:1B:2C:3D:4E:5F (random)");
+    assert_eq!(public.to_string(), "0A:1B:2C:3D:4E:5F");
+    assert_eq!(Address { kind: AddrKind::RANDOM, ..public }.to_string(), "0A:1B:2C:3D:4E:5F (random)");
+    // A resolved identity's type prints as public or random.
+    for (raw, kind) in [(2, AddrKind::PUBLIC), (3, AddrKind::RANDOM)] {
+        let a = Address { kind: AddrKind::new(raw), ..public };
+        assert_eq!(parse_address(&a.to_string()), Some(Address { kind, ..public }), "{raw}");
+    }
     proptest::proptest!(|(kind in 0u8..2, bytes: [u8; 6])| {
         let a = Address { kind: AddrKind::new(kind), bytes };
-        proptest::prop_assert_eq!(parse_address(a.text(&mut [0; ADDRESS_TEXT_MAX])), Some(a));
+        proptest::prop_assert_eq!(parse_address(&a.to_string()), Some(a));
     });
 }
 
@@ -603,7 +628,7 @@ fn bonded_devices_reads_each_entry_and_no_more_than_the_reply_holds() {
         let reply = [1, raw, 0xE6, 0xD5, 0xC4, 0xB3, 0xA2, 0xC1];
         let bond = bonded_devices(&reply).next().unwrap();
         assert_eq!(bond.kind, kind);
-        let printed = parse_address(bond.text(&mut [0; bluenrg2::ADDRESS_TEXT_MAX])).unwrap();
+        let printed = parse_address(&bond.to_string()).unwrap();
         assert!(bonded_devices(&reply).any(|bond| bond == printed), "{raw}");
     }
 }
@@ -622,11 +647,11 @@ fn the_largest_bonded_devices_reply_fits_the_return_parameters() {
 
 #[test]
 fn an_st_status_is_not_named_as_an_hci_error() {
-    // HARDWARE.md: `ACI_GATT_ADD_SERVICE` refused with ST's 0x48, out of memory.
+    // ST's 0x48, out of memory, as the chip refused an `ACI_GATT_ADD_SERVICE`.
     let named = [
         format!("{:?}", parse(&[0x04, 0x0E, 0x04, 0x01, 0x02, 0xFD, 0x48])),
         format!("{:?}", parse(&[0x04, 0x0F, 0x04, 0x48, 0x01, 0x02, 0xFD])),
-        format!("{:?}", bluenrg2::proc_complete(&[0x01, 0x08, 0x48])),
+        format!("{:?}", bluenrg2::gatt_proc_complete(&[0x01, 0x08, 0x48])),
         format!("{:?}", gap_proc_complete(&[0x02, 0x48])),
         format!("{:?}", parse(&[0x04, 0x05, 0x04, 0x48, 0x01, 0x08, 0x13])),
         format!("{:?}", parse(&[0x04, 0x05, 0x04, 0x00, 0x01, 0x08, 0x48])),
