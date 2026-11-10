@@ -100,9 +100,7 @@ pub fn anchor(a: &Activities) -> Option<Ns> {
     a.central.iter().flatten().map(|s| interval_ns(s.interval) / u64::from(s.latency.max(1))).min()
 }
 
-/// What `ACI_HAL_GET_ANCHOR_PERIOD` reads beside `a`: the time base a new central link would
-/// join, and its longest free slot in whole 0.625 ms slots, as the chip counts it; `None` where the
-/// chip reads 0 for both (idle, or only links as peripheral). HARDWARE.md, `ble probe`.
+/// What `ACI_HAL_GET_ANCHOR_PERIOD` reads beside `a`, or `None` where it reads 0 for both (HARDWARE.md, `ble probe`).
 #[must_use]
 pub fn anchor_reading(a: &Activities) -> Option<Anchor> {
     let period = anchor(a).or_else(|| a.advertising.as_ref().map(adv_period))?;

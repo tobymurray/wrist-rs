@@ -5,7 +5,6 @@ use std::collections::HashMap;
 use wrist_ble::{Activities, AdvParams, Change, ConnParams, Duration};
 use wrist_bluenrg2::{anchor_reading, Scheduler};
 
-/// Each reading in the fixture, and what the model says the chip reads beside the same activity.
 #[test]
 fn the_model_reads_the_anchor_the_chip_reported() {
     let fixture = include_str!("fixtures/probe-anchor.txt");
@@ -30,7 +29,6 @@ fn the_model_reads_the_anchor_the_chip_reported() {
     assert_eq!(seen, 3);
 }
 
-/// Beside central links the reading is the longest slot a new link is given, wherever the gaps fall.
 #[test]
 fn the_free_slot_is_the_longest_a_new_link_gets() {
     let link = |ce| {
