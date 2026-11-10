@@ -11,6 +11,9 @@ pub const MAX_VALUE: usize = ATT_MAX_MTU - 3;
 /// The longest parameters here: a whole value after its handles, offset and length.
 pub const MAX_PARAMS: usize = 6 + MAX_VALUE;
 
+/// Writes only over a link encrypted with authenticated keys.
+const AUTHENTICATED_WRITE: u8 = permission::AUTHEN_WRITE | permission::ENCRY_WRITE;
+
 /// The most characteristics a server here holds.
 pub const MAX_CHARS: usize = 16;
 
@@ -64,7 +67,7 @@ pub fn add_char(service: u16, c: &CharDecl) -> Option<Command<MAX_PARAMS>> {
         _ if !writable(c) => permission::NONE,
         Permission::Open => permission::NONE,
         Permission::Encrypted => permission::ENCRY_WRITE,
-        Permission::Authenticated => permission::AUTHEN_WRITE | permission::ENCRY_WRITE,
+        Permission::Authenticated => AUTHENTICATED_WRITE,
     };
     let events = if writable(c) { evt_mask::ATTRIBUTE_WRITE } else { evt_mask::NONE };
     Command::new(

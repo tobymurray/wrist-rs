@@ -2,7 +2,7 @@
 //! when it built each command by hand.
 
 use wrist_ble::{BluetoothUuid, CharDecl, Permission, Props, ServerAttr, ServiceDecl};
-use wrist_bluenrg2::gatt::{add_char, add_service, initial, records, set_value, Handles, Part, MAX_CHARS, MAX_VALUE};
+use wrist_bluenrg2::gatt::{add_char, add_service, initial, records, set_value, Handles, Part, MAX_CHARS, MAX_PARAMS, MAX_VALUE};
 use wrist_wake::ble::server::{device_information, services, CONSOLE, RX, TX};
 
 static DIS: [CharDecl; 3] = device_information(b"0123456789abcdef0123456789abcdef-dirty");
@@ -86,6 +86,7 @@ fn a_value_fits_one_notification_or_is_refused() {
     assert_eq!(c.params()[..6], [0x20, 0x00, 0x24, 0x00, 0x00, 244]);
     assert_eq!(&c.params()[6..], &full[..]);
     assert_eq!(set_value(0x20, 0x24, &[7u8; MAX_VALUE + 1]), None);
+    assert_eq!(c.params().len(), MAX_PARAMS, "the longest command fills the buffer exactly");
     assert_eq!(initial(0x20, 0x24, &CONSOLE.chars[0]), None, "RX starts empty");
 }
 
