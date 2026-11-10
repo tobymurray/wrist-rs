@@ -450,7 +450,7 @@ pub struct ConnTiming {
 #[non_exhaustive]
 pub enum Event<'a> {
     /// Command Complete (7.7.14): the opcode answered, its status, the return parameters after it;
-    /// no status when there are no return parameters, as for opcode 0x0000, which only grants credits.
+    /// every opcode but 0x0000, which only grants credits, carries a status, else the event is `Malformed`.
     CommandComplete { cmd_opcode: u16, status: Option<BleStatus>, return_param_bytes: &'a [u8] },
     /// Command Status (7.7.15): a command accepted or refused, results to follow.
     CommandStatus { cmd_opcode: u16, status: BleStatus },
@@ -525,9 +525,12 @@ fn standard(code: u8, params: &[u8]) -> Option<Event<'_>> {
     Some(match code {
         ev::COMMAND_COMPLETE => {
             let e: hci::CommandComplete = first(params)?;
-            let (status, return_param_bytes) = match params[params.len() - e.bytes.len()..].split_first() {
-                Some((&status, rest)) => (Some(BleStatus(status)), rest),
-                None => (None, &[][..]),
+            let rest = &params[params.len() - e.bytes.len()..];
+            let (status, return_param_bytes) = if e.has_status() {
+                let (&status, rest) = rest.split_first()?;
+                (Some(BleStatus(status)), rest)
+            } else {
+                (None, rest)
             };
             Event::CommandComplete { cmd_opcode: e.cmd_opcode.to_raw(), status, return_param_bytes }
         }
