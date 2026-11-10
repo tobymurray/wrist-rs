@@ -296,6 +296,7 @@ impl<'a> Core<'a> {
         self.pending = None;
         self.queue = [None; QUEUE];
         self.backoff = [Backoff::default(); KINDS];
+        self.busy = Bucket::FULL;
         self.forget_phone_params();
     }
 
@@ -498,7 +499,6 @@ impl<'a> Core<'a> {
     fn spend(&mut self, now: Instant, out: &mut Outputs) {
         if self.busy.tokens == 0 && matches!(self.state.chip.state, Chip::Ready(_)) {
             self.counters.busy_spent += 1;
-            self.busy = Bucket::FULL;
             self.chip(now, chip::Event::BaselineRefused, out);
         }
     }
@@ -796,7 +796,11 @@ impl Bucket {
     fn take(self, now: Instant) -> Self {
         let back = self.since.map_or(0, |t| now.since(t).0 / BUSY_REFILL.0);
         let tokens = u8::try_from((u64::from(self.tokens) + u64::from(back)).min(u64::from(BUSY_BUDGET))).unwrap_or(BUSY_BUDGET);
-        let since = if back > 0 || self.since.is_none() { Some(now) } else { self.since };
+        // A refill under way keeps the part of its period already run.
+        let since = match self.since {
+            Some(t) if tokens < BUSY_BUDGET => Some(t + Millis(back * BUSY_REFILL.0)),
+            _ => Some(now),
+        };
         Self { tokens: tokens.saturating_sub(1), since }
     }
 }

@@ -296,3 +296,79 @@ fn a_chip_that_stays_busy_is_restarted_under_the_phones_link() {
     assert_eq!(b.core.counters.busy_spent, 1);
     assert_eq!(b.core.state.phone.link(), None);
 }
+
+/// One busy refusal every nine minutes, against one token back every ten: six hours of them stay
+/// within the budget.
+#[test]
+fn a_busy_refusal_every_nine_minutes_keeps_its_refills() {
+    let mut b = Bench::new(battery());
+    for i in 0..40u64 {
+        let t = 1_000 + i * 540_000;
+        let goals = if i % 2 == 0 { stop_advertising() } else { battery() };
+        let out = b.at(t, Input::Goals(goals));
+        assert!(matches!(out.op, Some(Op::Advertise(_))), "{i}: {out:?}");
+        b.refuse(FailureKind::Busy);
+        let out = b.at(t + 1_000, Input::Tick);
+        assert!(matches!(out.op, Some(Op::Advertise(_))), "{i}: {out:?}");
+        let id = b.accept();
+        b.at(t + 1_001, Input::Radio(RadioEvent::Done(id, Ok(Outcome::Done))));
+    }
+    assert_eq!(b.core.counters.busy_spent, 0);
+}
+
+/// A chip restarted for another cause starts with the whole budget, whatever the last one spent.
+#[test]
+fn a_restarted_chip_has_the_whole_busy_budget() {
+    let mut b = Bench::new(battery());
+    b.at(1_000, Input::Goals(stop_advertising()));
+    for _ in 1..BUSY_BUDGET {
+        b.refuse(FailureKind::Busy);
+        let next = b.core.step(b.now, Input::Tick).next.expect("a retry");
+        b.at(next.0, Input::Tick);
+    }
+    assert_eq!(b.core.counters.busy_spent, 0);
+    let out = b.at(b.now.0 + 1, Input::Radio(RadioEvent::ChipReset(wrist_ble::ResetCause::Watchdog)));
+    let Some(wrist_ble_core::chip::Action::Start(start)) = out.chip else { panic!("{out:?}") };
+    b.at(b.now.0 + 1, Input::Started(start, Ok(INFO)));
+    let id = b.accept();
+    b.at(b.now.0 + 1, Input::Radio(RadioEvent::Done(id, Ok(Outcome::Done))));
+    let out = b.at(b.now.0 + 1_000, Input::Goals(battery()));
+    assert!(matches!(out.op, Some(Op::Advertise(_))), "{out:?}");
+    b.refuse(FailureKind::Busy);
+    assert_eq!(b.core.counters.busy_spent, 0);
+}
+
+/// `n` busy refusals from `ms`, each retried after its backoff, then the retry accepted.
+fn busy(b: &mut Bench, ms: u64, goals: Goals, n: u32) {
+    let out = b.at(ms, Input::Goals(goals));
+    assert!(out.op.is_some(), "{out:?}");
+    for _ in 0..n {
+        b.refuse(FailureKind::Busy);
+        let next = b.core.step(b.now, Input::Tick).next.expect("a retry");
+        b.at(next.0, Input::Tick);
+    }
+    let id = b.accept();
+    b.at(b.now.0 + 1, Input::Radio(RadioEvent::Done(id, Ok(Outcome::Done))));
+}
+
+/// A token given back starts the next one's period where its own ended, not when it was taken.
+#[test]
+fn a_token_given_back_is_not_given_back_again() {
+    let mut b = Bench::new(battery());
+    busy(&mut b, 1_000, stop_advertising(), 6);
+    busy(&mut b, 660_000, battery(), 1);
+    b.at(720_000, Input::Goals(stop_advertising()));
+    b.refuse(FailureKind::Busy);
+    assert_eq!(b.core.counters.busy_spent, 1);
+}
+
+/// A full bucket earns nothing while it stays full.
+#[test]
+fn a_full_bucket_earns_no_credit() {
+    let mut b = Bench::new(battery());
+    busy(&mut b, 1_000, stop_advertising(), 1);
+    busy(&mut b, 900_000, battery(), 6);
+    b.at(1_260_000, Input::Goals(stop_advertising()));
+    b.refuse(FailureKind::Busy);
+    assert_eq!(b.core.counters.busy_spent, 1);
+}

@@ -518,3 +518,14 @@ fn nothing_is_reported_on_a_link_after_it_is_down() {
         }
     }
 }
+
+#[test]
+fn advertising_over_advertising_is_refused_and_the_old_goes_on() {
+    let mut f = ready(1);
+    f.submit(Op::Advertise(Some(ADV_100))).unwrap();
+    for p in [ADV_995, ADV_100] {
+        let r = f.submit(Op::Advertise(Some(p)));
+        assert_eq!(r.map_err(|e| (e.kind, e.native)), Err((FailureKind::ModeExclusion, 0x46)));
+        assert_eq!(f.advertising(), Some(ADV_100));
+    }
+}
