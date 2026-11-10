@@ -7,7 +7,7 @@ pub mod commands;
 pub mod events;
 
 use wrist_ble::{
-    Activities, AdvParams, Admitted, Capabilities, CentralSlot, Change, ConnParams, Duration, Exclusion, GattLimits, Interval, Micros,
+    Activities, AdvParams, Admitted, Anchor, Capabilities, CentralSlot, Change, ConnParams, Duration, Exclusion, GattLimits, Interval, Micros,
     Millis, OpKind, ParamAnswer, RoleSet, SchedKind, Schedule, ScanParams, Slots, MAX_LINKS,
 };
 
@@ -100,6 +100,15 @@ pub fn anchor(a: &Activities) -> Option<Ns> {
     a.central.iter().flatten().map(|s| interval_ns(s.interval) / u64::from(s.latency.max(1))).min()
 }
 
+/// What `ACI_HAL_GET_ANCHOR_PERIOD` reads beside `a`, or `None` where it reads 0 for both (HARDWARE.md, `ble probe`).
+#[must_use]
+pub fn anchor_reading(a: &Activities) -> Option<Anchor> {
+    let period = anchor(a).or_else(|| a.advertising.as_ref().map(adv_period))?;
+    let slots = longest(a, period).min(free(period, occupied(a, None, false))) / SLOT;
+    let us = |ns: Ns| Micros(u32::try_from(ns / 1_000).unwrap_or(u32::MAX));
+    Some(Anchor { period: us(period), max_free_slot: us(slots * SLOT) })
+}
+
 /// PM0257 §4.2's slot allocator, taking `ce_len` as a slot's minimum and maximum length alike.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Scheduler;
@@ -183,9 +192,8 @@ fn free(period: Ns, occupied: Ns) -> Ns {
     period.saturating_sub(occupied + micros(CAPABILITIES.guard))
 }
 
-/// The offset and room for a slot of `want` (§4.2.2), or `None` when the slots already placed overrun `period`.
-fn place(a: &Activities, except: Option<usize>, period: Ns, want: Ns) -> Option<(Ns, Ns)> {
-    let guard = micros(CAPABILITIES.guard);
+/// The slots in `a` but `except`, as start and end in order, and how many there are.
+fn placed(a: &Activities, except: Option<usize>) -> ([(Ns, Ns); MAX_LINKS], usize) {
     let mut spans = [(0, 0); MAX_LINKS];
     let mut n = 0;
     for (i, s) in a.central.iter().enumerate() {
@@ -195,13 +203,32 @@ fn place(a: &Activities, except: Option<usize>, period: Ns, want: Ns) -> Option<
             n += 1;
         }
     }
-    let spans = &mut spans[..n];
-    spans.sort_unstable();
+    spans[..n].sort_unstable();
+    (spans, n)
+}
+
+/// The longest slot `place` finds room for in `period`: the widest gap or the time after the last.
+fn longest(a: &Activities, period: Ns) -> Ns {
+    let guard = micros(CAPABILITIES.guard);
+    let (spans, n) = placed(a, None);
+    let (mut at, mut best) = (0, 0);
+    for &(start, end) in &spans[..n] {
+        best = best.max(start.saturating_sub(at + guard));
+        at = end + guard;
+    }
+    best.max(period.saturating_sub(at + guard))
+}
+
+/// The offset and room for a slot of `want` (§4.2.2), or `None` when the slots already placed overrun `period`.
+fn place(a: &Activities, except: Option<usize>, period: Ns, want: Ns) -> Option<(Ns, Ns)> {
+    let guard = micros(CAPABILITIES.guard);
+    let (spans, n) = placed(a, except);
+    let spans = &spans[..n];
     if spans.last().is_some_and(|&(_, end)| end + guard > period) {
         return None;
     }
     let mut at = 0;
-    for &(start, end) in spans.iter() {
+    for &(start, end) in spans {
         if want > 0 && at + want + guard <= start {
             return Some((at, want));
         }
