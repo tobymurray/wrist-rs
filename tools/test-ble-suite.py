@@ -583,7 +583,7 @@ class Replayable(unittest.TestCase):
 
     def test_the_radio_restarted_then_the_profile_held(self):
         usb = self.Said({'ble off': ['[ble] off'], 'ble on': ['[ble] on'],
-                         'ble': ['[ble] advertising as UNA, timing cable, address D9:5B:7A:EB:29:82'],
+                         'ble': ['[ble] advertising as UNA, timing cable, address C2:3D:4E:5F:60:71'],
                          'ble profile battery': ['[ble] timing: the battery\'s, whatever the power source']})
         problems, result = self.prepare(usb, restart_radio=True, profile='battery')
         self.assertEqual(problems, [])

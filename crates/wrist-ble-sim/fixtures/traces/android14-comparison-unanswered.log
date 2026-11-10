@@ -45,6 +45,7 @@
 241.527 == P1 try 2 ended like try 1: the notification never started pairing. Try 3: connect, then nRF Connect menu "Bond"
 262.537 == P1 try 3: phone B nRF "Bond" (createBond)
 309.964 == P1: the link at 235.269 is phone A (com.unawatch auto-reconnect, bonded since P5). Force-stop com.unawatch on phone A; watch drops the link
+313.566 >> usb ble disconnect
 313.766 [trace] 904065 c 0193FC03030813
 313.766 [trace] 904125 e 04050400030816
 313.766 [trace] 904125 c 0183FC1100A000A00001000409554E410000000000
