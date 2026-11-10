@@ -1169,6 +1169,9 @@ name = "wrist-bluenrg2"
 version = "0.0.0"
 dependencies = [
  "bluenrg2",
+ "embassy-futures",
+ "embedded-hal 1.0.0",
+ "embedded-hal-async",
  "wrist-ble",
 ]
 

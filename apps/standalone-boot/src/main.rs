@@ -464,6 +464,8 @@ fn main() -> ! {
                     irq: p.PA9,
                     irq_exti: p.EXTI9,
                     rst: p.PA8,
+                    tx_dma: p.GPDMA1_CH2,
+                    rx_dma: p.GPDMA1_CH3,
                 },
                 flash,
             )
