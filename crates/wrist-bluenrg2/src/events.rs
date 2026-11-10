@@ -1,9 +1,9 @@
 //! What each packet from the BlueNRG-2 tells the core.
 
-use bluenrg2::{boot_reason, vendor, Event};
+use bluenrg2::{boot_reason, vendor, BleStatus, EncryptionEnabledLevel, Event};
 use wrist_ble::{
-    AddrKind, BdAddr, ChipInfo, ConnHandle, Failure, FailureKind, Interval, LeConnRole, LinkParams, PairingEvent, PairingStep, PeerAddr,
-    RadioEvent, ResetCause, Status, Timeout,
+    BdAddr, ChipInfo, ConnHandle, Failure, FailureKind, Interval, LeConnRole, LinkParams, PairingEvent, PairingStep, PeerAddr, RadioEvent,
+    ResetCause, Status, Timeout,
 };
 
 /// The chip's packets as the core's events. ST's bond-lost event names no link, so the
@@ -25,44 +25,42 @@ impl Translator {
     pub fn event(&mut self, packet: &[u8]) -> Option<RadioEvent> {
         let e = match bluenrg2::parse(packet) {
             Event::CommandComplete { .. } | Event::CommandStatus { .. } | Event::LeAdvertisingReport { .. } => return None,
-            Event::LeConnectionComplete { handle, central, peer, conn_interval: Some((interval, latency)), supervision_timeout: Some(timeout) } => {
+            Event::LeConnectionComplete { handle, role, peer, conn_interval: Some((interval, latency)), supervision_timeout: Some(timeout) } => {
                 let link = ConnHandle::new(handle);
-                let role = if central { LeConnRole::Central } else { LeConnRole::Peripheral };
                 if role == LeConnRole::Peripheral {
                     self.phone = Some(link);
                 }
-                let kind = if peer.kind == 0 { AddrKind::PUBLIC } else { AddrKind::RANDOM };
-                RadioEvent::LinkUp { link, role, peer: PeerAddr { kind, addr: BdAddr::new(peer.bytes) }, params: params(interval, latency, timeout) }
+                RadioEvent::LinkUp { link, role, peer: PeerAddr { kind: peer.kind, addr: BdAddr::new(peer.bytes) }, params: params(interval, latency, timeout) }
             }
             Event::LeConnectionUpdateComplete { handle, conn_interval, peripheral_latency, supervision_timeout } => {
                 RadioEvent::Params { link: ConnHandle::new(handle), result: Ok(params(conn_interval, peripheral_latency, supervision_timeout)) }
             }
             Event::LeConnectionUpdateFailed { handle, status } => {
-                RadioEvent::Params { link: ConnHandle::new(handle), result: Err(failure(FailureKind::PeerRejected, status)) }
+                RadioEvent::Params { link: ConnHandle::new(handle), result: Err(failure(FailureKind::PeerRejected, status.into_inner())) }
             }
-            Event::DisconnectionComplete { handle, status: 0, reason } => {
+            Event::DisconnectionComplete { handle, status: BleStatus::SUCCESS, reason } => {
                 let link = ConnHandle::new(handle);
                 if self.phone == Some(link) {
                     self.phone = None;
                 }
-                RadioEvent::LinkDown { link, reason: Status::new(reason) }
+                RadioEvent::LinkDown { link, reason: Status::new(reason.into_inner()) }
             }
-            Event::EncryptionChange { handle, status, enabled } => RadioEvent::Encryption { link: ConnHandle::new(handle), on: status == 0 && enabled != 0 },
+            Event::EncryptionChange { handle, status, enabled } => {
+                RadioEvent::Encryption { link: ConnHandle::new(handle), on: status == BleStatus::SUCCESS && enabled != EncryptionEnabledLevel::Off }
+            }
             Event::LeDataLengthChange { handle, max_tx_octets, max_rx_octets, .. } => {
                 RadioEvent::DataLength { link: ConnHandle::new(handle), tx: max_tx_octets, rx: max_rx_octets }
             }
             Event::Vendor { code, params } => self.vendor(code, params)?,
             Event::LeUnknown { subevent_code } => RadioEvent::Unknown { raw_code: u16::from_be_bytes([0x3E, subevent_code]) },
-            Event::Unknown { code } => RadioEvent::Unknown { raw_code: u16::from(code) },
-            Event::LeConnectionComplete { .. } | Event::LeConnectionFailed { .. } | Event::DisconnectionComplete { .. } | Event::Malformed(_) => {
-                RadioEvent::Unknown { raw_code: packet.get(1).map_or(0, |&c| u16::from(c)) }
-            }
+            // Another event, a link without its timing, a connection or disconnection that failed, a malformed packet.
+            _ => RadioEvent::Unknown { raw_code: packet.get(1).map_or(0, |&c| u16::from(c)) },
         };
         Some(e)
     }
 
     fn vendor(&mut self, code: u16, params: &[u8]) -> Option<RadioEvent> {
-        let link = || ConnHandle::new(bluenrg2::connection_handle(params));
+        let link = bluenrg2::connection_handle(params).map(ConnHandle::new);
         Some(match code {
             // Whatever the reason, the chip's links are gone. A start's own boot never comes
             // here: the driver's `start()` consumes it (`wrist_ble::Radio::start`).
@@ -83,20 +81,20 @@ impl Translator {
                 let (conn, value) = bluenrg2::numeric_comparison(params)?;
                 RadioEvent::Pairing(PairingEvent { link: ConnHandle::new(conn), step: PairingStep::Numeric(value) })
             }
-            vendor::GAP_PASS_KEY_REQ => RadioEvent::Pairing(PairingEvent { link: link(), step: PairingStep::PasskeyWanted }),
+            vendor::GAP_PASS_KEY_REQ => RadioEvent::Pairing(PairingEvent { link: link?, step: PairingStep::PasskeyWanted }),
             vendor::GAP_PAIRING_COMPLETE => {
                 let (status, _) = bluenrg2::pairing_complete(params)?;
                 let step = if status == 0 { PairingStep::Complete } else { PairingStep::Failed };
-                RadioEvent::Pairing(PairingEvent { link: link(), step })
+                RadioEvent::Pairing(PairingEvent { link: link?, step })
             }
             vendor::GAP_BOND_LOST => RadioEvent::BondLost(self.phone?),
-            vendor::ATT_EXCHANGE_MTU_RESP => RadioEvent::Mtu(link(), bluenrg2::att_mtu(params)?),
+            vendor::ATT_EXCHANGE_MTU_RESP => RadioEvent::Mtu(link?, bluenrg2::att_mtu(params)?),
             vendor::L2CAP_CONNECTION_UPDATE_RESP => {
                 let r = bluenrg2::L2capUpdateResponse::decode(params)?;
                 if r.accepted() {
                     return None;
                 }
-                RadioEvent::Params { link: link(), result: Err(failure(FailureKind::PeerRejected, 0)) }
+                RadioEvent::Params { link: link?, result: Err(failure(FailureKind::PeerRejected, 0)) }
             }
             vendor::GAP_SLAVE_SECURITY_INITIATED
             | vendor::GAP_PROC_COMPLETE

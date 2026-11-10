@@ -3,8 +3,10 @@
 //! The BlueNRG-2 as the Bluetooth core sees it: what it can do, the link-layer scheduler ST
 //! documents in PM0257 Rev 4 §4, and the codes it refuses with.
 
+pub mod bonds;
 pub mod commands;
 pub mod events;
+pub mod probe;
 
 use wrist_ble::{
     Activities, AdvParams, Admitted, Anchor, Capabilities, CentralSlot, Change, ConnParams, Duration, Exclusion, GattLimits, Interval, Micros,
@@ -121,7 +123,9 @@ impl Schedule for Scheduler {
                 if a.initiating.is_some() {
                     excluded(Exclusion::NoAdvertiseWhileInitiating)?;
                 }
-                let Some(base) = anchor(a).or_else(|| a.scanning.as_ref().map(scan_ns)) else { return Ok(Admitted::AS_ASKED) };
+                let Some(base) = anchor(a).or_else(|| a.scanning.as_ref().map(scan_ns)) else {
+                    return Ok(Admitted::AS_ASKED);
+                };
                 let period = adv_period(&p);
                 if !period.is_multiple_of(base) {
                     return Err(if period < base { SchedKind::NewIntervalFailed } else { SchedKind::IntervalTooLarge });

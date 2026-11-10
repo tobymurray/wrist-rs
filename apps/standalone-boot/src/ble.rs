@@ -41,7 +41,7 @@
 //! also leaves its updater. More than three in an hour and it is held in reset.
 //!
 //! Address. A static random address from the MCU's unique id
-//! (`bluenrg2::static_random_address`), so bonds survive updates.
+//! (`wrist_bluenrg2::bonds::static_random_address`), so bonds survive updates.
 
 #[cfg(feature = "ble-probe")]
 mod probe;
@@ -75,8 +75,8 @@ use bluenrg2::opcode::{
     ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_REQ, HCI_LE_RAND, HCI_READ_LOCAL_VERSION, HCI_SET_EVENT_MASK,
 };
 use bluenrg2::{
-    address, boot_reason, config, event_code, evt_mask, permission, props, role, uuid_type, vendor, AttributeModified, Event,
-    L2capUpdateResponse, ADV_IND, ATT_HEADER_LEN, MAX_COMMAND, MIN_ENC_KEY_SIZE, NO_FILTER, PRIMARY_SERVICE,
+    address, boot_reason, config, event_code, evt_mask, permission, props, role, uuid_type, vendor, AddrKind, AttributeModified, EncryptionEnabledLevel, Event,
+    BleStatus, L2capUpdateResponse, ADV_IND, ATT_HEADER_LEN, MAX_COMMAND, MIN_ENC_KEY_SIZE, NO_FILTER, PRIMARY_SERVICE,
     PRIVACY_DISABLED, RETURN_PARAMS_MAX, VARIABLE_LENGTH,
 };
 use wrist_pages::{OldKey, Pairing, Prompt};
@@ -425,7 +425,7 @@ pub fn write_status(uart: Uart) {
         (_, Power::Battery) => "battery (forced)",
     });
     uart.write_str(", address ");
-    write_address(uart, bluenrg2::Address { kind: address::STATIC_RANDOM, bytes: ADDRESS.each_ref().map(|b| b.load(Ordering::Relaxed)) });
+    write_address(uart, bluenrg2::Address { kind: AddrKind::RANDOM, bytes: ADDRESS.each_ref().map(|b| b.load(Ordering::Relaxed)) });
     uart.write_str(", bonded ");
     uart.write_u32(u32::from(BONDED.load(Ordering::Relaxed)));
     let n = |label: &str, v: &AtomicU32| {
@@ -1103,7 +1103,7 @@ impl Link<'_> {
         let late: [(&str, u16, &[u8]); 3] = [
             ("device name", ACI_GATT_UPDATE_CHAR_VALUE, &name[..6 + DEVICE_NAME.len()]),
             ("IO capability", ACI_GAP_SET_IO_CAPABILITY, &[IO_CAP_DISPLAY_YES_NO]),
-            ("security requirements", ACI_GAP_SET_AUTHENTICATION_REQUIREMENT, &bluenrg2::PAIRING.params()),
+            ("security requirements", ACI_GAP_SET_AUTHENTICATION_REQUIREMENT, &wrist_bluenrg2::bonds::PAIRING.params()),
         ];
         for (what, opcode, params) in late {
             if !self.step(what, opcode, params).await {
@@ -1114,7 +1114,7 @@ impl Link<'_> {
             return;
         }
         self.uart.write_str("[ble] up: ST stack, address ");
-        write_address(self.uart, bluenrg2::Address { kind: address::STATIC_RANDOM, bytes: addr });
+        write_address(self.uart, bluenrg2::Address { kind: AddrKind::RANDOM, bytes: addr });
         self.uart.write_line(if central { ", peripheral and central" } else { ", peripheral only" });
         self.list_bonds(false).await;
         self.advertise().await;
@@ -1352,7 +1352,7 @@ impl Link<'_> {
         p[0] = ADV_IND;
         p[1..3].copy_from_slice(&want.advertise.to_le_bytes());
         p[3..5].copy_from_slice(&want.advertise.to_le_bytes());
-        p[5] = address::STATIC_RANDOM;
+        p[5] = address::RANDOM;
         p[6] = NO_FILTER;
         p[7] = u8::try_from(1 + DEVICE_NAME.len()).unwrap_or(0);
         p[8] = bluenrg2::ad::NAME_COMPLETE;
@@ -1394,12 +1394,12 @@ impl Link<'_> {
                 redraw();
                 self.uart.write_str("[ble] bonded devices: ");
                 self.uart.write_u32(u32::from(params[0]));
-                for (kind, bytes) in bluenrg2::bonded_devices(params) {
+                for bond in bluenrg2::bonded_devices(params) {
                     self.uart.write_str(" ");
-                    write_address(self.uart, bluenrg2::Address { kind, bytes });
+                    write_address(self.uart, bond);
                 }
                 self.uart.write_line("");
-                if after_pairing && self.peer.is_some_and(|peer| bluenrg2::bond_kept(params, before, peer)) {
+                if after_pairing && self.peer.is_some_and(|peer| wrist_bluenrg2::bonds::bond_kept(params, before, peer)) {
                     self.uart.write_line("[ble] bonded");
                 }
             }
@@ -1412,19 +1412,19 @@ impl Link<'_> {
             return self.uart.write_line("[ble] forget: the bonded devices could not be read");
         };
         let params = &r.params[..r.len.min(r.params.len())];
-        let found = bluenrg2::forget(params, addr);
-        if found != bluenrg2::Forget::Bond {
+        let found = wrist_bluenrg2::bonds::forget(params, addr);
+        if found != wrist_bluenrg2::bonds::Forget::Bond {
             self.uart.write_str("[ble] forget: not bonded: ");
             write_address(self.uart, addr);
-            if let bluenrg2::Forget::OtherType(bond) = found {
+            if let wrist_bluenrg2::bonds::Forget::OtherType(bond) = found {
                 self.uart.write_str("; bonded as ");
                 write_address(self.uart, bond);
             }
             return self.uart.write_line("");
         }
-        let keep = self.peer.is_some_and(|peer| bluenrg2::another_bond(params, addr, peer));
+        let keep = self.peer.is_some_and(|peer| wrist_bluenrg2::bonds::another_bond(params, addr, peer));
         let mut p = [0u8; 7];
-        p[0] = addr.kind;
+        p[0] = addr.kind.as_raw();
         p[1..].copy_from_slice(&addr.bytes);
         match self.command(ACI_GAP_REMOVE_BONDED_DEVICE, &p).await {
             Ok(r) if r.status == 0 => {
@@ -1610,14 +1610,14 @@ impl Link<'_> {
         match bluenrg2::parse(p) {
             Event::CommandComplete { cmd_opcode, status, return_param_bytes: params } => {
                 if self.waiting_for == Some(cmd_opcode) {
-                    let mut reply = Reply { status, params: [0; RETURN_PARAMS_MAX], len: params.len().min(RETURN_PARAMS_MAX) };
+                    let mut reply = Reply { status: status.into_inner(), params: [0; RETURN_PARAMS_MAX], len: params.len().min(RETURN_PARAMS_MAX) };
                     reply.params[..reply.len].copy_from_slice(&params[..reply.len]);
                     self.reply = Some(reply);
                 }
             }
             Event::CommandStatus { cmd_opcode, status } => {
                 if self.waiting_for == Some(cmd_opcode) {
-                    self.reply = Some(Reply { status, params: [0; RETURN_PARAMS_MAX], len: 0 });
+                    self.reply = Some(Reply { status: status.into_inner(), params: [0; RETURN_PARAMS_MAX], len: 0 });
                 }
             }
             Event::LeConnectionComplete { handle, peer, conn_interval, .. } => {
@@ -1659,24 +1659,24 @@ impl Link<'_> {
             }
             Event::LeConnectionUpdateFailed { status, .. } => {
                 UPDATE_FAILURES.fetch_add(1, Ordering::Relaxed);
-                LAST_UPDATE_FAILURE.store(status, Ordering::Relaxed);
+                LAST_UPDATE_FAILURE.store(status.into_inner(), Ordering::Relaxed);
             }
             Event::DisconnectionComplete { status, reason, .. } => {
-                if status != 0 {
+                if status != BleStatus::SUCCESS {
                     DISCONNECT_FAILURES.fetch_add(1, Ordering::Relaxed);
                 }
                 set_state(STATE_IDLE);
                 self.link_gone();
                 self.uart.write_str("[ble] disconnected, reason ");
-                self.uart.write_hex8(reason);
+                self.uart.write_hex8(reason.into_inner());
                 self.uart.write_line(" (13 = the central hung up)");
                 self.readvertise = true;
             }
             Event::EncryptionChange { status, enabled, .. } => {
-                if status != 0 {
+                if status != BleStatus::SUCCESS {
                     ENCRYPTION_FAILURES.fetch_add(1, Ordering::Relaxed);
                 }
-                let on = enabled != 0;
+                let on = enabled != EncryptionEnabledLevel::Off;
                 set_encrypted(on);
                 if on {
                     self.pair_ask.settled();
@@ -1695,7 +1695,7 @@ impl Link<'_> {
             Event::Vendor { code, params } => self.vendor(code, params),
             Event::LeUnknown { subevent_code } => self.unknown("[ble] LE event ", event_code::LE_META, subevent_code),
             Event::Unknown { code } => self.unknown("[ble] event ", code, 0),
-            Event::Malformed(_) => {
+            _ => {
                 UNKNOWN.fetch_add(1, Ordering::Relaxed);
             }
         }
@@ -1807,13 +1807,13 @@ impl Link<'_> {
         match ecode {
             vendor::BLUE_INITIALIZED => self.initialized(bluenrg2::blue_initialized(rest)),
             vendor::HAL_EVENTS_LOST => self.uart.write_line("[ble] the chip dropped events: the host read too slowly"),
-            vendor::GAP_PASS_KEY_REQ => {
+            vendor::GAP_PASS_KEY_REQ if handle(rest).is_some() => {
                 self.pair_ask.settled();
                 self.interval_ask.pairing();
-                self.passkey_for = Some(handle(rest));
+                self.passkey_for = handle(rest);
                 PROMPT.lock(|p| p.set(Prompt::Asked));
             }
-            vendor::GAP_NUMERIC_COMPARISON_VALUE if rest.len() >= 6 => {
+            vendor::GAP_NUMERIC_COMPARISON_VALUE if bluenrg2::numeric_comparison(rest).is_some() => {
                 self.pair_ask.settled();
                 self.interval_ask.pairing();
                 let (_, value) = bluenrg2::numeric_comparison(rest).unwrap_or_default();
@@ -1951,7 +1951,7 @@ fn write_interval(uart: Uart, units: u16) {
 fn address_from_uid() -> [u8; 6] {
     let uid = embassy_stm32::uid::uid();
     let w = |i: usize| u32::from_le_bytes([uid[4 * i], uid[4 * i + 1], uid[4 * i + 2], uid[4 * i + 3]]);
-    bluenrg2::static_random_address([w(0), w(1), w(2)])
+    wrist_bluenrg2::bonds::static_random_address([w(0), w(1), w(2)])
 }
 
 fn write_six_digits(uart: Uart, v: u32) {

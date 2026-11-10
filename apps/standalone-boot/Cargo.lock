@@ -936,6 +936,7 @@ dependencies = [
  "embassy-usb",
  "log",
  "static_cell",
+ "wrist-bluenrg2",
  "wrist-board",
  "wrist-crash",
  "wrist-eeprom",
@@ -1154,6 +1155,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc"
 dependencies = [
  "windows-link",
+]
+
+[[package]]
+name = "wrist-ble"
+version = "0.0.0"
+dependencies = [
+ "bt-hci",
+]
+
+[[package]]
+name = "wrist-bluenrg2"
+version = "0.0.0"
+dependencies = [
+ "bluenrg2",
+ "wrist-ble",
 ]
 
 [[package]]

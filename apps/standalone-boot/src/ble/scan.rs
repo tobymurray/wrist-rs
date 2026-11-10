@@ -4,7 +4,7 @@ use core::sync::atomic::Ordering;
 
 use embassy_time::{Duration, Instant};
 use bluenrg2::opcode::{ACI_GAP_SET_NON_DISCOVERABLE, ACI_GAP_START_GENERAL_DISCOVERY_PROC, ACI_GAP_TERMINATE_GAP_PROC};
-use bluenrg2::{address, gap_proc, Address, Uuid, FILTER_DUPLICATES, SCAN_RSP};
+use bluenrg2::{address, gap_proc, Address, BleStatus, LeAdvEventKind, Uuid, FILTER_DUPLICATES};
 use wrist_wake::ble::{scan, Scan};
 
 use super::{power, write_address, Link, Request, STATE, STATE_ADVERTISING, STATE_IDLE};
@@ -124,7 +124,7 @@ impl Scanner {
         for r in bluenrg2::reports(data) {
             *heard += 1;
             // One line per advertiser and kind.
-            let key = (r.address, r.kind == SCAN_RSP);
+            let key = (r.address, r.kind == LeAdvEventKind::ScanRsp);
             if *printed >= SCAN_LINES || self.seen.contains(&Some(key)) {
                 continue;
             }
@@ -139,7 +139,7 @@ impl Scanner {
             }
             uart.write_u32(u32::from(r.rssi.unsigned_abs()));
             uart.write_str(" dBm");
-            if r.kind == SCAN_RSP {
+            if r.kind == LeAdvEventKind::ScanRsp {
                 uart.write_str(" (scan response)");
             }
             if let Some(name) = bluenrg2::ad_name(r.data) {
@@ -159,11 +159,11 @@ impl Scanner {
     }
 
     /// The chip ended the scan, unless the watch's own end at its time took it first.
-    pub(super) fn gap_proc_complete(&mut self, code: u8, status: u8, uart: Uart) {
+    pub(super) fn gap_proc_complete(&mut self, code: u8, status: BleStatus, uart: Uart) {
         if code == gap_proc::GENERAL_DISCOVERY && self.scan.is_some() {
-            if status != 0 {
+            if status != BleStatus::SUCCESS {
                 uart.write_str("[ble] the chip ended the scan, status ");
-                uart.write_hex8(status);
+                uart.write_hex8(status.into_inner());
                 uart.write_line("");
             }
             ended(self.scan.take(), uart);
@@ -211,7 +211,7 @@ impl Link<'_> {
         let mut p = [0u8; 6];
         p[0..2].copy_from_slice(&s.interval.to_le_bytes());
         p[2..4].copy_from_slice(&s.window.to_le_bytes());
-        p[4] = address::STATIC_RANDOM;
+        p[4] = address::RANDOM;
         p[5] = FILTER_DUPLICATES;
         match self.while_advertising(ACI_GAP_START_GENERAL_DISCOVERY_PROC, &p).await {
             Ok(0) => {

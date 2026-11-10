@@ -24,6 +24,7 @@ embassy-futures = "0.1.2"
 embassy-boot-stm32 = "0.8.0"
 wrist-flash = { path = "../../crates/wrist-flash" }
 bluenrg2 = { path = "../../crates/bluenrg2", optional = true }
+wrist-bluenrg2 = { path = "../../crates/wrist-bluenrg2", optional = true }
 wrist-wake = { path = "../../crates/wrist-wake", optional = true }
 wrist-board = { path = "../../crates/wrist-board" }
 wrist-glass = { path = "../../crates/wrist-glass" }
@@ -41,7 +42,7 @@ wrist-panel = { path = "../../crates/wrist-panel" }
 usb-log = ["dep:log", "embassy-usb/log"]
 # The console and application updates over Bluetooth, for a bonded central (ble.rs). The radio
 # stays in reset until `ble on`.
-ble = ["dep:bluenrg2", "dep:wrist-wake"]
+ble = ["dep:bluenrg2", "dep:wrist-bluenrg2", "dep:wrist-wake"]
 # `ble probe`: the BlueNRG-2's firmware, updater and anchor period on the console.
 ble-probe = ["ble"]
 # Every packet to and from the BlueNRG-2 on the console, for replaying through the core on a host.
