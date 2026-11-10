@@ -5,12 +5,17 @@ use bluenrg2::{
     ad_name, bonded_devices, parse_address, ad_uuid128s, ad_uuid16s, att_mtu, characteristics, command, descriptors, gap_proc_complete, gatt_error,
     header_sizes, notification, numeric_comparison, packet_len, packet_whole, pairing_complete, parse, read_value,
     reports, service_range, services, vendor, Address, AttributeModified, Characteristic, Event, L2capUpdateRequest,
-    L2capUpdateResponse, Service, Uuid, AddrKind, ConnHandle, EncryptionEnabledLevel, LeAdvEventKind, LeConnRole, BleStatus,
+    L2capUpdateResponse, Service, Uuid, AddrKind, ConnHandle, ConnTiming, EncryptionEnabledLevel, LeAdvEventKind, LeConnRole, BleStatus,
 };
 
 /// Connection handle 0x0801, as the packets below carry it.
 fn link() -> ConnHandle {
     ConnHandle::new(0x0801)
+}
+
+/// An interval, latency 0, and a supervision timeout of 5 s.
+fn timing(conn_interval: u16) -> ConnTiming {
+    ConnTiming { conn_interval, peripheral_latency: 0, supervision_timeout: 500 }
 }
 
 /// A vendor event packet: `04 FF len code params`.
@@ -170,14 +175,14 @@ fn connection_complete_gives_handle_role_peer_interval_latency_and_timeout() {
     let peer = Address { kind: AddrKind::PUBLIC, bytes: [0x11, 0x22, 0x33, 0x44, 0x55, 0x66] };
     assert_eq!(
         parse(&p),
-        Event::LeConnectionComplete { handle: link(), role: LeConnRole::Peripheral, peer, conn_interval: Some((24, 0)), supervision_timeout: Some(500) }
+        Event::LeConnectionComplete { handle: link(), role: LeConnRole::Peripheral, peer, timing: Some(timing(24)) }
     );
     let mut e = enhanced_connection_complete();
     assert_eq!(e.len(), 3 + 31);
     let peer = Address { kind: AddrKind::PUBLIC, bytes: [0x11; 6] };
     assert_eq!(
         parse(&e),
-        Event::LeConnectionComplete { handle: link(), role: LeConnRole::Peripheral, peer, conn_interval: Some((39, 0)), supervision_timeout: Some(500) }
+        Event::LeConnectionComplete { handle: link(), role: LeConnRole::Peripheral, peer, timing: Some(timing(39)) }
     );
     // The local device as the central (role 0), to a random address resolved (type 3).
     e[7] = 0x00;
@@ -187,7 +192,7 @@ fn connection_complete_gives_handle_role_peer_interval_latency_and_timeout() {
     assert_eq!(peer.kind, AddrKind::RANDOM);
     // Short of the latency: the handle and peer still, no interval.
     for q in [shortened(&p, 15), shortened(&e, 27)] {
-        assert!(matches!(parse(&q), Event::LeConnectionComplete { handle, conn_interval: None, .. } if handle == link()));
+        assert!(matches!(parse(&q), Event::LeConnectionComplete { handle, timing: None, .. } if handle == link()));
     }
     // Short of the peer's address: nothing to act on.
     for q in [shortened(&p, 11), shortened(&e, 11), shortened(&p, 1)] {

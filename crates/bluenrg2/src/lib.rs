@@ -406,6 +406,14 @@ pub struct Address {
     pub bytes: [u8; 6],
 }
 
+/// A connection's interval (1.25 ms units), peripheral latency and supervision timeout (10 ms units).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConnTiming {
+    pub conn_interval: u16,
+    pub peripheral_latency: u16,
+    pub supervision_timeout: u16,
+}
+
 /// The event in one HCI packet, by section of the Core Specification, Vol 4 Part E, whose
 /// layouts ST's `bluenrg1_events.h` follows. A connection handle above 0x0EFF makes it `Malformed`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -416,9 +424,8 @@ pub enum Event<'a> {
     /// Command Status (7.7.15): a command accepted or refused, results to follow.
     CommandStatus { cmd_opcode: u16, status: BleStatus },
     /// LE (Enhanced) Connection Complete (7.7.65.1, 7.7.65.10) with success: the handle, the
-    /// local device's role, the peer, and the interval (1.25 ms units), latency and supervision
-    /// timeout (10 ms units) when the packet carries them.
-    LeConnectionComplete { handle: ConnHandle, role: LeConnRole, peer: Address, conn_interval: Option<(u16, u16)>, supervision_timeout: Option<u16> },
+    /// local device's role, the peer, and the timing when the packet carries it.
+    LeConnectionComplete { handle: ConnHandle, role: LeConnRole, peer: Address, timing: Option<ConnTiming> },
     /// LE (Enhanced) Connection Complete with an error: no connection formed.
     LeConnectionFailed { status: BleStatus },
     /// LE Connection Update Complete (7.7.65.3) with success: interval (1.25 ms units), latency,
@@ -570,17 +577,20 @@ fn connection_complete(code: u8, params: &[u8]) -> Option<Event<'_>> {
     let (kind, rest) = AddrKind::from_hci_bytes(rest).ok()?;
     let peer: BdAddr = first(rest)?;
     let timing = if code == le_subevent::CONNECTION_COMPLETE {
-        first::<le::LeConnectionComplete>(params).map(|e| (e.conn_interval.as_u16(), e.peripheral_latency, e.supervision_timeout.as_u16()))
+        first::<le::LeConnectionComplete>(params).map(|e| (e.conn_interval, e.peripheral_latency, e.supervision_timeout))
     } else {
-        first::<le::LeEnhancedConnectionComplete>(params).map(|e| (e.conn_interval.as_u16(), e.peripheral_latency, e.supervision_timeout.as_u16()))
+        first::<le::LeEnhancedConnectionComplete>(params).map(|e| (e.conn_interval, e.peripheral_latency, e.supervision_timeout))
     };
     Some(Event::LeConnectionComplete {
         handle: link(handle)?,
         role: if role == 0 { LeConnRole::Central } else { LeConnRole::Peripheral },
         // An Enhanced event says 2 or 3 for an identity it resolved: still public or random.
         peer: Address { kind: AddrKind::new(kind.as_raw() & 0x01), bytes: peer.into_inner() },
-        conn_interval: timing.map(|(interval, latency, _)| (interval, latency)),
-        supervision_timeout: timing.map(|(.., timeout)| timeout),
+        timing: timing.map(|(interval, latency, timeout)| ConnTiming {
+            conn_interval: interval.as_u16(),
+            peripheral_latency: latency,
+            supervision_timeout: timeout.as_u16(),
+        }),
     })
 }
 

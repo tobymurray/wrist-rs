@@ -1620,7 +1620,7 @@ impl Link<'_> {
                     self.reply = Some(Reply { status: status.into_inner(), params: [0; RETURN_PARAMS_MAX], len: 0 });
                 }
             }
-            Event::LeConnectionComplete { handle, peer, conn_interval, .. } => {
+            Event::LeConnectionComplete { handle, peer, timing, .. } => {
                 CONN_HANDLE.store(handle.raw(), Ordering::Relaxed);
                 self.peer = Some(peer);
                 self.pair_ask.connected(Instant::now().as_ticks(), embassy_time::TICK_HZ);
@@ -1629,9 +1629,9 @@ impl Link<'_> {
                 if HOLD_ASK.load(Ordering::Relaxed) {
                     self.interval_ask.pairing();
                 }
-                if let Some((iv, lat)) = conn_interval {
-                    INTERVAL.store(iv, Ordering::Relaxed);
-                    LATENCY.store(lat, Ordering::Relaxed);
+                if let Some(t) = timing {
+                    INTERVAL.store(t.conn_interval, Ordering::Relaxed);
+                    LATENCY.store(t.peripheral_latency, Ordering::Relaxed);
                 }
                 set_state(STATE_CONNECTED);
                 set_encrypted(false);

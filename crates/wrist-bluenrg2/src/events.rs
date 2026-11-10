@@ -25,11 +25,11 @@ impl Translator {
     pub fn event(&mut self, packet: &[u8]) -> Option<RadioEvent> {
         let e = match bluenrg2::parse(packet) {
             Event::CommandComplete { .. } | Event::CommandStatus { .. } | Event::LeAdvertisingReport { .. } => return None,
-            Event::LeConnectionComplete { handle: link, role, peer, conn_interval: Some((interval, latency)), supervision_timeout: Some(timeout) } => {
+            Event::LeConnectionComplete { handle: link, role, peer, timing: Some(t) } => {
                 if role == LeConnRole::Peripheral {
                     self.phone = Some(link);
                 }
-                RadioEvent::LinkUp { link, role, peer: PeerAddr { kind: peer.kind, addr: BdAddr::new(peer.bytes) }, params: params(interval, latency, timeout) }
+                RadioEvent::LinkUp { link, role, peer: PeerAddr { kind: peer.kind, addr: BdAddr::new(peer.bytes) }, params: params(t.conn_interval, t.peripheral_latency, t.supervision_timeout) }
             }
             Event::LeConnectionUpdateComplete { handle, conn_interval, peripheral_latency, supervision_timeout } => {
                 RadioEvent::Params { link: handle, result: Ok(params(conn_interval, peripheral_latency, supervision_timeout)) }

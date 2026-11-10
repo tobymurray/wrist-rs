@@ -69,10 +69,10 @@ fuzz_target!(|read: &[u8]| {
                 vendor(params);
             }
             Event::LeDataLengthChange { .. } => assert!(packet.len() >= 14),
-            Event::LeConnectionComplete { conn_interval, .. } => {
+            Event::LeConnectionComplete { timing, .. } => {
                 assert!(packet.len() >= 15);
                 // The interval comes only with a whole event (Core Vol 4 Part E §7.7.65.1, §7.7.65.10).
-                assert!(conn_interval.is_none() || packet.len() >= if packet[3] == 0x01 { 22 } else { 34 });
+                assert!(timing.is_none() || packet.len() >= if packet[3] == 0x01 { 22 } else { 34 });
             }
             Event::LeConnectionUpdateComplete { .. } => assert!(packet.len() >= 13),
             _ => assert!(packet_whole(rest)),
