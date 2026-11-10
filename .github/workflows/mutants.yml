@@ -1,5 +1,5 @@
 name: Mutants
-# Every change the diff makes to the radio's model, its packets and the fake chip must fail a test when broken.
+# Every change the diff makes to these crates must fail a test when broken.
 on:
   pull_request:
     paths:
