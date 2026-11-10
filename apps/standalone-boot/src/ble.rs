@@ -45,14 +45,13 @@ mod scan;
 use core::cell::{Cell, RefCell};
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU8, Ordering};
 
-use embassy_embedded_hal::adapter::BlockingAsync;
 use embassy_futures::select::{select, select4, Either4};
 use embassy_stm32::exti::{self, ExtiInput};
 use embassy_stm32::gpio::{Level, Output, Pull, Speed};
-use embassy_stm32::mode::{Async, Blocking};
+use embassy_stm32::mode::Async;
 use embassy_stm32::spi::{self, Spi};
 use embassy_stm32::time::Hertz;
-use embassy_stm32::{bind_interrupts, peripherals, Peri};
+use embassy_stm32::{bind_interrupts, dma, peripherals, Peri};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::channel::Channel;
@@ -84,6 +83,8 @@ use crate::update::FlashMutex;
 
 bind_interrupts!(struct Irqs {
     EXTI9 => exti::InterruptHandler<embassy_stm32::interrupt::typelevel::EXTI9>;
+    GPDMA1_CHANNEL2 => dma::InterruptHandler<peripherals::GPDMA1_CH2>;
+    GPDMA1_CHANNEL3 => dma::InterruptHandler<peripherals::GPDMA1_CH3>;
 });
 
 pub struct Pins {
@@ -95,6 +96,8 @@ pub struct Pins {
     pub irq: Peri<'static, peripherals::PA9>,
     pub irq_exti: Peri<'static, peripherals::EXTI9>,
     pub rst: Peri<'static, peripherals::PA8>,
+    pub tx_dma: Peri<'static, peripherals::GPDMA1_CH2>,
+    pub rx_dma: Peri<'static, peripherals::GPDMA1_CH3>,
 }
 
 const BOOT_TIMEOUT: Duration = Duration::from_millis(3000);
@@ -581,6 +584,7 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
             chip: bus(
                 (pins.spi.reborrow(), pins.sck.reborrow(), pins.miso.reborrow(), pins.mosi.reborrow()),
                 (pins.cs.reborrow(), pins.irq.reborrow(), pins.irq_exti.reborrow()),
+                (pins.tx_dma.reborrow(), pins.rx_dma.reborrow()),
             ),
             rst: &mut rst,
             uart,
@@ -638,19 +642,20 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
     }
 }
 
-type Bus<'d> = Transport<'static, BlockingAsync<Spi<'d, Blocking, spi::mode::Master>>, Output<'d>, ExtiInput<'d, Async>, Delay>;
+type Bus<'d> = Transport<'static, Spi<'d, Async, spi::mode::Master>, Output<'d>, ExtiInput<'d, Async>, Delay>;
 
 /// SPI1, CS and IRQ while the radio is on.
 fn bus<'d>(
     (spi, sck, miso, mosi): (Peri<'d, peripherals::SPI1>, Peri<'d, peripherals::PG2>, Peri<'d, peripherals::PG3>, Peri<'d, peripherals::PB5>),
     (cs, irq, irq_exti): (Peri<'d, peripherals::PA15>, Peri<'d, peripherals::PA9>, Peri<'d, peripherals::EXTI9>),
+    (tx_dma, rx_dma): (Peri<'d, peripherals::GPDMA1_CH2>, Peri<'d, peripherals::GPDMA1_CH3>),
 ) -> Bus<'d> {
     let mut config = spi::Config::default();
     config.frequency = Hertz(1_000_000);
     // ST's bus setup for the BlueNRG-2 in X-CUBE-BLE2.
     config.mode = spi::MODE_1;
     Transport::new(
-        BlockingAsync::new(Spi::new_blocking(spi, sck, mosi, miso, config)),
+        Spi::new(spi, sck, mosi, miso, tx_dma, rx_dma, Irqs, config),
         Output::new(cs, Level::High, Speed::VeryHigh),
         ExtiInput::new(irq, irq_exti, Pull::Down, Irqs),
         Delay,

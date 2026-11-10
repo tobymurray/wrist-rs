@@ -928,7 +928,6 @@ dependencies = [
  "cortex-m-rt",
  "critical-section",
  "embassy-boot-stm32",
- "embassy-embedded-hal",
  "embassy-executor",
  "embassy-futures",
  "embassy-stm32",
