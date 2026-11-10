@@ -106,3 +106,21 @@ fn the_trace_keeps_the_recent_steps_and_lets_the_oldest_go() {
     assert!(report.lines().count() > 1, "{report}");
     assert!(!report.contains(&first), "{report}");
 }
+
+/// A snapshot carries no advertising interval, and needs none while a new interval is a stop then a
+/// start (`a_new_advertising_interval_is_a_stop_then_a_start`).
+#[test]
+fn a_new_interval_whose_events_are_lost_leaves_the_core_at_the_chips() {
+    // The stop's outcome lost, then the start's too.
+    for lost in 1..=2 {
+        for (from, to) in [(Power::Battery, Power::Cable), (Power::Cable, Power::Battery)] {
+            let mut s = Sim::started(1, on(from));
+            s.fake.lose_events(lost);
+            s.power(to);
+            s.run_for(Millis::mins(1));
+            assert_eq!(s.core.state.radio.advertising, s.fake.advertising(), "{lost} lost, {from:?} to {to:?}\n{}", s.report());
+            assert_eq!(s.core.counters.divergences, 0, "{lost} lost, {from:?} to {to:?}\n{}", s.report());
+            assert_eq!(s.core.counters.resets, 0, "{lost} lost, {from:?} to {to:?}\n{}", s.report());
+        }
+    }
+}
