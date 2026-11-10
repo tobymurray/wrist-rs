@@ -21,8 +21,7 @@ fn traces() -> Vec<(String, String)> {
 
 /// Where the core is known to act otherwise than the driver did, by fixture.
 const KNOWN: &[(&str, &[&str])] = &[(
-    // Nobody answered: the core refuses at its 30 s deadline, 2 ms before the chip's own security
-    // timeout fails the pairing; the driver leaves it to the chip.
+    // Nobody answered: the core refuses at its own deadline; the driver leaves it to the chip's.
     "android14-comparison-unanswered.log",
     &["1062525: the core did ConfirmNumeric(ConnHandle(2053), false) and the driver did not"],
 )];
@@ -37,7 +36,6 @@ fn the_core_acts_where_and_as_the_driver_did() {
     }
 }
 
-/// A suite run opens the console with the chip long up, and updates the watch partway through.
 #[test]
 fn a_capture_that_begins_with_the_chip_up_is_taken_as_up() {
     let r = replay(&fixture("bluez-suite.log"));
@@ -52,10 +50,15 @@ fn a_capture_that_begins_with_the_chip_up_is_taken_as_up() {
     assert_eq!(driver, core);
     assert!(driver > 40, "{driver}");
     assert_eq!(kinds(OpKind::RequestSecurity), (1, 1));
-    for (name, capture) in traces() {
-        if capture.lines().find(|l| l.contains("[trace] ")).is_some_and(|l| l.ends_with(" r")) {
-            assert_eq!(replay(&capture).seeded, None, "{name}");
-        }
+}
+
+#[test]
+fn a_capture_that_begins_as_the_chip_comes_up_is_a_start() {
+    let from = |name: &str, first: &str| fixture(name).lines().skip_while(|l| !l.ends_with(first)).flat_map(|l| [l, "\n"]).collect::<String>();
+    for capture in [from("bluez-cable.log", " r"), from("bluez-suite.log", " e 04FF03010001")] {
+        let r = replay(&capture);
+        assert_eq!(r.seeded, None, "{}", r.render(false));
+        assert_eq!(r.disagreements(), Vec::<String>::new(), "{}", r.render(false));
     }
 }
 
@@ -90,8 +93,6 @@ fn security_rebonds_and_disconnects_on_one_side_alone_are_disagreements() {
     }
 }
 
-/// The core has no goal for the operator's `ble disconnect`, so the driver's disconnect just after
-/// it is the operator's, and any other is the driver's own.
 #[test]
 fn only_a_disconnect_the_operator_asked_for_is_the_drivers_alone() {
     let asked = |at: u64, disconnect: u64| Report {

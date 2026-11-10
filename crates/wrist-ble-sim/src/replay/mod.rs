@@ -52,9 +52,7 @@ pub struct Report {
     pub cut_by_the_trace: u32,
     /// Times the watch reset, each the start of a new epoch.
     pub resets: u32,
-    /// Where a capture began with the chip already up, which the core was told at once, and the
-    /// operations it then asked for to catch up with a chip it never saw configured, which are not
-    /// compared.
+    /// Where a capture began with the chip already up, and the catch-up operations, not compared.
     pub seeded: Option<(u64, Vec<Op>)>,
     pub core_ops: Vec<(u64, Op)>,
     pub driver_ops: Vec<(u64, DriverOp)>,
@@ -236,9 +234,7 @@ impl Replay<'_> {
         self.feed(Input::Goals(g));
     }
 
-    /// A capture that begins with the chip up, as a suite run does, never shows the core its start:
-    /// the chip's ready answers the core's start at once, and what the core asks for in that step
-    /// sets up what the driver had already.
+    /// The chip's ready answers the core's start at once, for a capture that never shows it.
     fn seed(&mut self) {
         let Some(id) = self.core.state.chip.starting() else { return };
         self.push(Who::Line, "-- the chip was already up".into());
@@ -471,8 +467,7 @@ pub fn replay(capture: &str) -> Report {
                 r.now = Instant(ms);
                 r.goals();
                 started = true;
-                // The trace starts where the driver resets the chip, or the chip was already up.
-                if text.split_whitespace().nth(2).is_none_or(|d| d != "r") {
+                if !comes_up(text) {
                     r.seed();
                 }
             }
@@ -480,6 +475,13 @@ pub fn replay(capture: &str) -> Report {
         r.line(text);
     }
     r.report
+}
+
+/// Whether a trace line is the driver resetting the chip or the chip's ready.
+fn comes_up(text: &str) -> bool {
+    let mut f = text.split_whitespace().skip(2);
+    // `ACI_BLUE_INITIALIZED`, started normally.
+    matches!((f.next(), f.next()), (Some("r"), _) | (Some("e"), Some("04FF03010001")))
 }
 
 /// A line's host time in milliseconds, from seconds with three decimals or a wall clock's `HH:MM:SS.mmm`.

@@ -77,7 +77,7 @@ use bluenrg2::opcode::{
 use bluenrg2::{
     address, boot_reason, config, event_code, evt_mask, permission, props, role, uuid_type, vendor, AttributeModified, Event,
     L2capUpdateResponse, ADV_IND, ATT_HEADER_LEN, MAX_COMMAND, MIN_ENC_KEY_SIZE, NO_FILTER, PRIMARY_SERVICE,
-    PRIVACY_DISABLED, VARIABLE_LENGTH,
+    PRIVACY_DISABLED, RETURN_PARAMS_MAX, VARIABLE_LENGTH,
 };
 use wrist_pages::{OldKey, Pairing, Prompt};
 use wrist_wake::ble::restart::{Boot, Restarts};
@@ -156,8 +156,8 @@ enum Request {
     No,
     Bonds,
     Forget,
-    /// `ble forget <address>`: one bond, by its address (the chip's byte order).
-    ForgetOne([u8; 6]),
+    /// `ble forget <address>`: one bond, by its address and type.
+    ForgetOne(bluenrg2::Address),
     Disconnect,
     /// Ask for this interval range (1.25 ms units) on the current connection.
     IntervalNow(u16, u16),
@@ -242,7 +242,7 @@ static BONDED_READ: AtomicBool = AtomicBool::new(false);
 static LAST_PAIRING: AtomicU8 = AtomicU8::new(0);
 static LAST_PAIRING_REASON: AtomicU8 = AtomicU8::new(0);
 static PROMPT: Mutex<CriticalSectionRawMutex, Cell<Prompt>> = Mutex::new(Cell::new(Prompt::None));
-static OLD_KEY: Mutex<CriticalSectionRawMutex, Cell<OldKey>> = Mutex::new(Cell::new(OldKey::NONE));
+static OLD_KEY: Mutex<CriticalSectionRawMutex, Cell<OldKey<bluenrg2::Address>>> = Mutex::new(Cell::new(OldKey::NONE));
 /// The address written into the chip, little-endian as the chip holds it.
 static ADDRESS: [AtomicU8; 6] = [const { AtomicU8::new(0) }; 6];
 /// `ble profile`: 0 follows the power source, 1 always the cable's, 2 always the battery's.
@@ -474,7 +474,7 @@ pub fn write_status(uart: Uart) {
     }
     if let Some((address, n)) = OLD_KEY.lock(Cell::get).central() {
         uart.write_str("; refused for an old key: ");
-        write_address(uart, &address);
+        write_address(uart, address);
         uart.write_str(", ");
         uart.write_u32(n);
         uart.write_str(if n == 1 { " time" } else { " times" });
@@ -517,7 +517,7 @@ pub fn has_old_key() -> bool {
 }
 
 /// `f` applied to [`OLD_KEY`]; the face and the page redrawn when the notice comes or goes.
-fn old_key(f: impl FnOnce(&mut OldKey)) {
+fn old_key(f: impl FnOnce(&mut OldKey<bluenrg2::Address>)) {
     let changed = OLD_KEY.lock(|c| {
         let mut key = c.get();
         let before = key.central().is_some();
@@ -570,7 +570,7 @@ fn answer_prompt(yes: bool) -> bool {
 /// A command's reply: the status byte and the parameters after it.
 struct Reply {
     status: u8,
-    params: [u8; 64],
+    params: [u8; RETURN_PARAMS_MAX],
     len: usize,
 }
 
@@ -1404,9 +1404,9 @@ impl Link<'_> {
                 redraw();
                 self.uart.write_str("[ble] bonded devices: ");
                 self.uart.write_u32(u32::from(params[0]));
-                for (_, addr) in bluenrg2::bonded_devices(params) {
+                for (kind, bytes) in bluenrg2::bonded_devices(params) {
                     self.uart.write_str(" ");
-                    write_address(self.uart, &addr);
+                    write_address(self.uart, bluenrg2::Address { kind, bytes });
                 }
                 self.uart.write_line("");
                 if after_pairing && self.peer.is_some_and(|peer| bluenrg2::bond_kept(params, before, peer)) {
@@ -1417,24 +1417,24 @@ impl Link<'_> {
     }
 
     /// `ble forget <address>`, then the bonds left.
-    async fn forget_one(&mut self, addr: [u8; 6]) {
+    async fn forget_one(&mut self, addr: bluenrg2::Address) {
         let Ok(r) = self.command(ACI_GAP_GET_BONDED_DEVICES, &[]).await else {
             return self.uart.write_line("[ble] forget: the bonded devices could not be read");
         };
         let params = &r.params[..r.len.min(r.params.len())];
-        let Some((kind, _)) = bluenrg2::bonded_devices(params).find(|(_, a)| *a == addr) else {
+        if !bluenrg2::listed(params, addr) {
             self.uart.write_str("[ble] forget: not bonded: ");
-            write_address(self.uart, &addr);
+            write_address(self.uart, addr);
             return self.uart.write_line("");
-        };
+        }
         let keep = self.peer.is_some_and(|peer| bluenrg2::another_bond(params, addr, peer));
         let mut p = [0u8; 7];
-        p[0] = kind;
-        p[1..].copy_from_slice(&addr);
+        p[0] = addr.kind;
+        p[1..].copy_from_slice(&addr.bytes);
         match self.command(ACI_GAP_REMOVE_BONDED_DEVICE, &p).await {
             Ok(r) if r.status == 0 => {
                 self.uart.write_str("[ble] forgot ");
-                write_address(self.uart, &addr);
+                write_address(self.uart, addr);
                 self.uart.write_line("; forget the watch on that central too");
                 if !keep {
                     self.end_forgotten_link().await;
@@ -1615,14 +1615,14 @@ impl Link<'_> {
         match bluenrg2::parse(p) {
             Event::CommandComplete { cmd_opcode, status, return_param_bytes: params } => {
                 if self.waiting_for == Some(cmd_opcode) {
-                    let mut reply = Reply { status, params: [0; 64], len: params.len().min(64) };
+                    let mut reply = Reply { status, params: [0; RETURN_PARAMS_MAX], len: params.len().min(RETURN_PARAMS_MAX) };
                     reply.params[..reply.len].copy_from_slice(&params[..reply.len]);
                     self.reply = Some(reply);
                 }
             }
             Event::CommandStatus { cmd_opcode, status } => {
                 if self.waiting_for == Some(cmd_opcode) {
-                    self.reply = Some(Reply { status, params: [0; 64], len: 0 });
+                    self.reply = Some(Reply { status, params: [0; RETURN_PARAMS_MAX], len: 0 });
                 }
             }
             Event::LeConnectionComplete { handle, peer, conn_interval, .. } => {
@@ -1840,7 +1840,7 @@ impl Link<'_> {
                     self.recount_bonds = true;
                 } else {
                     if let (bluenrg2::PAIRING_LTK_MISSING, Some(peer)) = (status, self.peer) {
-                        old_key(|k| k.refused(peer.bytes));
+                        old_key(|k| k.refused(peer));
                     }
                     self.interval_ask.pairing_failed();
                     self.uart.write_str("[ble] pairing failed: status ");
@@ -1935,14 +1935,8 @@ fn redraw() {
     crate::redraw(wrist_pages::Page::Bluetooth);
 }
 
-/// `AC:12:03:D7:FC:5C`, from the chip's byte order.
-fn write_address(uart: Uart, addr: &[u8; 6]) {
-    for (i, b) in addr.iter().rev().enumerate() {
-        if i > 0 {
-            uart.write_str(":");
-        }
-        uart.write_hex8(*b);
-    }
+fn write_address(uart: Uart, a: bluenrg2::Address) {
+    uart.write_str(a.text(&mut [0; bluenrg2::ADDRESS_TEXT_MAX]));
 }
 
 fn clear_prompt() {

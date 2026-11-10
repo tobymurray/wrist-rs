@@ -203,12 +203,12 @@ pub const fn action(page: Page, press: Press, pairing: Option<Pairing>) -> Optio
 
 /// The last central refused for a pairing key the watch no longer has, and how many times in a row.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct OldKey(Option<([u8; 6], u32)>);
+pub struct OldKey<A>(Option<(A, u32)>);
 
-impl OldKey {
+impl<A: Copy + PartialEq> OldKey<A> {
     pub const NONE: Self = Self(None);
 
-    pub fn refused(&mut self, address: [u8; 6]) {
+    pub fn refused(&mut self, address: A) {
         let tries = match self.0 {
             Some((a, n)) if a == address => n.saturating_add(1),
             _ => 1,
@@ -221,7 +221,7 @@ impl OldKey {
     }
 
     #[must_use]
-    pub const fn central(self) -> Option<([u8; 6], u32)> {
+    pub const fn central(self) -> Option<(A, u32)> {
         self.0
     }
 }

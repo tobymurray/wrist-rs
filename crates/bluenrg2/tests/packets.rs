@@ -555,31 +555,53 @@ fn the_chip_says_why_it_started() {
 
 #[test]
 fn an_address_parses_into_the_chips_byte_order() {
-    assert_eq!(parse_address("AC:12:03:D7:FC:5C"), Some([0x5C, 0xFC, 0xD7, 0x03, 0x12, 0xAC]));
-    assert_eq!(parse_address(" ac-12-03-d7-fc-5c "), Some([0x5C, 0xFC, 0xD7, 0x03, 0x12, 0xAC]));
-    for bad in ["", "AC:12:03:D7:FC", "AC:12:03:D7:FC:5C:00", "AC:12:03:D7:FC:5", "AC:12:03:D7:FC:5G", "AC1203D7FC5C"] {
+    let public = Address { kind: 0, bytes: [0x5F, 0x4E, 0x3D, 0x2C, 0x1B, 0x0A] };
+    let random = Address { kind: 1, ..public };
+    assert_eq!(parse_address("0A:1B:2C:3D:4E:5F"), Some(public));
+    assert_eq!(parse_address(" 0a-1b-2c-3d-4e-5f "), Some(public));
+    assert_eq!(parse_address("0A:1B:2C:3D:4E:5F (random)"), Some(random));
+    assert_eq!(parse_address("0a-1b-2c-3d-4e-5f(random) "), Some(random));
+    for bad in ["", "0A:1B:2C:3D:4E", "0A:1B:2C:3D:4E:5F:00", "0A:1B:2C:3D:4E:5", "0A:1B:2C:3D:4E:5G", "0A1B2C3D4E5F", "(random)",
+        "0A:1B:2C:3D:4E:5F (public)", "0A:1B:2C:3D:4E:5F random", "0A:1B:2C:3D:4E:5F (random) (random)"] {
         assert_eq!(parse_address(bad), None, "{bad:?}");
     }
 }
 
 #[test]
+fn an_address_is_written_with_its_type_and_reads_back() {
+    use bluenrg2::ADDRESS_TEXT_MAX;
+    let mut out = [0; ADDRESS_TEXT_MAX];
+    let public = Address { kind: 0, bytes: [0x5F, 0x4E, 0x3D, 0x2C, 0x1B, 0x0A] };
+    assert_eq!(public.text(&mut out), "0A:1B:2C:3D:4E:5F");
+    assert_eq!(Address { kind: 1, ..public }.text(&mut out), "0A:1B:2C:3D:4E:5F (random)");
+    proptest::proptest!(|(kind in 0u8..2, bytes: [u8; 6])| {
+        let a = Address { kind, bytes };
+        proptest::prop_assert_eq!(parse_address(a.text(&mut [0; ADDRESS_TEXT_MAX])), Some(a));
+    });
+}
+
+#[test]
 fn only_another_bonds_identity_keeps_a_link_through_a_forget() {
     use bluenrg2::{another_bond, Address};
-    let reply = [2, 1, 0xFD, 0x81, 0x10, 0xCE, 0xD1, 0x80, 0, 0x5C, 0xFC, 0xD7, 0x03, 0x12, 0xAC];
-    let (random, public) = ([0xFD, 0x81, 0x10, 0xCE, 0xD1, 0x80], [0x5C, 0xFC, 0xD7, 0x03, 0x12, 0xAC]);
-    assert!(another_bond(&reply, random, Address { kind: 0, bytes: public }));
-    assert!(!another_bond(&reply, public, Address { kind: 0, bytes: public }));
-    assert!(!another_bond(&reply, random, Address { kind: 1, bytes: public }));
+    let reply = [2, 1, 0xEB, 0xDA, 0xC9, 0xB8, 0xA7, 0xC6, 0, 0x5F, 0x4E, 0x3D, 0x2C, 0x1B, 0x0A];
+    let random = Address { kind: 1, bytes: [0xEB, 0xDA, 0xC9, 0xB8, 0xA7, 0xC6] };
+    let public = Address { kind: 0, bytes: [0x5F, 0x4E, 0x3D, 0x2C, 0x1B, 0x0A] };
+    assert!(another_bond(&reply, random, public));
+    assert!(!another_bond(&reply, public, public));
+    assert!(!another_bond(&reply, random, Address { kind: 1, ..public }));
     // A resolvable private address, as a phone connects with.
     assert!(!another_bond(&reply, random, Address { kind: 1, bytes: [1, 2, 3, 4, 5, 0x4A] }));
-    assert!(!another_bond(&[], random, Address { kind: 0, bytes: public }));
+    assert!(!another_bond(&[], random, public));
+    // Two bonds that share an address but not its type.
+    let twins = [2, 1, 0x5F, 0x4E, 0x3D, 0x2C, 0x1B, 0x0A, 0, 0x5F, 0x4E, 0x3D, 0x2C, 0x1B, 0x0A];
+    assert!(another_bond(&twins, Address { kind: 1, ..public }, public));
 }
 
 #[test]
 fn a_pairing_is_bonded_only_when_the_bond_list_shows_it() {
     use bluenrg2::{bond_kept, Address};
-    let mac = [1, 0xFD, 0x81, 0x10, 0xCE, 0xD1, 0x80];
-    let phone = [0, 0x5C, 0xFC, 0xD7, 0x03, 0x12, 0xAC];
+    let mac = [1, 0xEB, 0xDA, 0xC9, 0xB8, 0xA7, 0xC6];
+    let phone = [0, 0x5F, 0x4E, 0x3D, 0x2C, 0x1B, 0x0A];
     let rpa = Address { kind: 1, bytes: [1, 2, 3, 4, 5, 0x4A] };
     let one = [&[1u8][..], &phone].concat();
     let two = [&[2u8][..], &phone, &mac].concat();
@@ -587,17 +609,37 @@ fn a_pairing_is_bonded_only_when_the_bond_list_shows_it() {
     assert!(bond_kept(&two, Some(1), rpa), "a private address bonded under its identity");
     assert!(!bond_kept(&two, Some(2), rpa), "a private address encrypting again proves nothing");
     assert!(!bond_kept(&two, None, rpa));
-    assert!(bond_kept(&two, Some(2), Address { kind: 0, bytes: [0x5C, 0xFC, 0xD7, 0x03, 0x12, 0xAC] }));
+    assert!(bond_kept(&two, Some(2), Address { kind: 0, bytes: [0x5F, 0x4E, 0x3D, 0x2C, 0x1B, 0x0A] }));
     assert!(!bond_kept(&one, Some(2), rpa), "one forgotten since");
 }
 
 #[test]
 fn bonded_devices_reads_each_entry_and_no_more_than_the_reply_holds() {
     // Two bonds: a static random identity and a public one, as the watch's reply gave them.
-    let reply = [2, 1, 0xFD, 0x81, 0x10, 0xCE, 0xD1, 0x80, 0, 0x5C, 0xFC, 0xD7, 0x03, 0x12, 0xAC];
+    let reply = [2, 1, 0xEB, 0xDA, 0xC9, 0xB8, 0xA7, 0xC6, 0, 0x5F, 0x4E, 0x3D, 0x2C, 0x1B, 0x0A];
     let all: Vec<_> = bonded_devices(&reply).collect();
-    assert_eq!(all, vec![(1, [0xFD, 0x81, 0x10, 0xCE, 0xD1, 0x80]), (0, [0x5C, 0xFC, 0xD7, 0x03, 0x12, 0xAC])]);
+    assert_eq!(all, vec![(1, [0xEB, 0xDA, 0xC9, 0xB8, 0xA7, 0xC6]), (0, [0x5F, 0x4E, 0x3D, 0x2C, 0x1B, 0x0A])]);
     // A count past the entries present stops at the last whole one.
     assert_eq!(bonded_devices(&[5, 0, 1, 2, 3, 4, 5, 6, 0, 1]).count(), 1);
     assert_eq!(bonded_devices(&[]).count(), 0);
+    // A type past random reads as a peer's does, so the printed form finds the bond again.
+    for (raw, kind) in [(2, 0), (3, 1)] {
+        let reply = [1, raw, 0xE6, 0xD5, 0xC4, 0xB3, 0xA2, 0xC1];
+        let (k, bytes) = bonded_devices(&reply).next().unwrap();
+        assert_eq!(k, kind);
+        let printed = parse_address(Address { kind: k, bytes }.text(&mut [0; bluenrg2::ADDRESS_TEXT_MAX])).unwrap();
+        assert!(bluenrg2::listed(&reply, printed), "{raw}");
+    }
+}
+
+#[test]
+fn the_largest_bonded_devices_reply_fits_the_return_parameters() {
+    use bluenrg2::RETURN_PARAMS_MAX;
+    let bonds = (RETURN_PARAMS_MAX - 1) / 7;
+    let mut p = vec![0x04, 0x0E, 0xFF, 0x01, 0xA3, 0xFC, 0x00, u8::try_from(bonds).unwrap()];
+    p.extend((0..bonds).flat_map(|i| [1, u8::try_from(i).unwrap(), 0, 0, 0, 0, 0xC0]));
+    p.resize(3 + 0xFF, 0);
+    let Event::CommandComplete { return_param_bytes, .. } = parse(&p) else { panic!() };
+    assert_eq!(return_param_bytes.len(), RETURN_PARAMS_MAX);
+    assert_eq!(bonded_devices(return_param_bytes).count(), 35);
 }
