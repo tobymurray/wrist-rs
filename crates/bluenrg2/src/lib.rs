@@ -45,7 +45,7 @@ pub mod opcode {
     /// Reads only; [`ACI_UPDATER_START`] reboots the chip into the updater.
     pub const ACI_HAL_GET_UPDATER_VERSION: u16 = 0xFC22;
     /// Reboots the chip into its updater: status 0, then `BLUE_INITIALIZED` with
-    /// [`super::boot_reason::UPDATER_BY_COMMAND`]. BlueNRG-MS's name for it.
+    /// [`super::boot_reason::UPDATER_BY_COMMAND`].
     pub const ACI_UPDATER_START: u16 = 0xFC20;
     pub const ACI_GAP_SET_NON_DISCOVERABLE: u16 = 0xFC81;
     pub const ACI_GAP_SET_DISCOVERABLE: u16 = 0xFC83;
@@ -445,8 +445,8 @@ pub struct ConnTiming {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Event<'a> {
-    /// Command Complete (7.7.14): the opcode answered, its status, the return parameters after it.
-    /// No status when there are no return parameters, as for opcode 0x0000, which only grants credits.
+    /// Command Complete (7.7.14): the opcode answered, its status, the return parameters after it;
+    /// no status when there are no return parameters, as for opcode 0x0000, which only grants credits.
     CommandComplete { cmd_opcode: u16, status: Option<BleStatus>, return_param_bytes: &'a [u8] },
     /// Command Status (7.7.15): a command accepted or refused, results to follow.
     CommandStatus { cmd_opcode: u16, status: BleStatus },
@@ -601,7 +601,7 @@ fn connection_complete(code: u8, params: &[u8]) -> Option<Event<'_>> {
         // No connection formed, so the other fields mean nothing (Core Vol 4 Part E §7.7.65.1).
         return Some(Event::LeConnectionFailed { status: ble(status) });
     }
-    // The link exists on the chip even when the tail is short or reserved, so it is still taken.
+    // A short tail or a reserved clock accuracy still leaves a link on the chip, so it is taken.
     let (handle, rest) = u16::from_hci_bytes(rest).ok()?;
     let (role, rest) = LeConnRole::from_hci_bytes(rest).ok()?;
     let (kind, rest) = AddrKind::from_hci_bytes(rest).ok()?;
@@ -762,7 +762,7 @@ pub fn bonded_devices(params: &[u8]) -> impl Iterator<Item = Address> + '_ {
 }
 
 /// `0A:1B:2C:3D:4E:5F`, the most significant byte first, then ` (random)` for a random address,
-/// resolved (3) or not. [`parse_address`] reads it back.
+/// resolved (3) or not, as [`parse_address`] reads it back.
 impl core::fmt::Display for Address {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let [b0, b1, b2, b3, b4, b5] = self.bytes;

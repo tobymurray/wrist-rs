@@ -20,9 +20,9 @@ let read = [0x04, 0x0E, 0x04, 0x01, 0x01, 0x10, 0x00];
 assert!(matches!(parse(&read), Event::CommandComplete { cmd_opcode: 0x1001, .. }));
 ```
 
-The `opcode` module names a subset of the ACI; `command` builds any opcode. Layouts follow the Bluetooth Core Specification and ST's
-PM0257 and `bluenrg1_*.h` headers. Standard events decode through
-[`bt-hci`](https://crates.io/crates/bt-hci).
+The `opcode` module names a subset of the ACI; `command` builds any opcode. Layouts follow the
+Bluetooth Core Specification and ST's PM0257 and `bluenrg1_*.h` headers. Standard events
+decode through [`bt-hci`](https://crates.io/crates/bt-hci).
 
 For the older BlueNRG-MS, see [`bluenrg`](https://crates.io/crates/bluenrg).
 

@@ -1,11 +1,8 @@
-//! [`parse`] against a reference decoder written as slice patterns over the packet, over
-//! every packet the other tests use, each cut and each byte changed, every status of the LE
-//! events, and generated packets.
+//! [`parse`] against a reference decoder written as slice patterns over the packet.
 
 use bluenrg2::{packet_len, parse, vendor, AddrKind, Address, ConnHandle, ConnTiming, Event, LeConnRole};
 use proptest::prelude::*;
 
-/// The reference decoder.
 mod reference {
     use bluenrg2::bt_hci::FromHciBytes;
     use bluenrg2::{event_code, le_subevent, packet, packet_len, packet_whole, AddrKind, Address, ConnHandle, ConnTiming, EncryptionEnabledLevel, Event, LeConnRole, BleStatus};
@@ -181,7 +178,6 @@ fn command_complete(opcode: u16, status: u8, params: &[u8]) -> Vec<u8> {
     hci_event(0x0E, &all)
 }
 
-/// The packets of `tests/packets.rs` and `tests/hal.rs`.
 fn corpus() -> Vec<Vec<u8>> {
     let connection = le_event(0x01, &[0x00, 0x01, 0x08, 0x01, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 24, 0, 0, 0, 0xF4, 0x01, 0x00]);
     let mut enhanced_params = vec![0x00, 0x01, 0x08, 0x01, 0x00];

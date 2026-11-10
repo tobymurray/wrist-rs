@@ -1,5 +1,4 @@
-//! Packets as the BlueNRG-2 sends them: a 217-byte attribute write, two events in one read, a
-//! read cut short.
+//! Packets as the BlueNRG-2 sends them.
 
 use bluenrg2::{
     ad_name, bonded_devices, parse_address, ad_uuid128s, ad_uuid16s, att_mtu, characteristics, command, descriptors, gap_proc_complete, gatt_error,
@@ -8,12 +7,10 @@ use bluenrg2::{
     L2capUpdateResponse, Service, Uuid, AddrKind, ConnHandle, ConnTiming, EncryptionEnabledLevel, LeAdvEventKind, LeConnRole, BleStatus,
 };
 
-/// Connection handle 0x0801, as the packets below carry it.
 fn link() -> ConnHandle {
     ConnHandle::new(0x0801)
 }
 
-/// An interval, latency 0, and a supervision timeout of 5 s.
 fn timing(conn_interval: u16) -> ConnTiming {
     ConnTiming { conn_interval, peripheral_latency: 0, supervision_timeout: 500 }
 }
@@ -566,7 +563,7 @@ fn the_centrals_answer_to_a_parameter_request_decodes() {
     assert_eq!(L2capUpdateResponse::decode(params), None);
 }
 
-/// The start stack build 2353 reported after `ACI_UPDATER_START`: `04 FF 03 01 00 02`.
+/// The start the chip reports after `ACI_UPDATER_START`.
 #[test]
 fn the_chip_says_why_it_started() {
     use bluenrg2::{blue_initialized, boot_reason};
@@ -650,7 +647,7 @@ fn the_largest_bonded_devices_reply_fits_the_return_parameters() {
 
 #[test]
 fn an_st_status_is_not_named_as_an_hci_error() {
-    // ST's 0x48, out of memory, as stack build 2353 refused an `ACI_GATT_ADD_SERVICE`.
+    // ST's 0x48, out of memory, as the chip refused an `ACI_GATT_ADD_SERVICE`.
     let named = [
         format!("{:?}", parse(&[0x04, 0x0E, 0x04, 0x01, 0x02, 0xFD, 0x48])),
         format!("{:?}", parse(&[0x04, 0x0F, 0x04, 0x48, 0x01, 0x02, 0xFD])),

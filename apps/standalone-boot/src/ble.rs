@@ -1615,7 +1615,6 @@ impl Link<'_> {
                     self.reply = Some(reply);
                 }
             }
-            // Credits only: no command's reply.
             Event::CommandComplete { status: None, .. } => {}
             Event::CommandStatus { cmd_opcode, status } => {
                 if self.waiting_for == Some(cmd_opcode) {
