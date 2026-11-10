@@ -1,6 +1,6 @@
 //! The core's operations as BlueNRG-2 commands.
 
-use bluenrg2::{ad, address, adv_filter_policy, adv_type, opcode};
+use bluenrg2::{ad, adv_filter_policy, adv_type, opcode, AddrKind};
 use wrist_ble::{ConnHandle, DisconnectReason, LeConnRole, Op};
 
 /// The longest complete local name the chip's advertisement holds beside its flags and TX power (PM0257 Table 43).
@@ -51,7 +51,7 @@ pub fn command(op: &Op, name: &[u8], role: impl Fn(ConnHandle) -> Option<LeConnR
                     &[adv_type::ADV_IND],
                     &p.interval_min.as_u16().to_le_bytes(),
                     &p.interval_max.as_u16().to_le_bytes(),
-                    &[address::RANDOM, adv_filter_policy::NO_FILTER, name_len, ad::NAME_COMPLETE],
+                    &[AddrKind::RANDOM.as_raw(), adv_filter_policy::NO_FILTER, name_len, ad::NAME_COMPLETE],
                     name,
                     &[0, 0, 0, 0, 0],
                 ],

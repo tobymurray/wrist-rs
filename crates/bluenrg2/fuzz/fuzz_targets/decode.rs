@@ -6,7 +6,7 @@
 use libfuzzer_sys::fuzz_target;
 use bluenrg2::{
     ad_name, ad_uuid128s, ad_uuid16s, att_mtu, characteristics, descriptors, gap_proc_complete, gatt_error,
-    notification, numeric_comparison, packet_len, packet_whole, pairing_complete, parse, proc_complete, read_value,
+    notification, numeric_comparison, packet_len, packet_whole, pairing_complete, parse, gatt_proc_complete, read_value,
     reports, service_range, services, AttributeModified, Event, L2capUpdateRequest, L2capUpdateResponse,
 };
 
@@ -23,7 +23,7 @@ fn vendor(params: &[u8]) {
     let _ = pairing_complete(params);
     let _ = att_mtu(params);
     let _ = gap_proc_complete(params);
-    let _ = proc_complete(params);
+    let _ = gatt_proc_complete(params);
     let _ = gatt_error(params);
     let _ = service_range(params);
     let _ = L2capUpdateRequest::decode(params);

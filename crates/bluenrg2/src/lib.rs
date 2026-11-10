@@ -93,7 +93,7 @@ pub mod opcode {
 }
 
 /// `ACI_GAP_INIT`'s roles, a bitmask.
-pub mod role {
+pub mod gap_role {
     pub const PERIPHERAL: u8 = 0x01;
     pub const BROADCASTER: u8 = 0x02;
     pub const CENTRAL: u8 = 0x04;
@@ -110,14 +110,6 @@ pub mod gap_proc {
 pub mod config {
     pub const PUBLIC_ADDRESS: u8 = 0x00;
     pub const STATIC_RANDOM_ADDRESS: u8 = 0x2E;
-}
-
-/// Address types as command parameters carry them: own, identity and peer.
-pub mod address {
-    pub const PUBLIC: u8 = 0x00;
-    /// The local device's own static random address ([`super::config::STATIC_RANDOM_ADDRESS`]),
-    /// or a peer's random address, static or private.
-    pub const RANDOM: u8 = 0x01;
 }
 
 /// A static random address (Core 6.B 1.3.2.1) from 64 bits, little-endian as the chip carries it.
@@ -360,13 +352,13 @@ pub struct AuthenticationRequirement {
     pub max_key_size: u8,
     /// `None`: the host is asked for a passkey (`GAP_PASS_KEY_REQ`).
     pub fixed_pin: Option<u32>,
-    /// 0 public, 1 static random.
-    pub identity_address_type: u8,
+    /// Public, or random for the static random address ([`config::STATIC_RANDOM_ADDRESS`]).
+    pub identity_address_type: AddrKind,
 }
 
 impl AuthenticationRequirement {
     #[must_use]
-    pub const fn params(&self) -> [u8; 12] {
+    pub fn params(&self) -> [u8; 12] {
         const USE_FIXED_PIN: u8 = 0x00;
         const ASK_FOR_PIN: u8 = 0x01;
         let (use_fixed, pin) = match self.fixed_pin {
@@ -375,10 +367,10 @@ impl AuthenticationRequirement {
         };
         let p = pin.to_le_bytes();
         [
-            self.bonding as u8,
-            self.mitm as u8,
+            u8::from(self.bonding),
+            u8::from(self.mitm),
             self.secure_connections,
-            self.keypress_notifications as u8,
+            u8::from(self.keypress_notifications),
             self.min_key_size,
             self.max_key_size,
             use_fixed,
@@ -386,7 +378,7 @@ impl AuthenticationRequirement {
             p[1],
             p[2],
             p[3],
-            self.identity_address_type,
+            self.identity_address_type.as_raw(),
         ]
     }
 }
@@ -802,10 +794,16 @@ pub fn parse_address(text: &str) -> Option<Address> {
     parts.next().is_none().then_some(Address { kind, bytes })
 }
 
-/// `GAP_PAIRING_COMPLETE`'s status when encryption failed for a key the local device no longer holds.
-pub const PAIRING_LTK_MISSING: u8 = 0x03;
+/// `GAP_PAIRING_COMPLETE`'s status: ST's own codes (`bluenrg1_events.h`), not HCI's.
+pub mod pairing_status {
+    pub const SUCCESS: u8 = 0x00;
+    pub const TIMEOUT: u8 = 0x01;
+    pub const FAILED: u8 = 0x02;
+    /// Encryption failed for a key the local device no longer holds.
+    pub const LTK_MISSING: u8 = 0x03;
+}
 
-/// `GAP_PAIRING_COMPLETE`: status (0 success) and reason.
+/// `GAP_PAIRING_COMPLETE`: status ([`pairing_status`]) and reason.
 #[must_use]
 pub fn pairing_complete(params: &[u8]) -> Option<(u8, u8)> {
     Some((*params.get(2)?, *params.get(3)?))
@@ -958,7 +956,7 @@ pub fn gatt_error(params: &[u8]) -> Option<(u8, u16, u8)> {
 
 /// `GATT_PROC_COMPLETE`: success, or the procedure's error.
 #[must_use]
-pub fn proc_complete(params: &[u8]) -> Option<BleStatus> {
+pub fn gatt_proc_complete(params: &[u8]) -> Option<BleStatus> {
     params.get(2).copied().map(BleStatus)
 }
 

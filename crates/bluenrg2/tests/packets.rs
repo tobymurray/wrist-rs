@@ -434,7 +434,7 @@ fn a_fixed_pin_goes_little_endian_after_its_flag() {
         min_key_size: 16,
         max_key_size: 16,
         fixed_pin: Some(123_456),
-        identity_address_type: bluenrg2::address::RANDOM,
+        identity_address_type: AddrKind::RANDOM,
     };
     assert_eq!(r.params()[6..11], [0x00, 0x40, 0xE2, 0x01, 0x00]);
 }
@@ -654,7 +654,7 @@ fn an_st_status_is_not_named_as_an_hci_error() {
     let named = [
         format!("{:?}", parse(&[0x04, 0x0E, 0x04, 0x01, 0x02, 0xFD, 0x48])),
         format!("{:?}", parse(&[0x04, 0x0F, 0x04, 0x48, 0x01, 0x02, 0xFD])),
-        format!("{:?}", bluenrg2::proc_complete(&[0x01, 0x08, 0x48])),
+        format!("{:?}", bluenrg2::gatt_proc_complete(&[0x01, 0x08, 0x48])),
         format!("{:?}", gap_proc_complete(&[0x02, 0x48])),
         format!("{:?}", parse(&[0x04, 0x05, 0x04, 0x48, 0x01, 0x08, 0x13])),
         format!("{:?}", parse(&[0x04, 0x05, 0x04, 0x00, 0x01, 0x08, 0x48])),

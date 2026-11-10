@@ -75,7 +75,7 @@ use bluenrg2::opcode::{
     ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_REQ, HCI_LE_RAND, HCI_READ_LOCAL_VERSION, HCI_SET_EVENT_MASK,
 };
 use bluenrg2::{
-    address, adv_filter_policy, adv_type, boot_reason, config, enc_key_size, event_code, evt_mask, permission, privacy, props, role, service_type,
+    adv_filter_policy, adv_type, boot_reason, config, enc_key_size, event_code, evt_mask, gap_role, pairing_status, permission, privacy, props, service_type,
     uuid_type, value_length, vendor, AddrKind, AttributeModified, Event, BleStatus, L2capUpdateResponse, ATT_HEADER_LEN,
     MAX_COMMAND, RETURN_PARAMS_MAX,
 };
@@ -1069,12 +1069,12 @@ impl Link<'_> {
         // Peripheral alone if the chip refuses both roles, so updates never depend on the
         // central role.
         let mut handles = None;
-        for roles in [role::PERIPHERAL | role::CENTRAL, role::PERIPHERAL] {
+        for roles in [gap_role::PERIPHERAL | gap_role::CENTRAL, gap_role::PERIPHERAL] {
             match self.command(ACI_GAP_INIT, &[roles, privacy::DISABLED, GAP_NAME_LEN]).await {
                 Ok(r) if r.status == 0 && r.len >= 6 => {
                     let service = u16::from_le_bytes([r.params[0], r.params[1]]);
                     let name_char = u16::from_le_bytes([r.params[2], r.params[3]]);
-                    handles = Some((service, name_char, roles & role::CENTRAL != 0));
+                    handles = Some((service, name_char, roles & gap_role::CENTRAL != 0));
                     break;
                 }
                 Ok(r) => {
@@ -1352,7 +1352,7 @@ impl Link<'_> {
         p[0] = adv_type::ADV_IND;
         p[1..3].copy_from_slice(&want.advertise.to_le_bytes());
         p[3..5].copy_from_slice(&want.advertise.to_le_bytes());
-        p[5] = address::RANDOM;
+        p[5] = AddrKind::RANDOM.as_raw();
         p[6] = adv_filter_policy::NO_FILTER;
         p[7] = u8::try_from(1 + DEVICE_NAME.len()).unwrap_or(0);
         p[8] = bluenrg2::ad::NAME_COMPLETE;
@@ -1844,12 +1844,12 @@ impl Link<'_> {
                 LAST_PAIRING_REASON.store(reason, Ordering::Relaxed);
                 self.pair_ask.settled();
                 clear_prompt();
-                if status == 0 {
+                if status == pairing_status::SUCCESS {
                     old_key(OldKey::clear);
                     self.uart.write_line("[ble] paired");
                     self.recount_bonds = true;
                 } else {
-                    if let (bluenrg2::PAIRING_LTK_MISSING, Some(peer)) = (status, self.peer) {
+                    if let (pairing_status::LTK_MISSING, Some(peer)) = (status, self.peer) {
                         old_key(|k| k.refused(peer));
                     }
                     self.interval_ask.pairing_failed();

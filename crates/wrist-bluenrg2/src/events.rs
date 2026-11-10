@@ -83,7 +83,7 @@ impl Translator {
             vendor::GAP_PASS_KEY_REQ => RadioEvent::Pairing(PairingEvent { link: link?, step: PairingStep::PasskeyWanted }),
             vendor::GAP_PAIRING_COMPLETE => {
                 let (status, _) = bluenrg2::pairing_complete(params)?;
-                let step = if status == 0 { PairingStep::Complete } else { PairingStep::Failed };
+                let step = if status == bluenrg2::pairing_status::SUCCESS { PairingStep::Complete } else { PairingStep::Failed };
                 RadioEvent::Pairing(PairingEvent { link: link?, step })
             }
             vendor::GAP_BOND_LOST => RadioEvent::BondLost(self.phone?),
