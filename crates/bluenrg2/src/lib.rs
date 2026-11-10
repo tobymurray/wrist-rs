@@ -32,7 +32,7 @@ pub fn header_sizes(header: &[u8; 5]) -> (usize, usize) {
     )
 }
 
-/// HCI commands and ST's vendor commands: the ones in use so far, not the whole ACI.
+/// HCI opcodes and a subset of the ACI; [`command`] builds any opcode.
 pub mod opcode {
     pub const HCI_READ_LOCAL_VERSION: u16 = 0x1001;
     pub const HCI_SET_EVENT_MASK: u16 = 0x0C01;
@@ -95,7 +95,9 @@ pub mod opcode {
 /// `ACI_GAP_INIT`'s roles, a bitmask.
 pub mod role {
     pub const PERIPHERAL: u8 = 0x01;
+    pub const BROADCASTER: u8 = 0x02;
     pub const CENTRAL: u8 = 0x04;
+    pub const OBSERVER: u8 = 0x08;
 }
 
 /// GAP procedure codes, for `ACI_GAP_TERMINATE_GAP_PROC` and `GAP_PROC_COMPLETE`.
@@ -133,8 +135,16 @@ pub const fn static_random(bits: u64) -> [u8; 6] {
 /// `ACI_GATT_ADD_CHAR`'s security permissions (ST's `ble_defs.h`).
 pub mod permission {
     pub const NONE: u8 = 0x00;
+    /// Reads only over a link encrypted with authenticated (MITM-protected) keys.
+    pub const AUTHEN_READ: u8 = 0x01;
+    /// Reads only once the application authorizes each.
+    pub const AUTHOR_READ: u8 = 0x02;
+    /// Reads only over an encrypted link.
+    pub const ENCRY_READ: u8 = 0x04;
     /// Writes only over a link encrypted with authenticated (MITM-protected) keys.
     pub const AUTHEN_WRITE: u8 = 0x08;
+    /// Writes only once the application authorizes each.
+    pub const AUTHOR_WRITE: u8 = 0x10;
     /// Writes only over an encrypted link.
     pub const ENCRY_WRITE: u8 = 0x20;
 }
@@ -265,7 +275,10 @@ pub mod uuid_type {
 }
 
 /// `ACI_GATT_ADD_SERVICE`'s service type.
-pub const PRIMARY_SERVICE: u8 = 0x01;
+pub mod service_type {
+    pub const PRIMARY: u8 = 0x01;
+    pub const SECONDARY: u8 = 0x02;
+}
 
 /// `ACI_GATT_ADD_CHAR`'s `GATT_Evt_Mask`.
 pub mod evt_mask {
@@ -273,19 +286,39 @@ pub mod evt_mask {
     pub const ATTRIBUTE_WRITE: u8 = 0x01;
 }
 
-/// `ACI_GATT_ADD_CHAR`'s smallest `Enc_Key_Size`, and its `Is_Variable`.
-pub const MIN_ENC_KEY_SIZE: u8 = 7;
-pub const VARIABLE_LENGTH: u8 = 0x01;
+/// `ACI_GATT_ADD_CHAR`'s `Enc_Key_Size` bounds.
+pub mod enc_key_size {
+    pub const MIN: u8 = 7;
+    pub const MAX: u8 = 16;
+}
+
+/// `ACI_GATT_ADD_CHAR`'s `Is_Variable`.
+pub mod value_length {
+    pub const CONSTANT: u8 = 0x00;
+    pub const VARIABLE: u8 = 0x01;
+}
 
 /// `ACI_GAP_INIT`'s privacy flag.
-pub const PRIVACY_DISABLED: u8 = 0x00;
+pub mod privacy {
+    pub const DISABLED: u8 = 0x00;
+}
 
-/// `ACI_GAP_SET_DISCOVERABLE`'s connectable undirected advertising, and its filter policy.
-pub const ADV_IND: u8 = 0x00;
-pub const NO_FILTER: u8 = 0x00;
+/// `ACI_GAP_SET_DISCOVERABLE`'s advertising type.
+pub mod adv_type {
+    /// Connectable undirected.
+    pub const ADV_IND: u8 = 0x00;
+}
+
+/// `ACI_GAP_SET_DISCOVERABLE`'s advertising filter policy.
+pub mod adv_filter_policy {
+    pub const NO_FILTER: u8 = 0x00;
+}
 
 /// `ACI_GAP_START_GENERAL_DISCOVERY_PROC`'s `Filter_Duplicates`.
-pub const FILTER_DUPLICATES: u8 = 0x01;
+pub mod filter_duplicates {
+    pub const DISABLED: u8 = 0x00;
+    pub const ENABLED: u8 = 0x01;
+}
 
 /// HCI packet indicators (Core Vol 4 Part A 2).
 pub mod packet {
@@ -854,11 +887,14 @@ pub struct Characteristic {
 
 /// Characteristic properties (Core Specification, Vol 3, Part G, 3.3.1.1).
 pub mod props {
+    pub const BROADCAST: u8 = 0x01;
     pub const READ: u8 = 0x02;
     pub const WRITE_WITHOUT_RESPONSE: u8 = 0x04;
     pub const WRITE: u8 = 0x08;
     pub const NOTIFY: u8 = 0x10;
     pub const INDICATE: u8 = 0x20;
+    pub const AUTHENTICATED_SIGNED_WRITES: u8 = 0x40;
+    pub const EXTENDED_PROPERTIES: u8 = 0x80;
 }
 
 /// `ATT_READ_BY_TYPE_RESP` from a characteristic discovery: connection handle, element

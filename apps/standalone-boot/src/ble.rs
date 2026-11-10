@@ -75,9 +75,9 @@ use bluenrg2::opcode::{
     ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_REQ, HCI_LE_RAND, HCI_READ_LOCAL_VERSION, HCI_SET_EVENT_MASK,
 };
 use bluenrg2::{
-    address, boot_reason, config, event_code, evt_mask, permission, props, role, uuid_type, vendor, AddrKind, AttributeModified, Event,
-    BleStatus, L2capUpdateResponse, ADV_IND, ATT_HEADER_LEN, MAX_COMMAND, MIN_ENC_KEY_SIZE, NO_FILTER, PRIMARY_SERVICE,
-    PRIVACY_DISABLED, RETURN_PARAMS_MAX, VARIABLE_LENGTH,
+    address, adv_filter_policy, adv_type, boot_reason, config, enc_key_size, event_code, evt_mask, permission, privacy, props, role, service_type,
+    uuid_type, value_length, vendor, AddrKind, AttributeModified, Event, BleStatus, L2capUpdateResponse, ATT_HEADER_LEN,
+    MAX_COMMAND, RETURN_PARAMS_MAX,
 };
 use wrist_pages::{OldKey, Pairing, Prompt};
 use wrist_wake::ble::restart::{Boot, Restarts};
@@ -1070,7 +1070,7 @@ impl Link<'_> {
         // central role.
         let mut handles = None;
         for roles in [role::PERIPHERAL | role::CENTRAL, role::PERIPHERAL] {
-            match self.command(ACI_GAP_INIT, &[roles, PRIVACY_DISABLED, GAP_NAME_LEN]).await {
+            match self.command(ACI_GAP_INIT, &[roles, privacy::DISABLED, GAP_NAME_LEN]).await {
                 Ok(r) if r.status == 0 && r.len >= 6 => {
                     let service = u16::from_le_bytes([r.params[0], r.params[1]]);
                     let name_char = u16::from_le_bytes([r.params[2], r.params[3]]);
@@ -1164,7 +1164,7 @@ impl Link<'_> {
         p[0] = uuid_type::U128;
         p[1..17].copy_from_slice(&NUS_BASE);
         p[13] = last;
-        p[17] = PRIMARY_SERVICE;
+        p[17] = service_type::PRIMARY;
         p[18] = max_records;
         match self.command(ACI_GATT_ADD_SERVICE, &p).await {
             Ok(r) if r.status == 0 && r.len >= 2 => Some(u16::from_le_bytes([r.params[0], r.params[1]])),
@@ -1183,8 +1183,8 @@ impl Link<'_> {
         p[21] = props;
         p[22] = security;
         p[23] = evt_mask;
-        p[24] = MIN_ENC_KEY_SIZE;
-        p[25] = VARIABLE_LENGTH;
+        p[24] = enc_key_size::MIN;
+        p[25] = value_length::VARIABLE;
         match self.command(ACI_GATT_ADD_CHAR, &p).await {
             Ok(r) if r.status == 0 && r.len >= 2 => Some(u16::from_le_bytes([r.params[0], r.params[1]])),
             _ => None,
@@ -1193,7 +1193,7 @@ impl Link<'_> {
 
     async fn add_service(&mut self, uuid: u16, max_records: u8) -> Option<u16> {
         let u = uuid.to_le_bytes();
-        match self.command(ACI_GATT_ADD_SERVICE, &[uuid_type::U16, u[0], u[1], PRIMARY_SERVICE, max_records]).await {
+        match self.command(ACI_GATT_ADD_SERVICE, &[uuid_type::U16, u[0], u[1], service_type::PRIMARY, max_records]).await {
             Ok(r) if r.status == 0 && r.len >= 2 => Some(u16::from_le_bytes([r.params[0], r.params[1]])),
             _ => {
                 self.fail("adding a service");
@@ -1208,8 +1208,8 @@ impl Link<'_> {
         let u = uuid.to_le_bytes();
         let l = u16::try_from(len).unwrap_or(0).to_le_bytes();
         let p = [
-            sv[0], sv[1], uuid_type::U16, u[0], u[1], l[0], l[1], props::READ, permission::NONE, evt_mask::NONE, MIN_ENC_KEY_SIZE,
-            VARIABLE_LENGTH,
+            sv[0], sv[1], uuid_type::U16, u[0], u[1], l[0], l[1], props::READ, permission::NONE, evt_mask::NONE, enc_key_size::MIN,
+            value_length::VARIABLE,
         ];
         match self.command(ACI_GATT_ADD_CHAR, &p).await {
             Ok(r) if r.status == 0 && r.len >= 2 => Some(u16::from_le_bytes([r.params[0], r.params[1]])),
@@ -1349,11 +1349,11 @@ impl Link<'_> {
     async fn advertise(&mut self) {
         let want = timing(power(), false);
         let mut p = [0u8; 20];
-        p[0] = ADV_IND;
+        p[0] = adv_type::ADV_IND;
         p[1..3].copy_from_slice(&want.advertise.to_le_bytes());
         p[3..5].copy_from_slice(&want.advertise.to_le_bytes());
         p[5] = address::RANDOM;
-        p[6] = NO_FILTER;
+        p[6] = adv_filter_policy::NO_FILTER;
         p[7] = u8::try_from(1 + DEVICE_NAME.len()).unwrap_or(0);
         p[8] = bluenrg2::ad::NAME_COMPLETE;
         p[9..9 + DEVICE_NAME.len()].copy_from_slice(DEVICE_NAME);
