@@ -180,10 +180,6 @@ enum Request {
     ProbeDrop(u8),
 }
 
-/// `ble probe hold on`: no interval ask on a link before it is encrypted or its pairing fails.
-#[cfg(feature = "ble-probe")]
-static HOLD_ASK: AtomicBool = AtomicBool::new(false);
-
 static REQUESTS: Channel<CriticalSectionRawMutex, Request, 4> = Channel::new();
 /// Raised by other tasks that leave the loop work it cannot see coming: console output for a
 /// subscribed central. The loop clears it before it reads that state.
@@ -348,20 +344,6 @@ pub fn command(args: &[u8], uart: Uart) {
                 Some(reason) => Request::ProbeDrop(reason),
                 None => return uart.write_line("[ble] usage: ble probe drop <reason, hex>"),
             }
-        }
-        #[cfg(feature = "ble-probe")]
-        rest if rest.starts_with(b"probe hold ") => {
-            let on = match &rest[11..] {
-                b"on" => true,
-                b"off" => false,
-                _ => return uart.write_line("[ble] usage: ble probe hold on|off"),
-            };
-            HOLD_ASK.store(on, Ordering::Relaxed);
-            return uart.write_line(if on {
-                "[ble] probe: the interval ask waits for encryption (or a failed pairing)"
-            } else {
-                "[ble] probe: the interval ask as built (1.5 s, or encryption)"
-            });
         }
         rest if rest.starts_with(b"profile") => {
             let (code, word) = match &rest[7..] {
@@ -825,7 +807,6 @@ impl Link<'_> {
                 .then(|| Console { pending: !OUT.is_empty() || self.outbox.holding(), next_at: tick(self.console_at) }),
             abandon_at: self.transfer.as_ref().map(|_| tick(self.last_data + TRANSFER_IDLE + one)),
             ask_at: self.pair_ask.due(),
-            interval_at: self.interval_ask.due(),
             scan_end: self.scanner.until().map(tick),
         };
         wrist_wake::ble::due(&state).map(Instant::from_ticks)
@@ -905,7 +886,7 @@ impl Link<'_> {
                     self.advertise().await;
                 }
             }
-            STATE_CONNECTED if self.asked != Some(want) && self.interval_ask.open(Instant::now().as_ticks()) => {
+            STATE_CONNECTED if self.asked != Some(want) && self.interval_ask.open() => {
                 self.asked = Some(want);
                 self.ask_connection(want.interval_min, want.interval_max, want.latency, want.timeout).await;
             }
@@ -1625,11 +1606,7 @@ impl Link<'_> {
                 CONN_HANDLE.store(handle.raw(), Ordering::Relaxed);
                 self.peer = Some(peer);
                 self.pair_ask.connected(Instant::now().as_ticks(), embassy_time::TICK_HZ);
-                self.interval_ask.connected(Instant::now().as_ticks(), embassy_time::TICK_HZ);
-                #[cfg(feature = "ble-probe")]
-                if HOLD_ASK.load(Ordering::Relaxed) {
-                    self.interval_ask.pairing();
-                }
+                self.interval_ask.connected();
                 if let Some(t) = timing {
                     INTERVAL.store(t.conn_interval, Ordering::Relaxed);
                     LATENCY.store(t.peripheral_latency, Ordering::Relaxed);
@@ -1823,13 +1800,11 @@ impl Link<'_> {
             vendor::HAL_EVENTS_LOST => self.uart.write_line("[ble] the chip dropped events: the host read too slowly"),
             vendor::GAP_PASS_KEY_REQ if handle(rest).is_some() => {
                 self.pair_ask.settled();
-                self.interval_ask.pairing();
                 self.passkey_for = handle(rest).map(|h| h.raw());
                 PROMPT.lock(|p| p.set(Prompt::Asked));
             }
             vendor::GAP_NUMERIC_COMPARISON_VALUE if bluenrg2::numeric_comparison(rest).is_some() => {
                 self.pair_ask.settled();
-                self.interval_ask.pairing();
                 let (_, value) = bluenrg2::numeric_comparison(rest).unwrap_or_default();
                 PROMPT.lock(|p| p.set(Prompt::Waiting(Pairing::Compare, value, Instant::now().as_millis())));
                 crate::wake_display();
