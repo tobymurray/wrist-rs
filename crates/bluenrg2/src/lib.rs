@@ -446,7 +446,6 @@ pub struct Address {
     pub bytes: [u8; 6],
 }
 
-/// A connection's timing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ConnTiming {
     pub conn_interval: Duration<1_250>,
