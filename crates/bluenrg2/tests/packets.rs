@@ -3,14 +3,11 @@
 mod common;
 
 use bluenrg2::{
-    ad_name, ad_uuid128s, ad_uuid16s, att_mtu, bonded_devices, characteristics, command,
-    descriptors, gap_proc_complete, gatt_error, gatt_proc_complete, header_sizes, notification,
-    numeric_comparison, packet_len, packet_whole, pairing_complete, read_value, reports,
-    service_range, services, vendor, AddrKind, Address, AttributeModified, BdAddr, BleStatus,
-    ConnHandle, Duration, EncryptionEnabledLevel, L2capUpdateRequest, L2capUpdateResponse,
-    LeAdvEventKind, LeConnRole, PairingStatus, Uuid,
+    ad_name, ad_uuid128s, ad_uuid16s, bonded_devices, command, header_sizes, packet_len,
+    packet_whole, reports, vendor, AddrKind, Address, BdAddr, BleStatus, ConnHandle, Duration,
+    EncryptionEnabledLevel, LeAdvEventKind, LeConnRole, PairingReason, PairingStatus,
 };
-use common::{parse, Ev, Timing};
+use common::{parse, Ev, Timing, Vn};
 
 fn link() -> ConnHandle {
     ConnHandle::new(0x0801)
@@ -135,7 +132,7 @@ fn an_acl_packet_is_measured_by_its_16_bit_length() {
     assert_eq!(packet_len(&read[..acl - 1]), Some(acl));
     assert_eq!(
         parse(&read[acl..]),
-        Ev::Vendor { code: vendor::GATT_PROC_COMPLETE, params: &[0x01, 0x08, 0x00] }
+        Ev::Vendor(Vn::GattProcComplete { handle: link(), status: BleStatus::SUCCESS })
     );
 }
 
@@ -173,34 +170,6 @@ fn acl_data_decodes_with_its_handle_flags_and_data() {
         Ev::Malformed(&[0x02, 0x00, 0x2F, 0x00, 0x00])
     );
     assert_eq!(parse(&p[..6]), Ev::Malformed(&p[..6]));
-}
-
-#[test]
-fn a_217_byte_attribute_write_decodes() {
-    // Connection 0x0801, attribute 0x0019, offset 0, 217 bytes.
-    let mut params = vec![0x01, 0x08, 0x19, 0x00, 0x00, 0x00, 217, 0x00];
-    params.extend((0..217u8).map(|i| i.wrapping_mul(7)));
-    let p = vendor_event(vendor::GATT_ATTRIBUTE_MODIFIED, &params);
-    assert_eq!(p.len(), 230);
-    let Ev::Vendor { code, params } = parse(&p) else { panic!("not vendor") };
-    assert_eq!(code, vendor::GATT_ATTRIBUTE_MODIFIED);
-    let w = AttributeModified::decode(params).unwrap();
-    assert_eq!((w.handle, w.attr, w.offset, w.data.len()), (link(), 0x19, 0, 217));
-    assert_eq!(w.data[1], 7);
-}
-
-#[test]
-fn an_attribute_write_longer_than_its_event_is_cut() {
-    let params = [0x01, 0x08, 0x1C, 0x00, 0x00, 0x00, 0x09, 0x00, 0x01, 0x00];
-    let w = AttributeModified::decode(&params).unwrap();
-    assert_eq!(w.data, &[0x01, 0x00]);
-    assert!(AttributeModified::decode(&params[..7]).is_none());
-}
-
-#[test]
-fn an_empty_attribute_write_decodes() {
-    let w = AttributeModified::decode(&[0x01, 0x08, 0x1C, 0x00, 0x00, 0x00, 0x00, 0x00]).unwrap();
-    assert_eq!((w.attr, w.offset, w.data), (0x1C, 0, &[][..]));
 }
 
 /// An HCI event packet: `04 code len params`.
@@ -517,10 +486,10 @@ fn events_the_crate_does_not_decode_are_named() {
         assert_eq!(parse(&hci_event(code, &[0x00, 0x01, 0x08])), Ev::Unknown { code });
         assert_eq!(parse(&hci_event(code, &[])), Ev::Unknown { code });
     }
-    // A vendor event with no parameters is still one.
+    // A vendor event this crate does not decode, by its code.
     assert_eq!(
-        parse(&vendor_event(vendor::GAP_SLAVE_SECURITY_INITIATED, &[])),
-        Ev::Vendor { code: vendor::GAP_SLAVE_SECURITY_INITIATED, params: &[] }
+        parse(&vendor_event(0x0C13, &[0x01, 0x08])),
+        Ev::Vendor(Vn::Unknown { code: 0x0C13, params: &[0x01, 0x08] })
     );
 }
 
@@ -561,7 +530,7 @@ fn a_packet_is_read_no_further_than_its_own_length() {
     read.extend(hci_event(0x05, &[0x00, 0x01, 0x08, 0x13]));
     assert_eq!(
         parse(&read),
-        Ev::Vendor { code: vendor::GATT_PROC_COMPLETE, params: &[0x01, 0x08, 0x00] }
+        Ev::Vendor(Vn::GattProcComplete { handle: link(), status: BleStatus::SUCCESS })
     );
 }
 
@@ -593,38 +562,43 @@ fn no_bytes_make_the_decoder_panic() {
 }
 
 #[test]
-fn gap_events_decode() {
-    // Pairing: connection 0x0801, number 123456.
-    let mut params = vec![0x01, 0x08];
-    params.extend(123_456u32.to_le_bytes());
-    assert_eq!(numeric_comparison(&params), Some((link(), 123_456)));
-    assert_eq!(pairing_complete(&[0x01, 0x08, 0x00, 0x00]), Some((PairingStatus::SUCCESS, 0)));
-    assert_eq!(
-        pairing_complete(&[0x01, 0x08, 0x03, 0x05]),
-        Some((PairingStatus::LTK_MISSING, 0x05))
-    );
-    assert_eq!(pairing_complete(&[0x01, 0x08, 0x02]), None);
-}
-
-#[test]
-fn the_mtu_exchange_decodes() {
-    assert_eq!(att_mtu(&[0x01, 0x08, 0xDC, 0x00]), Some(220));
-    assert_eq!(att_mtu(&[0x01, 0x08, 0xDC]), None);
-}
-
-#[test]
 fn a_fixed_pin_goes_little_endian_after_its_flag() {
-    let r = bluenrg2::AuthenticationRequirement {
-        bonding: true,
-        mitm: true,
-        secure_connections: 2,
-        keypress_notifications: false,
-        min_key_size: 16,
-        max_key_size: 16,
-        fixed_pin: Some(123_456),
-        identity_address_type: AddrKind::RANDOM,
+    use bluenrg2::{
+        AuthenticationRequirement, FixedPin, IdentityAddress, KeySizes, Passkey, SecureConnections,
     };
-    assert_eq!(r.params()[6..11], [0x00, 0x40, 0xE2, 0x01, 0x00]);
+    let r = AuthenticationRequirement {
+        bonding: true,
+        mitm: false,
+        secure_connections: SecureConnections::Optional,
+        keypress_notifications: true,
+        key_size: KeySizes::new(7, 12).unwrap(),
+        fixed_pin: FixedPin::Pin(Passkey::new(123_456).unwrap()),
+        identity_address: IdentityAddress::Public,
+    };
+    assert_eq!(r.params(), [0x01, 0x00, 0x01, 0x01, 7, 12, 0x00, 0x40, 0xE2, 0x01, 0x00, 0x00]);
+    let asked = AuthenticationRequirement {
+        secure_connections: SecureConnections::NotSupported,
+        fixed_pin: FixedPin::Ask,
+        identity_address: IdentityAddress::StaticRandom,
+        ..r
+    };
+    assert_eq!(asked.params(), [0x01, 0x00, 0x00, 0x01, 7, 12, 0x01, 0, 0, 0, 0, 0x01]);
+    assert_eq!(SecureConnections::Only as u8, 2);
+}
+
+#[test]
+fn only_values_the_chip_takes_make_an_authentication_requirement() {
+    use bluenrg2::{KeySizes, Passkey};
+    assert_eq!(Passkey::new(999_999).map(Passkey::get), Some(999_999));
+    assert_eq!(Passkey::new(0).map(Passkey::get), Some(0));
+    assert_eq!(Passkey::new(1_000_000), None);
+    assert_eq!(Passkey::new(4_000_000_000), None);
+    let k = KeySizes::new(7, 16).unwrap();
+    assert_eq!((k.min(), k.max()), (7, 16));
+    assert!(KeySizes::new(16, 16).is_some());
+    for (min, max) in [(6, 16), (7, 17), (10, 9), (20, 3), (0, 0)] {
+        assert_eq!(KeySizes::new(min, max), None, "{min} {max}");
+    }
 }
 
 #[test]
@@ -701,150 +675,128 @@ fn advertising_data_with_a_128_bit_uuid_and_junk() {
 }
 
 #[test]
-fn primary_services_decode() {
-    // Connection 0x0801, elements of 6: (1, 5, 0x1800), (6, 9, 0x180D).
-    let p = [0x01, 0x08, 6, 12, 1, 0, 5, 0, 0x00, 0x18, 6, 0, 9, 0, 0x0D, 0x18];
-    let all: Vec<_> = services(&p).map(|s| (s.start, s.end, s.uuid)).collect();
-    assert_eq!(all, [(1, 5, Uuid::U16(0x1800)), (6, 9, Uuid::U16(0x180D))]);
-    // A 128-bit service, element length 20.
-    let mut q = vec![0x01, 0x08, 20, 20, 0x10, 0, 0x20, 0];
-    q.extend([0xAB; 16]);
-    assert_eq!(
-        services(&q).map(|s| (s.start, s.end, s.uuid)).next(),
-        Some((0x10, 0x20, Uuid::U128([0xAB; 16])))
-    );
-    // An element length that fits no UUID yields nothing.
-    assert_eq!(services(&[0x01, 0x08, 5, 5, 1, 0, 2, 0, 3]).count(), 0);
-}
-
-#[test]
-fn characteristics_decode() {
-    // Heart Rate Measurement: declaration 7, notify, value 8; Body Sensor Location 10, read, 11.
-    let p = [0x01, 0x08, 7, 14, 7, 0, 0x10, 8, 0, 0x37, 0x2A, 10, 0, 0x02, 11, 0, 0x38, 0x2A];
-    let all: Vec<_> =
-        characteristics(&p).map(|c| (c.declaration, c.properties, c.value, c.uuid)).collect();
-    assert_eq!(all, [(7, 0x10, 8, Uuid::U16(0x2A37)), (10, 0x02, 11, Uuid::U16(0x2A38))]);
-    // A data length past the event is cut to it: one whole element.
-    let cut = [0x01, 0x08, 7, 14, 7, 0, 0x10, 8, 0, 0x37, 0x2A, 10, 0];
-    assert_eq!(characteristics(&cut).count(), 1);
-    // A 128-bit characteristic, element length 21.
-    let mut q = vec![0x01, 0x08, 21, 21, 0x11, 0, 0x12, 0x12, 0];
-    q.extend([0xCD; 16]);
-    let all: Vec<_> =
-        characteristics(&q).map(|c| (c.declaration, c.properties, c.value, c.uuid)).collect();
-    assert_eq!(all, [(0x11, 0x12, 0x12, Uuid::U128([0xCD; 16]))]);
-}
-
-#[test]
-fn descriptors_service_range_and_values_decode() {
-    // Format 1: (9, 0x2902).
-    assert_eq!(
-        descriptors(&[0x01, 0x08, 1, 4, 9, 0, 0x02, 0x29]).collect::<Vec<_>>(),
-        [(9, Uuid::U16(0x2902))]
-    );
-    assert_eq!(descriptors(&[0x01, 0x08, 3, 4, 9, 0, 0x02, 0x29]).count(), 0);
-    // Format 2: (0x13, a 128-bit UUID).
-    let mut d = vec![0x01, 0x08, 2, 18, 0x13, 0];
-    d.extend([0xEF; 16]);
-    assert_eq!(descriptors(&d).collect::<Vec<_>>(), [(0x13, Uuid::U128([0xEF; 16]))]);
-    assert_eq!(service_range(&[0x01, 0x08, 1, 6, 0, 9, 0]), Some((6, 9)));
-    assert_eq!(read_value(&[0x01, 0x08, 2, 0x01, 0x02]), Some(&[0x01, 0x02][..]));
-    assert_eq!(read_value(&[0x01, 0x08, 9, 0x01, 0x02]), Some(&[0x01, 0x02][..]));
-    // Notification: connection, attribute 8, three bytes.
-    assert_eq!(
-        notification(&[0x01, 0x08, 8, 0, 3, 0x16, 72, 0x2C]),
-        Some((8, &[0x16, 72, 0x2C][..]))
-    );
-    assert_eq!(notification(&[0x01, 0x08, 8, 0, 9, 0x16]), Some((8, &[0x16][..])));
-    assert_eq!(notification(&[0x01, 0x08, 8]), None);
-    assert_eq!(gatt_error(&[0x01, 0x08, 0x0A, 0x0B, 0x00, 0x05]), Some((0x0A, 0x0B, 0x05)));
-    assert_eq!(gap_proc_complete(&[0x02, 0x00, 0x00]), Some((0x02, BleStatus::SUCCESS)));
-    assert_eq!(gatt_proc_complete(&[0x01, 0x08, 0x00]), Some(BleStatus::SUCCESS));
-    assert_eq!(gatt_proc_complete(&[0x01, 0x08, 0x48]), Some(BleStatus::new(0x48)));
-    assert_eq!(gatt_proc_complete(&[0x01, 0x08]), None);
-}
-
-#[test]
-fn a_peripherals_parameter_request_decodes() {
-    // Connection 0x0801, identifier 7, L2CAP length 8, 400 to 800 ms, latency 0, 6 s.
-    let p = [0x01, 0x08, 7, 8, 0, 0x40, 0x01, 0x80, 0x02, 0, 0, 0x58, 0x02];
-    let L2capUpdateRequest {
-        handle, identifier, interval_min, interval_max, latency, timeout, ..
-    } = L2capUpdateRequest::decode(&p).unwrap();
-    assert_eq!(
-        (handle, identifier, interval_min, interval_max, latency, timeout),
-        (
-            link(),
-            7,
-            Duration::from_millis(400),
-            Duration::from_millis(800),
-            0,
-            Duration::from_secs(6)
-        )
-    );
-    assert_eq!(L2capUpdateRequest::decode(&p[..12]), None);
-}
-
-#[test]
-fn the_centrals_answer_to_a_parameter_request_decodes() {
-    let accepted = vendor_event(vendor::L2CAP_CONNECTION_UPDATE_RESP, &[0x01, 0x08, 0x00, 0x00]);
-    let refused = vendor_event(vendor::L2CAP_CONNECTION_UPDATE_RESP, &[0x01, 0x08, 0x01, 0x00]);
-    for (p, result) in [(&accepted, 0), (&refused, 1)] {
-        let Ev::Vendor { code, params } = parse(p) else { panic!("{p:02X?}") };
-        assert_eq!(code, 0x0800);
-        let r = L2capUpdateResponse::decode(params).unwrap();
-        assert_eq!((r.handle, r.result), (link(), result));
-        assert_eq!(r.accepted(), result == 0);
-    }
-    assert_eq!(L2capUpdateResponse::decode(&[0x01, 0x08, 0x01]), None);
-    let short = vendor_event(vendor::L2CAP_CONNECTION_UPDATE_RESP, &[0x01, 0x08]);
-    let Ev::Vendor { params, .. } = parse(&short) else { panic!("{short:02X?}") };
-    assert_eq!(L2capUpdateResponse::decode(params), None);
-}
-
-/// The start the chip reports after `ACI_UPDATER_START`.
-#[test]
-fn the_chip_says_why_it_started() {
-    use bluenrg2::{blue_initialized, BootReason};
-    let p = [0x04, 0xFF, 0x03, 0x01, 0x00, 0x02];
-    let Ev::Vendor { code, params } = parse(&p) else { panic!("{p:02X?}") };
-    assert_eq!(
-        (code, blue_initialized(params)),
-        (vendor::BLUE_INITIALIZED, Some(BootReason::UPDATER_BY_COMMAND))
-    );
-    assert_eq!(blue_initialized(&[]), None);
-    assert_eq!(blue_initialized(&[0x00]), Some(BootReason::new(0)));
-    let updater: Vec<u8> = (0..=u8::MAX).filter(|&r| BootReason::new(r).is_updater()).collect();
-    assert_eq!(updater, [0x02, 0x03, 0x04]);
-    assert_eq!(BootReason::ECC_ERROR.into_inner(), 0x09);
-}
-
-#[test]
 fn statuses_compare_with_their_constants_and_say_whether_they_succeeded() {
     use bluenrg2::BootReason;
     let p = [0x04, 0x0F, 0x04, 0x0C, 0x01, 0x9E, 0xFC];
     assert!(matches!(parse(&p), Ev::CommandStatus { status: BleStatus::COMMAND_DISALLOWED, .. }));
     assert_eq!(BleStatus::new(0x64), BleStatus::INSUFFICIENT_RESOURCES);
-    assert_eq!(BleStatus::REMOTE_USER_TERMINATED.into_inner(), 0x13);
+    assert_eq!(BleStatus::TERMINATED_REMOTE_USER.into_inner(), 0x13);
     assert!(BleStatus::SUCCESS.is_success());
     assert!(!BleStatus::new(0x01).is_success());
     assert!(PairingStatus::new(0).is_success());
-    for code in 1..=3 {
+    for code in 1..=5 {
         assert!(!PairingStatus::new(code).is_success());
     }
     assert_eq!(
-        [PairingStatus::TIMEOUT, PairingStatus::FAILED].map(PairingStatus::into_inner),
-        [1, 2]
+        [
+            PairingStatus::TIMEOUT,
+            PairingStatus::FAILED,
+            PairingStatus::LTK_MISSING_LOCAL,
+            PairingStatus::LTK_MISSING_PEER,
+            PairingStatus::ENCRYPTION_NOT_SUPPORTED,
+        ]
+        .map(PairingStatus::into_inner),
+        [1, 2, 3, 4, 5]
     );
     assert_eq!(BootReason::new(0x05), BootReason::WATCHDOG);
+}
+
+/// Every status `ble_status.h` defines for the chip, with its code; ST's own carry ST's name.
+#[test]
+fn every_status_st_defines_has_its_code_and_st_names_its_own() {
+    let all = [
+        (BleStatus::SUCCESS, 0x00, "SUCCESS"),
+        (BleStatus::UNKNOWN_HCI_COMMAND, 0x01, "UNKNOWN_HCI_COMMAND"),
+        (BleStatus::UNKNOWN_CONNECTION_ID, 0x02, "UNKNOWN_CONNECTION_ID"),
+        (BleStatus::HARDWARE_FAILURE, 0x03, "HARDWARE_FAILURE"),
+        (BleStatus::AUTHENTICATION_FAILURE, 0x05, "AUTHENTICATION_FAILURE"),
+        (BleStatus::KEY_MISSING, 0x06, "KEY_MISSING"),
+        (BleStatus::MEMORY_CAPACITY_EXCEEDED, 0x07, "MEMORY_CAPACITY_EXCEEDED"),
+        (BleStatus::CONNECTION_TIMEOUT, 0x08, "CONNECTION_TIMEOUT"),
+        (BleStatus::COMMAND_DISALLOWED, 0x0C, "COMMAND_DISALLOWED"),
+        (BleStatus::UNSUPPORTED_FEATURE, 0x11, "UNSUPPORTED_FEATURE"),
+        (BleStatus::INVALID_HCI_CMD_PARAMS, 0x12, "INVALID_HCI_CMD_PARAMS"),
+        (BleStatus::TERMINATED_REMOTE_USER, 0x13, "TERMINATED_REMOTE_USER"),
+        (BleStatus::TERMINATED_LOCAL_HOST, 0x16, "TERMINATED_LOCAL_HOST"),
+        (BleStatus::UNSUPP_RMT_FEATURE, 0x1A, "UNSUPP_RMT_FEATURE"),
+        (BleStatus::UNSPECIFIED, 0x1F, "UNSPECIFIED"),
+        (BleStatus::PROCEDURE_TIMEOUT, 0x22, "PROCEDURE_TIMEOUT"),
+        (BleStatus::INSTANT_PASSED, 0x28, "INSTANT_PASSED"),
+        (BleStatus::PARAMETER_OUT_OF_RANGE, 0x30, "PARAMETER_OUT_OF_RANGE"),
+        (BleStatus::HOST_BUSY_PAIRING, 0x38, "HOST_BUSY_PAIRING"),
+        (BleStatus::CONTROLLER_BUSY, 0x3A, "CONTROLLER_BUSY"),
+        (BleStatus::DIRECTED_ADVERTISING_TIMEOUT, 0x3C, "DIRECTED_ADVERTISING_TIMEOUT"),
+        (BleStatus::CONNECTION_END_WITH_MIC_FAILURE, 0x3D, "CONNECTION_END_WITH_MIC_FAILURE"),
+        (BleStatus::CONNECTION_FAILED_TO_ESTABLISH, 0x3E, "CONNECTION_FAILED_TO_ESTABLISH"),
+        (BleStatus::STATUS_UNKNOWN_CONNECTION_ID, 0x40, "STATUS_UNKNOWN_CONNECTION_ID"),
+        (BleStatus::FAILED, 0x41, "FAILED"),
+        (BleStatus::INVALID_PARAMS, 0x42, "INVALID_PARAMS"),
+        (BleStatus::BUSY, 0x43, "BUSY"),
+        (BleStatus::PENDING, 0x45, "PENDING"),
+        (BleStatus::NOT_ALLOWED, 0x46, "NOT_ALLOWED"),
+        (BleStatus::ERROR, 0x47, "ERROR"),
+        (BleStatus::OUT_OF_MEMORY, 0x48, "OUT_OF_MEMORY"),
+        (BleStatus::INVALID_CID, 0x50, "INVALID_CID"),
+        (BleStatus::DEV_IN_BLACKLIST, 0x59, "DEV_IN_BLACKLIST"),
+        (BleStatus::CSRK_NOT_FOUND, 0x5A, "CSRK_NOT_FOUND"),
+        (BleStatus::IRK_NOT_FOUND, 0x5B, "IRK_NOT_FOUND"),
+        (BleStatus::DEV_NOT_FOUND, 0x5C, "DEV_NOT_FOUND"),
+        (BleStatus::SEC_DB_FULL, 0x5D, "SEC_DB_FULL"),
+        (BleStatus::DEV_NOT_BONDED, 0x5E, "DEV_NOT_BONDED"),
+        (BleStatus::INSUFFICIENT_ENC_KEYSIZE, 0x5F, "INSUFFICIENT_ENC_KEYSIZE"),
+        (BleStatus::INVALID_HANDLE, 0x60, "INVALID_HANDLE"),
+        (BleStatus::OUT_OF_HANDLE, 0x61, "OUT_OF_HANDLE"),
+        (BleStatus::INVALID_OPERATION, 0x62, "INVALID_OPERATION"),
+        (BleStatus::CHARAC_ALREADY_EXISTS, 0x63, "CHARAC_ALREADY_EXISTS"),
+        (BleStatus::INSUFFICIENT_RESOURCES, 0x64, "INSUFFICIENT_RESOURCES"),
+        (BleStatus::SEC_PERMISSION_ERROR, 0x65, "SEC_PERMISSION_ERROR"),
+        (BleStatus::ADDRESS_NOT_RESOLVED, 0x70, "ADDRESS_NOT_RESOLVED"),
+        (BleStatus::NO_VALID_SLOT, 0x82, "NO_VALID_SLOT"),
+        (BleStatus::SCAN_WINDOW_SHORT, 0x83, "SCAN_WINDOW_SHORT"),
+        (BleStatus::NEW_INTERVAL_FAILED, 0x84, "NEW_INTERVAL_FAILED"),
+        (BleStatus::INTERVAL_TOO_LARGE, 0x85, "INTERVAL_TOO_LARGE"),
+        (BleStatus::LENGTH_FAILED, 0x86, "LENGTH_FAILED"),
+        (BleStatus::FLASH_READ_FAILED, 0xFA, "FLASH_READ_FAILED"),
+        (BleStatus::FLASH_WRITE_FAILED, 0xFB, "FLASH_WRITE_FAILED"),
+        (BleStatus::FLASH_ERASE_FAILED, 0xFC, "FLASH_ERASE_FAILED"),
+    ];
+    for (status, code, name) in all {
+        assert_eq!(status.into_inner(), code);
+        if code >= 0x40 {
+            assert_eq!(format!("{status:?}"), name);
+        }
+    }
+}
+
+/// Every reason `bluenrg1_events.h` names, in code order from 0x01.
+#[test]
+fn every_pairing_reason_st_names_has_its_code() {
+    let all = [
+        PairingReason::PASSKEY_ENTRY_FAILED,
+        PairingReason::OOB_NOT_AVAILABLE,
+        PairingReason::AUTH_REQ_CANNOT_BE_MET,
+        PairingReason::CONFIRM_VALUE_FAILED,
+        PairingReason::PAIRING_NOT_SUPPORTED,
+        PairingReason::INSUFF_ENCRYPTION_KEY_SIZE,
+        PairingReason::CMD_NOT_SUPPORTED,
+        PairingReason::UNSPECIFIED_REASON,
+        PairingReason::VERY_EARLY_NEXT_ATTEMPT,
+        PairingReason::SM_INVALID_PARAMS,
+        PairingReason::SMP_SC_DHKEY_CHECK_FAILED,
+        PairingReason::SMP_SC_NUMCOMPARISON_FAILED,
+    ];
+    assert_eq!(all.map(PairingReason::into_inner), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    assert_eq!(PairingReason::new(0x0C), PairingReason::SMP_SC_NUMCOMPARISON_FAILED);
 }
 
 #[test]
 fn a_status_is_an_error_written_with_its_code() {
     assert_eq!(BleStatus::COMMAND_DISALLOWED.to_string(), "Command Disallowed (0x0c)");
     assert_eq!(BleStatus::new(0x3F).to_string(), format!("{:?} (0x3f)", BleStatus::new(0x3F)));
-    assert_eq!(BleStatus::new(0x40).to_string(), "ST status 0x40");
-    assert_eq!(BleStatus::INSUFFICIENT_RESOURCES.to_string(), "ST status 0x64");
+    assert_eq!(BleStatus::INSUFFICIENT_RESOURCES.to_string(), "INSUFFICIENT_RESOURCES (0x64)");
+    assert_eq!(format!("{:?}", BleStatus::OUT_OF_MEMORY), "OUT_OF_MEMORY");
+    assert_eq!(BleStatus::new(0x44).to_string(), "ST status 0x44");
+    assert_eq!(format!("{:?}", BleStatus::new(0x44)), "BleStatus(0x44)");
     let e: &dyn core::error::Error = &BleStatus::new(0x48);
     assert!(e.source().is_none());
 }
@@ -900,8 +852,11 @@ fn an_st_status_is_not_named_as_an_hci_error() {
     let named = [
         format!("{:?}", parse(&[0x04, 0x0E, 0x04, 0x01, 0x02, 0xFD, 0x48])),
         format!("{:?}", parse(&[0x04, 0x0F, 0x04, 0x48, 0x01, 0x02, 0xFD])),
-        format!("{:?}", gatt_proc_complete(&[0x01, 0x08, 0x48])),
-        format!("{:?}", gap_proc_complete(&[0x02, 0x48])),
+        format!(
+            "{:?}",
+            bluenrg2::parse(&vendor_event(vendor::GATT_PROC_COMPLETE, &[0x01, 0x08, 0x48]))
+        ),
+        format!("{:?}", bluenrg2::parse(&vendor_event(vendor::GAP_PROC_COMPLETE, &[0x02, 0x48]))),
         format!("{:?}", parse(&[0x04, 0x05, 0x04, 0x48, 0x01, 0x08, 0x13])),
         format!("{:?}", parse(&[0x04, 0x05, 0x04, 0x00, 0x01, 0x08, 0x48])),
         format!("{:?}", parse(&[0x04, 0x08, 0x04, 0x48, 0x01, 0x08, 0x00])),
@@ -919,11 +874,11 @@ fn an_st_status_is_not_named_as_an_hci_error() {
 }
 
 #[test]
-fn a_status_below_0x40_is_named_as_hci_names_it() {
+fn a_status_below_0x40_is_named_as_hci_names_it_and_from_0x40_as_st_does() {
     assert_eq!(format!("{:?}", BleStatus::SUCCESS), "Success");
     assert_ne!(format!("{:?}", BleStatus::new(0x3F)), "BleStatus(0x3f)");
-    assert_eq!(format!("{:?}", BleStatus::new(0x40)), "BleStatus(0x40)");
-    assert_eq!(format!("{:?}", BleStatus::new(0x48)), "BleStatus(0x48)");
+    assert_eq!(format!("{:?}", BleStatus::new(0x40)), "STATUS_UNKNOWN_CONNECTION_ID");
+    assert_eq!(format!("{:?}", BleStatus::new(0x48)), "OUT_OF_MEMORY");
     assert_eq!(BleStatus::new(0x48).into_inner(), 0x48);
 }
 
@@ -944,13 +899,14 @@ fn a_handle_above_0x0eff_is_malformed() {
     for p in events {
         assert!(matches!(parse(p), Ev::Malformed(_)), "{p:02x?}: {:?}", parse(p));
     }
-    assert_eq!(bluenrg2::connection_handle(&h), None);
-    assert_eq!(bluenrg2::connection_handle(&[0x01]), None);
-    assert_eq!(numeric_comparison(&[h[0], h[1], 1, 2, 3, 4]), None);
-    assert_eq!(L2capUpdateResponse::decode(&[h[0], h[1], 0, 0]), None);
-    assert_eq!(AttributeModified::decode(&[h[0], h[1], 0x1C, 0, 0, 0, 0, 0]), None);
-    assert_eq!(
-        L2capUpdateRequest::decode(&[h[0], h[1], 1, 10, 0, 6, 0, 12, 0, 0, 0, 0xF4, 0x01]),
-        None
-    );
+    for (code, rest) in [
+        (vendor::GAP_NUMERIC_COMPARISON_VALUE, &[1, 2, 3, 4][..]),
+        (vendor::L2CAP_CONNECTION_UPDATE_RESP, &[0, 0]),
+        (vendor::L2CAP_CONNECTION_UPDATE_REQ, &[1, 10, 0, 6, 0, 12, 0, 0, 0, 0xF4, 0x01]),
+        (vendor::GATT_ATTRIBUTE_MODIFIED, &[0x1C, 0, 0, 0, 0, 0]),
+        (vendor::GATT_PROC_COMPLETE, &[0]),
+    ] {
+        let p = vendor_event(code, &[&h[..], rest].concat());
+        assert_eq!(parse(&p), Ev::Malformed(&p), "{code:#06x}");
+    }
 }

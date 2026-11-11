@@ -7,13 +7,14 @@ use common::{parse, Ev, Timing};
 use proptest::prelude::*;
 
 mod reference {
-    use super::common::{Ev, Timing};
+    use super::common::{Ev, Timing, Vn};
     use bluenrg2::bt_hci::FromHciBytes;
     use bluenrg2::{
         event_code, le_subevent, packet, packet_len, packet_whole, AclBroadcastFlag,
         AclPacketBoundary, AddrKind, Address, BdAddr, BleStatus, ConnHandle, Duration,
         EncryptionEnabledLevel, LeConnRole,
     };
+    use bluenrg2::{vendor as v, BootReason, PairingReason, PairingStatus, Uuid};
 
     /// The event in one HCI packet, read no further than the packet's own length, with no
     /// connection handle above 0x0EFF.
@@ -34,8 +35,202 @@ mod reference {
             Ev::Acl { handle, .. } if handle.raw() > 0x0EFF => {
                 Ev::Malformed(&p[..packet_len(p).unwrap()])
             }
+            Ev::Vendor(ref e) if vendor_handle(e).is_some_and(|h| h.raw() > 0x0EFF) => {
+                Ev::Malformed(&p[..packet_len(p).unwrap()])
+            }
             e => e,
         }
+    }
+
+    fn vendor_handle(e: &Vn<'_>) -> Option<ConnHandle> {
+        match *e {
+            Vn::PairingComplete { handle, .. }
+            | Vn::PassKeyRequest { handle }
+            | Vn::NumericComparison { handle, .. }
+            | Vn::L2capUpdateResponse { handle, .. }
+            | Vn::L2capUpdateRequest { handle, .. }
+            | Vn::AttributeModified { handle, .. }
+            | Vn::GattProcTimeout { handle }
+            | Vn::ExchangeMtuResponse { handle, .. }
+            | Vn::FindInfoResponse { handle, .. }
+            | Vn::FindByTypeValueResponse { handle, .. }
+            | Vn::ReadByTypeResponse { handle, .. }
+            | Vn::ReadResponse { handle, .. }
+            | Vn::ReadByGroupTypeResponse { handle, .. }
+            | Vn::Indication { handle, .. }
+            | Vn::Notification { handle, .. }
+            | Vn::GattProcComplete { handle, .. }
+            | Vn::GattErrorResponse { handle, .. }
+            | Vn::TxPoolAvailable { handle, .. }
+            | Vn::ServerConfirmation { handle } => Some(handle),
+            _ => None,
+        }
+    }
+
+    /// `n` bytes of `rest`, or as many as it holds.
+    fn cut(n: u8, rest: &[u8]) -> &[u8] {
+        &rest[..usize::from(n).min(rest.len())]
+    }
+
+    /// A UUID from its two or sixteen bytes.
+    fn uuid(b: &[u8]) -> Uuid {
+        match *b {
+            [lo, hi] => Uuid::U16(u16::from_le_bytes([lo, hi])),
+            _ => Uuid::U128(b.try_into().unwrap()),
+        }
+    }
+
+    /// ST's vendor events by code (`bluenrg1_events.h`), the handle unchecked; `None` when the
+    /// parameters are short of the layout.
+    #[allow(clippy::too_many_lines)]
+    fn vendor(code: u16, p: &[u8]) -> Option<Vn<'_>> {
+        let word = |lo: &u8, hi: &u8| u16::from_le_bytes([*lo, *hi]);
+        let conn = |lo: &u8, hi: &u8| ConnHandle::from_hci_bytes(&[*lo, *hi]).unwrap().0;
+        Some(match (code, p) {
+            (v::BLUE_INITIALIZED, p) => {
+                Vn::BlueInitialized { reason: p.first().map(|r| BootReason::new(*r)) }
+            }
+            (v::BLUE_EVENTS_LOST, [b0, b1, b2, b3, b4, b5, b6, b7, ..]) => Vn::EventsLost {
+                lost: u64::from_le_bytes([*b0, *b1, *b2, *b3, *b4, *b5, *b6, *b7]),
+            },
+            (v::GAP_PAIRING_COMPLETE, [lo, hi, status, reason, ..]) => Vn::PairingComplete {
+                handle: conn(lo, hi),
+                status: PairingStatus::new(*status),
+                reason: (*status == 0x02).then_some(PairingReason::new(*reason)),
+            },
+            (v::GAP_PASS_KEY_REQ, [lo, hi, ..]) => Vn::PassKeyRequest { handle: conn(lo, hi) },
+            (v::GAP_SLAVE_SECURITY_INITIATED, _) => Vn::SlaveSecurityInitiated,
+            (v::GAP_BOND_LOST, _) => Vn::BondLost,
+            (v::GAP_PROC_COMPLETE, [procedure, status, ..]) => {
+                Vn::GapProcComplete { procedure: *procedure, status: BleStatus::new(*status) }
+            }
+            (v::GAP_NUMERIC_COMPARISON_VALUE, [lo, hi, v0, v1, v2, v3, ..]) => {
+                Vn::NumericComparison {
+                    handle: conn(lo, hi),
+                    value: u32::from_le_bytes([*v0, *v1, *v2, *v3]),
+                }
+            }
+            (v::L2CAP_CONNECTION_UPDATE_RESP, [lo, hi, r0, r1, ..]) => {
+                Vn::L2capUpdateResponse { handle: conn(lo, hi), accepted: [*r0, *r1] == [0, 0] }
+            }
+            (
+                v::L2CAP_CONNECTION_UPDATE_REQ,
+                [lo, hi, identifier, _, _, a0, a1, b0, b1, l0, l1, t0, t1, ..],
+            ) => Vn::L2capUpdateRequest {
+                handle: conn(lo, hi),
+                identifier: *identifier,
+                interval_min: Duration::from_u16(word(a0, a1)),
+                interval_max: Duration::from_u16(word(b0, b1)),
+                latency: word(l0, l1),
+                timeout: Duration::from_u16(word(t0, t1)),
+            },
+            (v::GATT_ATTRIBUTE_MODIFIED, [lo, hi, a0, a1, o0, o1, n0, n1, data @ ..]) => {
+                Vn::AttributeModified {
+                    handle: conn(lo, hi),
+                    attr: word(a0, a1),
+                    offset: word(o0, &(o1 & 0x7F)),
+                    more: o1 & 0x80 != 0,
+                    data: &data[..usize::from(word(n0, n1)).min(data.len())],
+                }
+            }
+            (v::GATT_PROC_TIMEOUT, [lo, hi, ..]) => Vn::GattProcTimeout { handle: conn(lo, hi) },
+            (v::ATT_EXCHANGE_MTU_RESP, [lo, hi, m0, m1, ..]) => {
+                Vn::ExchangeMtuResponse { handle: conn(lo, hi), server_mtu: word(m0, m1) }
+            }
+            (v::ATT_FIND_INFO_RESP, [lo, hi, format, n, rest @ ..]) => {
+                let each = match format {
+                    1 => 4,
+                    2 => 18,
+                    _ => usize::MAX,
+                };
+                let data = cut(*n, rest);
+                let descriptors = (0..data.len().checked_div(each).unwrap_or(0))
+                    .map(|i| &data[i * each..(i + 1) * each]);
+                Vn::FindInfoResponse {
+                    handle: conn(lo, hi),
+                    descriptors: descriptors.map(|e| (word(&e[0], &e[1]), uuid(&e[2..]))).collect(),
+                }
+            }
+            (v::ATT_FIND_BY_TYPE_VALUE_RESP, [lo, hi, count, rest @ ..]) => {
+                let pairs = rest.len() / 4;
+                let ranges = (0..pairs.min(usize::from(*count))).map(|i| {
+                    (word(&rest[4 * i], &rest[4 * i + 1]), word(&rest[4 * i + 2], &rest[4 * i + 3]))
+                });
+                Vn::FindByTypeValueResponse { handle: conn(lo, hi), ranges: ranges.collect() }
+            }
+            (v::ATT_READ_BY_TYPE_RESP, [lo, hi, each, n, rest @ ..]) => {
+                let each = usize::from(*each);
+                let data = cut(*n, rest);
+                let all = if each == 7 || each == 21 { data.len() / each } else { 0 };
+                let characteristics = (0..all)
+                    .map(|i| &data[i * each..(i + 1) * each])
+                    .map(|e| (word(&e[0], &e[1]), e[2], word(&e[3], &e[4]), uuid(&e[5..])));
+                Vn::ReadByTypeResponse {
+                    handle: conn(lo, hi),
+                    characteristics: characteristics.collect(),
+                }
+            }
+            (v::ATT_READ_RESP, [lo, hi, n, rest @ ..]) => {
+                Vn::ReadResponse { handle: conn(lo, hi), value: cut(*n, rest) }
+            }
+            (v::ATT_READ_BY_GROUP_TYPE_RESP, [lo, hi, each, n, rest @ ..]) => {
+                let each = usize::from(*each);
+                let data = cut(*n, rest);
+                let all = if each == 6 || each == 20 { data.len() / each } else { 0 };
+                let services = (0..all)
+                    .map(|i| &data[i * each..(i + 1) * each])
+                    .map(|e| (word(&e[0], &e[1]), word(&e[2], &e[3]), uuid(&e[4..])));
+                Vn::ReadByGroupTypeResponse { handle: conn(lo, hi), services: services.collect() }
+            }
+            (v::GATT_INDICATION, [lo, hi, a0, a1, n, rest @ ..]) => {
+                Vn::Indication { handle: conn(lo, hi), attr: word(a0, a1), value: cut(*n, rest) }
+            }
+            (v::GATT_NOTIFICATION, [lo, hi, a0, a1, n, rest @ ..]) => {
+                Vn::Notification { handle: conn(lo, hi), attr: word(a0, a1), value: cut(*n, rest) }
+            }
+            (v::GATT_PROC_COMPLETE, [lo, hi, status, ..]) => {
+                Vn::GattProcComplete { handle: conn(lo, hi), status: BleStatus::new(*status) }
+            }
+            (v::GATT_ERROR_RESP, [lo, hi, request_opcode, a0, a1, error, ..]) => {
+                Vn::GattErrorResponse {
+                    handle: conn(lo, hi),
+                    request_opcode: *request_opcode,
+                    attr: word(a0, a1),
+                    error: *error,
+                }
+            }
+            (v::GATT_TX_POOL_AVAILABLE, [lo, hi, a0, a1, ..]) => {
+                Vn::TxPoolAvailable { handle: conn(lo, hi), available: word(a0, a1) }
+            }
+            (v::GATT_SERVER_CONFIRMATION, [lo, hi, ..]) => {
+                Vn::ServerConfirmation { handle: conn(lo, hi) }
+            }
+            (
+                v::BLUE_EVENTS_LOST
+                | v::GAP_PAIRING_COMPLETE
+                | v::GAP_PASS_KEY_REQ
+                | v::GAP_PROC_COMPLETE
+                | v::GAP_NUMERIC_COMPARISON_VALUE
+                | v::L2CAP_CONNECTION_UPDATE_RESP
+                | v::L2CAP_CONNECTION_UPDATE_REQ
+                | v::GATT_ATTRIBUTE_MODIFIED
+                | v::GATT_PROC_TIMEOUT
+                | v::ATT_EXCHANGE_MTU_RESP
+                | v::ATT_FIND_INFO_RESP
+                | v::ATT_FIND_BY_TYPE_VALUE_RESP
+                | v::ATT_READ_BY_TYPE_RESP
+                | v::ATT_READ_RESP
+                | v::ATT_READ_BY_GROUP_TYPE_RESP
+                | v::GATT_INDICATION
+                | v::GATT_NOTIFICATION
+                | v::GATT_PROC_COMPLETE
+                | v::GATT_ERROR_RESP
+                | v::GATT_TX_POOL_AVAILABLE
+                | v::GATT_SERVER_CONFIRMATION,
+                _,
+            ) => return None,
+            (code, params) => Vn::Unknown { code, params },
+        })
     }
 
     #[allow(clippy::too_many_lines)]
@@ -156,7 +351,7 @@ mod reference {
                 Ev::LeUnknown { subevent_code: *sub }
             }
             [EVENT, ev::VENDOR, _, lo, hi, params @ ..] => {
-                Ev::Vendor { code: u16::from_le_bytes([*lo, *hi]), params }
+                vendor(u16::from_le_bytes([*lo, *hi]), params).map_or(Ev::Malformed(p), Ev::Vendor)
             }
             // Handle, then boundary and broadcast flags, in the first two bytes (Core Vol 4 Part E §5.4.2).
             [ACL, lo, hi, _, _, data @ ..] => Ev::Acl {
@@ -359,7 +554,63 @@ fn corpus() -> Vec<Vec<u8>> {
         all.push(hci_event(code, &[0x00, 0x01, 0x08]));
         all.push(hci_event(code, &[]));
     }
+    // Every vendor event, its lengths and counts mostly in range.
+    for code in VENDOR_CODES {
+        all.push(vendor_event(
+            code,
+            &[
+                0x01, 0x08, 0x02, 0x04, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04, 0x00, 0x05, 0x00,
+                0x06, 0x00,
+            ],
+        ));
+    }
     all
+}
+
+/// The vendor events the crate decodes, and one it doesn't.
+const VENDOR_CODES: [u16; 25] = [
+    vendor::BLUE_INITIALIZED,
+    vendor::BLUE_EVENTS_LOST,
+    vendor::GAP_PAIRING_COMPLETE,
+    vendor::GAP_PASS_KEY_REQ,
+    vendor::GAP_SLAVE_SECURITY_INITIATED,
+    vendor::GAP_BOND_LOST,
+    vendor::GAP_PROC_COMPLETE,
+    vendor::GAP_NUMERIC_COMPARISON_VALUE,
+    vendor::L2CAP_CONNECTION_UPDATE_RESP,
+    vendor::L2CAP_CONNECTION_UPDATE_REQ,
+    vendor::GATT_ATTRIBUTE_MODIFIED,
+    vendor::GATT_PROC_TIMEOUT,
+    vendor::ATT_EXCHANGE_MTU_RESP,
+    vendor::ATT_FIND_INFO_RESP,
+    vendor::ATT_FIND_BY_TYPE_VALUE_RESP,
+    vendor::ATT_READ_BY_TYPE_RESP,
+    vendor::ATT_READ_RESP,
+    vendor::ATT_READ_BY_GROUP_TYPE_RESP,
+    vendor::GATT_INDICATION,
+    vendor::GATT_NOTIFICATION,
+    vendor::GATT_PROC_COMPLETE,
+    vendor::GATT_ERROR_RESP,
+    vendor::GATT_TX_POOL_AVAILABLE,
+    vendor::GATT_SERVER_CONFIRMATION,
+    0x0C13,
+];
+
+/// A vendor event of any code above, its handle mostly valid and its element length, format or
+/// count mostly one the layout takes.
+fn vendor_events() -> impl Strategy<Value = Vec<u8>> {
+    (
+        prop::sample::select(VENDOR_CODES.to_vec()),
+        prop::collection::vec(any::<u8>(), 0..48),
+        any::<bool>(),
+    )
+        .prop_map(|(code, mut params, valid)| {
+            if valid && params.len() > 3 {
+                params[1] &= 0x0E;
+                params[2] = [1, 2, 6, 7, 20, 21][usize::from(params[2] % 6)];
+            }
+            vendor_event(code, &params)
+        })
 }
 
 /// The packet with its length field set to `n` parameters and the bytes after them dropped.
@@ -517,6 +768,14 @@ proptest! {
         let mut q = p.clone();
         q.extend(extra);
         check(&q);
+    }
+
+    #[test]
+    fn any_vendor_event_decodes_the_same(p in vendor_events()) {
+        check(&p);
+        for n in 0..p.len() - 3 {
+            check(&shortened(&p, n));
+        }
     }
 
     #[test]

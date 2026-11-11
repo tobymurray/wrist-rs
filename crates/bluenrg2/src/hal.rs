@@ -24,6 +24,7 @@ pub struct FirmwareDetails {
 impl FirmwareDetails {
     const LEN: usize = 14;
 
+    /// From a Command Complete's return parameters, the bytes after its status.
     #[must_use]
     pub fn decode(p: &[u8]) -> Option<Self> {
         let p = p.get(..Self::LEN)?;
@@ -50,6 +51,7 @@ pub struct AnchorPeriod {
 }
 
 impl AnchorPeriod {
+    /// From a Command Complete's return parameters, the bytes after its status.
     #[must_use]
     pub fn decode(p: &[u8]) -> Option<Self> {
         let p = p.get(..8)?;

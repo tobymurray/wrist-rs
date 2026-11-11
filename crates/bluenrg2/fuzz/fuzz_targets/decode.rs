@@ -1,13 +1,10 @@
-//! A read decoded packet by packet, each vendor event and advertising report through its
+//! A read decoded packet by packet, each advertising report and vendor event's list through its
 //! decoders: nothing may panic, and nothing decoded may lie outside its packet.
 
 #![no_main]
 
 use bluenrg2::{
-    ad_name, ad_uuid128s, ad_uuid16s, att_mtu, characteristics, descriptors, gap_proc_complete,
-    gatt_error, gatt_proc_complete, notification, numeric_comparison, packet_len, packet_whole,
-    pairing_complete, parse, read_value, reports, service_range, services, AttributeModified,
-    Event, L2capUpdateRequest, L2capUpdateResponse,
+    ad_name, ad_uuid128s, ad_uuid16s, packet_len, packet_whole, parse, reports, Event, VendorEvent,
 };
 use libfuzzer_sys::fuzz_target;
 
@@ -16,28 +13,21 @@ fn within(outer: &[u8], inner: &[u8]) {
     assert!(o.start <= i.start && i.end <= o.end);
 }
 
-fn vendor(params: &[u8]) {
-    if let Some(w) = AttributeModified::decode(params) {
-        within(params, w.data);
+fn vendor(packet: &[u8], e: VendorEvent<'_>) {
+    match e {
+        VendorEvent::AttributeModified { data, .. } => within(packet, data),
+        VendorEvent::ReadResponse { value, .. }
+        | VendorEvent::Notification { value, .. }
+        | VendorEvent::Indication { value, .. } => within(packet, value),
+        VendorEvent::Unknown { params, .. } => within(packet, params),
+        VendorEvent::ReadByGroupTypeResponse { services, .. } => services.iter().for_each(drop),
+        VendorEvent::ReadByTypeResponse { characteristics, .. } => {
+            characteristics.iter().for_each(drop)
+        }
+        VendorEvent::FindInfoResponse { descriptors, .. } => descriptors.iter().for_each(drop),
+        VendorEvent::FindByTypeValueResponse { ranges, .. } => ranges.iter().for_each(drop),
+        _ => {}
     }
-    let _ = numeric_comparison(params);
-    let _ = pairing_complete(params);
-    let _ = att_mtu(params);
-    let _ = gap_proc_complete(params);
-    let _ = gatt_proc_complete(params);
-    let _ = gatt_error(params);
-    let _ = service_range(params);
-    let _ = L2capUpdateRequest::decode(params);
-    let _ = L2capUpdateResponse::decode(params);
-    if let Some(v) = read_value(params) {
-        within(params, v);
-    }
-    if let Some((_, v)) = notification(params) {
-        within(params, v);
-    }
-    services(params).for_each(drop);
-    characteristics(params).for_each(drop);
-    descriptors(params).for_each(drop);
 }
 
 fn advertising(data: &[u8]) {
@@ -70,10 +60,7 @@ fuzz_target!(|read: &[u8]| {
                 within(packet, data);
                 advertising(data);
             }
-            Event::Vendor { params, .. } => {
-                within(packet, params);
-                vendor(params);
-            }
+            Event::Vendor(e) => vendor(packet, e),
             Event::LeDataLengthChange { .. } => assert!(packet.len() >= 14),
             Event::LeConnectionComplete { timing, .. } => {
                 assert!(packet.len() >= 15);
