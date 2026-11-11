@@ -12,7 +12,66 @@ on:
         default: false
 permissions:
   contents: read
+# A push to a pull request replaces its run; main, tags and dispatches each run to the end.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
 jobs:
+  # The recipe's checks, which a pull request's build leaves to these jobs.
+  test:
+    if: github.ref_type != 'tag'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # Not in Cargo.toml, which the build ID hashes.
+      CARGO_PROFILE_TEST_OPT_LEVEL: 1
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: |
+          rustup toolchain install "$(jq -r .stable release/toolchain.json)" --profile minimal \
+            --target thumbv8m.main-none-eabihf
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo test --locked --workspace
+  lint:
+    if: github.ref_type != 'tag'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain and pyelftools
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$(jq -r .stable release/toolchain.json)" --profile minimal \
+            --component clippy --target thumbv8m.main-none-eabihf
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install pyelftools==0.32
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            apps/standalone-boot -> target
+            apps/wrist-loader -> target
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - run: cargo clippy --locked --release -- -D warnings
+        working-directory: apps/wrist-loader
+      # As tools/release-build.py runs them.
+      - working-directory: apps/standalone-boot
+        run: |
+          set -euo pipefail
+          features=$(jq -r '.app_features | join(",")' ../../release/toolchain.json)
+          cargo clippy --locked --release ${features:+--features "$features"} -- -D warnings
+          cargo clippy --locked --release -- -D warnings
+          cargo clippy --locked --release --all-features -- -D warnings
+      # Here, where Cargo has already fetched the apps' crates for its metadata.
+      - run: '"$RUNNER_TEMP/venv/bin/python" tools/test-release.py'
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -66,9 +125,8 @@ jobs:
           commit=$(git -C source rev-parse HEAD)
           version="0.0.0-candidate.${commit:0:12}"
           if [ "$REF_TYPE" = tag ]; then version="${REF_NAME#v}"; fi
-          # A pull request also builds the image several ways, to check each has its own ID.
           extra=()
-          if [ "$EVENT" = pull_request ]; then extra=(--test-build-id); fi
+          if [ "$EVENT" = pull_request ]; then extra=(--skip-checks); fi
           python3 source/tools/release-docker.py --sdk "$PWD/sdk" --out "$RUNNER_TEMP/firmware" --version "$version" \
             --cargo-home "$PWD/cargo-home" "${extra[@]}"
       # Incremental state is redone for every change, so it is not kept.
