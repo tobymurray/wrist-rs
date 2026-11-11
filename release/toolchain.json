@@ -3,7 +3,7 @@
   "nightly": "nightly-2026-10-19",
   "target": "thumbv8m.main-none-eabihf",
   "app_features": ["ble"],
-  "build_image": "ghcr.io/tobymurray/wrist-rs-build@sha256:323d347edb24b29e8cd6545166e5d14a2899b7646489111468d3e94017d759f5",
+  "build_image": "ghcr.io/tobymurray/wrist-rs-build@sha256:a732f579a709bde97cb52d6b57a300cff97bc0d2e771c04b78e133f62ec51137",
   "sdk_url": "https://github.com/UNAWatch/una-sdk",
   "sdk_tag": "sdk-v1.6.1",
   "sdk_commit": "d71d0dc3bad7d47282fcf5a4c53a3f0f2031afb1"

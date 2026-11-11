@@ -141,12 +141,14 @@ package stays public, so every release rebuilds.
 
 Two inputs live in other accounts, and each has a way to keep it:
 
-- **The base image**, `xanderhendriks/stm32cubeide` on Docker Hub. The build image
-  workflow, run by hand with `mirror_base`, copies the base named in `FROM` to
+- **The toolchain's image**, `xanderhendriks/stm32cubeide` on Docker Hub, the unnamed
+  `FROM` that the image copies the GNU Arm toolchain out of. The build image
+  workflow, run by hand with `mirror_base`, copies it to
   `ghcr.io/tobymurray/stm32cubeide`, digest unchanged, so a `FROM` that names the mirror
   with the same digest builds the same image. Dependabot then watches the mirror, which
-  changes only when copied to: a base bump puts upstream's new tag and digest in `FROM`
-  and runs the copy on that branch before the image is published.
+  changes only when copied to: a bump puts upstream's new tag and digest in `FROM`, and
+  the toolchain's path in `GNU_TOOLS`, and runs the copy on that branch before the image
+  is published.
 - **The UNA SDK** at `sdk_commit`, from `sdk_url`. A fork under `tobymurray` keeps that
   commit fetchable; CI checks out `sdk_url`, so pointing it at the fork moves every build.
 
@@ -157,7 +159,7 @@ To switch to both:
    link them to this repository.
 3. Fork `UNAWatch/una-sdk` to `tobymurray/una-sdk`, with all branches, and check that
    `sdk_commit` and the `sdk_tag` tag are in it.
-4. On one branch, change `FROM` in [`Dockerfile`](Dockerfile) to
+4. On one branch, change the unnamed `FROM` in [`Dockerfile`](Dockerfile) to
    `ghcr.io/tobymurray/stm32cubeide:<tag>@<the same digest>`, set `sdk_url` in
    [`toolchain.json`](toolchain.json) to `https://github.com/tobymurray/una-sdk`, and
    pin the image that branch publishes, as above. The new pin and `sdk_url` are both in
