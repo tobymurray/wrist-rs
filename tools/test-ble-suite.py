@@ -176,6 +176,12 @@ class Judgements(unittest.TestCase):
         self.assertFalse(run(suite.update, usb, Phone(), 'b', update_image=None))
         self.assertEqual(asyncio.run(suite.snapshot(usb))['ble'], status)
 
+    def test_the_radio_is_back_once_it_advertises_after_the_hang_up(self):
+        replies = iter([['[ble] up, not advertising, timing cable'], ['[ble] advertising as UNA, timing cable']])
+        usb = Console({'version': ['[usb] build b'], 'ble': lambda _: next(replies)})
+        self.assertTrue(run(suite.update, usb, Phone(), 'b', update_image=None))
+        self.assertEqual(usb.sent.count('ble'), 2)
+
     def test_no_reconnects_is_not_a_pass(self):
         self.assertFalse(run(suite.reconnect, None, None, 'b', reconnects=0, encrypt_limit=2.0))
 
@@ -488,6 +494,7 @@ class Judgements(unittest.TestCase):
                 asyncio.run(suite.lateness(s, usb, Phone(), 'b', argparse.Namespace(lag_seconds=8)))
             return s
         self.assertTrue(run_with(2).passed)
+        self.assertEqual(run_with(2).checks[0]['what'], 'attached over the air for traffic')
         expired = run_with(0)
         self.assertFalse(expired.passed)
         self.assertIn('the probe ran through the traffic (0 s of 2 s', ' '.join(c['what'] for c in expired.checks))

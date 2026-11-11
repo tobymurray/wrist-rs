@@ -484,12 +484,13 @@ async def traffic(link, seconds):
 
 
 async def lateness(s, usb, phone, build, a):
+    link = await phone.connect()
+    if not s.check(link, 'attached over the air for traffic'):
+        return
     await page(usb)
     armed = await usb.ask(f'page lag {a.lag_seconds}', r'probe armed', 3)
     if not s.check(armed, f'`page lag {a.lag_seconds}` armed the probe'):
-        return
-    link = await phone.connect()
-    if not s.check(link, 'attached over the air for traffic'):
+        await link.close()
         return
     readings, since = [], time.time()
     for _ in range(2):
@@ -566,6 +567,15 @@ async def soak(s, usb, phone, build, a):
     s.check(None not in up and up[1] > up[0] and not closed, f'no reset: uptime {up[0]} to {up[1]} s, console never closed')
 
 
+async def radio_back(usb, attempts):
+    """Whether `ble` reports advertising or a link within `attempts` asks: the radio is idle for a moment after
+    the update's hang-up."""
+    for _ in range(attempts):
+        if await usb.ask('ble', r'\[ble\] (advertising as \S+|connected), ', 1):
+            return True
+    return False
+
+
 async def update(s, usb, phone, build, a):
     t0 = time.time()
     mark = usb.mark()
@@ -575,7 +585,7 @@ async def update(s, usb, phone, build, a):
     s.check(kept, f'the update over the air reached `state boot` ({took} s)')
     s.check(not [l for _, l in usb.since(mark) if 'revert' in l], 'the loader never reverted')
     s.check(await usb.ask('version', rf'build {re.escape(build)}(?: |$)', 10), f'the watch runs build {build} after it')
-    s.check(await usb.ask('ble', r'\[ble\] (advertising as \S+|connected), ', 5), 'the radio is back on after the reset')
+    s.check(await radio_back(usb, 10), 'the radio is back on after the reset')
     if a.profile:
         s.check(await usb.ask(f'ble profile {a.profile}', r'\[ble\] timing', 5), f'`ble profile {a.profile}` held again')
 
