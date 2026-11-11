@@ -28,7 +28,9 @@ pub mod hal;
 
 pub use bt_hci;
 pub use bt_hci::data::{AclBroadcastFlag, AclPacketBoundary};
-pub use bt_hci::param::{AddrKind, BdAddr, ConnHandle, Duration, EncryptionEnabledLevel, LeAdvEventKind, LeConnRole};
+pub use bt_hci::param::{
+    AddrKind, BdAddr, ConnHandle, Duration, EncryptionEnabledLevel, LeAdvEventKind, LeConnRole,
+};
 
 use bt_hci::data::AclPacket;
 use bt_hci::param::Status;
@@ -483,13 +485,23 @@ pub enum Event<'a> {
     /// LE (Enhanced) Connection Complete (7.7.65.1, 7.7.65.10) with success: the handle, the
     /// local device's role, the peer, and the timing when the packet carries it.
     #[non_exhaustive]
-    LeConnectionComplete { handle: ConnHandle, role: LeConnRole, peer: Address, timing: Option<ConnTiming> },
+    LeConnectionComplete {
+        handle: ConnHandle,
+        role: LeConnRole,
+        peer: Address,
+        timing: Option<ConnTiming>,
+    },
     /// LE (Enhanced) Connection Complete with an error: no connection formed.
     #[non_exhaustive]
     LeConnectionFailed { status: BleStatus },
     /// LE Connection Update Complete (7.7.65.3) with success: the link's new timing.
     #[non_exhaustive]
-    LeConnectionUpdateComplete { handle: ConnHandle, conn_interval: Duration<1_250>, peripheral_latency: u16, supervision_timeout: Duration<10_000> },
+    LeConnectionUpdateComplete {
+        handle: ConnHandle,
+        conn_interval: Duration<1_250>,
+        peripheral_latency: u16,
+        supervision_timeout: Duration<10_000>,
+    },
     /// LE Connection Update Complete with an error: the link keeps the parameters it had.
     #[non_exhaustive]
     LeConnectionUpdateFailed { handle: ConnHandle, status: BleStatus },
@@ -506,7 +518,13 @@ pub enum Event<'a> {
     EncryptionKeyRefresh { handle: ConnHandle, status: BleStatus },
     /// LE Data Length Change (7.7.65.7): the largest payload each way, in octets and in microseconds on air.
     #[non_exhaustive]
-    LeDataLengthChange { handle: ConnHandle, max_tx_octets: u16, max_tx_time: u16, max_rx_octets: u16, max_rx_time: u16 },
+    LeDataLengthChange {
+        handle: ConnHandle,
+        max_tx_octets: u16,
+        max_tx_time: u16,
+        max_rx_octets: u16,
+        max_rx_time: u16,
+    },
     /// LE Advertising Report (7.7.65.2): one or more reports ([`reports`]).
     #[non_exhaustive]
     LeAdvertisingReport { data: &'a [u8] },
@@ -522,7 +540,12 @@ pub enum Event<'a> {
     /// ACL data (Core Vol 4 Part E 5.4.2), as the chip sends it in its link-layer-only
     /// configuration (ST's `bluenrg1_hal_aci.h`, `LL_WITHOUT_HOST`).
     #[non_exhaustive]
-    Acl { handle: ConnHandle, boundary: AclPacketBoundary, broadcast: AclBroadcastFlag, data: &'a [u8] },
+    Acl {
+        handle: ConnHandle,
+        boundary: AclPacketBoundary,
+        broadcast: AclBroadcastFlag,
+        data: &'a [u8],
+    },
     /// Not an HCI event, cut short by the end of the read, or not fitting its layout.
     Malformed(&'a [u8]),
 }
@@ -533,7 +556,9 @@ impl Event<'_> {
     #[must_use]
     pub fn encryption(&self) -> Option<(ConnHandle, bool)> {
         match *self {
-            Event::EncryptionChange { handle, status, enabled } => Some((handle, status.is_success() && enabled != EncryptionEnabledLevel::Off)),
+            Event::EncryptionChange { handle, status, enabled } => {
+                Some((handle, status.is_success() && enabled != EncryptionEnabledLevel::Off))
+            }
             Event::EncryptionKeyRefresh { handle, status } => Some((handle, status.is_success())),
             _ => None,
         }
@@ -557,7 +582,12 @@ pub fn parse(p: &[u8]) -> Event<'_> {
 fn acl(p: &[u8]) -> Option<Event<'_>> {
     let acl: AclPacket = first(p)?;
     let handle = link(acl.header().handle & 0x0FFF)?;
-    Some(Event::Acl { handle, boundary: acl.boundary_flag(), broadcast: acl.broadcast_flag(), data: acl.data() })
+    Some(Event::Acl {
+        handle,
+        boundary: acl.boundary_flag(),
+        broadcast: acl.broadcast_flag(),
+        data: acl.data(),
+    })
 }
 
 /// The value at the start of `b`, the bytes after it ignored.
@@ -587,11 +617,19 @@ fn standard(code: u8, params: &[u8]) -> Option<Event<'_>> {
         }
         ev::DISCONNECTION_COMPLETE => {
             let e: hci::DisconnectionComplete = first(params)?;
-            Event::DisconnectionComplete { handle: link(e.handle.raw())?, status: ble(e.status), reason: ble(e.reason) }
+            Event::DisconnectionComplete {
+                handle: link(e.handle.raw())?,
+                status: ble(e.status),
+                reason: ble(e.reason),
+            }
         }
         ev::ENCRYPTION_CHANGE => {
             let e: hci::EncryptionChangeV1 = first(params)?;
-            Event::EncryptionChange { handle: link(e.handle.raw())?, status: ble(e.status), enabled: e.enabled }
+            Event::EncryptionChange {
+                handle: link(e.handle.raw())?,
+                status: ble(e.status),
+                enabled: e.enabled,
+            }
         }
         ev::ENCRYPTION_KEY_REFRESH_COMPLETE => {
             let e: hci::EncryptionKeyRefreshComplete = first(params)?;
@@ -612,7 +650,9 @@ fn le_meta(params: &[u8]) -> Option<Event<'_>> {
     use le_subevent as sub;
     let (&code, params) = params.split_first()?;
     Some(match code {
-        sub::CONNECTION_COMPLETE | sub::ENHANCED_CONNECTION_COMPLETE => connection_complete(code, params)?,
+        sub::CONNECTION_COMPLETE | sub::ENHANCED_CONNECTION_COMPLETE => {
+            connection_complete(code, params)?
+        }
         sub::CONNECTION_UPDATE_COMPLETE => {
             let (status, rest) = Status::from_hci_bytes(params).ok()?;
             if status == Status::SUCCESS {
@@ -661,9 +701,11 @@ fn connection_complete(code: u8, params: &[u8]) -> Option<Event<'_>> {
     let (kind, rest) = AddrKind::from_hci_bytes(rest).ok()?;
     let peer: BdAddr = first(rest)?;
     let timing = if code == le_subevent::CONNECTION_COMPLETE {
-        first::<le::LeConnectionComplete>(params).map(|e| (e.conn_interval, e.peripheral_latency, e.supervision_timeout))
+        first::<le::LeConnectionComplete>(params)
+            .map(|e| (e.conn_interval, e.peripheral_latency, e.supervision_timeout))
     } else {
-        first::<le::LeEnhancedConnectionComplete>(params).map(|e| (e.conn_interval, e.peripheral_latency, e.supervision_timeout))
+        first::<le::LeEnhancedConnectionComplete>(params)
+            .map(|e| (e.conn_interval, e.peripheral_latency, e.supervision_timeout))
     };
     Some(Event::LeConnectionComplete {
         handle: link(handle)?,
@@ -705,7 +747,10 @@ pub fn reports(data: &[u8]) -> impl Iterator<Item = Report<'_>> + '_ {
         at += 10 + len;
         Some(Report {
             kind,
-            address: Address { kind: AddrKind::new(head[1] & 0x01), addr: BdAddr([head[2], head[3], head[4], head[5], head[6], head[7]]) },
+            address: Address {
+                kind: AddrKind::new(head[1] & 0x01),
+                addr: BdAddr([head[2], head[3], head[4], head[5], head[6], head[7]]),
+            },
             data: body,
             rssi: rssi.cast_signed(),
         })
@@ -739,7 +784,9 @@ pub mod ad {
 /// The name in advertising data, complete or shortened.
 #[must_use]
 pub fn ad_name(data: &[u8]) -> Option<&[u8]> {
-    ad_structures(data).find(|(t, _)| *t == ad::NAME_COMPLETE || *t == ad::NAME_SHORT).map(|(_, v)| v)
+    ad_structures(data)
+        .find(|(t, _)| *t == ad::NAME_COMPLETE || *t == ad::NAME_SHORT)
+        .map(|(_, v)| v)
 }
 
 /// The 16-bit service UUIDs in advertising data.

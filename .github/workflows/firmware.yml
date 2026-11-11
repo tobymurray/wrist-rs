@@ -49,7 +49,7 @@ jobs:
         run: |
           set -euo pipefail
           rustup toolchain install "$(jq -r .stable release/toolchain.json)" --profile minimal \
-            --component clippy --target thumbv8m.main-none-eabihf
+            --component clippy,rustfmt --target thumbv8m.main-none-eabihf
           python3 -m venv "$RUNNER_TEMP/venv"
           "$RUNNER_TEMP/venv/bin/pip" install pyelftools==0.32
       - uses: Swatinem/rust-cache@v2
@@ -60,6 +60,9 @@ jobs:
             apps/wrist-loader -> target
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - run: |
+          cargo fmt -p bluenrg2 --check
+          cargo fmt --manifest-path crates/bluenrg2/fuzz/Cargo.toml --check
       - run: cargo clippy --locked --release -- -D warnings
         working-directory: apps/wrist-loader
       # As tools/release-build.py runs them.

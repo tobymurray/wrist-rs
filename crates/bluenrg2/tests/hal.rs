@@ -6,10 +6,26 @@ const FIRMWARE: [u8; 14] = [2, 1, 0, 0x02, 0x34, 0x12, 2, 2, 1, 0, 0x0F, 0x00, 0
 
 #[test]
 fn firmware_details_decode_field_by_field() {
-    let FirmwareDetails { dtm_version, dtm_variant, dtm_build, stack_version, stack_development, stack_variant, stack_build, .. } =
-        FirmwareDetails::decode(&FIRMWARE).unwrap();
+    let FirmwareDetails {
+        dtm_version,
+        dtm_variant,
+        dtm_build,
+        stack_version,
+        stack_development,
+        stack_variant,
+        stack_build,
+        ..
+    } = FirmwareDetails::decode(&FIRMWARE).unwrap();
     assert_eq!(
-        (dtm_version, dtm_variant, dtm_build, stack_version, stack_development, stack_variant, stack_build),
+        (
+            dtm_version,
+            dtm_variant,
+            dtm_build,
+            stack_version,
+            stack_development,
+            stack_variant,
+            stack_build
+        ),
         ([2, 1, 0], 2, 0x1234, [2, 2, 1], 0, 0x000F, 2353)
     );
     assert_eq!(FirmwareDetails::decode(&FIRMWARE[..13]), None);
