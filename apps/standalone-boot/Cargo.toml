@@ -23,7 +23,7 @@ embassy-sync = "0.8.0"
 embassy-futures = "0.1.2"
 embassy-boot-stm32 = "0.8.0"
 wrist-flash = { path = "../../crates/wrist-flash" }
-bluenrg2 = { path = "../../crates/bluenrg2", optional = true }
+bluenrg2 = { version = "0.1.0", optional = true }
 wrist-bluenrg2 = { path = "../../crates/wrist-bluenrg2", optional = true }
 wrist-wake = { path = "../../crates/wrist-wake", optional = true }
 wrist-board = { path = "../../crates/wrist-board" }

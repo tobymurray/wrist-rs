@@ -7,7 +7,7 @@ publish = false
 description = "The BLE task's decisions without hardware: when it next has timed work, the radio's timing, its states and the console's notifications"
 
 [dependencies]
-bluenrg2 = { path = "../bluenrg2" }
+bluenrg2 = "0.1.0"
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
