@@ -3,7 +3,7 @@ use std::future::Future;
 use std::pin::pin;
 use std::task::{Context, Poll, Waker};
 
-use wrist_power::{gauge_reset, restore_gauge, GaugeBus, GaugeStep, GAUGE_RESTORE};
+use wrist_power::{configure_gauge, gauge_reset, gauge_unsettled, GaugeBus, GaugeStep, GAUGE_RESTORE, GAUGE_SETTLE};
 
 /// A MAX17262 after a reset: the register defaults, `POR` set, `Refresh` clearing on the
 /// first read after it is written. `fail_after` writes succeed, then every transfer fails;
@@ -50,14 +50,18 @@ impl GaugeBus for Gauge {
 }
 
 fn run(gauge: &mut Gauge) -> Result<(), &'static str> {
-    match pin!(restore_gauge(gauge)).as_mut().poll(&mut Context::from_waker(Waker::noop())) {
+    run_steps(gauge, &GAUGE_RESTORE)
+}
+
+fn run_steps(gauge: &mut Gauge, steps: &[GaugeStep]) -> Result<(), &'static str> {
+    match pin!(configure_gauge(gauge, steps)).as_mut().poll(&mut Context::from_waker(Waker::noop())) {
         Poll::Ready(r) => r,
         Poll::Pending => panic!("the restore awaited something that never completes"),
     }
 }
 
 fn assert_configured(gauge: &Gauge) {
-    for (reg, v) in [(0x18, 0x0190), (0x1E, 0x0059), (0x3A, 0xAA63), (0xDB, 0x0400), (0xBA, 0x870F)] {
+    for (reg, v) in [(0x18, 0x0190), (0x1E, 0x0020), (0x3A, 0xAA63), (0xDB, 0x0400), (0xBA, 0)] {
         assert_eq!(gauge.regs[&reg], v, "register {reg:#04x}");
     }
     assert!(!gauge_reset(gauge.regs[&0x00]));
@@ -71,8 +75,8 @@ fn por_is_status_bit_1() {
 }
 
 #[test]
-fn restore_waits_for_the_gauge_then_writes_the_stock_configuration() {
-    assert_eq!(GAUGE_RESTORE[..2], [GaugeStep::WaitClear(0x3D, 1), GaugeStep::SaveHibCfg]);
+fn restore_waits_for_the_gauge_wakes_it_then_writes_the_configuration() {
+    assert_eq!(GAUGE_RESTORE[0], GaugeStep::WaitClear(0x3D, 1));
     let writes: Vec<_> = GAUGE_RESTORE
         .iter()
         .filter_map(|s| match *s {
@@ -84,55 +88,52 @@ fn restore_waits_for_the_gauge_then_writes_the_stock_configuration() {
     assert_eq!(&writes[..3], &[(0x60, 0x0090), (0xBA, 0), (0x60, 0)]);
     // The stock ModelCfg, 0x0400, with Refresh.
     assert_eq!(writes.last(), Some(&(0xDB, 0x0400 | 0x8000)));
+    // Nothing puts hibernate back.
+    assert_eq!(writes.iter().filter(|w| w.0 == 0xBA).count(), 1);
 }
 
 #[test]
-fn hibernate_and_por_come_back_only_after_the_model_reloads() {
+fn por_clears_only_after_the_model_reloads() {
     let at = |step| GAUGE_RESTORE.iter().position(|s| *s == step).unwrap();
     let refresh = at(GaugeStep::WaitClear(0xDB, 0x8000));
     assert!(at(GaugeStep::Write(0xDB, 0x8400)) < refresh);
-    assert_eq!(at(GaugeStep::RestoreHibCfg), refresh + 1);
     assert_eq!(at(GaugeStep::ClearPor), GAUGE_RESTORE.len() - 1);
 }
 
 #[test]
-fn a_reset_gauge_ends_configured_hibernating_and_without_por() {
+fn a_reset_gauge_ends_configured_awake_and_without_por() {
     let mut gauge = Gauge::reset();
     assert_eq!(run(&mut gauge), Ok(()));
     assert_configured(&gauge);
 }
 
 #[test]
-fn a_failure_anywhere_leaves_por_set_and_hibernate_on_after_a_retry() {
-    // Each failure point from the write of HibCfg = 0 to clearing POR.
-    for fail_after in 2..=9 {
+fn a_failure_anywhere_leaves_por_set_for_a_retry() {
+    // Each failure point before the write clearing POR, the eighth.
+    for fail_after in 0..8 {
         let mut gauge = Gauge::reset();
         gauge.fail_after = fail_after;
         assert!(run(&mut gauge).is_err(), "failing after {fail_after} writes");
-        // The bus died, so the write putting HibCfg back may have failed too.
-        assert!([0, 0x870F].contains(&gauge.regs[&0xBA]), "failing after {fail_after} writes");
+        assert!(gauge_reset(gauge.regs[&0x00]), "failing after {fail_after} writes");
         gauge.fail_after = usize::MAX;
-        if gauge_reset(gauge.regs[&0x00]) {
-            assert_eq!(run(&mut gauge), Ok(()));
-        }
+        assert_eq!(run(&mut gauge), Ok(()));
         assert_configured(&gauge);
     }
 }
 
 #[test]
-fn a_refused_hibernate_write_is_tried_again() {
+fn a_reload_that_never_finishes_gives_up_with_por_set() {
     let mut gauge = Gauge::reset();
-    gauge.refuse = Some((0xBA, 0x870F));
-    assert_eq!(run(&mut gauge), Err("HibCfg unwritten"));
-    assert_eq!(gauge.regs[&0xBA], 0x870F);
+    gauge.stuck_refresh = true;
+    assert_eq!(run(&mut gauge), Err("still busy after 1 s"));
     assert!(gauge_reset(gauge.regs[&0x00]));
 }
 
 #[test]
-fn a_reload_that_never_finishes_gives_up_and_puts_hibernate_back() {
+fn settling_wakes_a_stock_gauge_and_leaves_the_rest() {
     let mut gauge = Gauge::reset();
-    gauge.stuck_refresh = true;
-    assert_eq!(run(&mut gauge), Err("still busy after 1 s"));
-    assert_eq!(gauge.regs[&0xBA], 0x870F);
-    assert!(gauge_reset(gauge.regs[&0x00]));
+    gauge.regs.extend([(0x00, 0x8080), (0x1E, 0x0059), (0x18, 0x0190), (0xBA, 0x870F)]);
+    assert_eq!(run_steps(&mut gauge, &GAUGE_SETTLE), Ok(()));
+    assert_eq!(gauge.writes, [(0x60, 0x0090), (0xBA, 0), (0x60, 0), (0x1E, 0x0020)]);
+    assert!(!gauge_unsettled(gauge.regs[&0xBA], gauge.regs[&0x1E]));
 }

@@ -362,16 +362,6 @@ fn main() -> ! {
     pmic::write_rails(&mut uart.lines(), power.top_cntl3);
     pmic::write_summary(&mut uart.lines(), &power);
     pmic::write_gauge(&mut uart.lines(), &power);
-    match pmic::slow_gauge_hibernate(&mut bus) {
-        Some(cfg) => {
-            let [hi, lo] = cfg.to_be_bytes();
-            uart.write_str("[10] gauge HibCfg ");
-            uart.write_hex8(hi);
-            uart.write_hex8(lo);
-            uart.write_line("");
-        }
-        None => uart.write_line("[10] gauge HibCfg: the gauge did not answer"),
-    }
     uart.write_str("[10b] input-power interrupt on PWR_INT_L (PG7): ");
     match crate::power::arm_input_interrupt(&mut bus) {
         Some(mask) => {
@@ -1142,8 +1132,8 @@ fn minute_now() -> u32 {
 async fn read_power(uart: Uart, bus: &mut pmic::AsyncBus, n: u32) -> (Option<u8>, Option<u32>) {
     let s = pmic::snapshot(bus, n.is_multiple_of(6)).await;
     pmic::restore_gauge(bus, s.gauge_status).await;
-    if !s.gauge_status.is_some_and(wrist_power::gauge_reset) {
-        pmic::keep_hibernate_slow(&mut uart.lines(), bus, s.hib_cfg).await;
+    if s.full && !s.gauge_status.is_some_and(wrist_power::gauge_reset) {
+        pmic::keep_gauge_settled(&mut uart.lines(), bus, &s).await;
     }
     if s.full {
         pmic::write_report(&mut uart.lines(), &s);

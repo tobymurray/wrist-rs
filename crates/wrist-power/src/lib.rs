@@ -202,19 +202,20 @@ pub const fn hibernating(status2: u16) -> bool {
     status2 & (1 << 1) != 0
 }
 
-/// `HibCfg` with `HibScalar` at its largest: in hibernate the MAX17262 samples every
-/// 351 ms × 2^7 = 45 s instead of the default 5.6 s (ADI UG6597). A value with `EnHib`
-/// clear, as a failed restore leaves, starts from the default `0x870C` instead.
-#[must_use]
-pub const fn slow_hibernate(hib_cfg: u16) -> u16 {
-    let base = if hib_cfg & (1 << 15) != 0 { hib_cfg } else { 0x870C };
-    base | 0b111
-}
+/// `HibCfg` 0: the MAX17262 never hibernates. Hibernating, it read the current once every 45 s,
+/// missed a bursty draw, and at rest took noise in the end-of-charge band for a charge ending,
+/// reporting the cell full (ADI UG6597). It costs about 11 µA (datasheet, 16 against 5.2).
+pub const HIB_CFG_AWAKE: u16 = 0;
 
-/// Whether `hib_cfg` is not yet what [`slow_hibernate`] makes it.
+/// `IChgTerm` 5.0 mA: what the gauge reads as the charger stops. It reads the PCA9420's 100 mA
+/// charge as 99 to 100 mA, so the nominal 10 mA top-off ends nearer 5; stock's 13.9 mA called
+/// the cell full early.
+pub const ICHG_TERM_WATCH: u16 = 0x0020;
+
+/// Whether `HibCfg` and `IChgTerm` need [`GAUGE_SETTLE`].
 #[must_use]
-pub const fn hibernate_fast(hib_cfg: u16) -> bool {
-    slow_hibernate(hib_cfg) != hib_cfg
+pub const fn gauge_unsettled(hib_cfg: u16, ichg_term: u16) -> bool {
+    hib_cfg != HIB_CFG_AWAKE || ichg_term != ICHG_TERM_WATCH
 }
 
 /// Whether the MAX17262 has been reset since it was last configured: `Status.POR`, bit 1.
@@ -223,36 +224,41 @@ pub const fn gauge_reset(status: u16) -> bool {
     status & STATUS_POR != 0
 }
 
-/// One step of configuring the MAX17262 after a reset (ADI UG6595, Steps 1 to 3, EZ option).
+/// One step of configuring the MAX17262 (ADI UG6595, Steps 1 to 3, EZ option).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GaugeStep {
     /// Read the register until these bits are clear.
     WaitClear(u8, u16),
     Write(u8, u16),
-    /// Read `HibCfg`, for [`GaugeStep::RestoreHibCfg`].
-    SaveHibCfg,
-    /// Write it back, with [`slow_hibernate`].
-    RestoreHibCfg,
     /// Clear `Status.POR`, and read it back.
     ClearPor,
 }
 
-/// The stock firmware's configuration, as read from the watch (`HARDWARE.md`): 200 mAh,
-/// 13.9 mA end of charge, empty at 3.40 V, charged above 4.275 V. `ModelCfg` carries `Refresh`.
-pub const GAUGE_RESTORE: [GaugeStep; 12] = [
-    GaugeStep::WaitClear(FSTAT, FSTAT_DNR),
-    GaugeStep::SaveHibCfg,
+/// Out of hibernate: 0x90 to `Command`, `HibCfg` 0, `Command` cleared (ADI UG6595).
+const WAKE: [GaugeStep; 3] = [
     GaugeStep::Write(COMMAND, SOFT_WAKEUP),
-    GaugeStep::Write(HIB_CFG, 0),
+    GaugeStep::Write(HIB_CFG, HIB_CFG_AWAKE),
     GaugeStep::Write(COMMAND, 0),
+];
+
+/// After a reset: awake, then the stock firmware's configuration as read from the watch
+/// (`HARDWARE.md`), 200 mAh, empty at 3.40 V, charged above 4.275 V, but with
+/// [`ICHG_TERM_WATCH`]. `ModelCfg` carries `Refresh`.
+pub const GAUGE_RESTORE: [GaugeStep; 10] = [
+    GaugeStep::WaitClear(FSTAT, FSTAT_DNR),
+    WAKE[0],
+    WAKE[1],
+    WAKE[2],
     GaugeStep::Write(DESIGN_CAP, 0x0190),
-    GaugeStep::Write(ICHG_TERM, 0x0059),
+    GaugeStep::Write(ICHG_TERM, ICHG_TERM_WATCH),
     GaugeStep::Write(V_EMPTY, 0xAA63),
     GaugeStep::Write(MODEL_CFG, 0x8400),
     GaugeStep::WaitClear(MODEL_CFG, MODEL_CFG_REFRESH),
-    GaugeStep::RestoreHibCfg,
     GaugeStep::ClearPor,
 ];
+
+/// Without a reset, on a gauge stock or an older image configured: awake, [`ICHG_TERM_WATCH`].
+pub const GAUGE_SETTLE: [GaugeStep; 4] = [WAKE[0], WAKE[1], WAKE[2], GaugeStep::Write(ICHG_TERM, ICHG_TERM_WATCH)];
 
 /// The MAX17262's registers, a little-endian word at a time.
 #[allow(async_fn_in_trait)]
@@ -262,25 +268,13 @@ pub trait GaugeBus {
     async fn wait_ms(&mut self, ms: u32);
 }
 
-/// Runs [`GAUGE_RESTORE`]. A failure after `HibCfg` was saved still writes it back, so the
-/// gauge is never left out of hibernate.
+/// Runs `steps`, [`GAUGE_RESTORE`] or [`GAUGE_SETTLE`].
 ///
 /// # Errors
 ///
 /// The step that failed.
-pub async fn restore_gauge(bus: &mut impl GaugeBus) -> Result<(), &'static str> {
-    let mut hib_cfg = None;
-    let outcome = run_restore(bus, &mut hib_cfg).await;
-    if outcome.is_err() {
-        if let Some(v) = hib_cfg {
-            bus.write(HIB_CFG, slow_hibernate(v)).await;
-        }
-    }
-    outcome
-}
-
-async fn run_restore(bus: &mut impl GaugeBus, hib_cfg: &mut Option<u16>) -> Result<(), &'static str> {
-    for step in GAUGE_RESTORE {
+pub async fn configure_gauge(bus: &mut impl GaugeBus, steps: &[GaugeStep]) -> Result<(), &'static str> {
+    for &step in steps {
         match step {
             GaugeStep::WaitClear(reg, mask) => {
                 let mut tries = 0;
@@ -295,14 +289,6 @@ async fn run_restore(bus: &mut impl GaugeBus, hib_cfg: &mut Option<u16>) -> Resu
             GaugeStep::Write(reg, v) => {
                 if !bus.write(reg, v).await {
                     return Err("a write failed");
-                }
-            }
-            GaugeStep::SaveHibCfg => *hib_cfg = Some(bus.read(HIB_CFG).await.ok_or("HibCfg unread")?),
-            GaugeStep::RestoreHibCfg => {
-                let v = hib_cfg.take().ok_or("HibCfg not saved")?;
-                if !bus.write(HIB_CFG, slow_hibernate(v)).await {
-                    *hib_cfg = Some(v);
-                    return Err("HibCfg unwritten");
                 }
             }
             GaugeStep::ClearPor => {
