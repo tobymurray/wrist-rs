@@ -69,7 +69,7 @@ use bluenrg2::opcode::{
 };
 use bluenrg2::{
     adv_filter_policy, adv_type, config, enc_key_size, event_code, evt_mask, gap_role, permission, privacy, props, service_type,
-    uuid_type, value_length, AddrKind, BdAddr, BootReason, Event, BleStatus, PairingStatus, VendorEvent, ATT_HEADER_LEN,
+    uuid_type, value_length, AddrKind, BdAddr, BootReason, Event, BleStatus, PairingReason, PairingStatus, VendorEvent, ATT_HEADER_LEN,
     MAX_COMMAND, RETURN_PARAMS_MAX,
 };
 use wrist_bluenrg2::transport::{self, Counts, Read, Transport};
@@ -1779,6 +1779,7 @@ impl Link<'_> {
                 self.uart.write_line(", `ble yes` on the USB console (`ble no` rejects)");
             }
             VendorEvent::PairingComplete { status, reason, .. } => {
+                let reason = reason.map_or(0, PairingReason::into_inner);
                 LAST_PAIRING.store(status.into_inner().saturating_add(1), Ordering::Relaxed);
                 LAST_PAIRING_REASON.store(reason, Ordering::Relaxed);
                 self.pair_ask.settled();

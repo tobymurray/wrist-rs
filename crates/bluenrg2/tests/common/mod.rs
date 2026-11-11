@@ -4,7 +4,8 @@
 
 use bluenrg2::{
     AclBroadcastFlag, AclPacketBoundary, Address, BleStatus, BootReason, ConnHandle, ConnTiming,
-    Duration, EncryptionEnabledLevel, Event, LeConnRole, PairingStatus, Uuid, VendorEvent,
+    Duration, EncryptionEnabledLevel, Event, LeConnRole, PairingReason, PairingStatus, Uuid,
+    VendorEvent,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -169,7 +170,7 @@ pub enum Vn<'a> {
     PairingComplete {
         handle: ConnHandle,
         status: PairingStatus,
-        reason: u8,
+        reason: Option<PairingReason>,
     },
     PassKeyRequest {
         handle: ConnHandle,

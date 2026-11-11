@@ -5,7 +5,7 @@ mod common;
 use bluenrg2::{
     ad_name, ad_uuid128s, ad_uuid16s, bonded_devices, command, header_sizes, packet_len,
     packet_whole, reports, vendor, AddrKind, Address, BdAddr, BleStatus, ConnHandle, Duration,
-    EncryptionEnabledLevel, LeAdvEventKind, LeConnRole, PairingStatus,
+    EncryptionEnabledLevel, LeAdvEventKind, LeConnRole, PairingReason, PairingStatus,
 };
 use common::{parse, Ev, Timing, Vn};
 
@@ -766,6 +766,27 @@ fn every_status_st_defines_has_its_code_and_st_names_its_own() {
             assert_eq!(format!("{status:?}"), name);
         }
     }
+}
+
+/// Every reason `bluenrg1_events.h` names, in code order from 0x01.
+#[test]
+fn every_pairing_reason_st_names_has_its_code() {
+    let all = [
+        PairingReason::PASSKEY_ENTRY_FAILED,
+        PairingReason::OOB_NOT_AVAILABLE,
+        PairingReason::AUTH_REQ_CANNOT_BE_MET,
+        PairingReason::CONFIRM_VALUE_FAILED,
+        PairingReason::PAIRING_NOT_SUPPORTED,
+        PairingReason::INSUFF_ENCRYPTION_KEY_SIZE,
+        PairingReason::CMD_NOT_SUPPORTED,
+        PairingReason::UNSPECIFIED_REASON,
+        PairingReason::VERY_EARLY_NEXT_ATTEMPT,
+        PairingReason::SM_INVALID_PARAMS,
+        PairingReason::SMP_SC_DHKEY_CHECK_FAILED,
+        PairingReason::SMP_SC_NUMCOMPARISON_FAILED,
+    ];
+    assert_eq!(all.map(PairingReason::into_inner), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    assert_eq!(PairingReason::new(0x0C), PairingReason::SMP_SC_NUMCOMPARISON_FAILED);
 }
 
 #[test]

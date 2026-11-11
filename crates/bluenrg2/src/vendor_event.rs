@@ -2,8 +2,8 @@
 //! `bluenrg1_events.h`.
 
 use crate::{
-    link, vendor, BleStatus, BootReason, Characteristic, ConnHandle, Duration, PairingStatus,
-    Service, Uuid,
+    link, vendor, BleStatus, BootReason, Characteristic, ConnHandle, Duration, PairingReason,
+    PairingStatus, Service, Uuid,
 };
 
 /// One of ST's vendor events, by its code. Each starts with its connection handle where it has
@@ -18,9 +18,10 @@ pub enum VendorEvent<'a> {
     /// each kind it dropped, in ST's order.
     #[non_exhaustive]
     EventsLost { lost: u64 },
-    /// `ACI_GAP_PAIRING_COMPLETE`, with the SMP reason a pairing failed (Core Vol 3 Part H 3.5.5).
+    /// `ACI_GAP_PAIRING_COMPLETE`; the reason only when the status is
+    /// [`PairingStatus::FAILED`], the only status ST gives one for.
     #[non_exhaustive]
-    PairingComplete { handle: ConnHandle, status: PairingStatus, reason: u8 },
+    PairingComplete { handle: ConnHandle, status: PairingStatus, reason: Option<PairingReason> },
     /// `ACI_GAP_PASS_KEY_REQ`: the stack wants a passkey (`ACI_GAP_PASS_KEY_RESP`).
     #[non_exhaustive]
     PassKeyRequest { handle: ConnHandle },
@@ -146,11 +147,15 @@ pub(crate) fn decode(code: u16, p: &[u8]) -> Option<VendorEvent<'_>> {
     Some(match code {
         v::BLUE_INITIALIZED => E::BlueInitialized { reason: BootReason::new(byte(0)?) },
         v::HAL_EVENTS_LOST => E::EventsLost { lost: u64::from_le_bytes(*p.first_chunk()?) },
-        v::GAP_PAIRING_COMPLETE => E::PairingComplete {
-            handle: handle()?,
-            status: PairingStatus::new(byte(2)?),
-            reason: byte(3)?,
-        },
+        v::GAP_PAIRING_COMPLETE => {
+            let status = PairingStatus::new(byte(2)?);
+            let reason = PairingReason::new(byte(3)?);
+            E::PairingComplete {
+                handle: handle()?,
+                status,
+                reason: (status == PairingStatus::FAILED).then_some(reason),
+            }
+        }
         v::GAP_PASS_KEY_REQ => E::PassKeyRequest { handle: handle()? },
         v::GAP_SLAVE_SECURITY_INITIATED => E::SlaveSecurityInitiated,
         v::GAP_BOND_LOST => E::BondLost,

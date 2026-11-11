@@ -1019,6 +1019,36 @@ impl PairingStatus {
     }
 }
 
+/// Why a pairing failed: `GAP_PAIRING_COMPLETE`'s reason, ST's names (`bluenrg1_events.h`) for
+/// SMP's codes (Core Vol 3 Part H 3.5.5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PairingReason(u8);
+
+impl PairingReason {
+    pub const PASSKEY_ENTRY_FAILED: Self = Self(0x01);
+    pub const OOB_NOT_AVAILABLE: Self = Self(0x02);
+    pub const AUTH_REQ_CANNOT_BE_MET: Self = Self(0x03);
+    pub const CONFIRM_VALUE_FAILED: Self = Self(0x04);
+    pub const PAIRING_NOT_SUPPORTED: Self = Self(0x05);
+    pub const INSUFF_ENCRYPTION_KEY_SIZE: Self = Self(0x06);
+    pub const CMD_NOT_SUPPORTED: Self = Self(0x07);
+    pub const UNSPECIFIED_REASON: Self = Self(0x08);
+    pub const VERY_EARLY_NEXT_ATTEMPT: Self = Self(0x09);
+    pub const SM_INVALID_PARAMS: Self = Self(0x0A);
+    pub const SMP_SC_DHKEY_CHECK_FAILED: Self = Self(0x0B);
+    pub const SMP_SC_NUMCOMPARISON_FAILED: Self = Self(0x0C);
+
+    #[must_use]
+    pub const fn new(code: u8) -> Self {
+        Self(code)
+    }
+
+    #[must_use]
+    pub const fn into_inner(self) -> u8 {
+        self.0
+    }
+}
+
 /// The LE `ATT_MTU` before an exchange (Core Vol 3 Part G 5.2.1).
 pub const ATT_DEFAULT_MTU: usize = 23;
 /// A write's or a notification's opcode and handle, ahead of its value.

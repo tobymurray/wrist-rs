@@ -14,7 +14,7 @@ mod reference {
         AclPacketBoundary, AddrKind, Address, BdAddr, BleStatus, ConnHandle, Duration,
         EncryptionEnabledLevel, LeConnRole,
     };
-    use bluenrg2::{vendor as v, BootReason, PairingStatus, Uuid};
+    use bluenrg2::{vendor as v, BootReason, PairingReason, PairingStatus, Uuid};
 
     /// The event in one HCI packet, read no further than the packet's own length, with no
     /// connection handle above 0x0EFF.
@@ -96,7 +96,7 @@ mod reference {
             (v::GAP_PAIRING_COMPLETE, [lo, hi, status, reason, ..]) => Vn::PairingComplete {
                 handle: conn(lo, hi),
                 status: PairingStatus::new(*status),
-                reason: *reason,
+                reason: (*status == 0x02).then_some(PairingReason::new(*reason)),
             },
             (v::GAP_PASS_KEY_REQ, [lo, hi, ..]) => Vn::PassKeyRequest { handle: conn(lo, hi) },
             (v::GAP_SLAVE_SECURITY_INITIATED, _) => Vn::SlaveSecurityInitiated,

@@ -3,7 +3,8 @@
 mod common;
 
 use bluenrg2::{
-    vendor, BleStatus, BootReason, ConnHandle, Duration, Event, PairingStatus, Uuid, VendorEvent,
+    vendor, BleStatus, BootReason, ConnHandle, Duration, Event, PairingReason, PairingStatus, Uuid,
+    VendorEvent,
 };
 use common::{vn, Ev, Vn};
 
@@ -71,7 +72,17 @@ fn gap_events_decode() {
         vendor::GAP_PAIRING_COMPLETE,
         &[0x01, 0x08, 0x03, 0x05],
         4,
-        Vn::PairingComplete { handle: link(), status, reason: 0x05 },
+        Vn::PairingComplete { handle: link(), status, reason: None },
+    );
+    whole_and_short(
+        vendor::GAP_PAIRING_COMPLETE,
+        &[0x01, 0x08, 0x02, 0x0B],
+        4,
+        Vn::PairingComplete {
+            handle: link(),
+            status: PairingStatus::FAILED,
+            reason: Some(PairingReason::SMP_SC_DHKEY_CHECK_FAILED),
+        },
     );
     whole_and_short(
         vendor::GAP_PASS_KEY_REQ,
