@@ -69,7 +69,7 @@ use bluenrg2::opcode::{
 };
 use bluenrg2::{
     adv_filter_policy, adv_type, config, enc_key_size, event_code, evt_mask, gap_role, permission, privacy, props, service_type,
-    uuid_type, value_length, vendor, AddrKind, AttributeModified, BootReason, Event, BleStatus, L2capUpdateResponse, PairingStatus, ATT_HEADER_LEN,
+    uuid_type, value_length, vendor, AddrKind, AttributeModified, BdAddr, BootReason, Event, BleStatus, L2capUpdateResponse, PairingStatus, ATT_HEADER_LEN,
     MAX_COMMAND, RETURN_PARAMS_MAX,
 };
 use wrist_bluenrg2::transport::{self, Counts, Read, Transport};
@@ -306,7 +306,7 @@ pub fn command(args: &[u8], uart: Uart) {
         b"bonds" => Request::Bonds,
         b"forget" => Request::Forget,
         rest if rest.starts_with(b"forget ") => {
-            match core::str::from_utf8(&rest[7..]).ok().and_then(bluenrg2::parse_address) {
+            match core::str::from_utf8(&rest[7..]).ok().and_then(wrist_bluenrg2::console::parse_address) {
                 Some(addr) => Request::ForgetOne(addr),
                 None => return uart.write_line("[ble] usage: ble forget [<address>, as `ble bonds` lists it]"),
             }
@@ -395,7 +395,7 @@ pub fn write_status(uart: Uart) {
         (_, Power::Battery) => "battery (forced)",
     });
     uart.write_str(", address ");
-    write_address(uart, bluenrg2::Address { kind: AddrKind::RANDOM, bytes: ADDRESS.each_ref().map(|b| b.load(Ordering::Relaxed)) });
+    write_address(uart, bluenrg2::Address { kind: AddrKind::RANDOM, addr: BdAddr(ADDRESS.each_ref().map(|b| b.load(Ordering::Relaxed))) });
     uart.write_str(", bonded ");
     uart.write_u32(u32::from(BONDED.load(Ordering::Relaxed)));
     let n = |label: &str, v: &AtomicU32| {
@@ -1095,7 +1095,7 @@ impl Link<'_> {
             return;
         }
         self.uart.write_str("[ble] up: ST stack, address ");
-        write_address(self.uart, bluenrg2::Address { kind: AddrKind::RANDOM, bytes: addr });
+        write_address(self.uart, bluenrg2::Address { kind: AddrKind::RANDOM, addr: BdAddr(addr) });
         self.uart.write_line(if central { ", peripheral and central" } else { ", peripheral only" });
         self.list_bonds(false).await;
         self.advertise().await;
@@ -1406,7 +1406,7 @@ impl Link<'_> {
         let keep = self.peer.is_some_and(|peer| wrist_bluenrg2::bonds::another_bond(params, addr, peer));
         let mut p = [0u8; 7];
         p[0] = addr.kind.as_raw();
-        p[1..].copy_from_slice(&addr.bytes);
+        p[1..].copy_from_slice(addr.addr.raw());
         match self.command(ACI_GAP_REMOVE_BONDED_DEVICE, &p).await {
             Ok(r) if r.status == 0 => {
                 self.uart.write_str("[ble] forgot ");
@@ -1870,7 +1870,7 @@ fn write_address(uart: Uart, a: bluenrg2::Address) {
             Ok(())
         }
     }
-    let _ = write!(Out(uart), "{a}");
+    let _ = write!(Out(uart), "{}", wrist_bluenrg2::console::address(a));
 }
 
 fn clear_prompt() {

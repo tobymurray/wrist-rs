@@ -17,10 +17,10 @@ pub mod hal;
 
 pub use bt_hci;
 pub use bt_hci::data::{AclBroadcastFlag, AclPacketBoundary};
-pub use bt_hci::param::{AddrKind, ConnHandle, Duration, EncryptionEnabledLevel, LeAdvEventKind, LeConnRole};
+pub use bt_hci::param::{AddrKind, BdAddr, ConnHandle, Duration, EncryptionEnabledLevel, LeAdvEventKind, LeConnRole};
 
 use bt_hci::data::AclPacket;
-use bt_hci::param::{BdAddr, Status};
+use bt_hci::param::Status;
 use bt_hci::FromHciBytes;
 
 /// The SPI header the host sends to write (`0A`) or read (`0B`); the chip
@@ -118,16 +118,17 @@ pub mod config {
     pub const STATIC_RANDOM_ADDRESS: u8 = 0x2E;
 }
 
-/// A static random address (Core 6.B 1.3.2.1) from 64 bits, little-endian as the chip carries it.
+/// A static random address (Core Vol 6 Part B 1.3.2.1) from the low 48 of 64 bits, nudged off
+/// the two values the specification forbids.
 #[must_use]
-pub const fn static_random(bits: u64) -> [u8; 6] {
+pub const fn static_random(bits: u64) -> BdAddr {
     let b = bits.to_le_bytes();
     let mut a = [b[0], b[1], b[2], b[3], b[4], b[5] | 0xC0];
     let rest = bits & 0x3FFF_FFFF_FFFF;
     if rest == 0 || rest == 0x3FFF_FFFF_FFFF {
         a[0] ^= 1;
     }
-    a
+    BdAddr(a)
 }
 
 /// `ACI_GATT_ADD_CHAR`'s security permissions (ST's `ble_defs.h`).
@@ -438,12 +439,13 @@ pub fn packet_whole(p: &[u8]) -> bool {
     packet_len(p).is_some_and(|len| len <= p.len())
 }
 
-/// A device address as the air carries it: little-endian, and public or random.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+/// A device address, public or random.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub struct Address {
     /// [`AddrKind::PUBLIC`] or [`AddrKind::RANDOM`]; a resolved identity's type is given as one of these.
     pub kind: AddrKind,
-    pub bytes: [u8; 6],
+    /// Little-endian, as the air carries it.
+    pub addr: BdAddr,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -640,7 +642,7 @@ fn connection_complete(code: u8, params: &[u8]) -> Option<Event<'_>> {
         handle: link(handle)?,
         role,
         // An Enhanced event says 2 or 3 for an identity it resolved: still public or random.
-        peer: Address { kind: AddrKind::new(kind.as_raw() & 0x01), bytes: peer.into_inner() },
+        peer: Address { kind: AddrKind::new(kind.as_raw() & 0x01), addr: peer },
         timing: timing.map(|(conn_interval, peripheral_latency, supervision_timeout)| ConnTiming {
             conn_interval,
             peripheral_latency,
@@ -673,7 +675,7 @@ pub fn reports(data: &[u8]) -> impl Iterator<Item = Report<'_>> + '_ {
         at += 10 + len;
         Some(Report {
             kind,
-            address: Address { kind: AddrKind::new(head[1] & 0x01), bytes: [head[2], head[3], head[4], head[5], head[6], head[7]] },
+            address: Address { kind: AddrKind::new(head[1] & 0x01), addr: BdAddr([head[2], head[3], head[4], head[5], head[6], head[7]]) },
             data: body,
             rssi: rssi.cast_signed(),
         })
@@ -780,43 +782,17 @@ pub const RETURN_PARAMS_MAX: usize = 255 - 4;
 pub fn bonded_devices(params: &[u8]) -> impl Iterator<Item = Address> + '_ {
     let count = usize::from(params.first().copied().unwrap_or(0));
     params.get(1..).unwrap_or(&[]).as_chunks::<7>().0.iter().take(count).map(|e| {
-        let mut bytes = [0u8; 6];
-        bytes.copy_from_slice(&e[1..7]);
-        Address { kind: AddrKind::new(e[0] & 0x01), bytes }
+        let [kind, a0, a1, a2, a3, a4, a5] = *e;
+        Address { kind: AddrKind::new(kind & 0x01), addr: BdAddr([a0, a1, a2, a3, a4, a5]) }
     })
 }
 
-/// `0A:1B:2C:3D:4E:5F`, the most significant byte first, then ` (random)` for a random address,
-/// resolved (3) or not, as [`parse_address`] reads it back.
+/// `0A:1B:2C:3D:4E:5F`, the most significant byte first; the kind is not written.
 impl core::fmt::Display for Address {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let [b0, b1, b2, b3, b4, b5] = self.bytes;
-        write!(f, "{b5:02X}:{b4:02X}:{b3:02X}:{b2:02X}:{b1:02X}:{b0:02X}")?;
-        if self.kind.as_raw() & 0x01 != 0 {
-            f.write_str(" (random)")?;
-        }
-        Ok(())
+        let [b0, b1, b2, b3, b4, b5] = self.addr.into_inner();
+        write!(f, "{b5:02X}:{b4:02X}:{b3:02X}:{b2:02X}:{b1:02X}:{b0:02X}")
     }
-}
-
-/// An [`Address`] as its `Display` writes it, read back: colons or dashes, either case.
-#[must_use]
-pub fn parse_address(text: &str) -> Option<Address> {
-    let text = text.trim();
-    let (text, kind) = match text.strip_suffix("(random)") {
-        Some(rest) => (rest.trim_end(), AddrKind::RANDOM),
-        None => (text, AddrKind::PUBLIC),
-    };
-    let mut bytes = [0u8; 6];
-    let mut parts = text.split([':', '-']);
-    for i in (0..6).rev() {
-        let part = parts.next()?;
-        if part.len() != 2 || !part.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return None;
-        }
-        bytes[i] = u8::from_str_radix(part, 16).ok()?;
-    }
-    parts.next().is_none().then_some(Address { kind, bytes })
 }
 
 /// `GAP_PAIRING_COMPLETE`'s status: ST's own codes (`bluenrg1_events.h`), not HCI's.

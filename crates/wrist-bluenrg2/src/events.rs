@@ -2,7 +2,7 @@
 
 use bluenrg2::{vendor, BleStatus, BootReason, Event};
 use wrist_ble::{
-    BdAddr, ChipInfo, ConnHandle, Failure, FailureKind, LeConnRole, LinkParams, PairingEvent, PairingStep, PeerAddr, RadioEvent, ResetCause,
+    ChipInfo, ConnHandle, Failure, FailureKind, LeConnRole, LinkParams, PairingEvent, PairingStep, PeerAddr, RadioEvent, ResetCause,
     Status,
 };
 
@@ -30,7 +30,7 @@ impl Translator {
                     self.phone = Some(link);
                 }
                 let params = timing.map(|t| LinkParams { interval: t.conn_interval, latency: t.peripheral_latency, timeout: t.supervision_timeout });
-                RadioEvent::LinkUp { link, role, peer: PeerAddr { kind: peer.kind, addr: BdAddr::new(peer.bytes) }, params }
+                RadioEvent::LinkUp { link, role, peer: PeerAddr { kind: peer.kind, addr: peer.addr }, params }
             }
             Event::LeConnectionUpdateComplete { handle, conn_interval, peripheral_latency, supervision_timeout } => {
                 RadioEvent::Params { link: handle, result: Ok(LinkParams { interval: conn_interval, latency: peripheral_latency, timeout: supervision_timeout }) }

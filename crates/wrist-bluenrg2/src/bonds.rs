@@ -21,7 +21,7 @@ pub fn static_random_address(uid: [u32; 3]) -> [u8; 6] {
     const OFFSET: u64 = 0xCBF2_9CE4_8422_2325;
     const PRIME: u64 = 0x0100_0000_01B3;
     let h = uid.iter().flat_map(|w| w.to_le_bytes()).fold(OFFSET, |h, b| (h ^ u64::from(b)).wrapping_mul(PRIME));
-    static_random(h)
+    static_random(h).into_inner()
 }
 
 /// Whether `peer` is a bond's identity in a `GET_BONDED_DEVICES` reply. A private address proves nothing.
@@ -46,7 +46,7 @@ pub fn forget(params: &[u8], wanted: Address) -> Forget {
     if listed(params, wanted) {
         return Forget::Bond;
     }
-    bonded_devices(params).find(|bond| bond.bytes == wanted.bytes).map_or(Forget::NotBonded, Forget::OtherType)
+    bonded_devices(params).find(|bond| bond.addr == wanted.addr).map_or(Forget::NotBonded, Forget::OtherType)
 }
 
 /// Whether a link from `peer` is provably not `forgotten`'s: `peer` is the identity of another bond.

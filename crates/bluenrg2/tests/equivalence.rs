@@ -1,11 +1,11 @@
 //! [`parse`] against a reference decoder written as slice patterns over the packet.
 
-use bluenrg2::{packet_len, parse, vendor, AddrKind, Address, ConnHandle, ConnTiming, Event, LeConnRole};
+use bluenrg2::{packet_len, parse, vendor, AddrKind, Address, BdAddr, ConnHandle, ConnTiming, Event, LeConnRole};
 use proptest::prelude::*;
 
 mod reference {
     use bluenrg2::bt_hci::FromHciBytes;
-    use bluenrg2::{event_code, le_subevent, packet, packet_len, packet_whole, AclBroadcastFlag, AclPacketBoundary, AddrKind, Address, ConnHandle, ConnTiming, Duration, EncryptionEnabledLevel, Event, LeConnRole, BleStatus};
+    use bluenrg2::{event_code, le_subevent, packet, packet_len, packet_whole, AclBroadcastFlag, AclPacketBoundary, AddrKind, Address, BdAddr, ConnHandle, ConnTiming, Duration, EncryptionEnabledLevel, Event, LeConnRole, BleStatus};
 
     /// The event in one HCI packet, read no further than the packet's own length, with no
     /// connection handle above 0x0EFF.
@@ -72,7 +72,7 @@ mod reference {
                     handle: handle_at(5),
                     role: if *role == 0 { LeConnRole::Central } else { LeConnRole::Peripheral },
                     // An Enhanced event says 2 or 3 for an identity it resolved: still public or random.
-                    peer: Address { kind: AddrKind::new(kind & 0x01), bytes: [*a0, *a1, *a2, *a3, *a4, *a5] },
+                    peer: Address { kind: AddrKind::new(kind & 0x01), addr: BdAddr([*a0, *a1, *a2, *a3, *a4, *a5]) },
                     timing: p.get(at..at + 6).map(|v| ConnTiming {
                         conn_interval: Duration::from_u16(u16::from_le_bytes([v[0], v[1]])),
                         peripheral_latency: u16::from_le_bytes([v[2], v[3]]),
@@ -287,7 +287,7 @@ fn shortened(p: &[u8], n: usize) -> Vec<u8> {
 
 #[test]
 fn where_the_reference_takes_what_the_layout_does_not_allow() {
-    let peer = Address { kind: AddrKind::PUBLIC, bytes: [0x11, 0x22, 0x33, 0x44, 0x55, 0x66] };
+    let peer = Address { kind: AddrKind::PUBLIC, addr: BdAddr([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]) };
     let connection = le_event(0x01, &le_full(0x01));
     let mut reserved_role = connection.clone();
     reserved_role[7] = 0x02;

@@ -1,10 +1,10 @@
 //! Packets as the BlueNRG-2 sends them.
 
 use bluenrg2::{
-    ad_name, bonded_devices, gatt_proc_complete, parse_address, ad_uuid128s, ad_uuid16s, att_mtu, characteristics, command, descriptors, gap_proc_complete, gatt_error,
+    ad_name, bonded_devices, gatt_proc_complete, ad_uuid128s, ad_uuid16s, att_mtu, characteristics, command, descriptors, gap_proc_complete, gatt_error,
     header_sizes, notification, numeric_comparison, packet_len, packet_whole, pairing_complete, parse, read_value,
     reports, service_range, services, vendor, Address, AttributeModified, Characteristic, Event, L2capUpdateRequest,
-    L2capUpdateResponse, Service, Uuid, AddrKind, ConnHandle, ConnTiming, EncryptionEnabledLevel, LeAdvEventKind, LeConnRole, BleStatus, Duration, PairingStatus,
+    L2capUpdateResponse, Service, Uuid, AddrKind, ConnHandle, ConnTiming, EncryptionEnabledLevel, LeAdvEventKind, LeConnRole, BdAddr, BleStatus, Duration, PairingStatus,
 };
 
 fn link() -> ConnHandle {
@@ -239,14 +239,14 @@ fn enhanced_connection_complete() -> Vec<u8> {
 fn connection_complete_gives_handle_role_peer_interval_latency_and_timeout() {
     let p = connection_complete();
     assert_eq!(p.len(), 3 + 19);
-    let peer = Address { kind: AddrKind::PUBLIC, bytes: [0x11, 0x22, 0x33, 0x44, 0x55, 0x66] };
+    let peer = Address { kind: AddrKind::PUBLIC, addr: BdAddr([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]) };
     assert_eq!(
         parse(&p),
         Event::LeConnectionComplete { handle: link(), role: LeConnRole::Peripheral, peer, timing: Some(timing(24)) }
     );
     let mut e = enhanced_connection_complete();
     assert_eq!(e.len(), 3 + 31);
-    let peer = Address { kind: AddrKind::PUBLIC, bytes: [0x11; 6] };
+    let peer = Address { kind: AddrKind::PUBLIC, addr: BdAddr([0x11; 6]) };
     assert_eq!(
         parse(&e),
         Event::LeConnectionComplete { handle: link(), role: LeConnRole::Peripheral, peer, timing: Some(timing(39)) }
@@ -511,9 +511,10 @@ fn a_fixed_pin_goes_little_endian_after_its_flag() {
 #[test]
 fn a_static_random_address_has_its_top_bits_set_and_the_rest_never_all_zero_or_one() {
     use bluenrg2::static_random;
-    assert_eq!(static_random(0), [0x01, 0, 0, 0, 0, 0xC0]);
-    assert_eq!(static_random(u64::MAX), [0xFE, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
-    assert_eq!(static_random(0x0000_3FFF_FFFF_FFFF), [0xFE, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+    assert_eq!(static_random(0), BdAddr([0x01, 0, 0, 0, 0, 0xC0]));
+    assert_eq!(static_random(u64::MAX), BdAddr([0xFE, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]));
+    assert_eq!(static_random(0x0000_3FFF_FFFF_FFFF), BdAddr([0xFE, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]));
+    assert_eq!(static_random(0x1234_5678_9ABC), BdAddr([0xBC, 0x9A, 0x78, 0x56, 0x34, 0xD2]));
 }
 
 fn heart_rate_report() -> Vec<u8> {
@@ -537,12 +538,12 @@ fn advertising_reports_decode() {
     assert_eq!(all.len(), 2);
     let first = all[0];
     assert_eq!(first.kind, LeAdvEventKind::AdvInd);
-    assert_eq!(first.address, Address { kind: AddrKind::RANDOM, bytes: [0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xC6] });
+    assert_eq!(first.address, Address { kind: AddrKind::RANDOM, addr: BdAddr([0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xC6]) });
     assert_eq!(first.rssi, -67);
     assert_eq!(ad_name(first.data), Some(&b"H10 "[..]));
     assert_eq!(ad_uuid16s(first.data).collect::<Vec<_>>(), [0x180D, 0x180F]);
     assert_eq!(all[1].kind, LeAdvEventKind::ScanRsp);
-    assert_eq!(all[1].address, Address { kind: AddrKind::PUBLIC, bytes: [1, 2, 3, 4, 5, 6] });
+    assert_eq!(all[1].address, Address { kind: AddrKind::PUBLIC, addr: BdAddr([1, 2, 3, 4, 5, 6]) });
     assert_eq!(ad_name(all[1].data), Some(&b"PM"[..]));
     assert_eq!(all[1].rssi, -80);
     // A count past what the event holds stops at the last whole report.
@@ -706,34 +707,10 @@ fn a_status_is_an_error_written_with_its_code() {
 }
 
 #[test]
-fn an_address_parses_into_the_chips_byte_order() {
-    let public = Address { kind: AddrKind::PUBLIC, bytes: [0x5F, 0x4E, 0x3D, 0x2C, 0x1B, 0x0A] };
-    let random = Address { kind: AddrKind::RANDOM, ..public };
-    assert_eq!(parse_address("0A:1B:2C:3D:4E:5F"), Some(public));
-    assert_eq!(parse_address(" 0a-1b-2c-3d-4e-5f "), Some(public));
-    assert_eq!(parse_address("0A:1B:2C:3D:4E:5F (random)"), Some(random));
-    assert_eq!(parse_address("0a-1b-2c-3d-4e-5f(random) "), Some(random));
-    for bad in ["", "0A:1B:2C:3D:4E", "0A:1B:2C:3D:4E:5F:00", "0A:1B:2C:3D:4E:5", "0A:1B:2C:3D:4E:5G", "0A1B2C3D4E5F", "(random)",
-        "0A:1B:2C:3D:4E:5F (public)", "0A:1B:2C:3D:4E:5F random", "0A:1B:2C:3D:4E:5F (random) (random)", "+A:1B:2C:3D:4E:5F",
-        "+1:+2:+3:+4:+5:+6", "0A:1B:2C:3D:4E: F"] {
-        assert_eq!(parse_address(bad), None, "{bad:?}");
-    }
-}
-
-#[test]
-fn an_address_is_written_with_its_type_and_reads_back() {
-    let public = Address { kind: AddrKind::PUBLIC, bytes: [0x5F, 0x4E, 0x3D, 0x2C, 0x1B, 0x0A] };
+fn an_address_is_written_most_significant_byte_first_without_its_kind() {
+    let public = Address { kind: AddrKind::PUBLIC, addr: BdAddr([0x5F, 0x4E, 0x3D, 0x2C, 0x1B, 0x0A]) };
     assert_eq!(public.to_string(), "0A:1B:2C:3D:4E:5F");
-    assert_eq!(Address { kind: AddrKind::RANDOM, ..public }.to_string(), "0A:1B:2C:3D:4E:5F (random)");
-    // A resolved identity's type prints as public or random.
-    for (raw, kind) in [(2, AddrKind::PUBLIC), (3, AddrKind::RANDOM)] {
-        let a = Address { kind: AddrKind::new(raw), ..public };
-        assert_eq!(parse_address(&a.to_string()), Some(Address { kind, ..public }), "{raw}");
-    }
-    proptest::proptest!(|(kind in 0u8..2, bytes: [u8; 6])| {
-        let a = Address { kind: AddrKind::new(kind), bytes };
-        proptest::prop_assert_eq!(parse_address(&a.to_string()), Some(a));
-    });
+    assert_eq!(Address { kind: AddrKind::RANDOM, ..public }.to_string(), "0A:1B:2C:3D:4E:5F");
 }
 
 #[test]
@@ -744,20 +721,17 @@ fn bonded_devices_reads_each_entry_and_no_more_than_the_reply_holds() {
     assert_eq!(
         all,
         vec![
-            Address { kind: AddrKind::RANDOM, bytes: [0xEB, 0xDA, 0xC9, 0xB8, 0xA7, 0xC6] },
-            Address { kind: AddrKind::PUBLIC, bytes: [0x5F, 0x4E, 0x3D, 0x2C, 0x1B, 0x0A] }
+            Address { kind: AddrKind::RANDOM, addr: BdAddr([0xEB, 0xDA, 0xC9, 0xB8, 0xA7, 0xC6]) },
+            Address { kind: AddrKind::PUBLIC, addr: BdAddr([0x5F, 0x4E, 0x3D, 0x2C, 0x1B, 0x0A]) }
         ]
     );
     // A count past the entries present stops at the last whole one.
     assert_eq!(bonded_devices(&[5, 0, 1, 2, 3, 4, 5, 6, 0, 1]).count(), 1);
     assert_eq!(bonded_devices(&[]).count(), 0);
-    // A type past random reads as a peer's does, so the printed form finds the bond again.
+    // A type past random reads as a peer's does.
     for (raw, kind) in [(2, AddrKind::PUBLIC), (3, AddrKind::RANDOM)] {
         let reply = [1, raw, 0xE6, 0xD5, 0xC4, 0xB3, 0xA2, 0xC1];
-        let bond = bonded_devices(&reply).next().unwrap();
-        assert_eq!(bond.kind, kind);
-        let printed = parse_address(&bond.to_string()).unwrap();
-        assert!(bonded_devices(&reply).any(|bond| bond == printed), "{raw}");
+        assert_eq!(bonded_devices(&reply).next(), Some(Address { kind, addr: BdAddr([0xE6, 0xD5, 0xC4, 0xB3, 0xA2, 0xC1]) }));
     }
 }
 
