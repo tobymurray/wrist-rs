@@ -1,6 +1,6 @@
 //! What each packet from the BlueNRG-2 tells the core.
 
-use bluenrg2::{vendor, BleStatus, BootReason, Event};
+use bluenrg2::{BleStatus, BootReason, Event, VendorEvent};
 use wrist_ble::{
     ChipInfo, ConnHandle, Failure, FailureKind, LeConnRole, LinkParams, PairingEvent, PairingStep, PeerAddr, RadioEvent, ResetCause,
     Status,
@@ -51,7 +51,7 @@ impl Translator {
             Event::LeDataLengthChange { handle, max_tx_octets, max_rx_octets, .. } => {
                 RadioEvent::DataLength { link: handle, tx: max_tx_octets, rx: max_rx_octets }
             }
-            Event::Vendor { code, params, .. } => self.vendor(code, params)?,
+            Event::Vendor(e) => self.vendor(e)?,
             Event::LeUnknown { subevent_code, .. } => RadioEvent::Unknown { raw_code: u16::from_be_bytes([0x3E, subevent_code]) },
             // Another event, a connection or disconnection that failed, a malformed packet.
             _ => RadioEvent::Unknown { raw_code: packet.get(1).map_or(0, |&c| u16::from(c)) },
@@ -59,49 +59,41 @@ impl Translator {
         Some(e)
     }
 
-    fn vendor(&mut self, code: u16, params: &[u8]) -> Option<RadioEvent> {
-        let link = bluenrg2::connection_handle(params);
-        Some(match code {
+    fn vendor(&mut self, e: VendorEvent) -> Option<RadioEvent> {
+        Some(match e {
             // Whatever the reason, the chip's links are gone. A start's own boot never comes
             // here: the driver's `start()` consumes it (`wrist_ble::Radio::start`).
-            vendor::BLUE_INITIALIZED => {
+            VendorEvent::BlueInitialized { reason, .. } => {
                 self.phone = None;
-                RadioEvent::ChipReset(match bluenrg2::blue_initialized(params) {
-                    Some(BootReason::STARTED) => return Some(RadioEvent::Ready(self.info)),
-                    Some(BootReason::WATCHDOG) => ResetCause::Watchdog,
-                    Some(BootReason::LOCKUP) => ResetCause::Lockup,
-                    Some(BootReason::BROWNOUT) => ResetCause::Brownout,
-                    Some(BootReason::CRASH) => ResetCause::Crash,
-                    Some(r) if r.is_updater() => ResetCause::Updater,
+                RadioEvent::ChipReset(match reason {
+                    BootReason::STARTED => return Some(RadioEvent::Ready(self.info)),
+                    BootReason::WATCHDOG => ResetCause::Watchdog,
+                    BootReason::LOCKUP => ResetCause::Lockup,
+                    BootReason::BROWNOUT => ResetCause::Brownout,
+                    BootReason::CRASH => ResetCause::Crash,
+                    r if r.is_updater() => ResetCause::Updater,
                     _ => ResetCause::Other,
                 })
             }
-            vendor::HAL_EVENTS_LOST => RadioEvent::EventsLost,
-            vendor::GAP_NUMERIC_COMPARISON_VALUE => {
-                let (link, value) = bluenrg2::numeric_comparison(params)?;
-                RadioEvent::Pairing(PairingEvent { link, step: PairingStep::Numeric(value) })
-            }
-            vendor::GAP_PASS_KEY_REQ => RadioEvent::Pairing(PairingEvent { link: link?, step: PairingStep::PasskeyWanted }),
-            vendor::GAP_PAIRING_COMPLETE => {
-                let (status, _) = bluenrg2::pairing_complete(params)?;
+            VendorEvent::EventsLost { .. } => RadioEvent::EventsLost,
+            VendorEvent::NumericComparison { handle, value, .. } => RadioEvent::Pairing(PairingEvent { link: handle, step: PairingStep::Numeric(value) }),
+            VendorEvent::PassKeyRequest { handle, .. } => RadioEvent::Pairing(PairingEvent { link: handle, step: PairingStep::PasskeyWanted }),
+            VendorEvent::PairingComplete { handle, status, .. } => {
                 let step = if status.is_success() { PairingStep::Complete } else { PairingStep::Failed };
-                RadioEvent::Pairing(PairingEvent { link: link?, step })
+                RadioEvent::Pairing(PairingEvent { link: handle, step })
             }
-            vendor::GAP_BOND_LOST => RadioEvent::BondLost(self.phone?),
-            vendor::ATT_EXCHANGE_MTU_RESP => RadioEvent::Mtu(link?, bluenrg2::att_mtu(params)?),
-            vendor::L2CAP_CONNECTION_UPDATE_RESP => {
-                let r = bluenrg2::L2capUpdateResponse::decode(params)?;
-                if r.accepted() {
-                    return None;
-                }
-                RadioEvent::Params { link: link?, result: Err(failure(FailureKind::PeerRejected, 0)) }
+            VendorEvent::BondLost => RadioEvent::BondLost(self.phone?),
+            VendorEvent::ExchangeMtuResponse { handle, server_mtu, .. } => RadioEvent::Mtu(handle, server_mtu),
+            VendorEvent::L2capUpdateResponse { handle, accepted: false, .. } => {
+                RadioEvent::Params { link: handle, result: Err(failure(FailureKind::PeerRejected, 0)) }
             }
-            vendor::GAP_SLAVE_SECURITY_INITIATED
-            | vendor::GAP_PROC_COMPLETE
-            | vendor::GATT_ATTRIBUTE_MODIFIED
-            | vendor::GATT_TX_POOL_AVAILABLE
-            | vendor::GATT_SERVER_CONFIRMATION => return None,
-            _ => RadioEvent::Unknown { raw_code: code },
+            VendorEvent::L2capUpdateResponse { accepted: true, .. }
+            | VendorEvent::SlaveSecurityInitiated
+            | VendorEvent::GapProcComplete { .. }
+            | VendorEvent::AttributeModified { .. }
+            | VendorEvent::TxPoolAvailable { .. }
+            | VendorEvent::ServerConfirmation { .. } => return None,
+            e => RadioEvent::Unknown { raw_code: e.code() },
         })
     }
 }

@@ -83,7 +83,7 @@ fn a_central_refusing_the_watchs_request_fails_it_and_accepting_waits_for_the_up
     let refused = Failure { kind: FailureKind::PeerRejected, native: 0 };
     assert_eq!(one(&vendor(0x0800, &[0x01, 0x08, 0x01, 0x00])), Some(RadioEvent::Params { link: link(), result: Err(refused) }));
     assert_eq!(one(&vendor(0x0800, &[0x01, 0x08, 0x00, 0x00])), None);
-    assert_eq!(one(&vendor(0x0800, &[0x01, 0x08, 0x01])), None);
+    assert_eq!(one(&vendor(0x0800, &[0x01, 0x08, 0x01])), Some(RadioEvent::Unknown { raw_code: 0xFF }), "malformed");
 }
 
 #[test]
@@ -115,11 +115,11 @@ fn a_data_length_change_gives_the_octets_each_way() {
 fn pairing_steps_come_from_the_gap_events() {
     let step = |step| Some(RadioEvent::Pairing(PairingEvent { link: link(), step }));
     assert_eq!(one(&vendor(0x0409, &[0x01, 0x08, 0x40, 0xE2, 0x01, 0x00])), step(PairingStep::Numeric(123_456)));
-    assert_eq!(one(&vendor(0x0409, &[0x01, 0x08, 0x40])), None);
+    assert_eq!(one(&vendor(0x0409, &[0x01, 0x08, 0x40])), Some(RadioEvent::Unknown { raw_code: 0xFF }));
     assert_eq!(one(&vendor(0x0402, &[0x01, 0x08])), step(PairingStep::PasskeyWanted));
     assert_eq!(one(&vendor(0x0401, &[0x01, 0x08, 0x00, 0x00])), step(PairingStep::Complete));
     assert_eq!(one(&vendor(0x0401, &[0x01, 0x08, 0x02, 0x0B])), step(PairingStep::Failed));
-    assert_eq!(one(&vendor(0x0401, &[0x01, 0x08])), None);
+    assert_eq!(one(&vendor(0x0401, &[0x01, 0x08])), Some(RadioEvent::Unknown { raw_code: 0xFF }));
 }
 
 #[test]
@@ -145,7 +145,7 @@ fn a_lost_bond_names_the_link_a_central_holds() {
 #[test]
 fn the_mtu_comes_from_the_exchange() {
     assert_eq!(one(&vendor(0x0C03, &[0x01, 0x08, 220, 0])), Some(RadioEvent::Mtu(link(), 220)));
-    assert_eq!(one(&vendor(0x0C03, &[0x01, 0x08])), None);
+    assert_eq!(one(&vendor(0x0C03, &[0x01, 0x08])), Some(RadioEvent::Unknown { raw_code: 0xFF }));
 }
 
 #[test]
@@ -163,7 +163,7 @@ fn the_chip_starting_is_ready_and_any_other_reset_is_named() {
     ] {
         assert_eq!(one(&vendor(0x0001, &[reason])), Some(RadioEvent::ChipReset(cause)), "reason {reason}");
     }
-    assert_eq!(one(&vendor(0x0001, &[])), Some(RadioEvent::ChipReset(ResetCause::Other)));
+    assert_eq!(one(&vendor(0x0001, &[])), Some(RadioEvent::Unknown { raw_code: 0xFF }));
 }
 
 #[test]
@@ -180,7 +180,7 @@ fn replies_reports_and_events_the_core_has_no_use_for_are_none() {
         vendor(0x0404, &[0x01, 0x08]),
         vendor(0x0407, &[0x01, 0x00, 0x00]),
         vendor(0x0C01, &[0x01, 0x08, 0x0E, 0x00, 0x00, 0x00, 0x01, 0x00, b'x']),
-        vendor(0x0C16, &[]),
+        vendor(0x0C16, &[0x01, 0x08, 0x02, 0x00]),
         vendor(0x0C17, &[0x01, 0x08]),
     ] {
         assert_eq!(one(&p), None, "{p:02X?}");
@@ -189,7 +189,9 @@ fn replies_reports_and_events_the_core_has_no_use_for_are_none() {
 
 #[test]
 fn anything_else_is_unknown_by_its_code() {
-    assert_eq!(one(&vendor(0x0C0F, &[0x01, 0x08])), Some(RadioEvent::Unknown { raw_code: 0x0C0F }));
+    assert_eq!(one(&vendor(0x0C0F, &[0x01, 0x08, 0x12, 0x00, 0x00])), Some(RadioEvent::Unknown { raw_code: 0x0C0F }));
+    assert_eq!(one(&vendor(0x0C13, &[0x01, 0x08])), Some(RadioEvent::Unknown { raw_code: 0x0C13 }));
+    assert_eq!(one(&vendor(0x0C0F, &[0x01, 0x08])), Some(RadioEvent::Unknown { raw_code: 0xFF }), "malformed");
     assert_eq!(one(&le(0x14, &[0x01, 0x08, 0x01])), Some(RadioEvent::Unknown { raw_code: 0x3E14 }));
     assert_eq!(one(&hci(0x1A, &[0x01])), Some(RadioEvent::Unknown { raw_code: 0x1A }));
     assert_eq!(one(&[0x04, 0x05]), Some(RadioEvent::Unknown { raw_code: 0x05 }));

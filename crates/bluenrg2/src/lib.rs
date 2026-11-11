@@ -25,12 +25,15 @@
 struct ReadmeDoctests;
 
 pub mod hal;
+mod vendor_event;
 
 pub use bt_hci;
 pub use bt_hci::data::{AclBroadcastFlag, AclPacketBoundary};
 pub use bt_hci::param::{
     AddrKind, BdAddr, ConnHandle, Duration, EncryptionEnabledLevel, LeAdvEventKind, LeConnRole,
 };
+
+pub use vendor_event::{Characteristics, Descriptors, HandleRanges, Services, VendorEvent};
 
 use bt_hci::data::AclPacket;
 use bt_hci::param::Status;
@@ -107,7 +110,7 @@ pub mod opcode {
     /// An indication's confirmation.
     pub const ACI_GATT_CONFIRM_INDICATION: u16 = 0xFD25;
     pub const ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_REQ: u16 = 0xFD81;
-    /// As a central, the answer to a peripheral's request ([`super::L2capUpdateRequest`]).
+    /// As a central, the answer to a peripheral's request ([`super::VendorEvent::L2capUpdateRequest`]).
     pub const ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_RESP: u16 = 0xFD82;
 }
 
@@ -171,10 +174,10 @@ pub mod vendor {
     /// A security request reached the central.
     pub const GAP_SLAVE_SECURITY_INITIATED: u16 = 0x0404;
     pub const GAP_BOND_LOST: u16 = 0x0405;
-    /// A GAP procedure ended: its code, status, data ([`super::gap_proc_complete`]).
+    /// A GAP procedure ended ([`super::VendorEvent::GapProcComplete`]).
     pub const GAP_PROC_COMPLETE: u16 = 0x0407;
     pub const GAP_NUMERIC_COMPARISON_VALUE: u16 = 0x0409;
-    /// The central's answer to the local device's parameter request ([`super::L2capUpdateResponse`]).
+    /// The central's answer to the local device's parameter request ([`super::VendorEvent::L2capUpdateResponse`]).
     pub const L2CAP_CONNECTION_UPDATE_RESP: u16 = 0x0800;
     /// To the central: a peripheral asks for new connection parameters.
     pub const L2CAP_CONNECTION_UPDATE_REQ: u16 = 0x0802;
@@ -228,12 +231,6 @@ impl BootReason {
     pub const fn is_updater(self) -> bool {
         matches!(self.0, 0x02..=0x04)
     }
-}
-
-/// `ACI_BLUE_INITIALIZED`'s reason; `None` if the event is empty.
-#[must_use]
-pub fn blue_initialized(params: &[u8]) -> Option<BootReason> {
-    params.first().copied().map(BootReason)
 }
 
 /// A status or reason as the chip gives it (ST's `tBleStatus`): HCI's error codes below 0x40,
@@ -528,9 +525,8 @@ pub enum Event<'a> {
     /// LE Advertising Report (7.7.65.2): one or more reports ([`reports`]).
     #[non_exhaustive]
     LeAdvertisingReport { data: &'a [u8] },
-    /// One of ST's events (event code 0xFF): its code and the bytes after it.
-    #[non_exhaustive]
-    Vendor { code: u16, params: &'a [u8] },
+    /// One of ST's events (event code 0xFF), by the code after the event code.
+    Vendor(VendorEvent<'a>),
     /// Another LE meta event, by subevent code.
     #[non_exhaustive]
     LeUnknown { subevent_code: u8 },
@@ -638,7 +634,7 @@ fn standard(code: u8, params: &[u8]) -> Option<Event<'_>> {
         ev::LE_META => le_meta(params)?,
         ev::VENDOR => {
             let (code, params) = u16::from_hci_bytes(params).ok()?;
-            Event::Vendor { code, params }
+            Event::Vendor(vendor_event::decode(code, params)?)
         }
         code => Event::Unknown { code },
     })
@@ -803,12 +799,6 @@ pub fn ad_uuid128s(data: &[u8]) -> impl Iterator<Item = &[u8; 16]> + '_ {
         .flat_map(|(_, v)| v.as_chunks::<16>().0.iter())
 }
 
-/// The connection handle that starts most vendor events; `None` if short or above 0x0EFF.
-#[must_use]
-pub fn connection_handle(params: &[u8]) -> Option<ConnHandle> {
-    link(first(params)?)
-}
-
 fn ble(status: Status) -> BleStatus {
     BleStatus(status.into_inner())
 }
@@ -816,42 +806,6 @@ fn ble(status: Status) -> BleStatus {
 /// A connection handle, which is at most 0x0EFF (Core Vol 4 Part E 5.4.2).
 fn link(handle: u16) -> Option<ConnHandle> {
     (handle <= 0x0EFF).then(|| ConnHandle::new(handle))
-}
-
-/// `GATT_ATTRIBUTE_MODIFIED`: a peer wrote an attribute of the local GATT server.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct AttributeModified<'a> {
-    pub handle: ConnHandle,
-    pub attr: u16,
-    /// Bits 0-14 the offset, bit 15 "more to come" (a long write in pieces).
-    pub offset: u16,
-    pub data: &'a [u8],
-}
-
-impl<'a> AttributeModified<'a> {
-    /// Connection handle, attribute handle, offset, length, data; the data
-    /// is cut to what the event holds.
-    #[must_use]
-    pub fn decode(params: &'a [u8]) -> Option<Self> {
-        if params.len() < 8 {
-            return None;
-        }
-        let len = usize::from(u16::from_le_bytes([params[6], params[7]])).min(params.len() - 8);
-        Some(Self {
-            handle: connection_handle(params)?,
-            attr: u16::from_le_bytes([params[2], params[3]]),
-            offset: u16::from_le_bytes([params[4], params[5]]),
-            data: &params[8..8 + len],
-        })
-    }
-}
-
-/// `GAP_NUMERIC_COMPARISON_VALUE`: the connection and the six-digit number.
-#[must_use]
-pub fn numeric_comparison(params: &[u8]) -> Option<(ConnHandle, u32)> {
-    let v = params.get(2..6)?;
-    Some((connection_handle(params)?, u32::from_le_bytes([v[0], v[1], v[2], v[3]])))
 }
 
 /// The most a Command Complete carries after its status: an event's 255 parameter bytes less the
@@ -902,24 +856,10 @@ impl PairingStatus {
     }
 }
 
-/// `GAP_PAIRING_COMPLETE`: the status, and the SMP reason a pairing failed (Core Vol 3 Part H
-/// 3.5.5).
-#[must_use]
-pub fn pairing_complete(params: &[u8]) -> Option<(PairingStatus, u8)> {
-    Some((PairingStatus(*params.get(2)?), *params.get(3)?))
-}
-
 /// The LE `ATT_MTU` before an exchange (Core Vol 3 Part G 5.2.1).
 pub const ATT_DEFAULT_MTU: usize = 23;
 /// A write's or a notification's opcode and handle, ahead of its value.
 pub const ATT_HEADER_LEN: usize = 3;
-
-/// `ATT_EXCHANGE_MTU_RESP`: the server's receive MTU.
-#[must_use]
-pub fn att_mtu(params: &[u8]) -> Option<u16> {
-    let v = params.get(2..4)?;
-    Some(u16::from_le_bytes([v[0], v[1]]))
-}
 
 /// A UUID as an attribute carries it: 16-bit, or 128-bit little-endian.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -939,14 +879,7 @@ impl Uuid {
     }
 }
 
-/// The ATT response events of the GATT client, after the connection handle, share a shape: an
-/// element length, a data length, then elements of that length. Elements cut short are dropped.
-fn elements(params: &[u8], len_at: usize) -> &[u8] {
-    let n = params.get(len_at).map_or(0, |&n| usize::from(n));
-    params.get(len_at + 1..).map_or(&[], |rest| &rest[..n.min(rest.len())])
-}
-
-/// A primary service from `ATT_READ_BY_GROUP_TYPE_RESP`: its handle range and UUID.
+/// A primary service a discovery found: its handle range and UUID.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Service {
@@ -957,21 +890,7 @@ pub struct Service {
     pub uuid: Uuid,
 }
 
-/// `ATT_READ_BY_GROUP_TYPE_RESP` from a primary service discovery: connection handle, element
-/// length, data length, then (start, end, UUID) each.
-pub fn services(params: &[u8]) -> impl Iterator<Item = Service> + '_ {
-    let each = params.get(2).map_or(0, |&n| usize::from(n));
-    let data = elements(params, 3);
-    data.chunks_exact(each.max(1)).filter(move |_| each == 6 || each == 20).filter_map(|e| {
-        Some(Service {
-            start: u16::from_le_bytes([e[0], e[1]]),
-            end: u16::from_le_bytes([e[2], e[3]]),
-            uuid: Uuid::from_le(&e[4..])?,
-        })
-    })
-}
-
-/// A characteristic declaration from `ATT_READ_BY_TYPE_RESP`.
+/// A characteristic declaration a discovery found: its handle, properties ([`props`]), value handle and UUID.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Characteristic {
@@ -994,131 +913,4 @@ pub mod props {
     pub const INDICATE: u8 = 0x20;
     pub const AUTHENTICATED_SIGNED_WRITES: u8 = 0x40;
     pub const EXTENDED_PROPERTIES: u8 = 0x80;
-}
-
-/// `ATT_READ_BY_TYPE_RESP` from a characteristic discovery: connection handle, element
-/// length, data length, then (declaration handle, properties, value handle, UUID) each.
-pub fn characteristics(params: &[u8]) -> impl Iterator<Item = Characteristic> + '_ {
-    let each = params.get(2).map_or(0, |&n| usize::from(n));
-    let data = elements(params, 3);
-    data.chunks_exact(each.max(1)).filter(move |_| each == 7 || each == 21).filter_map(|e| {
-        Some(Characteristic {
-            declaration: u16::from_le_bytes([e[0], e[1]]),
-            properties: e[2],
-            value: u16::from_le_bytes([e[3], e[4]]),
-            uuid: Uuid::from_le(&e[5..])?,
-        })
-    })
-}
-
-/// `ATT_FIND_INFO_RESP` from a descriptor discovery: connection handle, format (1: 16-bit
-/// UUIDs, 2: 128-bit), data length, then (handle, UUID) each.
-pub fn descriptors(params: &[u8]) -> impl Iterator<Item = (u16, Uuid)> + '_ {
-    let each = match params.get(2) {
-        Some(1) => 4,
-        Some(2) => 18,
-        _ => 0,
-    };
-    let data = if each == 0 { &[][..] } else { elements(params, 3) };
-    data.chunks_exact(each.max(1))
-        .filter(move |_| each != 0)
-        .filter_map(|e| Some((u16::from_le_bytes([e[0], e[1]]), Uuid::from_le(&e[2..])?)))
-}
-
-/// `ATT_FIND_BY_TYPE_VALUE_RESP` from a discovery by UUID: the first (found, group end)
-/// handle pair, the service's range.
-#[must_use]
-pub fn service_range(params: &[u8]) -> Option<(u16, u16)> {
-    let v = params.get(3..7)?;
-    Some((u16::from_le_bytes([v[0], v[1]]), u16::from_le_bytes([v[2], v[3]])))
-}
-
-/// `ATT_READ_RESP`: the value read, cut to what the event holds.
-#[must_use]
-pub fn read_value(params: &[u8]) -> Option<&[u8]> {
-    let n = usize::from(*params.get(2)?);
-    params.get(3..3 + n.min(params.len() - 3))
-}
-
-/// `GATT_NOTIFICATION` or `GATT_INDICATION`: connection handle, attribute handle, a one-byte
-/// length, the value.
-#[must_use]
-pub fn notification(params: &[u8]) -> Option<(u16, &[u8])> {
-    let attr = u16::from_le_bytes([*params.get(2)?, *params.get(3)?]);
-    let n = usize::from(*params.get(4)?);
-    Some((attr, params.get(5..5 + n.min(params.len() - 5))?))
-}
-
-/// `GATT_ERROR_RESP`: the request opcode refused, the attribute and the ATT error code.
-#[must_use]
-pub fn gatt_error(params: &[u8]) -> Option<(u8, u16, u8)> {
-    Some((*params.get(2)?, u16::from_le_bytes([*params.get(3)?, *params.get(4)?]), *params.get(5)?))
-}
-
-/// `GATT_PROC_COMPLETE`: success, or the procedure's error.
-#[must_use]
-pub fn gatt_proc_complete(params: &[u8]) -> Option<BleStatus> {
-    params.get(2).copied().map(BleStatus)
-}
-
-/// `GAP_PROC_COMPLETE`: the procedure's code and its status.
-#[must_use]
-pub fn gap_proc_complete(params: &[u8]) -> Option<(u8, BleStatus)> {
-    Some((*params.first()?, BleStatus(*params.get(1)?)))
-}
-
-/// `L2CAP_CONNECTION_UPDATE_REQ`: a peripheral asks the central for an interval range, a
-/// latency and a timeout; the answer echoes the identifier.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct L2capUpdateRequest {
-    pub handle: ConnHandle,
-    pub identifier: u8,
-    pub interval_min: Duration<1_250>,
-    pub interval_max: Duration<1_250>,
-    /// Connection events the peripheral may skip.
-    pub latency: u16,
-    pub timeout: Duration<10_000>,
-}
-
-impl L2capUpdateRequest {
-    /// Connection handle, identifier, L2CAP length, interval min and max,
-    /// latency, timeout multiplier.
-    #[must_use]
-    pub fn decode(params: &[u8]) -> Option<Self> {
-        let p = params.get(..13)?;
-        let at = |i: usize| u16::from_le_bytes([p[i], p[i + 1]]);
-        Some(Self {
-            handle: connection_handle(p)?,
-            identifier: p[2],
-            interval_min: Duration::from_u16(at(5)),
-            interval_max: Duration::from_u16(at(7)),
-            latency: at(9),
-            timeout: Duration::from_u16(at(11)),
-        })
-    }
-}
-
-/// `L2CAP_CONNECTION_UPDATE_RESP`: the central's answer to the local device's parameter request
-/// (Core Specification, Vol 3, Part A, 4.21).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct L2capUpdateResponse {
-    pub handle: ConnHandle,
-    pub result: u16,
-}
-
-impl L2capUpdateResponse {
-    /// Connection handle, result (ST's `bluenrg1_events.h`).
-    #[must_use]
-    pub fn decode(params: &[u8]) -> Option<Self> {
-        let p = params.get(..4)?;
-        Some(Self { handle: connection_handle(p)?, result: u16::from_le_bytes([p[2], p[3]]) })
-    }
-
-    /// Result 0; anything else is a refusal.
-    #[must_use]
-    pub fn accepted(&self) -> bool {
-        self.result == 0
-    }
 }

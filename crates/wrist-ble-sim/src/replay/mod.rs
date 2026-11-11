@@ -110,8 +110,7 @@ impl Report {
 
 /// The chip's report that the central accepted the watch's parameter request.
 fn accepted_update(packet: &[u8]) -> bool {
-    matches!(bluenrg2::parse(packet), bluenrg2::Event::Vendor { code: bluenrg2::vendor::L2CAP_CONNECTION_UPDATE_RESP, params, .. }
-        if bluenrg2::L2capUpdateResponse::decode(params).is_some_and(|r| r.accepted()))
+    matches!(bluenrg2::parse(packet), bluenrg2::Event::Vendor(bluenrg2::VendorEvent::L2capUpdateResponse { accepted: true, .. }))
 }
 
 /// The driver's command as the operation it carries out, for the commands that are one.

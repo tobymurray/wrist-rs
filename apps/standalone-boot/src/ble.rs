@@ -69,7 +69,7 @@ use bluenrg2::opcode::{
 };
 use bluenrg2::{
     adv_filter_policy, adv_type, config, enc_key_size, event_code, evt_mask, gap_role, permission, privacy, props, service_type,
-    uuid_type, value_length, vendor, AddrKind, AttributeModified, BdAddr, BootReason, Event, BleStatus, L2capUpdateResponse, PairingStatus, ATT_HEADER_LEN,
+    uuid_type, value_length, AddrKind, BdAddr, BootReason, Event, BleStatus, PairingStatus, VendorEvent, ATT_HEADER_LEN,
     MAX_COMMAND, RETURN_PARAMS_MAX,
 };
 use wrist_bluenrg2::transport::{self, Counts, Read, Transport};
@@ -1637,7 +1637,7 @@ impl Link<'_> {
                 self.data_length((max_tx_octets, max_tx_time), (max_rx_octets, max_rx_time));
             }
             Event::LeAdvertisingReport { data, .. } => self.scanner.advertising(data, self.uart),
-            Event::Vendor { code, params, .. } => self.vendor(code, params),
+            Event::Vendor(e) => self.vendor(e),
             Event::LeUnknown { subevent_code, .. } => self.unknown("[ble] LE event ", event_code::LE_META, subevent_code),
             Event::Unknown { code, .. } => self.unknown("[ble] event ", code, 0),
             _ => {
@@ -1734,8 +1734,7 @@ impl Link<'_> {
 
     /// A central wrote one of our attributes: the console's RX (bytes for the parser or a
     /// transfer) or TX's CCCD (the mirror on or off).
-    fn attribute_modified(&mut self, write: AttributeModified) {
-        let AttributeModified { attr, offset, data, .. } = write;
+    fn attribute_modified(&mut self, attr: u16, piece: bool, data: &[u8]) {
         let Some((_, rx, tx)) = self.nus else {
             return;
         };
@@ -1744,7 +1743,7 @@ impl Link<'_> {
                 UNSECURED.fetch_add(1, Ordering::Relaxed);
                 return self.uart.write_line("[ble] a console write over an unencrypted link: dropped");
             }
-            if offset != 0 {
+            if piece {
                 FRAGMENTS.fetch_add(1, Ordering::Relaxed);
             }
             let crc = wrist_flash::plan::crc32(data);
@@ -1762,28 +1761,24 @@ impl Link<'_> {
         }
     }
 
-    fn vendor(&mut self, ecode: u16, rest: &[u8]) {
-        let handle = bluenrg2::connection_handle;
-        match ecode {
-            // A boot without its reason is a boot all the same.
-            vendor::BLUE_INITIALIZED => self.initialized(bluenrg2::blue_initialized(rest).unwrap_or(BootReason::new(0))),
-            vendor::HAL_EVENTS_LOST => self.uart.write_line("[ble] the chip dropped events: the host read too slowly"),
-            vendor::GAP_PASS_KEY_REQ if handle(rest).is_some() => {
+    fn vendor(&mut self, e: VendorEvent) {
+        match e {
+            VendorEvent::BlueInitialized { reason, .. } => self.initialized(reason),
+            VendorEvent::EventsLost { .. } => self.uart.write_line("[ble] the chip dropped events: the host read too slowly"),
+            VendorEvent::PassKeyRequest { handle, .. } => {
                 self.pair_ask.settled();
-                self.passkey_for = handle(rest).map(|h| h.raw());
+                self.passkey_for = Some(handle.raw());
                 PROMPT.lock(|p| p.set(Prompt::Asked));
             }
-            vendor::GAP_NUMERIC_COMPARISON_VALUE if bluenrg2::numeric_comparison(rest).is_some() => {
+            VendorEvent::NumericComparison { value, .. } => {
                 self.pair_ask.settled();
-                let (_, value) = bluenrg2::numeric_comparison(rest).unwrap_or_default();
                 PROMPT.lock(|p| p.set(Prompt::Waiting(Pairing::Compare, value, Instant::now().as_millis())));
                 crate::wake_display();
                 self.uart.write_str("[ble] pairing: the central shows a number; if it is ");
                 write_six_digits(self.uart, value);
                 self.uart.write_line(", `ble yes` on the USB console (`ble no` rejects)");
             }
-            vendor::GAP_PAIRING_COMPLETE if rest.len() >= 4 => {
-                let (status, reason) = bluenrg2::pairing_complete(rest).unwrap_or((PairingStatus::SUCCESS, 0));
+            VendorEvent::PairingComplete { status, reason, .. } => {
                 LAST_PAIRING.store(status.into_inner().saturating_add(1), Ordering::Relaxed);
                 LAST_PAIRING_REASON.store(reason, Ordering::Relaxed);
                 self.pair_ask.settled();
@@ -1804,36 +1799,29 @@ impl Link<'_> {
                     self.uart.write_line(" (4 confirm failed, B DHKey check, C comparison refused)");
                 }
             }
-            vendor::GAP_SLAVE_SECURITY_INITIATED => self.uart.write_line("[ble] security request sent"),
-            vendor::GAP_BOND_LOST => self.rebond_for = Some(CONN_HANDLE.load(Ordering::Relaxed)),
-            vendor::ATT_EXCHANGE_MTU_RESP if rest.len() >= 4 => {
-                self.mtu = usize::from(bluenrg2::att_mtu(rest).unwrap_or(0)).clamp(DEFAULT_MTU, MAX_MTU);
+            VendorEvent::SlaveSecurityInitiated => self.uart.write_line("[ble] security request sent"),
+            VendorEvent::BondLost => self.rebond_for = Some(CONN_HANDLE.load(Ordering::Relaxed)),
+            VendorEvent::ExchangeMtuResponse { server_mtu, .. } => {
+                self.mtu = usize::from(server_mtu).clamp(DEFAULT_MTU, MAX_MTU);
                 self.uart.write_str("[ble] ATT MTU ");
                 self.uart.write_u32(u32::try_from(self.mtu).unwrap_or(0));
                 self.uart.write_line("");
             }
-            vendor::GATT_TX_POOL_AVAILABLE => {}
-            vendor::GATT_ATTRIBUTE_MODIFIED if rest.len() >= 8 => {
-                if let Some(write) = AttributeModified::decode(rest) {
-                    self.attribute_modified(write);
-                }
-            }
-            vendor::L2CAP_CONNECTION_UPDATE_RESP if rest.len() >= 4 => {
-                if L2capUpdateResponse::decode(rest).is_some_and(|r| !r.accepted()) {
+            VendorEvent::TxPoolAvailable { .. } => {}
+            VendorEvent::AttributeModified { attr, offset, more, data, .. } => self.attribute_modified(attr, offset != 0 || more, data),
+            VendorEvent::L2capUpdateResponse { accepted, .. } => {
+                if !accepted {
                     UPDATES_REFUSED.fetch_add(1, Ordering::Relaxed);
                     self.uart.write_line("[ble] the central refused the interval request");
                 }
             }
-            vendor::GAP_PROC_COMPLETE => {
-                if let Some((code, status)) = bluenrg2::gap_proc_complete(rest) {
-                    self.scanner.gap_proc_complete(code, status, self.uart);
-                }
-            }
-            _ => {
+            VendorEvent::GapProcComplete { procedure, status, .. } => self.scanner.gap_proc_complete(procedure, status, self.uart),
+            e => {
                 UNKNOWN.fetch_add(1, Ordering::Relaxed);
+                let [hi, lo] = e.code().to_be_bytes();
                 self.uart.write_str("[ble] vendor event ");
-                self.uart.write_hex8((ecode >> 8) as u8);
-                self.uart.write_hex8((ecode & 0xFF) as u8);
+                self.uart.write_hex8(hi);
+                self.uart.write_hex8(lo);
                 self.uart.write_line("");
             }
         }

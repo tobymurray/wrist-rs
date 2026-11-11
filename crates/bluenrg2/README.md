@@ -7,8 +7,7 @@ describes the SPI exchange, after ST's X-CUBE-BLE2.
 
 ```rust
 use bluenrg2::{
-    command, header_sizes, notification, opcode, packet_len, parse, service_type, uuid_type, vendor, Event, HEADER_WRITE,
-    MAX_COMMAND,
+    command, header_sizes, opcode, packet_len, parse, service_type, uuid_type, Event, VendorEvent, HEADER_WRITE, MAX_COMMAND,
 };
 
 // ACI_GATT_ADD_SERVICE: a primary Heart Rate service (0x180D) of up to four attributes.
@@ -35,9 +34,7 @@ while let Some(packet) = packet_len(rest).and_then(|len| rest.get(..len)) {
             assert!(status.is_success());
             assert_eq!(return_param_bytes, &[0x0C, 0x00]);
         }
-        Event::Vendor { code: vendor::GATT_NOTIFICATION, params, .. } => {
-            assert_eq!(notification(params), Some((0x000E, &[0x48][..])));
-        }
+        Event::Vendor(VendorEvent::Notification { attr, value, .. }) => assert_eq!((attr, value), (0x000E, &[0x48][..])),
         e => panic!("{e:?}"),
     }
     rest = &rest[packet.len()..];
