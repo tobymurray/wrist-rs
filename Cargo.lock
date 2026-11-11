@@ -1506,6 +1506,7 @@ dependencies = [
  "embassy-futures",
  "embedded-hal",
  "embedded-hal-async",
+ "proptest",
  "wrist-ble",
 ]
 

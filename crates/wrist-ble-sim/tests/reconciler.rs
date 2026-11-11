@@ -101,7 +101,7 @@ impl Bench {
     }
 
     fn phone_up(&mut self, ms: u64) {
-        self.at(ms, Input::Radio(RadioEvent::LinkUp { link: link(), role: LeConnRole::Peripheral, peer: phone(), params: OPENED }));
+        self.at(ms, Input::Radio(RadioEvent::LinkUp { link: link(), role: LeConnRole::Peripheral, peer: phone(), params: Some(OPENED) }));
     }
 
     fn params(&mut self, ms: u64, p: LinkParams) -> Outputs {

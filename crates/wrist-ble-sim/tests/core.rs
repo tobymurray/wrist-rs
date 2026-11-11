@@ -88,7 +88,7 @@ fn started(core: &Core<'_>) -> Input {
 }
 
 fn phone_up(h: &mut Harness, ms: u64, link: ConnHandle) {
-    h.at(ms, Input::Radio(RadioEvent::LinkUp { link, role: LeConnRole::Peripheral, peer: phone_addr(), params: PHONE }));
+    h.at(ms, Input::Radio(RadioEvent::LinkUp { link, role: LeConnRole::Peripheral, peer: phone_addr(), params: Some(PHONE) }));
 }
 
 #[test]
@@ -154,7 +154,7 @@ fn tap_to_retry_works_while_the_link_drops() {
     let goals = Goals { radio_on: true, peripherals: [Some(Want { profile: &HR, peer: strap(), priority: 0 }), None, None], ..Goals::OFF };
     let mut h = Harness::new(goals);
     let link = ConnHandle::new(0x802);
-    h.at(1_000, Input::Radio(RadioEvent::LinkUp { link, role: LeConnRole::Central, peer: strap(), params: PHONE }));
+    h.at(1_000, Input::Radio(RadioEvent::LinkUp { link, role: LeConnRole::Central, peer: strap(), params: Some(PHONE) }));
     let give_up = u64::from(GIVE_UP.0) + 10;
     h.at(give_up, Input::Tick);
     let machine = |h: &Harness| h.core.state.peers[0].unwrap().machine;
@@ -265,7 +265,7 @@ fn snapshot_with(link: ConnHandle) -> wrist_ble::Snapshot {
 fn advertising_done_after_the_phone_connects_stays_ended() {
     let mut core = retiming_advertising();
     let link = ConnHandle::new(0x801);
-    core.step(Instant(1_001), Input::Radio(RadioEvent::LinkUp { link, role: LeConnRole::Peripheral, peer: phone_addr(), params: PHONE }));
+    core.step(Instant(1_001), Input::Radio(RadioEvent::LinkUp { link, role: LeConnRole::Peripheral, peer: phone_addr(), params: Some(PHONE) }));
     core.step(Instant(1_001), done(3));
     assert_eq!(core.state.radio.advertising, None);
 }
@@ -277,6 +277,16 @@ fn advertising_done_after_a_resync_finds_the_phone_stays_ended() {
     core.step(Instant(1_002), Input::Snapshot(Ok(snapshot_with(ConnHandle::new(0x801)))));
     core.step(Instant(1_003), done(3));
     assert_eq!(core.state.radio.advertising, None);
+}
+
+#[test]
+fn a_phone_link_without_its_timing_is_up_and_asked_for_its_parameters() {
+    let mut h = Harness::new(Goals { radio_on: true, ..Goals::OFF });
+    let link = ConnHandle::new(0x801);
+    h.at(1_000, Input::Radio(RadioEvent::LinkUp { link, role: LeConnRole::Peripheral, peer: phone_addr(), params: None }));
+    assert_eq!(h.core.state.phone.link(), Some(link));
+    h.at(1_500, Input::Radio(RadioEvent::Encryption { link, on: true }));
+    assert!(matches!(h.ops.last(), Some(Op::UpdateParams(l, _)) if *l == link), "{:?}", h.ops);
 }
 
 #[test]

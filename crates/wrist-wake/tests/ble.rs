@@ -352,7 +352,7 @@ fn a_held_chunk_is_dropped_at_a_clear_and_a_whole_line_gets_no_blank_one() {
     assert_eq!(lines.feed(b"[hb] 1\r\nabcdefghij\r\n", &mut ring), 0);
     let mut central = notify(&mut out, &mut ring, 8, 0);
     // Refused for want of buffers, held, and never sent.
-    assert_eq!(notify(&mut out, &mut ring, 8, bluenrg2::status::INSUFFICIENT_RESOURCES), b"");
+    assert_eq!(notify(&mut out, &mut ring, 8, bluenrg2::BleStatus::INSUFFICIENT_RESOURCES.into_inner()), b"");
     ring.clear();
     lines.clear(out.discard());
     assert_eq!(lines.feed(b"[update] ok\r\n", &mut ring), 0);

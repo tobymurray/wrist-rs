@@ -1,11 +1,22 @@
 //! The BlueNRG-2's packets as bytes, without the SPI bus or the link's state.
 //!
-//! ST's network-coprocessor firmware speaks HCI with ST's vendor commands
-//! (OGF 0x3F, the ACI) and vendor events (event code 0xFF with a 16-bit
-//! code), over SPI with a five-byte header each way. This crate holds the
-//! numbers (from ST's public BlueNRG-1/2 ACI documentation), builds command
-//! packets, measures packets in a read, and decodes every packet into an
-//! event ([`parse`], then the vendor payload decoders).
+//! ST's network-coprocessor firmware speaks HCI with ST's vendor commands (OGF 0x3F, the ACI) and
+//! vendor events (event code 0xFF with a 16-bit code). This crate holds the numbers from ST's
+//! BlueNRG-1/2 ACI documentation, builds command packets ([`command`]), measures packets in a read
+//! ([`packet_len`]), and decodes each into an [`Event`] ([`parse`]).
+//!
+//! # The SPI exchange
+//!
+//! The bus is yours to drive; ST's X-CUBE-BLE2 `hci_tl_interface.c` (`HCI_TL_SPI_Send`,
+//! `HCI_TL_SPI_Receive`) is the reference. With CS low, the host clocks a five-byte header out
+//! while the chip clocks its answer in ([`header_sizes`]).
+//!
+//! - **Write**: CS low, then wait for IRQ to rise; exchange [`HEADER_WRITE`]; unless the room the
+//!   chip answers holds the whole packet, CS high and start again; clock the packet out; CS high;
+//!   wait for IRQ to fall.
+//! - **Read**, when IRQ is high: CS low; exchange [`HEADER_READ`]; clock in as many bytes as the
+//!   chip answers waiting; wait for IRQ to fall; CS high. Those bytes are one or more packets back
+//!   to back.
 
 #![no_std]
 
@@ -16,18 +27,22 @@ struct ReadmeDoctests;
 pub mod hal;
 
 pub use bt_hci;
-pub use bt_hci::param::{AddrKind, ConnHandle, EncryptionEnabledLevel, LeAdvEventKind, LeConnRole};
+pub use bt_hci::data::{AclBroadcastFlag, AclPacketBoundary};
+pub use bt_hci::param::{
+    AddrKind, BdAddr, ConnHandle, Duration, EncryptionEnabledLevel, LeAdvEventKind, LeConnRole,
+};
 
-use bt_hci::param::{BdAddr, Status};
+use bt_hci::data::AclPacket;
+use bt_hci::param::Status;
 use bt_hci::FromHciBytes;
 
-/// The SPI header the host sends to write (`0A`) or read (`0B`); the chip
-/// answers in the same five bytes.
+/// The SPI header the host sends to write a packet; the chip answers in the same five bytes.
 pub const HEADER_WRITE: [u8; 5] = [0x0A, 0, 0, 0, 0];
+/// The SPI header the host sends to read; the chip answers in the same five bytes.
 pub const HEADER_READ: [u8; 5] = [0x0B, 0, 0, 0, 0];
 
-/// The chip's answer to a header: room in its write buffer, and bytes
-/// waiting to be read. The BlueNRG-2 sends no ready byte, only these.
+/// The chip's answer to a header, in bytes: the room in its write buffer, and what waits to be
+/// read. ST's driver reads nothing else from the answer.
 #[must_use]
 pub fn header_sizes(header: &[u8; 5]) -> (usize, usize) {
     (
@@ -49,7 +64,7 @@ pub mod opcode {
     /// Reads only; [`ACI_UPDATER_START`] reboots the chip into the updater.
     pub const ACI_HAL_GET_UPDATER_VERSION: u16 = 0xFC22;
     /// Reboots the chip into its updater: status 0, then `BLUE_INITIALIZED` with
-    /// [`super::boot_reason::UPDATER_BY_COMMAND`].
+    /// [`super::BootReason::UPDATER_BY_COMMAND`].
     pub const ACI_UPDATER_START: u16 = 0xFC20;
     pub const ACI_GAP_SET_NON_DISCOVERABLE: u16 = 0xFC81;
     pub const ACI_GAP_SET_DISCOVERABLE: u16 = 0xFC83;
@@ -116,16 +131,17 @@ pub mod config {
     pub const STATIC_RANDOM_ADDRESS: u8 = 0x2E;
 }
 
-/// A static random address (Core 6.B 1.3.2.1) from 64 bits, little-endian as the chip carries it.
+/// A static random address (Core Vol 6 Part B 1.3.2.1) from the low 46 of 64 bits, nudged off
+/// the two values the specification forbids.
 #[must_use]
-pub const fn static_random(bits: u64) -> [u8; 6] {
+pub const fn static_random(bits: u64) -> BdAddr {
     let b = bits.to_le_bytes();
     let mut a = [b[0], b[1], b[2], b[3], b[4], b[5] | 0xC0];
     let rest = bits & 0x3FFF_FFFF_FFFF;
     if rest == 0 || rest == 0x3FFF_FFFF_FFFF {
         a[0] ^= 1;
     }
-    a
+    BdAddr(a)
 }
 
 /// `ACI_GATT_ADD_CHAR`'s security permissions (ST's `ble_defs.h`).
@@ -178,62 +194,24 @@ pub mod vendor {
     pub const GATT_SERVER_CONFIRMATION: u16 = 0x0C17;
 }
 
-/// Why the chip says it started: `ACI_BLUE_INITIALIZED`'s reason code (ST's
-/// `bluenrg1_events.h`), its one parameter. The chip sends the event after every reset, asked for
-/// or not.
-pub mod boot_reason {
+/// Why the chip says it started: `ACI_BLUE_INITIALIZED`'s reason code (ST's `bluenrg1_events.h`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct BootReason(u8);
+
+impl BootReason {
     /// The stack started.
-    pub const STARTED: u8 = 0x01;
-    /// The updater runs, started by [`super::opcode::ACI_UPDATER_START`].
-    pub const UPDATER_BY_COMMAND: u8 = 0x02;
+    pub const STARTED: Self = Self(0x01);
+    /// The updater runs, started by [`opcode::ACI_UPDATER_START`].
+    pub const UPDATER_BY_COMMAND: Self = Self(0x02);
     /// The updater runs because the stack's image is not marked valid.
-    pub const UPDATER_BAD_FLAG: u8 = 0x03;
+    pub const UPDATER_BAD_FLAG: Self = Self(0x03);
     /// The updater runs because the IRQ pin was high at reset.
-    pub const UPDATER_BY_PIN: u8 = 0x04;
-    pub const WATCHDOG: u8 = 0x05;
-    pub const LOCKUP: u8 = 0x06;
-    pub const BROWNOUT: u8 = 0x07;
-    pub const CRASH: u8 = 0x08;
-    pub const ECC_ERROR: u8 = 0x09;
-
-    /// The updater runs instead of the stack: it answers normal commands with status `0x01`,
-    /// and only a reset brings the stack back.
-    #[must_use]
-    pub const fn updater(reason: u8) -> bool {
-        matches!(reason, UPDATER_BY_COMMAND | UPDATER_BAD_FLAG | UPDATER_BY_PIN)
-    }
-
-    /// What the reason says of the chip's last start, in a few words.
-    #[must_use]
-    pub const fn describe(reason: u8) -> &'static str {
-        match reason {
-            STARTED => "the stack started",
-            UPDATER_BY_COMMAND => "the updater, by command",
-            UPDATER_BAD_FLAG => "the updater, the stack not marked valid",
-            UPDATER_BY_PIN => "the updater, by the IRQ pin",
-            WATCHDOG => "a watchdog reset",
-            LOCKUP => "a lockup reset",
-            BROWNOUT => "a brownout reset",
-            CRASH => "a crash reset",
-            ECC_ERROR => "an ECC error reset",
-            _ => "a reason unknown",
-        }
-    }
-}
-
-/// `ACI_BLUE_INITIALIZED`'s reason ([`boot_reason`]); 0 if the event is empty.
-#[must_use]
-pub fn blue_initialized(params: &[u8]) -> u8 {
-    params.first().copied().unwrap_or(0)
-}
-
-/// A status or reason as the chip gives it (ST's `tBleStatus`): HCI's error codes below 0x40,
-/// ST's own (`ble_status.h`) from 0x40, which bt-hci's `Status` would misname.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub struct BleStatus(u8);
-
-impl BleStatus {
-    pub const SUCCESS: Self = Self(0);
+    pub const UPDATER_BY_PIN: Self = Self(0x04);
+    pub const WATCHDOG: Self = Self(0x05);
+    pub const LOCKUP: Self = Self(0x06);
+    pub const BROWNOUT: Self = Self(0x07);
+    pub const CRASH: Self = Self(0x08);
+    pub const ECC_ERROR: Self = Self(0x09);
 
     #[must_use]
     pub const fn new(code: u8) -> Self {
@@ -244,8 +222,49 @@ impl BleStatus {
     pub const fn into_inner(self) -> u8 {
         self.0
     }
+
+    /// The updater runs instead of the stack.
+    #[must_use]
+    pub const fn is_updater(self) -> bool {
+        matches!(self.0, 0x02..=0x04)
+    }
 }
 
+/// `ACI_BLUE_INITIALIZED`'s reason; `None` if the event is empty.
+#[must_use]
+pub fn blue_initialized(params: &[u8]) -> Option<BootReason> {
+    params.first().copied().map(BootReason)
+}
+
+/// A status or reason as the chip gives it (ST's `tBleStatus`): HCI's error codes below 0x40,
+/// ST's own (`ble_status.h`) from 0x40, which bt-hci's `Status` would misname.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BleStatus(u8);
+
+impl BleStatus {
+    pub const SUCCESS: Self = Self(0x00);
+    pub const COMMAND_DISALLOWED: Self = Self(0x0C);
+    pub const REMOTE_USER_TERMINATED: Self = Self(0x13);
+    /// No TX buffers for now; `GATT_TX_POOL_AVAILABLE` follows when there are.
+    pub const INSUFFICIENT_RESOURCES: Self = Self(0x64);
+
+    #[must_use]
+    pub const fn new(code: u8) -> Self {
+        Self(code)
+    }
+
+    #[must_use]
+    pub const fn into_inner(self) -> u8 {
+        self.0
+    }
+
+    #[must_use]
+    pub const fn is_success(self) -> bool {
+        self.0 == Self::SUCCESS.0
+    }
+}
+
+/// HCI's name below 0x40, else the code.
 impl core::fmt::Debug for BleStatus {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         if self.0 < 0x40 {
@@ -256,13 +275,18 @@ impl core::fmt::Debug for BleStatus {
     }
 }
 
-/// ST's command status codes (`ble_status.h`), HCI's among them.
-pub mod status {
-    pub const COMMAND_DISALLOWED: u8 = 0x0C;
-    pub const REMOTE_USER_TERMINATED: u8 = 0x13;
-    /// No TX buffers for now; `GATT_TX_POOL_AVAILABLE` follows when there are.
-    pub const INSUFFICIENT_RESOURCES: u8 = 0x64;
+/// HCI's name and the code below 0x40, `ST status 0x48` from it.
+impl core::fmt::Display for BleStatus {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        if self.0 < 0x40 {
+            write!(f, "{:?} (0x{:02x})", Status::new(self.0), self.0)
+        } else {
+            write!(f, "ST status 0x{:02x}", self.0)
+        }
+    }
 }
+
+impl core::error::Error for BleStatus {}
 
 /// `ACI_GATT_ADD_SERVICE`'s and `ACI_GATT_ADD_CHAR`'s UUID types.
 pub mod uuid_type {
@@ -387,61 +411,63 @@ impl AuthenticationRequirement {
     }
 }
 
-/// An HCI command packet (`01`, opcode, length, parameters) into `out`;
-/// returns its length. Parameters past 255 bytes, or past `out`, are cut.
-pub fn command(opcode: u16, params: &[u8], out: &mut [u8]) -> usize {
-    let n = params.len().min(MAX_COMMAND_PARAMS).min(out.len().saturating_sub(COMMAND_HEADER_LEN));
-    if out.len() < COMMAND_HEADER_LEN {
-        return 0;
+/// An HCI command packet (`01`, opcode, length, then the parts of `params` in order) at the start
+/// of `out`, and its length; `None`, with `out` untouched, when the parameters pass 255 bytes or the
+/// packet passes `out`.
+#[must_use]
+pub fn command(opcode: u16, params: &[&[u8]], out: &mut [u8]) -> Option<usize> {
+    let len: usize = params.iter().map(|p| p.len()).sum();
+    let len_byte = u8::try_from(len).ok()?;
+    let packet = out.get_mut(..COMMAND_HEADER_LEN + len)?;
+    let (header, mut rest) = packet.split_at_mut(COMMAND_HEADER_LEN);
+    let [lo, hi] = opcode.to_le_bytes();
+    header.copy_from_slice(&[packet::COMMAND, lo, hi, len_byte]);
+    for part in params {
+        let (here, after) = rest.split_at_mut(part.len());
+        here.copy_from_slice(part);
+        rest = after;
     }
-    out[0] = packet::COMMAND;
-    out[1..3].copy_from_slice(&opcode.to_le_bytes());
-    out[3] = u8::try_from(n).unwrap_or(0);
-    out[COMMAND_HEADER_LEN..COMMAND_HEADER_LEN + n].copy_from_slice(&params[..n]);
-    COMMAND_HEADER_LEN + n
+    Some(COMMAND_HEADER_LEN + len)
 }
 
 /// The indicator, opcode and length before a command's parameters.
-pub const COMMAND_HEADER_LEN: usize = 4;
-pub const MAX_COMMAND_PARAMS: usize = u8::MAX as usize;
+const COMMAND_HEADER_LEN: usize = 4;
 /// The longest packet [`command`] writes.
-pub const MAX_COMMAND: usize = COMMAND_HEADER_LEN + MAX_COMMAND_PARAMS;
+pub const MAX_COMMAND: usize = COMMAND_HEADER_LEN + u8::MAX as usize;
 
-/// The length of the HCI packet at the start of `p`, clamped to `p`; 0 if
-/// empty. A read may hold several packets back to back.
+/// The length the packet at the start of `p` gives in its header, which may run past the end of
+/// `p`; `None` unless `p` starts with a whole event or ACL header.
 #[must_use]
-pub fn packet_len(p: &[u8]) -> usize {
+pub fn packet_len(p: &[u8]) -> Option<usize> {
     match p {
-        [packet::EVENT, _, len, ..] => (3 + usize::from(*len)).min(p.len()),
-        [packet::ACL, _, _, lo, hi, ..] => (5 + usize::from(u16::from_le_bytes([*lo, *hi]))).min(p.len()),
-        _ => p.len(),
+        [packet::EVENT, _, len, ..] => Some(3 + usize::from(*len)),
+        [packet::ACL, _, _, lo, hi, ..] => Some(5 + usize::from(u16::from_le_bytes([*lo, *hi]))),
+        _ => None,
     }
 }
 
-/// True when the packet's own length field fits inside what was read.
+/// Whether `p` starts with a whole packet: its header, and as many bytes as the header says.
 #[must_use]
 pub fn packet_whole(p: &[u8]) -> bool {
-    match p {
-        [packet::EVENT, _, len, ..] => 3 + usize::from(*len) <= p.len(),
-        [packet::ACL, _, _, lo, hi, ..] => 5 + usize::from(u16::from_le_bytes([*lo, *hi])) <= p.len(),
-        _ => true,
-    }
+    packet_len(p).is_some_and(|len| len <= p.len())
 }
 
-/// A device address as the air carries it: little-endian, and public or random.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+/// A device address, public or random.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub struct Address {
     /// [`AddrKind::PUBLIC`] or [`AddrKind::RANDOM`]; a resolved identity's type is given as one of these.
     pub kind: AddrKind,
-    pub bytes: [u8; 6],
+    /// Little-endian, as the air carries it.
+    pub addr: BdAddr,
 }
 
-/// A connection's interval (1.25 ms units), peripheral latency and supervision timeout (10 ms units).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ConnTiming {
-    pub conn_interval: u16,
+    pub conn_interval: Duration<1_250>,
+    /// Connection events the peripheral may skip.
     pub peripheral_latency: u16,
-    pub supervision_timeout: u16,
+    pub supervision_timeout: Duration<10_000>,
 }
 
 /// The event in one HCI packet, by section of the Core Specification, Vol 4 Part E, whose
@@ -451,37 +477,75 @@ pub struct ConnTiming {
 pub enum Event<'a> {
     /// Command Complete (7.7.14): the opcode answered, its status, the return parameters after it;
     /// every opcode but 0x0000, which only grants credits, carries a status, else the event is `Malformed`.
+    #[non_exhaustive]
     CommandComplete { cmd_opcode: u16, status: Option<BleStatus>, return_param_bytes: &'a [u8] },
     /// Command Status (7.7.15): a command accepted or refused, results to follow.
+    #[non_exhaustive]
     CommandStatus { cmd_opcode: u16, status: BleStatus },
     /// LE (Enhanced) Connection Complete (7.7.65.1, 7.7.65.10) with success: the handle, the
     /// local device's role, the peer, and the timing when the packet carries it.
-    LeConnectionComplete { handle: ConnHandle, role: LeConnRole, peer: Address, timing: Option<ConnTiming> },
+    #[non_exhaustive]
+    LeConnectionComplete {
+        handle: ConnHandle,
+        role: LeConnRole,
+        peer: Address,
+        timing: Option<ConnTiming>,
+    },
     /// LE (Enhanced) Connection Complete with an error: no connection formed.
+    #[non_exhaustive]
     LeConnectionFailed { status: BleStatus },
-    /// LE Connection Update Complete (7.7.65.3) with success: interval (1.25 ms units), latency,
-    /// supervision timeout (10 ms units).
-    LeConnectionUpdateComplete { handle: ConnHandle, conn_interval: u16, peripheral_latency: u16, supervision_timeout: u16 },
+    /// LE Connection Update Complete (7.7.65.3) with success: the link's new timing.
+    #[non_exhaustive]
+    LeConnectionUpdateComplete {
+        handle: ConnHandle,
+        conn_interval: Duration<1_250>,
+        peripheral_latency: u16,
+        supervision_timeout: Duration<10_000>,
+    },
     /// LE Connection Update Complete with an error: the link keeps the parameters it had.
+    #[non_exhaustive]
     LeConnectionUpdateFailed { handle: ConnHandle, status: BleStatus },
     /// Disconnection Complete (7.7.5): a status other than success is a disconnection that
     /// failed, the link still up; else the reason.
+    #[non_exhaustive]
     DisconnectionComplete { handle: ConnHandle, status: BleStatus, reason: BleStatus },
     /// Encryption Change (7.7.8): a status other than success is a change that failed.
+    #[non_exhaustive]
     EncryptionChange { handle: ConnHandle, status: BleStatus, enabled: EncryptionEnabledLevel },
     /// Encryption Key Refresh Complete (7.7.39): an encrypted link encrypted again, a status
     /// other than success a refresh that failed.
+    #[non_exhaustive]
     EncryptionKeyRefresh { handle: ConnHandle, status: BleStatus },
-    /// LE Data Length Change (7.7.65.7): the largest payload each way, octets and microseconds.
-    LeDataLengthChange { handle: ConnHandle, max_tx_octets: u16, max_tx_time: u16, max_rx_octets: u16, max_rx_time: u16 },
+    /// LE Data Length Change (7.7.65.7): the largest payload each way, in octets and in microseconds on air.
+    #[non_exhaustive]
+    LeDataLengthChange {
+        handle: ConnHandle,
+        max_tx_octets: u16,
+        max_tx_time: u16,
+        max_rx_octets: u16,
+        max_rx_time: u16,
+    },
     /// LE Advertising Report (7.7.65.2): one or more reports ([`reports`]).
+    #[non_exhaustive]
     LeAdvertisingReport { data: &'a [u8] },
     /// One of ST's events (event code 0xFF): its code and the bytes after it.
+    #[non_exhaustive]
     Vendor { code: u16, params: &'a [u8] },
     /// Another LE meta event, by subevent code.
+    #[non_exhaustive]
     LeUnknown { subevent_code: u8 },
     /// Another HCI event, by event code.
+    #[non_exhaustive]
     Unknown { code: u8 },
+    /// ACL data (Core Vol 4 Part E 5.4.2), as the chip sends it in its link-layer-only
+    /// configuration (ST's `bluenrg1_hal_aci.h`, `LL_WITHOUT_HOST`).
+    #[non_exhaustive]
+    Acl {
+        handle: ConnHandle,
+        boundary: AclPacketBoundary,
+        broadcast: AclBroadcastFlag,
+        data: &'a [u8],
+    },
     /// Not an HCI event, cut short by the end of the read, or not fitting its layout.
     Malformed(&'a [u8]),
 }
@@ -492,8 +556,10 @@ impl Event<'_> {
     #[must_use]
     pub fn encryption(&self) -> Option<(ConnHandle, bool)> {
         match *self {
-            Event::EncryptionChange { handle, status, enabled } => Some((handle, status == BleStatus::SUCCESS && enabled != EncryptionEnabledLevel::Off)),
-            Event::EncryptionKeyRefresh { handle, status } => Some((handle, status == BleStatus::SUCCESS)),
+            Event::EncryptionChange { handle, status, enabled } => {
+                Some((handle, status.is_success() && enabled != EncryptionEnabledLevel::Off))
+            }
+            Event::EncryptionKeyRefresh { handle, status } => Some((handle, status.is_success())),
             _ => None,
         }
     }
@@ -502,15 +568,26 @@ impl Event<'_> {
 /// The event in one HCI packet, read no further than the packet's own length.
 #[must_use]
 pub fn parse(p: &[u8]) -> Event<'_> {
-    if !packet_whole(p) {
+    let Some(p) = packet_len(p).and_then(|len| p.get(..len)) else {
         return Event::Malformed(p);
-    }
-    let p = &p[..packet_len(p)];
+    };
     let event = match p {
         [packet::EVENT, code, _, params @ ..] => standard(*code, params),
+        [packet::ACL, rest @ ..] => acl(rest),
         _ => None,
     };
     event.unwrap_or(Event::Malformed(p))
+}
+
+fn acl(p: &[u8]) -> Option<Event<'_>> {
+    let acl: AclPacket = first(p)?;
+    let handle = link(acl.header().handle & 0x0FFF)?;
+    Some(Event::Acl {
+        handle,
+        boundary: acl.boundary_flag(),
+        broadcast: acl.broadcast_flag(),
+        data: acl.data(),
+    })
 }
 
 /// The value at the start of `b`, the bytes after it ignored.
@@ -540,11 +617,19 @@ fn standard(code: u8, params: &[u8]) -> Option<Event<'_>> {
         }
         ev::DISCONNECTION_COMPLETE => {
             let e: hci::DisconnectionComplete = first(params)?;
-            Event::DisconnectionComplete { handle: link(e.handle.raw())?, status: ble(e.status), reason: ble(e.reason) }
+            Event::DisconnectionComplete {
+                handle: link(e.handle.raw())?,
+                status: ble(e.status),
+                reason: ble(e.reason),
+            }
         }
         ev::ENCRYPTION_CHANGE => {
             let e: hci::EncryptionChangeV1 = first(params)?;
-            Event::EncryptionChange { handle: link(e.handle.raw())?, status: ble(e.status), enabled: e.enabled }
+            Event::EncryptionChange {
+                handle: link(e.handle.raw())?,
+                status: ble(e.status),
+                enabled: e.enabled,
+            }
         }
         ev::ENCRYPTION_KEY_REFRESH_COMPLETE => {
             let e: hci::EncryptionKeyRefreshComplete = first(params)?;
@@ -565,16 +650,18 @@ fn le_meta(params: &[u8]) -> Option<Event<'_>> {
     use le_subevent as sub;
     let (&code, params) = params.split_first()?;
     Some(match code {
-        sub::CONNECTION_COMPLETE | sub::ENHANCED_CONNECTION_COMPLETE => connection_complete(code, params)?,
+        sub::CONNECTION_COMPLETE | sub::ENHANCED_CONNECTION_COMPLETE => {
+            connection_complete(code, params)?
+        }
         sub::CONNECTION_UPDATE_COMPLETE => {
             let (status, rest) = Status::from_hci_bytes(params).ok()?;
             if status == Status::SUCCESS {
                 let e: le::LeConnectionUpdateComplete = first(params)?;
                 Event::LeConnectionUpdateComplete {
                     handle: link(e.handle.raw())?,
-                    conn_interval: e.conn_interval.as_u16(),
+                    conn_interval: e.conn_interval,
                     peripheral_latency: e.peripheral_latency,
-                    supervision_timeout: e.supervision_timeout.as_u16(),
+                    supervision_timeout: e.supervision_timeout,
                 }
             } else {
                 // A failure's interval, latency and timeout mean nothing (Core Vol 4 Part E §7.7.65.3).
@@ -614,29 +701,34 @@ fn connection_complete(code: u8, params: &[u8]) -> Option<Event<'_>> {
     let (kind, rest) = AddrKind::from_hci_bytes(rest).ok()?;
     let peer: BdAddr = first(rest)?;
     let timing = if code == le_subevent::CONNECTION_COMPLETE {
-        first::<le::LeConnectionComplete>(params).map(|e| (e.conn_interval, e.peripheral_latency, e.supervision_timeout))
+        first::<le::LeConnectionComplete>(params)
+            .map(|e| (e.conn_interval, e.peripheral_latency, e.supervision_timeout))
     } else {
-        first::<le::LeEnhancedConnectionComplete>(params).map(|e| (e.conn_interval, e.peripheral_latency, e.supervision_timeout))
+        first::<le::LeEnhancedConnectionComplete>(params)
+            .map(|e| (e.conn_interval, e.peripheral_latency, e.supervision_timeout))
     };
     Some(Event::LeConnectionComplete {
         handle: link(handle)?,
         role,
         // An Enhanced event says 2 or 3 for an identity it resolved: still public or random.
-        peer: Address { kind: AddrKind::new(kind.as_raw() & 0x01), bytes: peer.into_inner() },
-        timing: timing.map(|(interval, latency, timeout)| ConnTiming {
-            conn_interval: interval.as_u16(),
-            peripheral_latency: latency,
-            supervision_timeout: timeout.as_u16(),
+        peer: Address { kind: AddrKind::new(kind.as_raw() & 0x01), addr: peer },
+        timing: timing.map(|(conn_interval, peripheral_latency, supervision_timeout)| ConnTiming {
+            conn_interval,
+            peripheral_latency,
+            supervision_timeout,
         }),
     })
 }
 
 /// One advertising report: what kind, who, the advertising data and the signal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Report<'a> {
     pub kind: LeAdvEventKind,
     pub address: Address,
+    /// The advertising data ([`ad_structures`]).
     pub data: &'a [u8],
+    /// In dBm; 127 when the controller could not measure it.
     pub rssi: i8,
 }
 
@@ -655,7 +747,10 @@ pub fn reports(data: &[u8]) -> impl Iterator<Item = Report<'_>> + '_ {
         at += 10 + len;
         Some(Report {
             kind,
-            address: Address { kind: AddrKind::new(head[1] & 0x01), bytes: [head[2], head[3], head[4], head[5], head[6], head[7]] },
+            address: Address {
+                kind: AddrKind::new(head[1] & 0x01),
+                addr: BdAddr([head[2], head[3], head[4], head[5], head[6], head[7]]),
+            },
             data: body,
             rssi: rssi.cast_signed(),
         })
@@ -689,7 +784,9 @@ pub mod ad {
 /// The name in advertising data, complete or shortened.
 #[must_use]
 pub fn ad_name(data: &[u8]) -> Option<&[u8]> {
-    ad_structures(data).find(|(t, _)| *t == ad::NAME_COMPLETE || *t == ad::NAME_SHORT).map(|(_, v)| v)
+    ad_structures(data)
+        .find(|(t, _)| *t == ad::NAME_COMPLETE || *t == ad::NAME_SHORT)
+        .map(|(_, v)| v)
 }
 
 /// The 16-bit service UUIDs in advertising data.
@@ -723,7 +820,9 @@ fn link(handle: u16) -> Option<ConnHandle> {
 
 /// `GATT_ATTRIBUTE_MODIFIED`: a peer wrote an attribute of the local GATT server.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct AttributeModified<'a> {
+    pub handle: ConnHandle,
     pub attr: u16,
     /// Bits 0-14 the offset, bit 15 "more to come" (a long write in pieces).
     pub offset: u16,
@@ -740,6 +839,7 @@ impl<'a> AttributeModified<'a> {
         }
         let len = usize::from(u16::from_le_bytes([params[6], params[7]])).min(params.len() - 8);
         Some(Self {
+            handle: connection_handle(params)?,
             attr: u16::from_le_bytes([params[2], params[3]]),
             offset: u16::from_le_bytes([params[4], params[5]]),
             data: &params[8..8 + len],
@@ -762,58 +862,51 @@ pub const RETURN_PARAMS_MAX: usize = 255 - 4;
 pub fn bonded_devices(params: &[u8]) -> impl Iterator<Item = Address> + '_ {
     let count = usize::from(params.first().copied().unwrap_or(0));
     params.get(1..).unwrap_or(&[]).as_chunks::<7>().0.iter().take(count).map(|e| {
-        let mut bytes = [0u8; 6];
-        bytes.copy_from_slice(&e[1..7]);
-        Address { kind: AddrKind::new(e[0] & 0x01), bytes }
+        let [kind, a0, a1, a2, a3, a4, a5] = *e;
+        Address { kind: AddrKind::new(kind & 0x01), addr: BdAddr([a0, a1, a2, a3, a4, a5]) }
     })
 }
 
-/// `0A:1B:2C:3D:4E:5F`, the most significant byte first, then ` (random)` for a random address,
-/// resolved (3) or not, as [`parse_address`] reads it back.
+/// `0A:1B:2C:3D:4E:5F`, the most significant byte first; the kind is not written.
 impl core::fmt::Display for Address {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let [b0, b1, b2, b3, b4, b5] = self.bytes;
-        write!(f, "{b5:02X}:{b4:02X}:{b3:02X}:{b2:02X}:{b1:02X}:{b0:02X}")?;
-        if self.kind.as_raw() & 0x01 != 0 {
-            f.write_str(" (random)")?;
-        }
-        Ok(())
+        let [b0, b1, b2, b3, b4, b5] = self.addr.into_inner();
+        write!(f, "{b5:02X}:{b4:02X}:{b3:02X}:{b2:02X}:{b1:02X}:{b0:02X}")
     }
-}
-
-/// An [`Address`] as its `Display` writes it, read back: colons or dashes, either case.
-#[must_use]
-pub fn parse_address(text: &str) -> Option<Address> {
-    let text = text.trim();
-    let (text, kind) = match text.strip_suffix("(random)") {
-        Some(rest) => (rest.trim_end(), AddrKind::RANDOM),
-        None => (text, AddrKind::PUBLIC),
-    };
-    let mut bytes = [0u8; 6];
-    let mut parts = text.split([':', '-']);
-    for i in (0..6).rev() {
-        let part = parts.next()?;
-        if part.len() != 2 || !part.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return None;
-        }
-        bytes[i] = u8::from_str_radix(part, 16).ok()?;
-    }
-    parts.next().is_none().then_some(Address { kind, bytes })
 }
 
 /// `GAP_PAIRING_COMPLETE`'s status: ST's own codes (`bluenrg1_events.h`), not HCI's.
-pub mod pairing_status {
-    pub const SUCCESS: u8 = 0x00;
-    pub const TIMEOUT: u8 = 0x01;
-    pub const FAILED: u8 = 0x02;
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PairingStatus(u8);
+
+impl PairingStatus {
+    pub const SUCCESS: Self = Self(0x00);
+    pub const TIMEOUT: Self = Self(0x01);
+    pub const FAILED: Self = Self(0x02);
     /// Encryption failed for a key the local device no longer holds.
-    pub const LTK_MISSING: u8 = 0x03;
+    pub const LTK_MISSING: Self = Self(0x03);
+
+    #[must_use]
+    pub const fn new(code: u8) -> Self {
+        Self(code)
+    }
+
+    #[must_use]
+    pub const fn into_inner(self) -> u8 {
+        self.0
+    }
+
+    #[must_use]
+    pub const fn is_success(self) -> bool {
+        self.0 == Self::SUCCESS.0
+    }
 }
 
-/// `GAP_PAIRING_COMPLETE`: status ([`pairing_status`]) and reason.
+/// `GAP_PAIRING_COMPLETE`: the status, and the SMP reason a pairing failed (Core Vol 3 Part H
+/// 3.5.5).
 #[must_use]
-pub fn pairing_complete(params: &[u8]) -> Option<(u8, u8)> {
-    Some((*params.get(2)?, *params.get(3)?))
+pub fn pairing_complete(params: &[u8]) -> Option<(PairingStatus, u8)> {
+    Some((PairingStatus(*params.get(2)?), *params.get(3)?))
 }
 
 /// The LE `ATT_MTU` before an exchange (Core Vol 3 Part G 5.2.1).
@@ -826,12 +919,6 @@ pub const ATT_HEADER_LEN: usize = 3;
 pub fn att_mtu(params: &[u8]) -> Option<u16> {
     let v = params.get(2..4)?;
     Some(u16::from_le_bytes([v[0], v[1]]))
-}
-
-/// A connection interval in 1.25 ms units as hundredths of a millisecond.
-#[must_use]
-pub fn interval_hundredths_ms(units: u16) -> u32 {
-    u32::from(units) * 125
 }
 
 /// A UUID as an attribute carries it: 16-bit, or 128-bit little-endian.
@@ -861,8 +948,11 @@ fn elements(params: &[u8], len_at: usize) -> &[u8] {
 
 /// A primary service from `ATT_READ_BY_GROUP_TYPE_RESP`: its handle range and UUID.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Service {
+    /// The first attribute handle in the service, its declaration.
     pub start: u16,
+    /// The last attribute handle in the service.
     pub end: u16,
     pub uuid: Uuid,
 }
@@ -883,9 +973,13 @@ pub fn services(params: &[u8]) -> impl Iterator<Item = Service> + '_ {
 
 /// A characteristic declaration from `ATT_READ_BY_TYPE_RESP`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Characteristic {
+    /// The declaration's attribute handle.
     pub declaration: u16,
+    /// A bitmask of [`props`].
     pub properties: u8,
+    /// The value's attribute handle.
     pub value: u16,
     pub uuid: Uuid,
 }
@@ -976,13 +1070,15 @@ pub fn gap_proc_complete(params: &[u8]) -> Option<(u8, BleStatus)> {
 /// `L2CAP_CONNECTION_UPDATE_REQ`: a peripheral asks the central for an interval range, a
 /// latency and a timeout; the answer echoes the identifier.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct L2capUpdateRequest {
     pub handle: ConnHandle,
     pub identifier: u8,
-    pub interval_min: u16,
-    pub interval_max: u16,
+    pub interval_min: Duration<1_250>,
+    pub interval_max: Duration<1_250>,
+    /// Connection events the peripheral may skip.
     pub latency: u16,
-    pub timeout: u16,
+    pub timeout: Duration<10_000>,
 }
 
 impl L2capUpdateRequest {
@@ -992,13 +1088,21 @@ impl L2capUpdateRequest {
     pub fn decode(params: &[u8]) -> Option<Self> {
         let p = params.get(..13)?;
         let at = |i: usize| u16::from_le_bytes([p[i], p[i + 1]]);
-        Some(Self { handle: connection_handle(p)?, identifier: p[2], interval_min: at(5), interval_max: at(7), latency: at(9), timeout: at(11) })
+        Some(Self {
+            handle: connection_handle(p)?,
+            identifier: p[2],
+            interval_min: Duration::from_u16(at(5)),
+            interval_max: Duration::from_u16(at(7)),
+            latency: at(9),
+            timeout: Duration::from_u16(at(11)),
+        })
     }
 }
 
 /// `L2CAP_CONNECTION_UPDATE_RESP`: the central's answer to the local device's parameter request
 /// (Core Specification, Vol 3, Part A, 4.21).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct L2capUpdateResponse {
     pub handle: ConnHandle,
     pub result: u16,

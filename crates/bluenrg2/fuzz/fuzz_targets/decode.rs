@@ -3,12 +3,13 @@
 
 #![no_main]
 
-use libfuzzer_sys::fuzz_target;
 use bluenrg2::{
-    ad_name, ad_uuid128s, ad_uuid16s, att_mtu, characteristics, descriptors, gap_proc_complete, gatt_error,
-    notification, numeric_comparison, packet_len, packet_whole, pairing_complete, parse, gatt_proc_complete, read_value,
-    reports, service_range, services, AttributeModified, Event, L2capUpdateRequest, L2capUpdateResponse,
+    ad_name, ad_uuid128s, ad_uuid16s, att_mtu, characteristics, descriptors, gap_proc_complete,
+    gatt_error, gatt_proc_complete, notification, numeric_comparison, packet_len, packet_whole,
+    pairing_complete, parse, read_value, reports, service_range, services, AttributeModified,
+    Event, L2capUpdateRequest, L2capUpdateResponse,
 };
+use libfuzzer_sys::fuzz_target;
 
 fn within(outer: &[u8], inner: &[u8]) {
     let (o, i) = (outer.as_ptr_range(), inner.as_ptr_range());
@@ -54,13 +55,18 @@ fuzz_target!(|read: &[u8]| {
     let mut at = 0;
     while at < read.len() {
         let rest = &read[at..];
-        let len = packet_len(rest);
-        assert!(len > 0 && len <= rest.len());
-        let packet = &rest[..len];
+        let Some(packet) = packet_len(rest).and_then(|len| rest.get(..len)) else {
+            // Nothing says where a packet ends, so the read ends.
+            assert!(!packet_whole(rest));
+            assert_eq!(parse(rest), Event::Malformed(rest));
+            break;
+        };
+        assert!(!packet.is_empty());
         match parse(rest) {
             Event::Malformed(p) => within(rest, p),
+            Event::Acl { data, .. } => within(packet, data),
             Event::CommandComplete { return_param_bytes, .. } => within(packet, return_param_bytes),
-            Event::LeAdvertisingReport { data } => {
+            Event::LeAdvertisingReport { data, .. } => {
                 within(packet, data);
                 advertising(data);
             }
@@ -72,15 +78,13 @@ fuzz_target!(|read: &[u8]| {
             Event::LeConnectionComplete { timing, .. } => {
                 assert!(packet.len() >= 15);
                 // The interval comes only with a whole event (Core Vol 4 Part E §7.7.65.1, §7.7.65.10).
-                assert!(timing.is_none() || packet.len() >= if packet[3] == 0x01 { 22 } else { 34 });
+                assert!(
+                    timing.is_none() || packet.len() >= if packet[3] == 0x01 { 22 } else { 34 }
+                );
             }
             Event::LeConnectionUpdateComplete { .. } => assert!(packet.len() >= 13),
             _ => assert!(packet_whole(rest)),
         }
-        // A packet cut short ends the read.
-        if !packet_whole(rest) {
-            break;
-        }
-        at += len;
+        at += packet.len();
     }
 });

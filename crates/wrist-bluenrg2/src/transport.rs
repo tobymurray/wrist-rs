@@ -27,7 +27,8 @@ pub const UNREADABLE_RUN: u32 = 3;
 pub struct Counts {
     /// Reads that returned bytes.
     pub reads: AtomicU32,
-    /// Packets whose own length ran past the end of their read, dropped with what followed.
+    /// Packets whose own length ran past the end of their read, or that started with no packet
+    /// header, dropped with what followed.
     pub cut_short: AtomicU32,
     /// Reads and writes after which IRQ did not fall within [`IRQ_LOW_WITHIN_MS`].
     pub irq_stuck_read: AtomicU32,
@@ -182,21 +183,21 @@ async fn within<F: core::future::Future>(delay: &mut impl DelayNs, ms: u32, f: F
     matches!(select(f, delay.delay_ms(ms)).await, Either::First(_))
 }
 
-/// The whole packets in one read, in order; one cut short by the read's end ends them, counted.
+/// The whole packets in one read, in order; one cut short by the read's end, or bytes that start
+/// no packet, end them, counted.
 pub fn packets<'a>(read: &'a [u8], counts: &'a Counts) -> impl Iterator<Item = &'a [u8]> + 'a {
     let mut at = 0;
     core::iter::from_fn(move || {
         let rest = &read[at..];
-        let len = bluenrg2::packet_len(rest);
-        if len == 0 {
+        if rest.is_empty() {
             return None;
         }
-        if !bluenrg2::packet_whole(rest) {
+        let Some(packet) = bluenrg2::packet_len(rest).and_then(|len| rest.get(..len)) else {
             bump(&counts.cut_short);
             at = read.len();
             return None;
-        }
-        at += len;
-        Some(&rest[..len])
+        };
+        at += packet.len();
+        Some(packet)
     })
 }

@@ -68,8 +68,8 @@ use bluenrg2::opcode::{
     ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_REQ, HCI_LE_RAND, HCI_READ_LOCAL_VERSION, HCI_SET_EVENT_MASK,
 };
 use bluenrg2::{
-    adv_filter_policy, adv_type, boot_reason, config, enc_key_size, event_code, evt_mask, gap_role, pairing_status, permission, privacy, props, service_type,
-    uuid_type, value_length, vendor, AddrKind, AttributeModified, Event, BleStatus, L2capUpdateResponse, ATT_HEADER_LEN,
+    adv_filter_policy, adv_type, config, enc_key_size, event_code, evt_mask, gap_role, permission, privacy, props, service_type,
+    uuid_type, value_length, vendor, AddrKind, AttributeModified, BdAddr, BootReason, Event, BleStatus, L2capUpdateResponse, PairingStatus, ATT_HEADER_LEN,
     MAX_COMMAND, RETURN_PARAMS_MAX,
 };
 use wrist_bluenrg2::transport::{self, Counts, Read, Transport};
@@ -306,7 +306,7 @@ pub fn command(args: &[u8], uart: Uart) {
         b"bonds" => Request::Bonds,
         b"forget" => Request::Forget,
         rest if rest.starts_with(b"forget ") => {
-            match core::str::from_utf8(&rest[7..]).ok().and_then(bluenrg2::parse_address) {
+            match core::str::from_utf8(&rest[7..]).ok().and_then(wrist_bluenrg2::console::parse_address) {
                 Some(addr) => Request::ForgetOne(addr),
                 None => return uart.write_line("[ble] usage: ble forget [<address>, as `ble bonds` lists it]"),
             }
@@ -395,7 +395,7 @@ pub fn write_status(uart: Uart) {
         (_, Power::Battery) => "battery (forced)",
     });
     uart.write_str(", address ");
-    write_address(uart, bluenrg2::Address { kind: AddrKind::RANDOM, bytes: ADDRESS.each_ref().map(|b| b.load(Ordering::Relaxed)) });
+    write_address(uart, bluenrg2::Address { kind: AddrKind::RANDOM, addr: BdAddr(ADDRESS.each_ref().map(|b| b.load(Ordering::Relaxed))) });
     uart.write_str(", bonded ");
     uart.write_u32(u32::from(BONDED.load(Ordering::Relaxed)));
     let n = |label: &str, v: &AtomicU32| {
@@ -1095,7 +1095,7 @@ impl Link<'_> {
             return;
         }
         self.uart.write_str("[ble] up: ST stack, address ");
-        write_address(self.uart, bluenrg2::Address { kind: AddrKind::RANDOM, bytes: addr });
+        write_address(self.uart, bluenrg2::Address { kind: AddrKind::RANDOM, addr: BdAddr(addr) });
         self.uart.write_line(if central { ", peripheral and central" } else { ", peripheral only" });
         self.list_bonds(false).await;
         self.advertise().await;
@@ -1406,7 +1406,7 @@ impl Link<'_> {
         let keep = self.peer.is_some_and(|peer| wrist_bluenrg2::bonds::another_bond(params, addr, peer));
         let mut p = [0u8; 7];
         p[0] = addr.kind.as_raw();
-        p[1..].copy_from_slice(&addr.bytes);
+        p[1..].copy_from_slice(addr.addr.raw());
         match self.command(ACI_GAP_REMOVE_BONDED_DEVICE, &p).await {
             Ok(r) if r.status == 0 => {
                 self.uart.write_str("[ble] forgot ");
@@ -1440,7 +1440,7 @@ impl Link<'_> {
 
     async fn terminate(&mut self) {
         let h = CONN_HANDLE.load(Ordering::Relaxed).to_le_bytes();
-        let _ = self.command(ACI_GAP_TERMINATE, &[h[0], h[1], bluenrg2::status::REMOTE_USER_TERMINATED]).await;
+        let _ = self.command(ACI_GAP_TERMINATE, &[h[0], h[1], BleStatus::REMOTE_USER_TERMINATED.into_inner()]).await;
     }
 
     /// A random six-digit passkey from the controller's own generator, shown on the console
@@ -1503,7 +1503,7 @@ impl Link<'_> {
             return Err("not sent: the chip restarted");
         }
         let mut packet = [0u8; MAX_COMMAND];
-        let n = bluenrg2::command(opcode, params, &mut packet);
+        let n = bluenrg2::command(opcode, &[params], &mut packet).ok_or("not sent: parameters past 255 bytes")?;
         #[cfg(feature = "ble-trace")]
         trace::packet(trace::Dir::ToChip, &packet[..n]);
         self.waiting_for = Some(opcode);
@@ -1558,7 +1558,7 @@ impl Link<'_> {
         #[cfg(feature = "ble-trace")]
         trace::packet(trace::Dir::FromChip, p);
         match bluenrg2::parse(p) {
-            Event::CommandComplete { cmd_opcode, status: Some(status), return_param_bytes: params } => {
+            Event::CommandComplete { cmd_opcode, status: Some(status), return_param_bytes: params, .. } => {
                 if self.waiting_for == Some(cmd_opcode) {
                     let mut reply = Reply { status: status.into_inner(), params: [0; RETURN_PARAMS_MAX], len: params.len().min(RETURN_PARAMS_MAX) };
                     reply.params[..reply.len].copy_from_slice(&params[..reply.len]);
@@ -1566,7 +1566,7 @@ impl Link<'_> {
                 }
             }
             Event::CommandComplete { status: None, .. } => {}
-            Event::CommandStatus { cmd_opcode, status } => {
+            Event::CommandStatus { cmd_opcode, status, .. } => {
                 if self.waiting_for == Some(cmd_opcode) {
                     self.reply = Some(Reply { status: status.into_inner(), params: [0; RETURN_PARAMS_MAX], len: 0 });
                 }
@@ -1577,7 +1577,7 @@ impl Link<'_> {
                 self.pair_ask.connected(Instant::now().as_ticks(), embassy_time::TICK_HZ);
                 self.interval_ask.connected();
                 if let Some(t) = timing {
-                    INTERVAL.store(t.conn_interval, Ordering::Relaxed);
+                    INTERVAL.store(t.conn_interval.as_u16(), Ordering::Relaxed);
                     LATENCY.store(t.peripheral_latency, Ordering::Relaxed);
                 }
                 set_state(STATE_CONNECTED);
@@ -1596,10 +1596,10 @@ impl Link<'_> {
                 CONNECT_FAILURES.fetch_add(1, Ordering::Relaxed);
             }
             Event::LeConnectionUpdateComplete { conn_interval: iv, peripheral_latency: lat, .. } => {
-                INTERVAL.store(iv, Ordering::Relaxed);
+                INTERVAL.store(iv.as_u16(), Ordering::Relaxed);
                 LATENCY.store(lat, Ordering::Relaxed);
                 self.uart.write_str("[ble] connection interval ");
-                write_interval(self.uart, iv);
+                write_interval(self.uart, iv.as_u16());
                 self.uart.write_str(", latency ");
                 self.uart.write_u32(u32::from(lat));
                 self.uart.write_line("");
@@ -1636,10 +1636,10 @@ impl Link<'_> {
             Event::LeDataLengthChange { max_tx_octets, max_tx_time, max_rx_octets, max_rx_time, .. } => {
                 self.data_length((max_tx_octets, max_tx_time), (max_rx_octets, max_rx_time));
             }
-            Event::LeAdvertisingReport { data } => self.scanner.advertising(data, self.uart),
-            Event::Vendor { code, params } => self.vendor(code, params),
-            Event::LeUnknown { subevent_code } => self.unknown("[ble] LE event ", event_code::LE_META, subevent_code),
-            Event::Unknown { code } => self.unknown("[ble] event ", code, 0),
+            Event::LeAdvertisingReport { data, .. } => self.scanner.advertising(data, self.uart),
+            Event::Vendor { code, params, .. } => self.vendor(code, params),
+            Event::LeUnknown { subevent_code, .. } => self.unknown("[ble] LE event ", event_code::LE_META, subevent_code),
+            Event::Unknown { code, .. } => self.unknown("[ble] event ", code, 0),
             _ => {
                 UNKNOWN.fetch_add(1, Ordering::Relaxed);
             }
@@ -1680,21 +1680,21 @@ impl Link<'_> {
 
     /// `ACI_BLUE_INITIALIZED`: the boot a reset waits for, or a restart nobody asked for, which
     /// leaves nothing of the link or the configuration; [`Link::serve`] brings the chip up again.
-    fn initialized(&mut self, reason: u8) {
+    fn initialized(&mut self, reason: BootReason) {
         let boot = self.restarts.initialized(self.booting, reason, Instant::now().as_ticks(), embassy_time::TICK_HZ);
         let restarted = matches!(boot, Boot::Restarted | Boot::KeptRestarting);
         self.uart.write_str(if restarted { "[ble] the chip restarted by itself, reason " } else { "[ble] chip initialised, reason " });
-        self.uart.write_hex8(reason);
+        self.uart.write_hex8(reason.into_inner());
         self.uart.write_str(" (");
-        self.uart.write_str(boot_reason::describe(reason));
+        self.uart.write_str(wrist_bluenrg2::console::boot_reason(reason));
         if !restarted {
             self.booting = false;
             self.boot = Some(boot);
             return self.uart.write_line(")");
         }
-        self.uart.write_line(if boot_reason::updater(reason) { "); resetting it out of the updater" } else { "); resetting it" });
+        self.uart.write_line(if reason.is_updater() { "); resetting it out of the updater" } else { "); resetting it" });
         RESTARTS.fetch_add(1, Ordering::Relaxed);
-        LAST_RESTART.store(reason, Ordering::Relaxed);
+        LAST_RESTART.store(reason.into_inner(), Ordering::Relaxed);
         set_state(STATE_STARTING);
         self.link_gone();
         clear_out(self.outbox.discard());
@@ -1735,7 +1735,7 @@ impl Link<'_> {
     /// A central wrote one of our attributes: the console's RX (bytes for the parser or a
     /// transfer) or TX's CCCD (the mirror on or off).
     fn attribute_modified(&mut self, write: AttributeModified) {
-        let AttributeModified { attr, offset, data } = write;
+        let AttributeModified { attr, offset, data, .. } = write;
         let Some((_, rx, tx)) = self.nus else {
             return;
         };
@@ -1765,7 +1765,8 @@ impl Link<'_> {
     fn vendor(&mut self, ecode: u16, rest: &[u8]) {
         let handle = bluenrg2::connection_handle;
         match ecode {
-            vendor::BLUE_INITIALIZED => self.initialized(bluenrg2::blue_initialized(rest)),
+            // A boot without its reason is a boot all the same.
+            vendor::BLUE_INITIALIZED => self.initialized(bluenrg2::blue_initialized(rest).unwrap_or(BootReason::new(0))),
             vendor::HAL_EVENTS_LOST => self.uart.write_line("[ble] the chip dropped events: the host read too slowly"),
             vendor::GAP_PASS_KEY_REQ if handle(rest).is_some() => {
                 self.pair_ask.settled();
@@ -1782,22 +1783,22 @@ impl Link<'_> {
                 self.uart.write_line(", `ble yes` on the USB console (`ble no` rejects)");
             }
             vendor::GAP_PAIRING_COMPLETE if rest.len() >= 4 => {
-                let (status, reason) = bluenrg2::pairing_complete(rest).unwrap_or_default();
-                LAST_PAIRING.store(status.saturating_add(1), Ordering::Relaxed);
+                let (status, reason) = bluenrg2::pairing_complete(rest).unwrap_or((PairingStatus::SUCCESS, 0));
+                LAST_PAIRING.store(status.into_inner().saturating_add(1), Ordering::Relaxed);
                 LAST_PAIRING_REASON.store(reason, Ordering::Relaxed);
                 self.pair_ask.settled();
                 clear_prompt();
-                if status == pairing_status::SUCCESS {
+                if status.is_success() {
                     old_key(OldKey::clear);
                     self.uart.write_line("[ble] paired");
                     self.recount_bonds = true;
                 } else {
-                    if let (pairing_status::LTK_MISSING, Some(peer)) = (status, self.peer) {
+                    if let (PairingStatus::LTK_MISSING, Some(peer)) = (status, self.peer) {
                         old_key(|k| k.refused(peer));
                     }
                     self.interval_ask.pairing_failed();
                     self.uart.write_str("[ble] pairing failed: status ");
-                    self.uart.write_hex8(status);
+                    self.uart.write_hex8(status.into_inner());
                     self.uart.write_str(" (1 timeout, 2 failed, 3/4 LTK missing), reason ");
                     self.uart.write_hex8(reason);
                     self.uart.write_line(" (4 confirm failed, B DHKey check, C comparison refused)");
@@ -1869,7 +1870,7 @@ fn write_address(uart: Uart, a: bluenrg2::Address) {
             Ok(())
         }
     }
-    let _ = write!(Out(uart), "{a}");
+    let _ = write!(Out(uart), "{}", wrist_bluenrg2::console::address(a));
 }
 
 fn clear_prompt() {
@@ -1879,7 +1880,7 @@ fn clear_prompt() {
 
 /// A connection interval in 1.25 ms units as milliseconds, `48.75 ms`.
 fn write_interval(uart: Uart, units: u16) {
-    let hundredths = bluenrg2::interval_hundredths_ms(units);
+    let hundredths = u32::from(units) * 125;
     uart.write_u32(hundredths / 100);
     uart.write_str(if hundredths % 100 < 10 { ".0" } else { "." });
     uart.write_u32(hundredths % 100);

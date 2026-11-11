@@ -186,7 +186,7 @@ impl Link<'_> {
     /// resumes when the scan is over.
     async fn while_advertising(&mut self, opcode: u16, params: &[u8]) -> Result<u8, &'static str> {
         let status = self.command(opcode, params).await?.status;
-        if status != bluenrg2::status::COMMAND_DISALLOWED || STATE.load(Ordering::Relaxed) != STATE_ADVERTISING {
+        if status != BleStatus::COMMAND_DISALLOWED.into_inner() || STATE.load(Ordering::Relaxed) != STATE_ADVERTISING {
             return Ok(status);
         }
         if self.command(ACI_GAP_SET_NON_DISCOVERABLE, &[]).await.is_ok() {
