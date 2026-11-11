@@ -1,11 +1,21 @@
 //! The BlueNRG-2's packets as bytes, without the SPI bus or the link's state.
 //!
-//! ST's network-coprocessor firmware speaks HCI with ST's vendor commands
-//! (OGF 0x3F, the ACI) and vendor events (event code 0xFF with a 16-bit
-//! code), over SPI with a five-byte header each way. This crate holds the
-//! numbers (from ST's public BlueNRG-1/2 ACI documentation), builds command
-//! packets, measures packets in a read, and decodes every packet into an
-//! event ([`parse`], then the vendor payload decoders).
+//! ST's network-coprocessor firmware speaks HCI with ST's vendor commands (OGF 0x3F, the ACI) and
+//! vendor events (event code 0xFF with a 16-bit code). This crate holds the numbers from ST's
+//! BlueNRG-1/2 ACI documentation, builds command packets ([`command`]), measures packets in a read
+//! ([`packet_len`]), and decodes each into an [`Event`] ([`parse`]).
+//!
+//! # The SPI exchange
+//!
+//! The bus is yours to drive; ST's X-CUBE-BLE2 `hci_tl_interface.c` (`HCI_TL_SPI_Send`,
+//! `HCI_TL_SPI_Receive`) is the reference. With CS low, the host clocks a five-byte header out
+//! while the chip clocks its answer in ([`header_sizes`]).
+//!
+//! - **Write**: CS low, then wait for IRQ to rise; exchange [`HEADER_WRITE`]; if the room the chip
+//!   answers holds the whole packet, clock the packet out, else send nothing and try again later;
+//!   CS high.
+//! - **Read**, when IRQ is high: CS low; exchange [`HEADER_READ`]; clock in as many bytes as the
+//!   chip answers waiting; CS high. Those bytes are one or more packets back to back.
 
 #![no_std]
 
@@ -23,13 +33,13 @@ use bt_hci::data::AclPacket;
 use bt_hci::param::Status;
 use bt_hci::FromHciBytes;
 
-/// The SPI header the host sends to write (`0A`) or read (`0B`); the chip
-/// answers in the same five bytes.
+/// The SPI header the host sends to write a packet; the chip answers in the same five bytes.
 pub const HEADER_WRITE: [u8; 5] = [0x0A, 0, 0, 0, 0];
+/// The SPI header the host sends to read; the chip answers in the same five bytes.
 pub const HEADER_READ: [u8; 5] = [0x0B, 0, 0, 0, 0];
 
-/// The chip's answer to a header: room in its write buffer, and bytes
-/// waiting to be read. The BlueNRG-2 sends no ready byte, only these.
+/// The chip's answer to a header, in bytes: the room in its write buffer, and what waits to be
+/// read. ST's driver reads nothing else from the answer.
 #[must_use]
 pub fn header_sizes(header: &[u8; 5]) -> (usize, usize) {
     (
@@ -493,7 +503,7 @@ pub enum Event<'a> {
     /// other than success a refresh that failed.
     #[non_exhaustive]
     EncryptionKeyRefresh { handle: ConnHandle, status: BleStatus },
-    /// LE Data Length Change (7.7.65.7): the largest payload each way, octets and microseconds.
+    /// LE Data Length Change (7.7.65.7): the largest payload each way, in octets and in microseconds on air.
     #[non_exhaustive]
     LeDataLengthChange { handle: ConnHandle, max_tx_octets: u16, max_tx_time: u16, max_rx_octets: u16, max_rx_time: u16 },
     /// LE Advertising Report (7.7.65.2): one or more reports ([`reports`]).
@@ -673,7 +683,9 @@ fn connection_complete(code: u8, params: &[u8]) -> Option<Event<'_>> {
 pub struct Report<'a> {
     pub kind: LeAdvEventKind,
     pub address: Address,
+    /// The advertising data ([`ad_structures`]).
     pub data: &'a [u8],
+    /// In dBm; 127 when the controller could not measure it.
     pub rssi: i8,
 }
 
@@ -890,7 +902,9 @@ fn elements(params: &[u8], len_at: usize) -> &[u8] {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Service {
+    /// The first attribute handle in the service, its declaration.
     pub start: u16,
+    /// The last attribute handle in the service.
     pub end: u16,
     pub uuid: Uuid,
 }
@@ -913,8 +927,11 @@ pub fn services(params: &[u8]) -> impl Iterator<Item = Service> + '_ {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Characteristic {
+    /// The declaration's attribute handle.
     pub declaration: u16,
+    /// A bitmask of [`props`].
     pub properties: u8,
+    /// The value's attribute handle.
     pub value: u16,
     pub uuid: Uuid,
 }
