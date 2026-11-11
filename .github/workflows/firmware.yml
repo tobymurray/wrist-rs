@@ -30,17 +30,13 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - name: Install the pinned toolchain and pyelftools
+      - name: Install the pinned toolchain
         run: |
-          set -euo pipefail
           rustup toolchain install "$(jq -r .stable release/toolchain.json)" --profile minimal \
             --target thumbv8m.main-none-eabihf
-          python3 -m venv "$RUNNER_TEMP/venv"
-          "$RUNNER_TEMP/venv/bin/pip" install pyelftools==0.32
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: '"$RUNNER_TEMP/venv/bin/python" tools/test-release.py'
       - run: cargo test --locked --workspace
   lint:
     if: github.ref_type != 'tag'
@@ -50,10 +46,13 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - name: Install the pinned toolchain
+      - name: Install the pinned toolchain and pyelftools
         run: |
+          set -euo pipefail
           rustup toolchain install "$(jq -r .stable release/toolchain.json)" --profile minimal \
             --component clippy --target thumbv8m.main-none-eabihf
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install pyelftools==0.32
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
@@ -72,6 +71,8 @@ jobs:
           cargo clippy --locked --release ${features:+--features "$features"} -- -D warnings
           cargo clippy --locked --release -- -D warnings
           cargo clippy --locked --release --all-features -- -D warnings
+      # Here, where Cargo has already fetched the apps' crates for its metadata.
+      - run: '"$RUNNER_TEMP/venv/bin/python" tools/test-release.py'
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
