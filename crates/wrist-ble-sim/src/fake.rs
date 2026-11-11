@@ -459,7 +459,7 @@ impl Fake {
     pub fn snapshot(&self) -> Snapshot {
         let mut links = [None; MAX_LINKS];
         for (out, l) in links.iter_mut().zip(self.links.iter().flatten()) {
-            *out = Some(LinkStatus { link: l.handle, role: l.role, peer: self.peer_addr(l.peer) });
+            *out = Some(LinkStatus { link: l.handle, role: l.role, peer: self.peer_addr(l.peer), encrypted: Some(l.encrypted) });
         }
         Snapshot {
             at: self.now,

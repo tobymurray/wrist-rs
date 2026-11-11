@@ -512,7 +512,8 @@ impl<'a> Core<'a> {
     fn resync(&mut self, now: Instant, r: Result<Snapshot, Fault>) {
         let Ok(s) = r else { return };
         let mut mismatch = false;
-        let phone = s.links.iter().flatten().find(|l| l.role == LeConnRole::Peripheral).map(|l| l.link);
+        let found = s.links.iter().flatten().find(|l| l.role == LeConnRole::Peripheral);
+        let phone = found.map(|l| l.link);
         if phone != self.state.phone.link() {
             mismatch = true;
             self.forget_phone_params();
@@ -530,6 +531,9 @@ impl<'a> Core<'a> {
             // snapshot cannot show: what was known of its parameters is let go, so the link is
             // judged afresh by its next update or the ask.
             self.forget_phone_params();
+        }
+        if let Some(l) = found {
+            self.state.phone = self.state.phone.step(now, phone::Event::Resynced(l.link, l.encrypted)).0;
         }
         self.state.radio.peripheral = u8::from(phone.is_some());
         let gone = |l: ConnHandle| !s.links.iter().flatten().any(|k| k.link == l);
@@ -755,7 +759,7 @@ impl<'a> Core<'a> {
                     let left = deadline.since(now).0;
                     (left > 0).then(|| deadline - Millis((left.div_ceil(1_000) - 1) * 1_000))
                 }
-                Security::Secure => None,
+                Security::Secure | Security::Unknown => None,
             },
             Phone::Discoverable | Phone::Off if !self.state.radio.advertising.is_some_and(|a| a.connectable) => {
                 Some(self.state.silent_since + REACHABLE_GAP + Millis(1)).filter(|&t| t > now)

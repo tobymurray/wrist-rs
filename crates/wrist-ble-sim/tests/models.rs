@@ -219,7 +219,8 @@ struct PhoneModel {
     now: Instant,
     acts: u8,
     up: bool,
-    encrypted: bool,
+    /// `None` once a resync could not say.
+    encrypted: Option<bool>,
     told: u8,
     /// A numeric comparison showing since then, not yet answered by the machine.
     showing: Option<Instant>,
@@ -241,7 +242,7 @@ impl Model for Phones {
 
     fn init_states(&self) -> Vec<PhoneModel> {
         let phone = Phone::Off.step(Instant(0), phone::Event::RadioOn).0;
-        vec![PhoneModel { phone, now: Instant(0), acts: 0, up: false, encrypted: false, told: 0, showing: None }]
+        vec![PhoneModel { phone, now: Instant(0), acts: 0, up: false, encrypted: Some(false), told: 0, showing: None }]
     }
 
     fn actions(&self, s: &PhoneModel, out: &mut Vec<PhoneAct>) {
@@ -262,6 +263,9 @@ impl Model for Phones {
                 phone::Event::BondLost(link()),
                 phone::Event::ParamsChanged(link()),
                 phone::Event::Answer(true),
+                phone::Event::Resynced(link(), Some(true)),
+                phone::Event::Resynced(link(), Some(false)),
+                phone::Event::Resynced(link(), None),
             ] {
                 out.push(PhoneAct::Event(e));
             }
@@ -287,12 +291,21 @@ impl Model for Phones {
         let (p, actions) = s.phone.step(now, e);
         n.phone = p;
         match e {
-            phone::Event::LinkUp(_) => (n.up, n.encrypted, n.told, n.showing) = (true, false, 0, None),
-            phone::Event::LinkDown(_) => (n.up, n.encrypted, n.showing) = (false, false, None),
+            phone::Event::LinkUp(_) => (n.up, n.encrypted, n.told, n.showing) = (true, Some(false), 0, None),
+            phone::Event::LinkDown(_) => (n.up, n.encrypted, n.showing) = (false, Some(false), None),
             phone::Event::Encryption(_, on) => {
-                n.encrypted = on;
+                n.encrypted = Some(on);
                 n.showing = n.showing.filter(|_| !on);
             }
+            phone::Event::Resynced(_, Some(on)) => {
+                // A link is never unencrypted once encrypted, so this one is new.
+                if !on && n.encrypted != Some(false) {
+                    n.told = 0;
+                }
+                n.encrypted = Some(on);
+                n.showing = n.showing.filter(|_| !on);
+            }
+            phone::Event::Resynced(_, None) if n.showing.is_none() => n.encrypted = None,
             phone::Event::Pairing(_, PairingStep::Numeric(_)) => n.showing = Some(now),
             phone::Event::Pairing(_, PairingStep::Failed) => n.showing = None,
             _ => {}
@@ -310,7 +323,10 @@ impl Model for Phones {
     fn properties(&self) -> Vec<Property<Self>> {
         vec![
             Property::always("secure only on an encrypted link", |_, s: &PhoneModel| {
-                !matches!(s.phone, Phone::Up(l) if l.security == Security::Secure) || (s.up && s.encrypted)
+                !matches!(s.phone, Phone::Up(l) if l.security == Security::Secure) || (s.up && s.encrypted == Some(true))
+            }),
+            Property::always("a link of unknown security is not asked for parameters", |_, s: &PhoneModel| {
+                !matches!(s.phone, Phone::Up(l) if l.security == Security::Unknown) || !s.phone.may_ask_params(s.now)
             }),
             Property::always("the lost bond told at most once a link", |_, s: &PhoneModel| s.told <= 1),
             Property::always("a comparison is answered by its deadline", |_, s: &PhoneModel| {

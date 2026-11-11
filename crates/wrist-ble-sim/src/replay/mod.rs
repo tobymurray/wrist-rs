@@ -210,7 +210,7 @@ impl Replay<'_> {
         if out.snapshot {
             let mut links = [None; MAX_LINKS];
             if let Some(link) = self.phone {
-                links[0] = Some(LinkStatus { link, role: LeConnRole::Peripheral, peer: wrist_ble::PeerAddr { kind: wrist_ble::AddrKind::RANDOM, addr: wrist_ble::BdAddr::new([0; 6]) } });
+                links[0] = Some(LinkStatus { link, role: LeConnRole::Peripheral, peer: wrist_ble::PeerAddr { kind: wrist_ble::AddrKind::RANDOM, addr: wrist_ble::BdAddr::new([0; 6]) }, encrypted: None });
             }
             let s = Snapshot { at: self.now, links, advertising: self.advertising, scanning: false, initiating: false, anchor: None };
             self.push(Who::Core, "snapshot".into());

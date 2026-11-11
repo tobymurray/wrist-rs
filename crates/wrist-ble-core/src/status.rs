@@ -43,7 +43,8 @@ pub enum PhoneStatus {
     Fault { cause: FaultCause, retry_at: Instant },
     Pairing { value: u32, left: Millis },
     Connected,
-    /// Connected, unencrypted, and still within the time a bonded phone takes to encrypt.
+    /// Connected, unencrypted and still within the time a bonded phone takes to encrypt, or not
+    /// known to be either.
     Securing,
     Unsecured { since: Millis },
     /// `None` within a planned gap in advertising.
@@ -121,7 +122,7 @@ fn phone_status(state: &State, now: Instant) -> PhoneStatus {
                 Security::Pairing { value, deadline, .. } => PhoneStatus::Pairing { value, left: deadline.since(now) },
                 Security::Secure => PhoneStatus::Connected,
                 Security::Unsecured if now.since(l.since) > ASK_TO_PAIR_AFTER => PhoneStatus::Unsecured { since: now.since(l.since) },
-                Security::Unsecured => PhoneStatus::Securing,
+                Security::Unsecured | Security::Unknown => PhoneStatus::Securing,
             },
             Phone::Off | Phone::Discoverable => match state.radio.advertising {
                 Some(a) if a.connectable => PhoneStatus::Discoverable { interval_ms: Some(a.interval_min.as_millis()) },

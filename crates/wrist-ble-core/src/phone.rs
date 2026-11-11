@@ -49,6 +49,8 @@ pub enum Security {
     /// Until `deadline` the comparison waits for an answer; once answered, the outcome.
     Pairing { value: u32, deadline: Instant, answered: bool },
     Secure,
+    /// A resync found the link and the chip could not say whether it is encrypted.
+    Unknown,
 }
 
 /// Whether this device may ask the phone for parameters: only once the link is encrypted, or its
@@ -69,6 +71,8 @@ pub enum Event {
     Pairing(ConnHandle, PairingStep),
     BondLost(ConnHandle),
     ParamsChanged(ConnHandle),
+    /// A resync found the link, encrypted or not, or `None` when the chip could not say.
+    Resynced(ConnHandle, Option<bool>),
     /// The user's answer to a numeric comparison.
     Answer(bool),
     Tick,
@@ -107,17 +111,7 @@ impl Phone {
         let next = match (self, event) {
             (_, Event::RadioOff) => Phone::Off,
             (Phone::Off, Event::RadioOn) => Phone::Discoverable,
-            (Phone::Discoverable, Event::LinkUp(link)) => Phone::Up(PhoneLink {
-                link,
-                since: now,
-                security: Security::Unsecured,
-                params_at: now,
-                ask_pair: Some(now + ASK_TO_PAIR_AFTER),
-                params: Params::Held,
-                bond_lost: false,
-                pairing_failed: false,
-                told_bond_lost: false,
-            }),
+            (Phone::Discoverable, Event::LinkUp(link)) => Phone::Up(PhoneLink::new(link, now)),
             (Phone::Up(l), Event::LinkDown(id)) if l.link == id => Phone::Discoverable,
             (Phone::Up(mut l), e) => {
                 l.on(now, e, &mut out);
@@ -164,18 +158,51 @@ impl Phone {
 }
 
 impl PhoneLink {
+    /// Held, and asked to pair if it stays unencrypted.
+    fn new(link: ConnHandle, now: Instant) -> Self {
+        PhoneLink {
+            link,
+            since: now,
+            security: Security::Unsecured,
+            params_at: now,
+            ask_pair: Some(now + ASK_TO_PAIR_AFTER),
+            params: Params::Held,
+            bond_lost: false,
+            pairing_failed: false,
+            told_bond_lost: false,
+        }
+    }
+
     fn on(&mut self, now: Instant, event: Event, out: &mut Actions) {
         let link = self.link;
         match event {
             Event::Encryption(id, on) if id == link => {
                 if on {
-                    self.security = Security::Secure;
-                    self.ask_pair = None;
-                    self.params = Params::Open;
+                    self.secure();
                 } else {
+                    if self.security == Security::Unknown {
+                        self.ask_pair = Some(now + ASK_TO_PAIR_AFTER);
+                        self.params = Params::Held;
+                    }
                     self.security = Security::Unsecured;
                 }
             }
+            // Lost events may have hidden an encryption, a re-pair or a new link on this handle.
+            Event::Resynced(id, encrypted) if id == link => match encrypted {
+                Some(true) => self.secure(),
+                // A link is never unencrypted once encrypted, so one found so is new.
+                Some(false) => {
+                    if matches!(self.security, Security::Secure | Security::Unknown) {
+                        *self = PhoneLink::new(link, now);
+                    }
+                }
+                None if matches!(self.security, Security::Pairing { .. }) => {}
+                None => {
+                    self.security = Security::Unknown;
+                    self.ask_pair = None;
+                    self.params = Params::Held;
+                }
+            },
             Event::Pairing(id, step) if id == link => match step {
                 PairingStep::Numeric(value) => {
                     self.security = Security::Pairing { value, deadline: now + NUMERIC_DEADLINE, answered: false };
@@ -213,6 +240,12 @@ impl PhoneLink {
             }
             _ => {}
         }
+    }
+
+    fn secure(&mut self) {
+        self.security = Security::Secure;
+        self.ask_pair = None;
+        self.params = Params::Open;
     }
 
     fn fail_pairing(&mut self, out: &mut Actions) {
