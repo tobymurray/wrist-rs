@@ -1,15 +1,23 @@
 # The release build image (release/README.md, "Moving the image forward").
 
 # The GNU Arm toolchain the UNA SDK builds with, by digest because a tag can be pushed again.
+# Unnamed, as the one base toolchain.yml's mirror job copies.
 FROM xanderhendriks/stm32cubeide:16.0@sha256:7e07c508e3944def22eaabe822eaf902a2ba4fbb38a3ce24d6ff874f9f04c447
 
+# The rest of the IDE stays behind; the toolchain keeps its path.
+FROM ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852 AS build
+ARG GNU_TOOLS=/opt/st/stm32cubeide_1.19.0/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.linux64_1.0.0.202410170706/tools
+COPY --from=0 ${GNU_TOOLS} ${GNU_TOOLS}
+# The base's CA bundle, for apt to reach the snapshot before ca-certificates is installed.
+COPY --from=0 /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+
 # Ubuntu's archive as it stood at this moment (snapshot.ubuntu.com), so that apt resolves
-# the same package versions whenever the image is built.
+# the same package versions whenever the image is built. gcc links Rust's build scripts.
 ARG UBUNTU_SNAPSHOT=20261020T000000Z
 RUN echo "APT::Snapshot \"${UBUNTU_SNAPSHOT}\";" > /etc/apt/apt.conf.d/50snapshot \
  && apt-get update \
  && apt-get install -y --no-install-recommends \
-      git curl ca-certificates cmake make \
+      git curl ca-certificates cmake make gcc libc6-dev \
       python3 python3-pyelftools python3-pil \
  && rm -rf /var/lib/apt/lists/*
 
