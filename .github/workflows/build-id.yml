@@ -1,0 +1,42 @@
+name: Build ID
+# tools/test-build-id.py builds the image several ways, so it runs when what it tests changes.
+on:
+  pull_request:
+    paths:
+      - apps/standalone-boot/.cargo/config.toml
+      - apps/standalone-boot/build.rs
+      - apps/standalone-boot/Cargo.lock
+      - apps/standalone-boot/Cargo.toml
+      - apps/standalone-boot/memory.x
+      - apps/standalone-boot/src/console.rs
+      - apps/standalone-boot/src/version.rs
+      - release/build-inputs.txt
+      - release/toolchain.json
+      - rust-toolchain.toml
+      - tools/firmware_build.py
+      - tools/test-build-id.py
+      - .github/workflows/build-id.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build-id:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain, an objcopy and pyelftools
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$(jq -r .stable release/toolchain.json)" --profile minimal \
+            --component llvm-tools --target thumbv8m.main-none-eabihf
+          echo "$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/bin" >> "$GITHUB_PATH"
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install pyelftools==0.32
+      - name: Build the image several ways and check each build's ID
+        run: '"$RUNNER_TEMP/venv/bin/python" tools/test-build-id.py'

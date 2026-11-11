@@ -380,8 +380,6 @@ def main():
     ap.add_argument('--container-id', default='native-uncontainerized')
     ap.add_argument('--allow-dirty', action='store_true', help='local candidates only')
     ap.add_argument('--skip-checks', action='store_true', help='local iteration only; recorded')
-    ap.add_argument('--test-build-id', action='store_true',
-                    help='also run tools/test-build-id.py, which builds the image several ways')
     a = ap.parse_args()
     require(re.fullmatch(r'\d{1,3}\.\d{1,3}\.\d{1,3}(?:-[A-Za-z0-9][A-Za-z0-9.-]*)?', a.version), 'unsafe version')
     require(all(int(x) <= 255 for x in a.version.split('-')[0].split('.')), 'version byte overflow')
@@ -444,8 +442,6 @@ def main():
         for features in [[], ['--all-features']]:
             execute('cargo', 'clippy', '--locked', '--release', *features, '--', '-D', 'warnings',
                     cwd=ROOT/'apps'/'standalone-boot', env={k: v for k, v in env.items() if k != 'WRIST_RELEASE_BUILD_ID'})
-    if a.test_build_id:
-        execute(sys.executable, ROOT/'tools/test-build-id.py')
     first = user / 'first-install/Apps/ImageInstaller'
     first.mkdir(parents=True)
     firmware_build.combine(execute, env, user / 'loader.bin', user / 'app.bin', first / 'image.bin')
