@@ -113,9 +113,9 @@ jobs:
             cargo-home/registry/index
             cargo-home/registry/cache
             cargo-home/git/db
-          key: firmware-v2-${{ runner.os }}-${{ hashFiles('source/Cargo.lock', 'source/apps/standalone-boot/Cargo.lock', 'source/apps/wrist-loader/Cargo.lock', 'source/release/Dockerfile', 'source/release/toolchain.json') }}
+          key: firmware-v3-${{ runner.os }}-${{ hashFiles('source/Cargo.lock', 'source/apps/standalone-boot/Cargo.lock', 'source/apps/wrist-loader/Cargo.lock', 'source/release/Dockerfile', 'source/release/toolchain.json') }}
           restore-keys: |
-            firmware-v2-${{ runner.os }}-
+            firmware-v3-${{ runner.os }}-
       - name: Build, lint, test and package in the pinned build image
         env:
           REF_TYPE: ${{ github.ref_type }}

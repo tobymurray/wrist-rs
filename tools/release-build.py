@@ -438,10 +438,12 @@ def main():
         copy(map_path, debug / (bin_name + '.map'))
     if not a.skip_checks:
         # The image with no features and with all of them stays clean too, whatever the release
-        # pins; the release ID is not theirs.
+        # pins; the release ID is not theirs. They share the build's build-script runs, so they
+        # keep its flags, or the next build reruns those and recompiles every crate above them.
+        app_env = firmware_build.with_map(env, map_dir / 'app.map')
         for features in [[], ['--all-features']]:
             execute('cargo', 'clippy', '--locked', '--release', *features, '--', '-D', 'warnings',
-                    cwd=ROOT/'apps'/'standalone-boot', env={k: v for k, v in env.items() if k != 'WRIST_RELEASE_BUILD_ID'})
+                    cwd=ROOT/'apps'/'standalone-boot', env={k: v for k, v in app_env.items() if k != 'WRIST_RELEASE_BUILD_ID'})
     first = user / 'first-install/Apps/ImageInstaller'
     first.mkdir(parents=True)
     firmware_build.combine(execute, env, user / 'loader.bin', user / 'app.bin', first / 'image.bin')
