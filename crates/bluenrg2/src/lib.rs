@@ -387,25 +387,29 @@ impl AuthenticationRequirement {
     }
 }
 
-/// An HCI command packet (`01`, opcode, length, parameters) into `out`;
-/// returns its length. Parameters past 255 bytes, or past `out`, are cut.
-pub fn command(opcode: u16, params: &[u8], out: &mut [u8]) -> usize {
-    let n = params.len().min(MAX_COMMAND_PARAMS).min(out.len().saturating_sub(COMMAND_HEADER_LEN));
-    if out.len() < COMMAND_HEADER_LEN {
-        return 0;
+/// An HCI command packet (`01`, opcode, length, then the parts of `params` in order) at the start
+/// of `out`, and its length; `None`, with `out` untouched, when the parameters pass 255 bytes or the
+/// packet passes `out`.
+#[must_use]
+pub fn command(opcode: u16, params: &[&[u8]], out: &mut [u8]) -> Option<usize> {
+    let len: usize = params.iter().map(|p| p.len()).sum();
+    let len_byte = u8::try_from(len).ok()?;
+    let packet = out.get_mut(..COMMAND_HEADER_LEN + len)?;
+    let (header, mut rest) = packet.split_at_mut(COMMAND_HEADER_LEN);
+    let [lo, hi] = opcode.to_le_bytes();
+    header.copy_from_slice(&[packet::COMMAND, lo, hi, len_byte]);
+    for part in params {
+        let (here, after) = rest.split_at_mut(part.len());
+        here.copy_from_slice(part);
+        rest = after;
     }
-    out[0] = packet::COMMAND;
-    out[1..3].copy_from_slice(&opcode.to_le_bytes());
-    out[3] = u8::try_from(n).unwrap_or(0);
-    out[COMMAND_HEADER_LEN..COMMAND_HEADER_LEN + n].copy_from_slice(&params[..n]);
-    COMMAND_HEADER_LEN + n
+    Some(COMMAND_HEADER_LEN + len)
 }
 
 /// The indicator, opcode and length before a command's parameters.
-pub const COMMAND_HEADER_LEN: usize = 4;
-pub const MAX_COMMAND_PARAMS: usize = u8::MAX as usize;
+const COMMAND_HEADER_LEN: usize = 4;
 /// The longest packet [`command`] writes.
-pub const MAX_COMMAND: usize = COMMAND_HEADER_LEN + MAX_COMMAND_PARAMS;
+pub const MAX_COMMAND: usize = COMMAND_HEADER_LEN + u8::MAX as usize;
 
 /// The length of the HCI packet at the start of `p`, clamped to `p`; 0 if
 /// empty. A read may hold several packets back to back.

@@ -33,44 +33,46 @@ fn header_sizes_read_both_fields() {
 #[test]
 fn command_packets_carry_opcode_and_length() {
     let mut out = [0u8; 16];
-    let n = command(0xFD81, &[0x01, 0x08, 12, 0, 24, 0, 0, 0, 0xF4, 0x01], &mut out);
+    let n = command(0xFD81, &[&[0x01, 0x08, 12, 0, 24, 0, 0, 0, 0xF4, 0x01]], &mut out).unwrap();
     assert_eq!(&out[..n], &[0x01, 0x81, 0xFD, 10, 0x01, 0x08, 12, 0, 24, 0, 0, 0, 0xF4, 0x01]);
-    let n = command(0x1001, &[], &mut out);
+    let n = command(0x1001, &[], &mut out).unwrap();
     assert_eq!(&out[..n], &[0x01, 0x01, 0x10, 0]);
-    // Cut to the buffer, never past it.
-    let mut small = [0u8; 6];
-    assert_eq!(command(0xFC0C, &[1, 2, 3, 4, 5], &mut small), 6);
-    assert_eq!(small, [0x01, 0x0C, 0xFC, 2, 1, 2]);
 }
 
 #[test]
-fn parameters_past_255_bytes_are_cut_and_the_length_says_so() {
-    let params: Vec<u8> = (0..300u16).map(|i| u8::try_from(i % 251).unwrap()).collect();
-    let mut out = [0u8; 400];
-    assert_eq!(command(0xFD06, &params, &mut out), 4 + 255);
-    assert_eq!(out[3], 255);
-    assert_eq!(&out[4..259], &params[..255]);
-    assert!(out[259..].iter().all(|&b| b == 0));
+fn a_commands_parts_are_written_one_after_another() {
+    let mut out = [0u8; 16];
+    let n = command(0xFC88, &[&[0x01, 0x08], &[], &123_456u32.to_le_bytes()], &mut out).unwrap();
+    assert_eq!(&out[..n], &[0x01, 0x88, 0xFC, 6, 0x01, 0x08, 0x40, 0xE2, 0x01, 0x00]);
 }
 
 #[test]
-fn a_buffer_too_small_for_the_header_gets_nothing() {
+fn a_command_that_does_not_fit_is_not_written() {
+    let mut small = [0xAAu8; 6];
+    assert_eq!(command(0xFC0C, &[&[1, 2, 3]], &mut small), None);
+    assert_eq!(command(0xFC0C, &[&[1], &[2, 3]], &mut small), None);
+    assert_eq!(small, [0xAA; 6]);
     let mut tiny = [0xAAu8; 3];
-    assert_eq!(command(0xFC0C, &[1, 2], &mut tiny), 0);
+    assert_eq!(command(0x1001, &[], &mut tiny), None);
     assert_eq!(tiny, [0xAA; 3]);
+    let mut exact = [0xAAu8; 6];
+    assert_eq!(command(0xFC0C, &[&[1, 2]], &mut exact), Some(6));
+    assert_eq!(exact, [0x01, 0x0C, 0xFC, 2, 1, 2]);
 }
 
 #[test]
-fn a_buffer_just_the_header_long_gets_the_header() {
-    let mut header = [0xAAu8; 4];
-    assert_eq!(command(0xFC0C, &[1, 2], &mut header), 4);
-    assert_eq!(header, [0x01, 0x0C, 0xFC, 0]);
+fn parameters_past_255_bytes_are_refused() {
+    let mut out = [0xAAu8; 400];
+    assert_eq!(command(0xFD06, &[&[0x5A; 256]], &mut out), None);
+    assert_eq!(command(0xFD06, &[&[0x5A; 200], &[0x5A; 56]], &mut out), None);
+    assert!(out.iter().all(|&b| b == 0xAA));
 }
 
 #[test]
 fn the_longest_command_fills_max_command_exactly() {
     let mut out = [0u8; bluenrg2::MAX_COMMAND];
-    assert_eq!(command(0xFD06, &[0x5A; 300], &mut out), out.len());
+    assert_eq!(command(0xFD06, &[&[0x5A; 255]], &mut out), Some(out.len()));
+    assert_eq!(out[3], 255);
 }
 
 #[test]

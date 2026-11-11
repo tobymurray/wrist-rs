@@ -9,7 +9,7 @@ use bluenrg2::{command, header_sizes, opcode, parse, Event, MAX_COMMAND};
 
 // A command packet, ready to write after the SPI header.
 let mut out = [0u8; MAX_COMMAND];
-let n = command(opcode::HCI_READ_LOCAL_VERSION, &[], &mut out);
+let n = command(opcode::HCI_READ_LOCAL_VERSION, &[], &mut out).unwrap();
 assert_eq!(&out[..n], &[0x01, 0x01, 0x10, 0x00]);
 
 // The chip's answer to a header: room to write, bytes to read.

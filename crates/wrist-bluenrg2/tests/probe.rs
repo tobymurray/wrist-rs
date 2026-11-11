@@ -37,7 +37,7 @@ fn the_probe_commands_have_no_parameters() {
         (Probe::Updater, [0x01, 0x22, 0xFC, 0x00]),
         (Probe::Anchor(Beside::Idle), [0x01, 0x19, 0xFC, 0x00]),
     ] {
-        let n = command(probe.opcode(), &[], &mut out);
+        let n = command(probe.opcode(), &[], &mut out).unwrap();
         assert_eq!(&out[..n], &bytes);
     }
 }

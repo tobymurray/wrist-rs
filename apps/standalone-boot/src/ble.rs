@@ -1503,7 +1503,7 @@ impl Link<'_> {
             return Err("not sent: the chip restarted");
         }
         let mut packet = [0u8; MAX_COMMAND];
-        let n = bluenrg2::command(opcode, params, &mut packet);
+        let n = bluenrg2::command(opcode, &[params], &mut packet).ok_or("not sent: parameters past 255 bytes")?;
         #[cfg(feature = "ble-trace")]
         trace::packet(trace::Dir::ToChip, &packet[..n]);
         self.waiting_for = Some(opcode);
