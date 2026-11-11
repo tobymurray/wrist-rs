@@ -181,7 +181,6 @@ pub mod vendor {
 }
 
 /// Why the chip says it started: `ACI_BLUE_INITIALIZED`'s reason code (ST's `bluenrg1_events.h`).
-/// The chip sends the event after every reset, asked for or not.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct BootReason(u8);
 
@@ -210,8 +209,7 @@ impl BootReason {
         self.0
     }
 
-    /// The updater runs instead of the stack: it answers normal commands with status `0x01`,
-    /// and only a reset brings the stack back.
+    /// The updater runs instead of the stack.
     #[must_use]
     pub const fn is_updater(self) -> bool {
         matches!(self.0, 0x02..=0x04)
