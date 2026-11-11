@@ -1105,7 +1105,7 @@ pub struct Characteristic {
     pub uuid: Uuid,
 }
 
-/// Characteristic properties (Core Specification, Vol 3, Part G, 3.3.1.1).
+/// Characteristic properties (Core Vol 3 Part G 3.3.1.1).
 pub mod props {
     pub const BROADCAST: u8 = 0x01;
     pub const READ: u8 = 0x02;
