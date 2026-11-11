@@ -72,8 +72,8 @@ pub mod opcode {
     pub const ACI_GAP_START_CONNECTION_UPDATE: u16 = 0xFC9E;
     pub const ACI_GAP_GET_BONDED_DEVICES: u16 = 0xFCA3;
     pub const ACI_GAP_NUMERIC_COMPARISON_CONFIRM: u16 = 0xFCA5;
-    /// Removes one bonded device (identity address type, then the address); PM0257 doesn't list
-    /// it, but stack build 2353 answers it with status 0 and drops only that bond.
+    /// Removes one bonded device: identity address type, then the address (ST's `bluenrg1_types.h`,
+    /// `aci_gap_remove_bonded_device_cp0`; PM0257 doesn't list it).
     pub const ACI_GAP_REMOVE_BONDED_DEVICE: u16 = 0xFCAA;
     pub const ACI_GATT_INIT: u16 = 0xFD01;
     pub const ACI_GATT_ADD_SERVICE: u16 = 0xFD02;
