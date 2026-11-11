@@ -1,7 +1,7 @@
-# HCI events from btmon on a Linux host (BlueZ 5.87, Intel AX200) as the central, reconnecting to
-# a BlueNRG-2 peripheral: one whole connection, then one that never formed (0x3E). Events only, no
-# commands or data, so no keys, and the peer's address zeroed. Each line: ms since the first, then the packet after its
-# type byte.
+# HCI events from btmon on a Linux host (BlueZ 5.87, Intel AX200) as the central to a BlueNRG-2
+# peripheral: one connection whole, then one that failed to be established (0x3E). Events only, no
+# commands or data, so no keys, and the peer's address zeroed. Each line: ms since the first, then
+# the packet after its type byte.
 0 3e1f0a00010e000100000000000000000000000000000000000018000000f40100
 0 3e0414010e00
 38 3e0c0400010e2900000000000000
