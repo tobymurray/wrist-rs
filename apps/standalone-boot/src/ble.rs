@@ -1763,7 +1763,7 @@ impl Link<'_> {
 
     fn vendor(&mut self, e: VendorEvent) {
         match e {
-            VendorEvent::BlueInitialized { reason, .. } => self.initialized(reason),
+            VendorEvent::BlueInitialized { reason, .. } => self.initialized(reason.unwrap_or(BootReason::new(0))),
             VendorEvent::EventsLost { .. } => self.uart.write_line("[ble] the chip dropped events: the host read too slowly"),
             VendorEvent::PassKeyRequest { handle, .. } => {
                 self.pair_ask.settled();

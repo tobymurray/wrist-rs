@@ -1,6 +1,6 @@
 //! The watch's identity and pairing, and what a `GET_BONDED_DEVICES` reply says about a central.
 
-use bluenrg2::{bonded_devices, static_random, Address, AuthenticationRequirement, IdentityAddress, KeySizes, SecureConnections};
+use bluenrg2::{bonded_devices, static_random, Address, AuthenticationRequirement, FixedPin, IdentityAddress, KeySizes, SecureConnections};
 
 /// The watch's pairing.
 pub const PAIRING: AuthenticationRequirement = AuthenticationRequirement {
@@ -9,7 +9,7 @@ pub const PAIRING: AuthenticationRequirement = AuthenticationRequirement {
     secure_connections: SecureConnections::Only,
     keypress_notifications: false,
     key_size: KeySizes::new(16, 16).unwrap(),
-    fixed_pin: None,
+    fixed_pin: FixedPin::Ask,
     identity_address: IdentityAddress::StaticRandom,
 };
 

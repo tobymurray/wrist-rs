@@ -65,12 +65,12 @@ impl Translator {
             VendorEvent::BlueInitialized { reason, .. } => {
                 self.phone = None;
                 RadioEvent::ChipReset(match reason {
-                    BootReason::STARTED => return Some(RadioEvent::Ready(self.info)),
-                    BootReason::WATCHDOG => ResetCause::Watchdog,
-                    BootReason::LOCKUP => ResetCause::Lockup,
-                    BootReason::BROWNOUT => ResetCause::Brownout,
-                    BootReason::CRASH => ResetCause::Crash,
-                    r if r.is_updater() => ResetCause::Updater,
+                    Some(BootReason::STARTED) => return Some(RadioEvent::Ready(self.info)),
+                    Some(BootReason::WATCHDOG) => ResetCause::Watchdog,
+                    Some(BootReason::LOCKUP) => ResetCause::Lockup,
+                    Some(BootReason::BROWNOUT) => ResetCause::Brownout,
+                    Some(BootReason::CRASH) => ResetCause::Crash,
+                    Some(r) if r.is_updater() => ResetCause::Updater,
                     _ => ResetCause::Other,
                 })
             }

@@ -87,10 +87,10 @@ mod reference {
         let word = |lo: &u8, hi: &u8| u16::from_le_bytes([*lo, *hi]);
         let conn = |lo: &u8, hi: &u8| ConnHandle::from_hci_bytes(&[*lo, *hi]).unwrap().0;
         Some(match (code, p) {
-            (v::BLUE_INITIALIZED, [reason, ..]) => {
-                Vn::BlueInitialized { reason: BootReason::new(*reason) }
+            (v::BLUE_INITIALIZED, p) => {
+                Vn::BlueInitialized { reason: p.first().map(|r| BootReason::new(*r)) }
             }
-            (v::HAL_EVENTS_LOST, [b0, b1, b2, b3, b4, b5, b6, b7, ..]) => Vn::EventsLost {
+            (v::BLUE_EVENTS_LOST, [b0, b1, b2, b3, b4, b5, b6, b7, ..]) => Vn::EventsLost {
                 lost: u64::from_le_bytes([*b0, *b1, *b2, *b3, *b4, *b5, *b6, *b7]),
             },
             (v::GAP_PAIRING_COMPLETE, [lo, hi, status, reason, ..]) => Vn::PairingComplete {
@@ -206,8 +206,7 @@ mod reference {
                 Vn::ServerConfirmation { handle: conn(lo, hi) }
             }
             (
-                v::BLUE_INITIALIZED
-                | v::HAL_EVENTS_LOST
+                v::BLUE_EVENTS_LOST
                 | v::GAP_PAIRING_COMPLETE
                 | v::GAP_PASS_KEY_REQ
                 | v::GAP_PROC_COMPLETE
@@ -571,7 +570,7 @@ fn corpus() -> Vec<Vec<u8>> {
 /// The vendor events the crate decodes, and one it doesn't.
 const VENDOR_CODES: [u16; 25] = [
     vendor::BLUE_INITIALIZED,
-    vendor::HAL_EVENTS_LOST,
+    vendor::BLUE_EVENTS_LOST,
     vendor::GAP_PAIRING_COMPLETE,
     vendor::GAP_PASS_KEY_REQ,
     vendor::GAP_SLAVE_SECURITY_INITIATED,

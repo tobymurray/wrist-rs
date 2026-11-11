@@ -13,7 +13,7 @@ use crate::{
 pub enum VendorEvent<'a> {
     /// `ACI_BLUE_INITIALIZED`: the chip started, after a reset asked for or not.
     #[non_exhaustive]
-    BlueInitialized { reason: BootReason },
+    BlueInitialized { reason: Option<BootReason> },
     /// `ACI_BLUE_EVENTS_LOST`: the chip dropped events because the host read too slowly; a bit for
     /// each kind it dropped, in ST's order.
     #[non_exhaustive]
@@ -108,7 +108,7 @@ impl VendorEvent<'_> {
         use vendor as v;
         match self {
             Self::BlueInitialized { .. } => v::BLUE_INITIALIZED,
-            Self::EventsLost { .. } => v::HAL_EVENTS_LOST,
+            Self::EventsLost { .. } => v::BLUE_EVENTS_LOST,
             Self::PairingComplete { .. } => v::GAP_PAIRING_COMPLETE,
             Self::PassKeyRequest { .. } => v::GAP_PASS_KEY_REQ,
             Self::SlaveSecurityInitiated => v::GAP_SLAVE_SECURITY_INITIATED,
@@ -144,8 +144,8 @@ pub(crate) fn decode(code: u16, p: &[u8]) -> Option<VendorEvent<'_>> {
     let u16_at = |i: usize| Some(u16::from_le_bytes([byte(i)?, byte(i + 1)?]));
     let handle = || link(u16_at(0)?);
     Some(match code {
-        v::BLUE_INITIALIZED => E::BlueInitialized { reason: BootReason::new(byte(0)?) },
-        v::HAL_EVENTS_LOST => E::EventsLost { lost: u64::from_le_bytes(*p.first_chunk()?) },
+        v::BLUE_INITIALIZED => E::BlueInitialized { reason: byte(0).map(BootReason::new) },
+        v::BLUE_EVENTS_LOST => E::EventsLost { lost: u64::from_le_bytes(*p.first_chunk()?) },
         v::GAP_PAIRING_COMPLETE => {
             let status = PairingStatus::new(byte(2)?);
             let reason = PairingReason::new(byte(3)?);

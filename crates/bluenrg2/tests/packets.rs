@@ -564,7 +564,7 @@ fn no_bytes_make_the_decoder_panic() {
 #[test]
 fn a_fixed_pin_goes_little_endian_after_its_flag() {
     use bluenrg2::{
-        AuthenticationRequirement, IdentityAddress, KeySizes, Passkey, SecureConnections,
+        AuthenticationRequirement, FixedPin, IdentityAddress, KeySizes, Passkey, SecureConnections,
     };
     let r = AuthenticationRequirement {
         bonding: true,
@@ -572,13 +572,13 @@ fn a_fixed_pin_goes_little_endian_after_its_flag() {
         secure_connections: SecureConnections::Optional,
         keypress_notifications: true,
         key_size: KeySizes::new(7, 12).unwrap(),
-        fixed_pin: Passkey::new(123_456),
+        fixed_pin: FixedPin::Pin(Passkey::new(123_456).unwrap()),
         identity_address: IdentityAddress::Public,
     };
     assert_eq!(r.params(), [0x01, 0x00, 0x01, 0x01, 7, 12, 0x00, 0x40, 0xE2, 0x01, 0x00, 0x00]);
     let asked = AuthenticationRequirement {
         secure_connections: SecureConnections::NotSupported,
-        fixed_pin: None,
+        fixed_pin: FixedPin::Ask,
         identity_address: IdentityAddress::StaticRandom,
         ..r
     };

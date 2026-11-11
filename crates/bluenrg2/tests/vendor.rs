@@ -45,20 +45,18 @@ fn whole_and_short(code: u16, params: &[u8], need: usize, want: Vn<'_>) {
 }
 
 #[test]
-fn the_chip_says_why_it_started() {
-    whole_and_short(
-        vendor::BLUE_INITIALIZED,
-        &[0x02],
-        1,
-        Vn::BlueInitialized { reason: BootReason::UPDATER_BY_COMMAND },
-    );
+fn the_chip_says_why_it_started_and_a_start_without_its_reason_is_still_a_start() {
+    let reason = Some(BootReason::UPDATER_BY_COMMAND);
+    assert_eq!(decode(vendor::BLUE_INITIALIZED, &[0x02]), Some(Vn::BlueInitialized { reason }));
+    let none = Vn::BlueInitialized { reason: None };
+    assert_eq!(decode(vendor::BLUE_INITIALIZED, &[]), Some(none));
 }
 
 #[test]
 fn lost_events_come_as_a_bitmap() {
     let lost = [0x01, 0, 0, 0, 0, 0, 0, 0x80];
     whole_and_short(
-        vendor::HAL_EVENTS_LOST,
+        vendor::BLUE_EVENTS_LOST,
         &lost,
         8,
         Vn::EventsLost { lost: 0x8000_0000_0000_0001 },
@@ -345,7 +343,7 @@ fn a_code_this_crate_does_not_decode_keeps_its_bytes() {
 fn every_event_names_the_code_it_came_with() {
     let codes = [
         vendor::BLUE_INITIALIZED,
-        vendor::HAL_EVENTS_LOST,
+        vendor::BLUE_EVENTS_LOST,
         vendor::GAP_PAIRING_COMPLETE,
         vendor::GAP_PASS_KEY_REQ,
         vendor::GAP_SLAVE_SECURITY_INITIATED,

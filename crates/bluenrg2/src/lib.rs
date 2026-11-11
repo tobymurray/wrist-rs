@@ -168,7 +168,7 @@ pub mod permission {
 pub mod vendor {
     pub const BLUE_INITIALIZED: u16 = 0x0001;
     /// The chip dropped events because the host read too slowly.
-    pub const HAL_EVENTS_LOST: u16 = 0x0002;
+    pub const BLUE_EVENTS_LOST: u16 = 0x0002;
     pub const GAP_PAIRING_COMPLETE: u16 = 0x0401;
     pub const GAP_PASS_KEY_REQ: u16 = 0x0402;
     /// A security request reached the central.
@@ -465,19 +465,20 @@ pub struct AuthenticationRequirement {
     pub secure_connections: SecureConnections,
     pub keypress_notifications: bool,
     pub key_size: KeySizes,
-    /// `None`: the host is asked for a passkey (`GAP_PASS_KEY_REQ`).
-    pub fixed_pin: Option<Passkey>,
+    pub fixed_pin: FixedPin,
     pub identity_address: IdentityAddress,
 }
 
 impl AuthenticationRequirement {
+    /// The parameters to give [`command`] with
+    /// [`opcode::ACI_GAP_SET_AUTHENTICATION_REQUIREMENT`].
     #[must_use]
     pub fn params(&self) -> [u8; 12] {
         const USE_FIXED_PIN: u8 = 0x00;
         const ASK_FOR_PIN: u8 = 0x01;
         let (use_fixed, pin) = match self.fixed_pin {
-            Some(pin) => (USE_FIXED_PIN, pin.get()),
-            None => (ASK_FOR_PIN, 0),
+            FixedPin::Pin(pin) => (USE_FIXED_PIN, pin.get()),
+            FixedPin::Ask => (ASK_FOR_PIN, 0),
         };
         let [p0, p1, p2, p3] = pin.to_le_bytes();
         let identity = match self.identity_address {
@@ -536,6 +537,14 @@ impl KeySizes {
     pub const fn max(self) -> u8 {
         self.max
     }
+}
+
+/// Whether pairing uses a fixed passkey or asks the host for one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FixedPin {
+    /// The host is asked for a passkey (`GAP_PASS_KEY_REQ`).
+    Ask,
+    Pin(Passkey),
 }
 
 /// A six-digit passkey, 0 to 999999 (Core Vol 3 Part H 2.3.5.3).

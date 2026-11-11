@@ -162,7 +162,7 @@ pub fn parse(p: &[u8]) -> Ev<'_> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Vn<'a> {
     BlueInitialized {
-        reason: BootReason,
+        reason: Option<BootReason>,
     },
     EventsLost {
         lost: u64,

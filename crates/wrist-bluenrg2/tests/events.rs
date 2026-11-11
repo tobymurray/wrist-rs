@@ -163,7 +163,7 @@ fn the_chip_starting_is_ready_and_any_other_reset_is_named() {
     ] {
         assert_eq!(one(&vendor(0x0001, &[reason])), Some(RadioEvent::ChipReset(cause)), "reason {reason}");
     }
-    assert_eq!(one(&vendor(0x0001, &[])), Some(RadioEvent::Unknown { raw_code: 0xFF }));
+    assert_eq!(one(&vendor(0x0001, &[])), Some(RadioEvent::ChipReset(ResetCause::Other)));
 }
 
 #[test]
