@@ -61,8 +61,7 @@ impl Translator {
 
     fn vendor(&mut self, e: VendorEvent) -> Option<RadioEvent> {
         Some(match e {
-            // Whatever the reason, the chip's links are gone. A start's own boot never comes
-            // here: the driver's `start()` consumes it (`wrist_ble::Radio::start`).
+            // Whatever the reason, the chip's links are gone; `wrist_ble::Radio::start` consumes a start's own boot.
             VendorEvent::BlueInitialized { reason, .. } => {
                 self.phone = None;
                 RadioEvent::ChipReset(match reason {

@@ -14,7 +14,7 @@ pub enum VendorEvent<'a> {
     /// `ACI_BLUE_INITIALIZED`: the chip started, after a reset asked for or not.
     #[non_exhaustive]
     BlueInitialized { reason: BootReason },
-    /// `ACI_HAL_EVENTS_LOST`: the chip dropped events because the host read too slowly; a bit for
+    /// `ACI_BLUE_EVENTS_LOST`: the chip dropped events because the host read too slowly; a bit for
     /// each kind it dropped, in ST's order.
     #[non_exhaustive]
     EventsLost { lost: u64 },
