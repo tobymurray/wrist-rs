@@ -181,8 +181,11 @@ pub fn command(args: &[u8], uart: Uart) {
     if let Some(rest) = text.strip_prefix("sleep") {
         return crate::sleep::command(rest, uart);
     }
+    if text == "gauge" {
+        return pmic::write_last_gauge(&mut uart.lines());
+    }
     if !text.is_empty() {
-        return uart.write_line("[power] usage: power | power sleep [on|off|status|clear-crash]");
+        return uart.write_line("[power] usage: power | power gauge | power sleep [on|off|status|clear-crash]");
     }
     uart.write_str("[power] input ");
     uart.write_line(match external_input() {

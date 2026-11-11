@@ -361,6 +361,7 @@ fn main() -> ! {
     });
     pmic::write_rails(&mut uart.lines(), power.top_cntl3);
     pmic::write_summary(&mut uart.lines(), &power);
+    pmic::write_gauge(&mut uart.lines(), &power);
     match pmic::slow_gauge_hibernate(&mut bus) {
         Some(cfg) => {
             let [hi, lo] = cfg.to_be_bytes();
@@ -1146,6 +1147,8 @@ async fn read_power(uart: Uart, bus: &mut pmic::AsyncBus, n: u32) -> (Option<u8>
     }
     if s.full {
         pmic::write_report(&mut uart.lines(), &s);
+        embassy_futures::yield_now().await;
+        pmic::write_gauge(&mut uart.lines(), &s);
         embassy_futures::yield_now().await;
         pmic::write_rails(&mut uart.lines(), s.top_cntl3);
         embassy_futures::yield_now().await;
