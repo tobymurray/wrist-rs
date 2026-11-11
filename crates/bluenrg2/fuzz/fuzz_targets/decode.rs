@@ -65,7 +65,7 @@ fuzz_target!(|read: &[u8]| {
             Event::Malformed(p) => within(rest, p),
             Event::Acl { data, .. } => within(packet, data),
             Event::CommandComplete { return_param_bytes, .. } => within(packet, return_param_bytes),
-            Event::LeAdvertisingReport { data } => {
+            Event::LeAdvertisingReport { data, .. } => {
                 within(packet, data);
                 advertising(data);
             }

@@ -1558,7 +1558,7 @@ impl Link<'_> {
         #[cfg(feature = "ble-trace")]
         trace::packet(trace::Dir::FromChip, p);
         match bluenrg2::parse(p) {
-            Event::CommandComplete { cmd_opcode, status: Some(status), return_param_bytes: params } => {
+            Event::CommandComplete { cmd_opcode, status: Some(status), return_param_bytes: params, .. } => {
                 if self.waiting_for == Some(cmd_opcode) {
                     let mut reply = Reply { status: status.into_inner(), params: [0; RETURN_PARAMS_MAX], len: params.len().min(RETURN_PARAMS_MAX) };
                     reply.params[..reply.len].copy_from_slice(&params[..reply.len]);
@@ -1566,7 +1566,7 @@ impl Link<'_> {
                 }
             }
             Event::CommandComplete { status: None, .. } => {}
-            Event::CommandStatus { cmd_opcode, status } => {
+            Event::CommandStatus { cmd_opcode, status, .. } => {
                 if self.waiting_for == Some(cmd_opcode) {
                     self.reply = Some(Reply { status: status.into_inner(), params: [0; RETURN_PARAMS_MAX], len: 0 });
                 }
@@ -1636,10 +1636,10 @@ impl Link<'_> {
             Event::LeDataLengthChange { max_tx_octets, max_tx_time, max_rx_octets, max_rx_time, .. } => {
                 self.data_length((max_tx_octets, max_tx_time), (max_rx_octets, max_rx_time));
             }
-            Event::LeAdvertisingReport { data } => self.scanner.advertising(data, self.uart),
-            Event::Vendor { code, params } => self.vendor(code, params),
-            Event::LeUnknown { subevent_code } => self.unknown("[ble] LE event ", event_code::LE_META, subevent_code),
-            Event::Unknown { code } => self.unknown("[ble] event ", code, 0),
+            Event::LeAdvertisingReport { data, .. } => self.scanner.advertising(data, self.uart),
+            Event::Vendor { code, params, .. } => self.vendor(code, params),
+            Event::LeUnknown { subevent_code, .. } => self.unknown("[ble] LE event ", event_code::LE_META, subevent_code),
+            Event::Unknown { code, .. } => self.unknown("[ble] event ", code, 0),
             _ => {
                 UNKNOWN.fetch_add(1, Ordering::Relaxed);
             }
@@ -1735,7 +1735,7 @@ impl Link<'_> {
     /// A central wrote one of our attributes: the console's RX (bytes for the parser or a
     /// transfer) or TX's CCCD (the mirror on or off).
     fn attribute_modified(&mut self, write: AttributeModified) {
-        let AttributeModified { attr, offset, data } = write;
+        let AttributeModified { attr, offset, data, .. } = write;
         let Some((_, rx, tx)) = self.nus else {
             return;
         };

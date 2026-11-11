@@ -4,6 +4,7 @@
 
 /// `ACI_HAL_GET_FIRMWARE_DETAILS`'s return parameters.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct FirmwareDetails {
     /// The network-coprocessor (DTM) application: major, minor, patch.
     pub dtm_version: [u8; 3],
@@ -40,6 +41,7 @@ impl FirmwareDetails {
 
 /// `ACI_HAL_GET_ANCHOR_PERIOD`'s return parameters, in 0.625 ms units.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct AnchorPeriod {
     pub anchor_period: u32,
     /// The longest slot a new link could still be given.

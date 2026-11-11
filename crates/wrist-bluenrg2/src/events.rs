@@ -25,20 +25,20 @@ impl Translator {
     pub fn event(&mut self, packet: &[u8]) -> Option<RadioEvent> {
         let e = match bluenrg2::parse(packet) {
             Event::CommandComplete { .. } | Event::CommandStatus { .. } | Event::LeAdvertisingReport { .. } => return None,
-            Event::LeConnectionComplete { handle: link, role, peer, timing } => {
+            Event::LeConnectionComplete { handle: link, role, peer, timing, .. } => {
                 if role == LeConnRole::Peripheral {
                     self.phone = Some(link);
                 }
                 let params = timing.map(|t| LinkParams { interval: t.conn_interval, latency: t.peripheral_latency, timeout: t.supervision_timeout });
                 RadioEvent::LinkUp { link, role, peer: PeerAddr { kind: peer.kind, addr: peer.addr }, params }
             }
-            Event::LeConnectionUpdateComplete { handle, conn_interval, peripheral_latency, supervision_timeout } => {
+            Event::LeConnectionUpdateComplete { handle, conn_interval, peripheral_latency, supervision_timeout, .. } => {
                 RadioEvent::Params { link: handle, result: Ok(LinkParams { interval: conn_interval, latency: peripheral_latency, timeout: supervision_timeout }) }
             }
-            Event::LeConnectionUpdateFailed { handle, status } => {
+            Event::LeConnectionUpdateFailed { handle, status, .. } => {
                 RadioEvent::Params { link: handle, result: Err(failure(FailureKind::PeerRejected, status.into_inner())) }
             }
-            Event::DisconnectionComplete { handle: link, status: BleStatus::SUCCESS, reason } => {
+            Event::DisconnectionComplete { handle: link, status: BleStatus::SUCCESS, reason, .. } => {
                 if self.phone == Some(link) {
                     self.phone = None;
                 }
@@ -51,8 +51,8 @@ impl Translator {
             Event::LeDataLengthChange { handle, max_tx_octets, max_rx_octets, .. } => {
                 RadioEvent::DataLength { link: handle, tx: max_tx_octets, rx: max_rx_octets }
             }
-            Event::Vendor { code, params } => self.vendor(code, params)?,
-            Event::LeUnknown { subevent_code } => RadioEvent::Unknown { raw_code: u16::from_be_bytes([0x3E, subevent_code]) },
+            Event::Vendor { code, params, .. } => self.vendor(code, params)?,
+            Event::LeUnknown { subevent_code, .. } => RadioEvent::Unknown { raw_code: u16::from_be_bytes([0x3E, subevent_code]) },
             // Another event, a connection or disconnection that failed, a malformed packet.
             _ => RadioEvent::Unknown { raw_code: packet.get(1).map_or(0, |&c| u16::from(c)) },
         };

@@ -449,6 +449,7 @@ pub struct Address {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ConnTiming {
     pub conn_interval: Duration<1_250>,
     /// Connection events the peripheral may skip.
@@ -463,38 +464,53 @@ pub struct ConnTiming {
 pub enum Event<'a> {
     /// Command Complete (7.7.14): the opcode answered, its status, the return parameters after it;
     /// every opcode but 0x0000, which only grants credits, carries a status, else the event is `Malformed`.
+    #[non_exhaustive]
     CommandComplete { cmd_opcode: u16, status: Option<BleStatus>, return_param_bytes: &'a [u8] },
     /// Command Status (7.7.15): a command accepted or refused, results to follow.
+    #[non_exhaustive]
     CommandStatus { cmd_opcode: u16, status: BleStatus },
     /// LE (Enhanced) Connection Complete (7.7.65.1, 7.7.65.10) with success: the handle, the
     /// local device's role, the peer, and the timing when the packet carries it.
+    #[non_exhaustive]
     LeConnectionComplete { handle: ConnHandle, role: LeConnRole, peer: Address, timing: Option<ConnTiming> },
     /// LE (Enhanced) Connection Complete with an error: no connection formed.
+    #[non_exhaustive]
     LeConnectionFailed { status: BleStatus },
     /// LE Connection Update Complete (7.7.65.3) with success: the link's new timing.
+    #[non_exhaustive]
     LeConnectionUpdateComplete { handle: ConnHandle, conn_interval: Duration<1_250>, peripheral_latency: u16, supervision_timeout: Duration<10_000> },
     /// LE Connection Update Complete with an error: the link keeps the parameters it had.
+    #[non_exhaustive]
     LeConnectionUpdateFailed { handle: ConnHandle, status: BleStatus },
     /// Disconnection Complete (7.7.5): a status other than success is a disconnection that
     /// failed, the link still up; else the reason.
+    #[non_exhaustive]
     DisconnectionComplete { handle: ConnHandle, status: BleStatus, reason: BleStatus },
     /// Encryption Change (7.7.8): a status other than success is a change that failed.
+    #[non_exhaustive]
     EncryptionChange { handle: ConnHandle, status: BleStatus, enabled: EncryptionEnabledLevel },
     /// Encryption Key Refresh Complete (7.7.39): an encrypted link encrypted again, a status
     /// other than success a refresh that failed.
+    #[non_exhaustive]
     EncryptionKeyRefresh { handle: ConnHandle, status: BleStatus },
     /// LE Data Length Change (7.7.65.7): the largest payload each way, octets and microseconds.
+    #[non_exhaustive]
     LeDataLengthChange { handle: ConnHandle, max_tx_octets: u16, max_tx_time: u16, max_rx_octets: u16, max_rx_time: u16 },
     /// LE Advertising Report (7.7.65.2): one or more reports ([`reports`]).
+    #[non_exhaustive]
     LeAdvertisingReport { data: &'a [u8] },
     /// One of ST's events (event code 0xFF): its code and the bytes after it.
+    #[non_exhaustive]
     Vendor { code: u16, params: &'a [u8] },
     /// Another LE meta event, by subevent code.
+    #[non_exhaustive]
     LeUnknown { subevent_code: u8 },
     /// Another HCI event, by event code.
+    #[non_exhaustive]
     Unknown { code: u8 },
     /// ACL data (Core Vol 4 Part E 5.4.2), as the chip sends it in its link-layer-only
     /// configuration (ST's `bluenrg1_hal_aci.h`, `LL_WITHOUT_HOST`).
+    #[non_exhaustive]
     Acl { handle: ConnHandle, boundary: AclPacketBoundary, broadcast: AclBroadcastFlag, data: &'a [u8] },
     /// Not an HCI event, cut short by the end of the read, or not fitting its layout.
     Malformed(&'a [u8]),
@@ -653,6 +669,7 @@ fn connection_complete(code: u8, params: &[u8]) -> Option<Event<'_>> {
 
 /// One advertising report: what kind, who, the advertising data and the signal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Report<'a> {
     pub kind: LeAdvEventKind,
     pub address: Address,
@@ -743,7 +760,9 @@ fn link(handle: u16) -> Option<ConnHandle> {
 
 /// `GATT_ATTRIBUTE_MODIFIED`: a peer wrote an attribute of the local GATT server.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct AttributeModified<'a> {
+    pub handle: ConnHandle,
     pub attr: u16,
     /// Bits 0-14 the offset, bit 15 "more to come" (a long write in pieces).
     pub offset: u16,
@@ -760,6 +779,7 @@ impl<'a> AttributeModified<'a> {
         }
         let len = usize::from(u16::from_le_bytes([params[6], params[7]])).min(params.len() - 8);
         Some(Self {
+            handle: connection_handle(params)?,
             attr: u16::from_le_bytes([params[2], params[3]]),
             offset: u16::from_le_bytes([params[4], params[5]]),
             data: &params[8..8 + len],
@@ -868,6 +888,7 @@ fn elements(params: &[u8], len_at: usize) -> &[u8] {
 
 /// A primary service from `ATT_READ_BY_GROUP_TYPE_RESP`: its handle range and UUID.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Service {
     pub start: u16,
     pub end: u16,
@@ -890,6 +911,7 @@ pub fn services(params: &[u8]) -> impl Iterator<Item = Service> + '_ {
 
 /// A characteristic declaration from `ATT_READ_BY_TYPE_RESP`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Characteristic {
     pub declaration: u16,
     pub properties: u8,
@@ -983,6 +1005,7 @@ pub fn gap_proc_complete(params: &[u8]) -> Option<(u8, BleStatus)> {
 /// `L2CAP_CONNECTION_UPDATE_REQ`: a peripheral asks the central for an interval range, a
 /// latency and a timeout; the answer echoes the identifier.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct L2capUpdateRequest {
     pub handle: ConnHandle,
     pub identifier: u8,
@@ -1014,6 +1037,7 @@ impl L2capUpdateRequest {
 /// `L2CAP_CONNECTION_UPDATE_RESP`: the central's answer to the local device's parameter request
 /// (Core Specification, Vol 3, Part A, 4.21).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct L2capUpdateResponse {
     pub handle: ConnHandle,
     pub result: u16,

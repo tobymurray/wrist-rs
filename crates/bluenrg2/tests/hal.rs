@@ -6,17 +6,11 @@ const FIRMWARE: [u8; 14] = [2, 1, 0, 0x02, 0x34, 0x12, 2, 2, 1, 0, 0x0F, 0x00, 0
 
 #[test]
 fn firmware_details_decode_field_by_field() {
+    let FirmwareDetails { dtm_version, dtm_variant, dtm_build, stack_version, stack_development, stack_variant, stack_build, .. } =
+        FirmwareDetails::decode(&FIRMWARE).unwrap();
     assert_eq!(
-        FirmwareDetails::decode(&FIRMWARE),
-        Some(FirmwareDetails {
-            dtm_version: [2, 1, 0],
-            dtm_variant: 2,
-            dtm_build: 0x1234,
-            stack_version: [2, 2, 1],
-            stack_development: 0,
-            stack_variant: 0x000F,
-            stack_build: 2353,
-        })
+        (dtm_version, dtm_variant, dtm_build, stack_version, stack_development, stack_variant, stack_build),
+        ([2, 1, 0], 2, 0x1234, [2, 2, 1], 0, 0x000F, 2353)
     );
     assert_eq!(FirmwareDetails::decode(&FIRMWARE[..13]), None);
 }
@@ -24,7 +18,8 @@ fn firmware_details_decode_field_by_field() {
 #[test]
 fn anchor_period_decodes_little_endian() {
     let a = [0x20, 0x03, 0, 0, 0x80, 0x02, 0, 0];
-    assert_eq!(AnchorPeriod::decode(&a), Some(AnchorPeriod { anchor_period: 800, max_free_slot: 640 }));
+    let AnchorPeriod { anchor_period, max_free_slot, .. } = AnchorPeriod::decode(&a).unwrap();
+    assert_eq!((anchor_period, max_free_slot), (800, 640));
     assert_eq!(AnchorPeriod::decode(&a[..7]), None);
 }
 
