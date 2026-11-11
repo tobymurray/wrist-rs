@@ -118,7 +118,7 @@ pub mod config {
     pub const STATIC_RANDOM_ADDRESS: u8 = 0x2E;
 }
 
-/// A static random address (Core Vol 6 Part B 1.3.2.1) from the low 48 of 64 bits, nudged off
+/// A static random address (Core Vol 6 Part B 1.3.2.1) from the low 46 of 64 bits, nudged off
 /// the two values the specification forbids.
 #[must_use]
 pub const fn static_random(bits: u64) -> BdAddr {
