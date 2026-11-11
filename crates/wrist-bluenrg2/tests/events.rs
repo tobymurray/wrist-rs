@@ -67,7 +67,6 @@ fn a_connection_without_its_timing_is_still_a_link() {
 
 #[test]
 fn a_connection_that_never_formed_is_unknown() {
-    // A connection that never formed is the central's to report, which this chip never is here.
     assert_eq!(one(&le(0x01, &[0x3E; 19])), Some(RadioEvent::Unknown { raw_code: 0x3E }));
 }
 
