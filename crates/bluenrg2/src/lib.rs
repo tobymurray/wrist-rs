@@ -303,7 +303,7 @@ pub mod evt_mask {
     pub const ATTRIBUTE_WRITE: u8 = 0x01;
 }
 
-/// `ACI_GATT_ADD_CHAR`'s `Enc_Key_Size` bounds.
+/// Encryption key size bounds, in bytes, for `ACI_GATT_ADD_CHAR` and [`KeySizes`].
 pub mod enc_key_size {
     pub const MIN: u8 = 7;
     pub const MAX: u8 = 16;
@@ -370,15 +370,12 @@ pub mod le_subevent {
 pub struct AuthenticationRequirement {
     pub bonding: bool,
     pub mitm: bool,
-    /// 0 not supported, 1 optional, 2 Secure Connections only.
-    pub secure_connections: u8,
+    pub secure_connections: SecureConnections,
     pub keypress_notifications: bool,
-    pub min_key_size: u8,
-    pub max_key_size: u8,
+    pub key_size: KeySizes,
     /// `None`: the host is asked for a passkey (`GAP_PASS_KEY_REQ`).
-    pub fixed_pin: Option<u32>,
-    /// Public, or random for the static random address ([`config::STATIC_RANDOM_ADDRESS`]).
-    pub identity_address_type: AddrKind,
+    pub fixed_pin: Option<Passkey>,
+    pub identity_address: IdentityAddress,
 }
 
 impl AuthenticationRequirement {
@@ -387,25 +384,96 @@ impl AuthenticationRequirement {
         const USE_FIXED_PIN: u8 = 0x00;
         const ASK_FOR_PIN: u8 = 0x01;
         let (use_fixed, pin) = match self.fixed_pin {
-            Some(pin) => (USE_FIXED_PIN, pin),
+            Some(pin) => (USE_FIXED_PIN, pin.get()),
             None => (ASK_FOR_PIN, 0),
         };
-        let p = pin.to_le_bytes();
+        let [p0, p1, p2, p3] = pin.to_le_bytes();
+        let identity = match self.identity_address {
+            IdentityAddress::Public => AddrKind::PUBLIC,
+            IdentityAddress::StaticRandom => AddrKind::RANDOM,
+        };
         [
             u8::from(self.bonding),
             u8::from(self.mitm),
-            self.secure_connections,
+            self.secure_connections as u8,
             u8::from(self.keypress_notifications),
-            self.min_key_size,
-            self.max_key_size,
+            self.key_size.min,
+            self.key_size.max,
             use_fixed,
-            p[0],
-            p[1],
-            p[2],
-            p[3],
-            self.identity_address_type.as_raw(),
+            p0,
+            p1,
+            p2,
+            p3,
+            identity.as_raw(),
         ]
     }
+}
+
+/// Whether pairing uses LE Secure Connections.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SecureConnections {
+    NotSupported = 0x00,
+    Optional = 0x01,
+    Only = 0x02,
+}
+
+/// The encryption key sizes a pairing accepts, in bytes: from 7 to 16 (Core Vol 3 Part H 2.3.4),
+/// the least first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct KeySizes {
+    min: u8,
+    max: u8,
+}
+
+impl KeySizes {
+    /// `None` unless `7 <= min <= max <= 16`.
+    #[must_use]
+    pub const fn new(min: u8, max: u8) -> Option<Self> {
+        if enc_key_size::MIN <= min && min <= max && max <= enc_key_size::MAX {
+            Some(Self { min, max })
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub const fn min(self) -> u8 {
+        self.min
+    }
+
+    #[must_use]
+    pub const fn max(self) -> u8 {
+        self.max
+    }
+}
+
+/// A six-digit passkey, 0 to 999999 (Core Vol 3 Part H 2.3.5.3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Passkey(u32);
+
+impl Passkey {
+    /// `None` past 999999.
+    #[must_use]
+    pub const fn new(key: u32) -> Option<Self> {
+        if key <= 999_999 {
+            Some(Self(key))
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
+
+/// The identity address a bond records: the public address, or the static random one
+/// ([`config::STATIC_RANDOM_ADDRESS`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum IdentityAddress {
+    Public,
+    StaticRandom,
 }
 
 /// An HCI command packet (`01`, opcode, length, then the parts of `params` in order) at the start

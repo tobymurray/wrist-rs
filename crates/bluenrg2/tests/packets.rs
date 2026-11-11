@@ -563,17 +563,42 @@ fn no_bytes_make_the_decoder_panic() {
 
 #[test]
 fn a_fixed_pin_goes_little_endian_after_its_flag() {
-    let r = bluenrg2::AuthenticationRequirement {
-        bonding: true,
-        mitm: true,
-        secure_connections: 2,
-        keypress_notifications: false,
-        min_key_size: 16,
-        max_key_size: 16,
-        fixed_pin: Some(123_456),
-        identity_address_type: AddrKind::RANDOM,
+    use bluenrg2::{
+        AuthenticationRequirement, IdentityAddress, KeySizes, Passkey, SecureConnections,
     };
-    assert_eq!(r.params()[6..11], [0x00, 0x40, 0xE2, 0x01, 0x00]);
+    let r = AuthenticationRequirement {
+        bonding: true,
+        mitm: false,
+        secure_connections: SecureConnections::Optional,
+        keypress_notifications: true,
+        key_size: KeySizes::new(7, 12).unwrap(),
+        fixed_pin: Passkey::new(123_456),
+        identity_address: IdentityAddress::Public,
+    };
+    assert_eq!(r.params(), [0x01, 0x00, 0x01, 0x01, 7, 12, 0x00, 0x40, 0xE2, 0x01, 0x00, 0x00]);
+    let asked = AuthenticationRequirement {
+        secure_connections: SecureConnections::NotSupported,
+        fixed_pin: None,
+        identity_address: IdentityAddress::StaticRandom,
+        ..r
+    };
+    assert_eq!(asked.params(), [0x01, 0x00, 0x00, 0x01, 7, 12, 0x01, 0, 0, 0, 0, 0x01]);
+    assert_eq!(SecureConnections::Only as u8, 2);
+}
+
+#[test]
+fn only_values_the_chip_takes_make_an_authentication_requirement() {
+    use bluenrg2::{KeySizes, Passkey};
+    assert_eq!(Passkey::new(999_999).map(Passkey::get), Some(999_999));
+    assert_eq!(Passkey::new(0).map(Passkey::get), Some(0));
+    assert_eq!(Passkey::new(1_000_000), None);
+    assert_eq!(Passkey::new(4_000_000_000), None);
+    let k = KeySizes::new(7, 16).unwrap();
+    assert_eq!((k.min(), k.max()), (7, 16));
+    assert!(KeySizes::new(16, 16).is_some());
+    for (min, max) in [(6, 16), (7, 17), (10, 9), (20, 3), (0, 0)] {
+        assert_eq!(KeySizes::new(min, max), None, "{min} {max}");
+    }
 }
 
 #[test]

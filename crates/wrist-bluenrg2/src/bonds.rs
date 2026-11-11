@@ -1,17 +1,16 @@
 //! The watch's identity and pairing, and what a `GET_BONDED_DEVICES` reply says about a central.
 
-use bluenrg2::{bonded_devices, static_random, AddrKind, Address, AuthenticationRequirement};
+use bluenrg2::{bonded_devices, static_random, Address, AuthenticationRequirement, IdentityAddress, KeySizes, SecureConnections};
 
 /// The watch's pairing.
 pub const PAIRING: AuthenticationRequirement = AuthenticationRequirement {
     bonding: true,
     mitm: true,
-    secure_connections: 2,
+    secure_connections: SecureConnections::Only,
     keypress_notifications: false,
-    min_key_size: 16,
-    max_key_size: 16,
+    key_size: KeySizes::new(16, 16).unwrap(),
     fixed_pin: None,
-    identity_address_type: AddrKind::RANDOM,
+    identity_address: IdentityAddress::StaticRandom,
 };
 
 /// The watch's static random address from the MCU's 96-bit unique id (FNV-1a).
