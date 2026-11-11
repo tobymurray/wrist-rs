@@ -13,7 +13,9 @@ pub enum RadioEvent {
     /// The chip reset itself: every link is gone and every pending operation with it.
     ChipReset(ResetCause),
     Done(OpId, Result<Outcome, Failure>),
-    LinkUp { link: ConnHandle, role: LeConnRole, peer: PeerAddr, params: LinkParams },
+    /// `params` is `None` when the chip reports the link without its timing; a [`RadioEvent::Params`]
+    /// gives it later.
+    LinkUp { link: ConnHandle, role: LeConnRole, peer: PeerAddr, params: Option<LinkParams> },
     LinkDown { link: ConnHandle, reason: Status },
     /// A parameter update completed, with an error too.
     Params { link: ConnHandle, result: Result<LinkParams, Failure> },

@@ -25,11 +25,12 @@ impl Translator {
     pub fn event(&mut self, packet: &[u8]) -> Option<RadioEvent> {
         let e = match bluenrg2::parse(packet) {
             Event::CommandComplete { .. } | Event::CommandStatus { .. } | Event::LeAdvertisingReport { .. } => return None,
-            Event::LeConnectionComplete { handle: link, role, peer, timing: Some(t) } => {
+            Event::LeConnectionComplete { handle: link, role, peer, timing } => {
                 if role == LeConnRole::Peripheral {
                     self.phone = Some(link);
                 }
-                RadioEvent::LinkUp { link, role, peer: PeerAddr { kind: peer.kind, addr: BdAddr::new(peer.bytes) }, params: params(t.conn_interval, t.peripheral_latency, t.supervision_timeout) }
+                let params = timing.map(|t| params(t.conn_interval, t.peripheral_latency, t.supervision_timeout));
+                RadioEvent::LinkUp { link, role, peer: PeerAddr { kind: peer.kind, addr: BdAddr::new(peer.bytes) }, params }
             }
             Event::LeConnectionUpdateComplete { handle, conn_interval, peripheral_latency, supervision_timeout } => {
                 RadioEvent::Params { link: handle, result: Ok(params(conn_interval, peripheral_latency, supervision_timeout)) }
@@ -52,7 +53,7 @@ impl Translator {
             }
             Event::Vendor { code, params } => self.vendor(code, params)?,
             Event::LeUnknown { subevent_code } => RadioEvent::Unknown { raw_code: u16::from_be_bytes([0x3E, subevent_code]) },
-            // Another event, a link without its timing, a connection or disconnection that failed, a malformed packet.
+            // Another event, a connection or disconnection that failed, a malformed packet.
             _ => RadioEvent::Unknown { raw_code: packet.get(1).map_or(0, |&c| u16::from(c)) },
         };
         Some(e)

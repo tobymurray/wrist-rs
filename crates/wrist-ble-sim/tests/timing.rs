@@ -41,7 +41,7 @@ fn the_core_asks_the_phone_for_the_drivers_timing() {
         run(&mut core, &mut ops, 0, Input::Goals(Goals { radio_on: true, power, transfer, ..Goals::OFF }));
         let start = core.state.chip.starting().expect("a start in flight");
         run(&mut core, &mut ops, 0, Input::Started(start, Ok(INFO)));
-        run(&mut core, &mut ops, 100, Input::Radio(RadioEvent::LinkUp { link, role: LeConnRole::Peripheral, peer, params }));
+        run(&mut core, &mut ops, 100, Input::Radio(RadioEvent::LinkUp { link, role: LeConnRole::Peripheral, peer, params: Some(params) }));
         run(&mut core, &mut ops, 2_000, Input::Radio(RadioEvent::Encryption { link, on: true }));
         let asked = ops.iter().find_map(|op| match op {
             Op::UpdateParams(l, p) if *l == link => Some(*p),

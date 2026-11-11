@@ -335,7 +335,7 @@ impl<'a> Core<'a> {
                     self.end_pending(|op| op.kind() == OpKind::Advertise);
                     self.phone(now, phone::Event::LinkUp(link), out);
                     self.forget_phone_params();
-                    self.phone_params = Some(params);
+                    self.phone_params = params;
                 }
                 self.state.radio.peripheral = self.state.radio.peripheral.saturating_add(1);
                 self.state.radio.advertising = None;

@@ -971,7 +971,7 @@ impl Fake {
         let Some(h) = self.new_link(LeConnRole::Peripheral, Peer::Phone(i), params, None) else { return };
         self.phones[i].link = Some(h);
         let _ = self.acts.apply(Change::PeripheralUp);
-        self.emit(RadioEvent::LinkUp { link: h, role: LeConnRole::Peripheral, peer: p.phone.addr, params });
+        self.emit(RadioEvent::LinkUp { link: h, role: LeConnRole::Peripheral, peer: p.phone.addr, params: Some(params) });
         self.later(90, 110, Do::Emit(RadioEvent::DataLength { link: h, tx: DATA_LENGTH.0, rx: DATA_LENGTH.1 }));
         match p.phone.keys {
             Keys::Bonded | Keys::ChipLost => {
@@ -1074,7 +1074,7 @@ impl Fake {
         let Some(h) = self.new_link(LeConnRole::Central, Peer::Sensor(i), lp, slot) else { return };
         self.end(id);
         let s = self.sensors[i].sensor;
-        self.emit(RadioEvent::LinkUp { link: h, role: LeConnRole::Central, peer, params: lp });
+        self.emit(RadioEvent::LinkUp { link: h, role: LeConnRole::Central, peer, params: Some(lp) });
         let iv = interval_ms(lp);
         if already || self.rng.chance(s.not_established_permille) {
             self.after(ms(iv * u32::try_from(ESTABLISH_EVENTS).unwrap_or(6)), Do::Lost(h, Status::CONN_FAILED_SYNCHRONIZATION_TIMEOUT));

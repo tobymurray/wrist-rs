@@ -50,6 +50,7 @@ fn one(packet: &[u8]) -> Option<RadioEvent> {
 fn a_central_connecting_is_a_peripheral_link_with_its_parameters() {
     let params = LinkParams { interval: Interval::from_u16(24), latency: 2, timeout: Timeout::from_u16(500) };
     let peer = PeerAddr { kind: AddrKind::RANDOM, addr: BdAddr::new(PEER) };
+    let params = Some(params);
     assert_eq!(one(&connection(0x01)), Some(RadioEvent::LinkUp { link: link(), role: LeConnRole::Peripheral, peer, params }));
     assert_eq!(one(&connection(0x00)), Some(RadioEvent::LinkUp { link: link(), role: LeConnRole::Central, peer, params }));
     let mut public = connection(0x01);
@@ -58,9 +59,14 @@ fn a_central_connecting_is_a_peripheral_link_with_its_parameters() {
 }
 
 #[test]
-fn a_connection_without_its_timing_is_unknown() {
+fn a_connection_without_its_timing_is_still_a_link() {
     let short = le(0x01, &[&[0x00, 0x01, 0x08, 0x01, 0x01][..], &PEER].concat());
-    assert_eq!(one(&short), Some(RadioEvent::Unknown { raw_code: 0x3E }));
+    let peer = PeerAddr { kind: AddrKind::RANDOM, addr: BdAddr::new(PEER) };
+    assert_eq!(one(&short), Some(RadioEvent::LinkUp { link: link(), role: LeConnRole::Peripheral, peer, params: None }));
+}
+
+#[test]
+fn a_connection_that_never_formed_is_unknown() {
     // A connection that never formed is the central's to report, which this chip never is here.
     assert_eq!(one(&le(0x01, &[0x3E; 19])), Some(RadioEvent::Unknown { raw_code: 0x3E }));
 }
