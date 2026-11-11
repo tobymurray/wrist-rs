@@ -468,7 +468,9 @@ class BuildImage(unittest.TestCase):
         self.assertNotIn('docker ', workflow)
         self.assertIn('release-docker.py --pins', workflow)
         self.assertIn('release-docker.py --sdk "$PWD/sdk" --out "$RUNNER_TEMP/firmware" --version "$version" \\\n'
-                      '            --cargo-home "$PWD/cargo-home"\n', workflow)
+                      '            --cargo-home "$PWD/cargo-home" "${extra[@]}"\n', workflow)
+        # Only a pull request leaves the checks to the workflow's own jobs.
+        self.assertIn('if [ "$EVENT" = pull_request ]; then extra=(--skip-checks); fi\n', workflow)
         image = 'ghcr.io/tobymurray/wrist-rs-build@sha256:' + 'ab' * 32
         argv = self.d.command(image, Path('/w/sdk'), Path('/runner/temp/firmware'), ['--version', '1.2.3'],
                               image, 1001, 118, root=Path('/w/source'))

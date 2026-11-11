@@ -92,7 +92,9 @@ python3 tools/release-build.py --sdk /tmp/wrist-sdk --version 0.0.0-local \
 python3 tools/test-release.py
 ```
 
-`--skip-checks` is for local iteration only.
+`--skip-checks` is for local iteration, and for a pull request's build, whose checks the [firmware
+workflow](../.github/workflows/firmware.yml) runs in jobs of its own. The manifest records it, and such a
+build is never release-ready.
 
 ## What it produces
 

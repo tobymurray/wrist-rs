@@ -17,6 +17,61 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: true
 jobs:
+  # A pull request runs the recipe's checks here, beside a build that skips them. Main and tags
+  # run them in the build image as well, and only a build that ran them is release-ready.
+  test:
+    if: github.ref_type != 'tag'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # The simulations run several times faster, and Cargo.toml, a build-ID input, is untouched.
+      CARGO_PROFILE_TEST_OPT_LEVEL: 1
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain and pyelftools
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$(jq -r .stable release/toolchain.json)" --profile minimal \
+            --target thumbv8m.main-none-eabihf
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install pyelftools==0.32
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: '"$RUNNER_TEMP/venv/bin/python" tools/test-release.py'
+      - run: cargo test --locked --workspace
+  lint:
+    if: github.ref_type != 'tag'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: |
+          rustup toolchain install "$(jq -r .stable release/toolchain.json)" --profile minimal \
+            --component clippy --target thumbv8m.main-none-eabihf
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            apps/standalone-boot -> target
+            apps/wrist-loader -> target
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - run: cargo clippy --locked --release -- -D warnings
+        working-directory: apps/wrist-loader
+      # The release's features, as tools/firmware_build.py passes them, then none and all.
+      - working-directory: apps/standalone-boot
+        run: |
+          set -euo pipefail
+          features=$(jq -r '.app_features | join(",")' ../../release/toolchain.json)
+          cargo clippy --locked --release ${features:+--features "$features"} -- -D warnings
+          cargo clippy --locked --release -- -D warnings
+          cargo clippy --locked --release --all-features -- -D warnings
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -64,13 +119,16 @@ jobs:
         env:
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
+          EVENT: ${{ github.event_name }}
         run: |
           set -euo pipefail
           commit=$(git -C source rev-parse HEAD)
           version="0.0.0-candidate.${commit:0:12}"
           if [ "$REF_TYPE" = tag ]; then version="${REF_NAME#v}"; fi
+          extra=()
+          if [ "$EVENT" = pull_request ]; then extra=(--skip-checks); fi
           python3 source/tools/release-docker.py --sdk "$PWD/sdk" --out "$RUNNER_TEMP/firmware" --version "$version" \
-            --cargo-home "$PWD/cargo-home"
+            --cargo-home "$PWD/cargo-home" "${extra[@]}"
       # Incremental state is redone for every change, so it is not kept.
       - name: Trim the build cache
         if: steps.cache.outcome == 'success' && steps.cache.outputs.cache-hit != 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
