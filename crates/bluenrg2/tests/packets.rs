@@ -1,7 +1,7 @@
 //! Packets as the BlueNRG-2 sends them.
 
 use bluenrg2::{
-    ad_name, bonded_devices, parse_address, ad_uuid128s, ad_uuid16s, att_mtu, characteristics, command, descriptors, gap_proc_complete, gatt_error,
+    ad_name, bonded_devices, gatt_proc_complete, interval_hundredths_ms, parse_address, ad_uuid128s, ad_uuid16s, att_mtu, characteristics, command, descriptors, gap_proc_complete, gatt_error,
     header_sizes, notification, numeric_comparison, packet_len, packet_whole, pairing_complete, parse, read_value,
     reports, service_range, services, vendor, Address, AttributeModified, Characteristic, Event, L2capUpdateRequest,
     L2capUpdateResponse, Service, Uuid, AddrKind, ConnHandle, ConnTiming, EncryptionEnabledLevel, LeAdvEventKind, LeConnRole, BleStatus,
@@ -61,6 +61,19 @@ fn a_buffer_too_small_for_the_header_gets_nothing() {
 }
 
 #[test]
+fn a_buffer_just_the_header_long_gets_the_header() {
+    let mut header = [0xAAu8; 4];
+    assert_eq!(command(0xFC0C, &[1, 2], &mut header), 4);
+    assert_eq!(header, [0x01, 0x0C, 0xFC, 0]);
+}
+
+#[test]
+fn the_longest_command_fills_max_command_exactly() {
+    let mut out = [0u8; bluenrg2::MAX_COMMAND];
+    assert_eq!(command(0xFD06, &[0x5A; 300], &mut out), out.len());
+}
+
+#[test]
 fn two_events_in_one_read_are_measured_apart() {
     let mut read = vendor_event(vendor::GATT_PROC_COMPLETE, &[0x01, 0x08, 0x00]);
     let first = read.len();
@@ -111,6 +124,12 @@ fn an_attribute_write_longer_than_its_event_is_cut() {
     let w = AttributeModified::decode(&params).unwrap();
     assert_eq!(w.data, &[0x01, 0x00]);
     assert!(AttributeModified::decode(&params[..7]).is_none());
+}
+
+#[test]
+fn an_empty_attribute_write_decodes() {
+    let w = AttributeModified::decode(&[0x01, 0x08, 0x1C, 0x00, 0x00, 0x00, 0x00, 0x00]).unwrap();
+    assert_eq!((w.attr, w.offset, w.data), (0x1C, 0, &[][..]));
 }
 
 /// An HCI event packet: `04 code len params`.
@@ -477,6 +496,7 @@ fn advertising_reports_decode() {
     assert_eq!(ad_name(first.data), Some(&b"H10 "[..]));
     assert_eq!(ad_uuid16s(first.data).collect::<Vec<_>>(), [0x180D, 0x180F]);
     assert_eq!(all[1].kind, LeAdvEventKind::ScanRsp);
+    assert_eq!(all[1].address, Address { kind: AddrKind::PUBLIC, bytes: [1, 2, 3, 4, 5, 6] });
     assert_eq!(ad_name(all[1].data), Some(&b"PM"[..]));
     assert_eq!(all[1].rssi, -80);
     // A count past what the event holds stops at the last whole report.
@@ -492,6 +512,12 @@ fn advertising_data_with_a_128_bit_uuid_and_junk() {
     let uuid = [0x66, 0x9A, 0x0C, 0x20, 0x00, 0x08, 0x6C, 0x91, 0xE4, 0x11, 0xE5, 0x43, 0x00, 0x00, 0x06, 0xCE];
     let mut ad = vec![17, 0x07];
     ad.extend(uuid);
+    assert_eq!(ad_uuid128s(&ad).collect::<Vec<_>>(), [&uuid]);
+    // An incomplete list is read; a 16-byte name is not a UUID.
+    let mut ad = vec![17, 0x06];
+    ad.extend(uuid);
+    ad.extend([17, 0x09]);
+    ad.extend(*b"a 16-byte name..");
     assert_eq!(ad_uuid128s(&ad).collect::<Vec<_>>(), [&uuid]);
     // A structure longer than the data, and a zero length, end the list without a panic.
     assert_eq!(ad_name(&[0x09, 0x09, b'x']), None);
@@ -525,6 +551,13 @@ fn characteristics_decode() {
     // A data length past the event is cut to it: one whole element.
     let cut = [0x01, 0x08, 7, 14, 7, 0, 0x10, 8, 0, 0x37, 0x2A, 10, 0];
     assert_eq!(characteristics(&cut).count(), 1);
+    // A 128-bit characteristic, element length 21.
+    let mut q = vec![0x01, 0x08, 21, 21, 0x11, 0, 0x12, 0x12, 0];
+    q.extend([0xCD; 16]);
+    assert_eq!(
+        characteristics(&q).collect::<Vec<_>>(),
+        [Characteristic { declaration: 0x11, properties: 0x12, value: 0x12, uuid: Uuid::U128([0xCD; 16]) }]
+    );
 }
 
 #[test]
@@ -532,14 +565,29 @@ fn descriptors_service_range_and_values_decode() {
     // Format 1: (9, 0x2902).
     assert_eq!(descriptors(&[0x01, 0x08, 1, 4, 9, 0, 0x02, 0x29]).collect::<Vec<_>>(), [(9, Uuid::U16(0x2902))]);
     assert_eq!(descriptors(&[0x01, 0x08, 3, 4, 9, 0, 0x02, 0x29]).count(), 0);
+    // Format 2: (0x13, a 128-bit UUID).
+    let mut d = vec![0x01, 0x08, 2, 18, 0x13, 0];
+    d.extend([0xEF; 16]);
+    assert_eq!(descriptors(&d).collect::<Vec<_>>(), [(0x13, Uuid::U128([0xEF; 16]))]);
     assert_eq!(service_range(&[0x01, 0x08, 1, 6, 0, 9, 0]), Some((6, 9)));
     assert_eq!(read_value(&[0x01, 0x08, 2, 0x01, 0x02]), Some(&[0x01, 0x02][..]));
+    assert_eq!(read_value(&[0x01, 0x08, 9, 0x01, 0x02]), Some(&[0x01, 0x02][..]));
     // Notification: connection, attribute 8, three bytes.
     assert_eq!(notification(&[0x01, 0x08, 8, 0, 3, 0x16, 72, 0x2C]), Some((8, &[0x16, 72, 0x2C][..])));
     assert_eq!(notification(&[0x01, 0x08, 8, 0, 9, 0x16]), Some((8, &[0x16][..])));
     assert_eq!(notification(&[0x01, 0x08, 8]), None);
     assert_eq!(gatt_error(&[0x01, 0x08, 0x0A, 0x0B, 0x00, 0x05]), Some((0x0A, 0x0B, 0x05)));
     assert_eq!(gap_proc_complete(&[0x02, 0x00, 0x00]), Some((0x02, BleStatus::SUCCESS)));
+    assert_eq!(gatt_proc_complete(&[0x01, 0x08, 0x00]), Some(BleStatus::SUCCESS));
+    assert_eq!(gatt_proc_complete(&[0x01, 0x08, 0x48]), Some(BleStatus::new(0x48)));
+    assert_eq!(gatt_proc_complete(&[0x01, 0x08]), None);
+}
+
+#[test]
+fn a_connection_interval_reads_in_hundredths_of_a_millisecond() {
+    assert_eq!(interval_hundredths_ms(24), 3000);
+    assert_eq!(interval_hundredths_ms(6), 750);
+    assert_eq!(interval_hundredths_ms(3200), 400_000);
 }
 
 #[test]
@@ -582,6 +630,16 @@ fn the_chip_says_why_it_started() {
     assert_eq!(updater, [0x02, 0x03, 0x04]);
     assert_eq!(boot_reason::describe(0x02), "the updater, by command");
     assert_eq!(boot_reason::describe(0x0A), "a reason unknown");
+}
+
+#[test]
+fn every_boot_reason_is_described_apart() {
+    use bluenrg2::boot_reason::describe;
+    let known: Vec<_> = (0x01..=0x09).map(describe).collect();
+    for (i, d) in known.iter().enumerate() {
+        assert_ne!(*d, describe(0x0A), "{:#04x}", i + 1);
+        assert!(!known[..i].contains(d), "{d}");
+    }
 }
 
 #[test]
@@ -658,7 +716,7 @@ fn an_st_status_is_not_named_as_an_hci_error() {
     let named = [
         format!("{:?}", parse(&[0x04, 0x0E, 0x04, 0x01, 0x02, 0xFD, 0x48])),
         format!("{:?}", parse(&[0x04, 0x0F, 0x04, 0x48, 0x01, 0x02, 0xFD])),
-        format!("{:?}", bluenrg2::gatt_proc_complete(&[0x01, 0x08, 0x48])),
+        format!("{:?}", gatt_proc_complete(&[0x01, 0x08, 0x48])),
         format!("{:?}", gap_proc_complete(&[0x02, 0x48])),
         format!("{:?}", parse(&[0x04, 0x05, 0x04, 0x48, 0x01, 0x08, 0x13])),
         format!("{:?}", parse(&[0x04, 0x05, 0x04, 0x00, 0x01, 0x08, 0x48])),
@@ -669,6 +727,15 @@ fn an_st_status_is_not_named_as_an_hci_error() {
     for text in named {
         assert!(!text.contains("Insufficient Channels"), "{text}");
     }
+}
+
+#[test]
+fn a_status_below_0x40_is_named_as_hci_names_it() {
+    assert_eq!(format!("{:?}", BleStatus::SUCCESS), "Success");
+    assert_ne!(format!("{:?}", BleStatus::new(0x3F)), "BleStatus(0x3f)");
+    assert_eq!(format!("{:?}", BleStatus::new(0x40)), "BleStatus(0x40)");
+    assert_eq!(format!("{:?}", BleStatus::new(0x48)), "BleStatus(0x48)");
+    assert_eq!(BleStatus::new(0x48).into_inner(), 0x48);
 }
 
 #[test]
