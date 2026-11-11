@@ -405,15 +405,37 @@ class Judgements(unittest.TestCase):
         self.assertEqual(asked, [['lsof', '-t', '/dev/cu.usbmodem101', '/dev/tty.usbmodem101']])
 
     def test_a_pipeline_subshell_is_ours_and_a_twin_is_not(self):
-        probe = (f'import importlib.util, time; s = importlib.util.spec_from_file_location("s", {str(spec.origin)!r}); '
-                 'm = importlib.util.module_from_spec(s); s.loader.exec_module(m); time.sleep(0.5); '
-                 'print("found", m.Host().other_tools())')
-        inner = subprocess.list2cmdline([sys.executable, '-c', probe])
-        piped = f'{inner} | while read l; do echo "$l"; done; : ble-suite.py #me{os.getpid()}'
-        out = subprocess.run(['sh', '-c', piped], capture_output=True, text=True).stdout
-        self.assertIn('found', out)
-        self.assertNotIn(f'#me{os.getpid()}', out)
-        out = subprocess.run(['sh', '-c', f'{inner} & {inner}; wait'], capture_output=True, text=True).stdout
+        # The twins meet before looking and again before exiting, so each sees the other running Python.
+        with tempfile.TemporaryDirectory() as d:
+            probe = Path(d, 'ble-suite.py')
+            probe.write_text(textwrap.dedent(f"""
+                import importlib.util, os, sys, time
+                s = importlib.util.spec_from_file_location('s', {str(spec.origin)!r})
+                m = importlib.util.module_from_spec(s)
+                s.loader.exec_module(m)
+                where, n = sys.argv[1], int(sys.argv[2])
+
+                def meet(stage):
+                    open(os.path.join(where, f'{{stage}}.{{os.getpid()}}'), 'w').close()
+                    while sum(f.startswith(stage + '.') for f in os.listdir(where)) < n:
+                        time.sleep(0.01)
+                while 'fork' in sys.argv and sum('#me{os.getpid()}' in p for p in m.Host().ps()) < 2:
+                    time.sleep(0.01)
+                meet('up')
+                found = m.Host().other_tools()
+                meet('looked')
+                print('found', found)
+            """))
+
+            def inner(where, n, *wait):
+                os.mkdir(where)
+                return subprocess.list2cmdline([sys.executable, str(probe), where, str(n), *wait])
+            piped = f'{inner(d + "/piped", 1, "fork")} | while read l; do echo "$l"; done; : ble-suite.py #me{os.getpid()}'
+            out = subprocess.run(['sh', '-c', piped], capture_output=True, text=True, timeout=60).stdout
+            self.assertIn('found', out)
+            self.assertNotIn(f'#me{os.getpid()}', out)
+            twin = inner(d + '/twins', 2)
+            out = subprocess.run(['sh', '-c', f'{twin} & {twin}; wait'], capture_output=True, text=True, timeout=60).stdout
         found = [l for l in out.splitlines() if l.startswith('found')]
         self.assertEqual(len(found), 2)
         self.assertTrue(all('ble-suite.py' in l for l in found), found)
