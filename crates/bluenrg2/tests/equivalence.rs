@@ -41,14 +41,14 @@ mod reference {
         // Unchecked, for `parse` above to judge.
         let handle_at = |i: usize| ConnHandle::from_hci_bytes(&p[i..]).unwrap().0;
         match p {
+            [EVENT, ev::COMMAND_COMPLETE, _, _num, 0, 0, return_param_bytes @ ..] => {
+                Event::CommandComplete { cmd_opcode: 0, status: None, return_param_bytes }
+            }
             [EVENT, ev::COMMAND_COMPLETE, _, _num, lo, hi, status, return_param_bytes @ ..] => Event::CommandComplete {
                 cmd_opcode: u16::from_le_bytes([*lo, *hi]),
                 status: Some(BleStatus::new(*status)),
                 return_param_bytes,
             },
-            [EVENT, ev::COMMAND_COMPLETE, _, _num, lo, hi] => {
-                Event::CommandComplete { cmd_opcode: u16::from_le_bytes([*lo, *hi]), status: None, return_param_bytes: &[] }
-            }
             [EVENT, ev::COMMAND_STATUS, _, status, _num, lo, hi, ..] => {
                 Event::CommandStatus { cmd_opcode: u16::from_le_bytes([*lo, *hi]), status: BleStatus::new(*status) }
             }
@@ -222,6 +222,9 @@ fn corpus() -> Vec<Vec<u8>> {
         acl,
         vec![0x04, 0x0E, 0x05, 0x01, 0x06, 0xFD, 0x00, 0xAA],
         vec![0x04, 0x0E, 0x03, 0x01, 0x00, 0x00],
+        vec![0x04, 0x0E, 0x04, 0x01, 0x00, 0x00, 0x00],
+        vec![0x04, 0x0E, 0x03, 0x01, 0x01, 0x10],
+        vec![0x04, 0x0E, 0x04, 0x01, 0x01, 0x10, 0x00],
         vec![0x04, 0x0F, 0x04, 0x00, 0x01, 0x13, 0xFD],
         vec![0x04, 0x0F, 0x04, 0x0C, 0x01, 0x9E, 0xFC],
         le_event(0x07, &[0x01, 0x08, 0xFB, 0x00, 0x48, 0x08, 0x1B, 0x00, 0x48, 0x01]),

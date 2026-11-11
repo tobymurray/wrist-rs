@@ -138,9 +138,16 @@ fn shortened(p: &[u8], n: usize) -> Vec<u8> {
 fn command_complete_and_status() {
     let p = [0x04, 0x0E, 0x05, 0x01, 0x06, 0xFD, 0x00, 0xAA];
     assert_eq!(parse(&p), Event::CommandComplete { cmd_opcode: 0xFD06, status: Some(BleStatus::SUCCESS), return_param_bytes: &[0xAA] });
-    // No Operation: credits only, no return parameters and so no status.
+    let p = [0x04, 0x0E, 0x04, 0x01, 0x01, 0x10, 0x00];
+    assert_eq!(parse(&p), Event::CommandComplete { cmd_opcode: 0x1001, status: Some(BleStatus::SUCCESS), return_param_bytes: &[] });
+    // No Operation (opcode 0x0000) only grants credits: no status, whatever follows.
     let p = [0x04, 0x0E, 0x03, 0x01, 0x00, 0x00];
     assert_eq!(parse(&p), Event::CommandComplete { cmd_opcode: 0x0000, status: None, return_param_bytes: &[] });
+    let p = [0x04, 0x0E, 0x04, 0x01, 0x00, 0x00, 0x00];
+    assert_eq!(parse(&p), Event::CommandComplete { cmd_opcode: 0x0000, status: None, return_param_bytes: &[0x00] });
+    // Any other opcode without its status.
+    let p = [0x04, 0x0E, 0x03, 0x01, 0x01, 0x10];
+    assert_eq!(parse(&p), Event::Malformed(&p));
     let p = [0x04, 0x0F, 0x04, 0x00, 0x01, 0x13, 0xFD];
     assert_eq!(parse(&p), Event::CommandStatus { cmd_opcode: 0xFD13, status: BleStatus::SUCCESS });
     // A refusal: Command Disallowed.

@@ -1,8 +1,9 @@
 name: Mutants
-# Every change the diff makes to the radio's model and the fake chip must fail a test when broken.
+# Every change the diff makes to these crates must fail a test when broken.
 on:
   pull_request:
     paths:
+      - crates/bluenrg2/**
       - crates/wrist-ble/**
       - crates/wrist-bluenrg2/**
       - crates/wrist-ble-sim/**
@@ -30,7 +31,7 @@ jobs:
         run: |
           set -euo pipefail
           git diff "$BASE"...HEAD > "$RUNNER_TEMP/diff"
-          cargo mutants --cargo-arg=--locked --in-diff "$RUNNER_TEMP/diff" -p wrist-ble -p wrist-bluenrg2 -p wrist-ble-sim --timeout 300 -o "$RUNNER_TEMP"
+          cargo mutants --cargo-arg=--locked --in-diff "$RUNNER_TEMP/diff" -p bluenrg2 -p wrist-ble -p wrist-bluenrg2 -p wrist-ble-sim --timeout 300 -o "$RUNNER_TEMP"
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
