@@ -379,7 +379,7 @@ def main():
     ap.add_argument('--out', type=Path, required=True, help='new empty staging directory')
     ap.add_argument('--container-id', default='native-uncontainerized')
     ap.add_argument('--allow-dirty', action='store_true', help='local candidates only')
-    ap.add_argument('--skip-checks', action='store_true', help='local iteration only; recorded')
+    ap.add_argument('--skip-checks', action='store_true', help='local iteration and pull requests only; recorded')
     a = ap.parse_args()
     require(re.fullmatch(r'\d{1,3}\.\d{1,3}\.\d{1,3}(?:-[A-Za-z0-9][A-Za-z0-9.-]*)?', a.version), 'unsafe version')
     require(all(int(x) <= 255 for x in a.version.split('-')[0].split('.')), 'version byte overflow')
