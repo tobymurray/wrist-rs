@@ -12,6 +12,10 @@ on:
         default: false
 permissions:
   contents: read
+# A push to a pull request replaces its run; main, tags and dispatches each run to the end.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
 jobs:
   build:
     runs-on: ubuntu-24.04
