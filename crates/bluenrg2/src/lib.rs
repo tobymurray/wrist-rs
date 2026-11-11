@@ -240,10 +240,60 @@ pub struct BleStatus(u8);
 
 impl BleStatus {
     pub const SUCCESS: Self = Self(0x00);
+    pub const UNKNOWN_HCI_COMMAND: Self = Self(0x01);
+    pub const UNKNOWN_CONNECTION_ID: Self = Self(0x02);
+    pub const HARDWARE_FAILURE: Self = Self(0x03);
+    pub const AUTHENTICATION_FAILURE: Self = Self(0x05);
+    pub const KEY_MISSING: Self = Self(0x06);
+    pub const MEMORY_CAPACITY_EXCEEDED: Self = Self(0x07);
+    pub const CONNECTION_TIMEOUT: Self = Self(0x08);
     pub const COMMAND_DISALLOWED: Self = Self(0x0C);
-    pub const REMOTE_USER_TERMINATED: Self = Self(0x13);
+    pub const UNSUPPORTED_FEATURE: Self = Self(0x11);
+    pub const INVALID_HCI_CMD_PARAMS: Self = Self(0x12);
+    pub const TERMINATED_REMOTE_USER: Self = Self(0x13);
+    pub const TERMINATED_LOCAL_HOST: Self = Self(0x16);
+    pub const UNSUPP_RMT_FEATURE: Self = Self(0x1A);
+    pub const UNSPECIFIED: Self = Self(0x1F);
+    pub const PROCEDURE_TIMEOUT: Self = Self(0x22);
+    pub const INSTANT_PASSED: Self = Self(0x28);
+    pub const PARAMETER_OUT_OF_RANGE: Self = Self(0x30);
+    pub const HOST_BUSY_PAIRING: Self = Self(0x38);
+    pub const CONTROLLER_BUSY: Self = Self(0x3A);
+    pub const DIRECTED_ADVERTISING_TIMEOUT: Self = Self(0x3C);
+    pub const CONNECTION_END_WITH_MIC_FAILURE: Self = Self(0x3D);
+    pub const CONNECTION_FAILED_TO_ESTABLISH: Self = Self(0x3E);
+    pub const STATUS_UNKNOWN_CONNECTION_ID: Self = Self(0x40);
+    pub const FAILED: Self = Self(0x41);
+    pub const INVALID_PARAMS: Self = Self(0x42);
+    pub const BUSY: Self = Self(0x43);
+    pub const PENDING: Self = Self(0x45);
+    pub const NOT_ALLOWED: Self = Self(0x46);
+    pub const ERROR: Self = Self(0x47);
+    pub const OUT_OF_MEMORY: Self = Self(0x48);
+    pub const INVALID_CID: Self = Self(0x50);
+    pub const DEV_IN_BLACKLIST: Self = Self(0x59);
+    pub const CSRK_NOT_FOUND: Self = Self(0x5A);
+    pub const IRK_NOT_FOUND: Self = Self(0x5B);
+    pub const DEV_NOT_FOUND: Self = Self(0x5C);
+    pub const SEC_DB_FULL: Self = Self(0x5D);
+    pub const DEV_NOT_BONDED: Self = Self(0x5E);
+    pub const INSUFFICIENT_ENC_KEYSIZE: Self = Self(0x5F);
+    pub const INVALID_HANDLE: Self = Self(0x60);
+    pub const OUT_OF_HANDLE: Self = Self(0x61);
+    pub const INVALID_OPERATION: Self = Self(0x62);
+    pub const CHARAC_ALREADY_EXISTS: Self = Self(0x63);
     /// No TX buffers for now; `GATT_TX_POOL_AVAILABLE` follows when there are.
     pub const INSUFFICIENT_RESOURCES: Self = Self(0x64);
+    pub const SEC_PERMISSION_ERROR: Self = Self(0x65);
+    pub const ADDRESS_NOT_RESOLVED: Self = Self(0x70);
+    pub const NO_VALID_SLOT: Self = Self(0x82);
+    pub const SCAN_WINDOW_SHORT: Self = Self(0x83);
+    pub const NEW_INTERVAL_FAILED: Self = Self(0x84);
+    pub const INTERVAL_TOO_LARGE: Self = Self(0x85);
+    pub const LENGTH_FAILED: Self = Self(0x86);
+    pub const FLASH_READ_FAILED: Self = Self(0xFA);
+    pub const FLASH_WRITE_FAILED: Self = Self(0xFB);
+    pub const FLASH_ERASE_FAILED: Self = Self(0xFC);
 
     #[must_use]
     pub const fn new(code: u8) -> Self {
@@ -261,22 +311,64 @@ impl BleStatus {
     }
 }
 
-/// HCI's name below 0x40, else the code.
+/// ST's name for one of its own codes, from 0x40.
+const fn st_name(code: u8) -> Option<&'static str> {
+    Some(match code {
+        0x40 => "STATUS_UNKNOWN_CONNECTION_ID",
+        0x41 => "FAILED",
+        0x42 => "INVALID_PARAMS",
+        0x43 => "BUSY",
+        0x45 => "PENDING",
+        0x46 => "NOT_ALLOWED",
+        0x47 => "ERROR",
+        0x48 => "OUT_OF_MEMORY",
+        0x50 => "INVALID_CID",
+        0x59 => "DEV_IN_BLACKLIST",
+        0x5A => "CSRK_NOT_FOUND",
+        0x5B => "IRK_NOT_FOUND",
+        0x5C => "DEV_NOT_FOUND",
+        0x5D => "SEC_DB_FULL",
+        0x5E => "DEV_NOT_BONDED",
+        0x5F => "INSUFFICIENT_ENC_KEYSIZE",
+        0x60 => "INVALID_HANDLE",
+        0x61 => "OUT_OF_HANDLE",
+        0x62 => "INVALID_OPERATION",
+        0x63 => "CHARAC_ALREADY_EXISTS",
+        0x64 => "INSUFFICIENT_RESOURCES",
+        0x65 => "SEC_PERMISSION_ERROR",
+        0x70 => "ADDRESS_NOT_RESOLVED",
+        0x82 => "NO_VALID_SLOT",
+        0x83 => "SCAN_WINDOW_SHORT",
+        0x84 => "NEW_INTERVAL_FAILED",
+        0x85 => "INTERVAL_TOO_LARGE",
+        0x86 => "LENGTH_FAILED",
+        0xFA => "FLASH_READ_FAILED",
+        0xFB => "FLASH_WRITE_FAILED",
+        0xFC => "FLASH_ERASE_FAILED",
+        _ => return None,
+    })
+}
+
+/// HCI's name below 0x40, ST's from it, else the code.
 impl core::fmt::Debug for BleStatus {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         if self.0 < 0x40 {
             core::fmt::Debug::fmt(&Status::new(self.0), f)
+        } else if let Some(name) = st_name(self.0) {
+            f.write_str(name)
         } else {
             write!(f, "BleStatus(0x{:02x})", self.0)
         }
     }
 }
 
-/// HCI's name and the code below 0x40, `ST status 0x48` from it.
+/// HCI's name below 0x40, ST's from it, then the code: `OUT_OF_MEMORY (0x48)`.
 impl core::fmt::Display for BleStatus {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         if self.0 < 0x40 {
             write!(f, "{:?} (0x{:02x})", Status::new(self.0), self.0)
+        } else if let Some(name) = st_name(self.0) {
+            write!(f, "{name} (0x{:02x})", self.0)
         } else {
             write!(f, "ST status 0x{:02x}", self.0)
         }
@@ -904,8 +996,12 @@ impl PairingStatus {
     pub const SUCCESS: Self = Self(0x00);
     pub const TIMEOUT: Self = Self(0x01);
     pub const FAILED: Self = Self(0x02);
-    /// Encryption failed for a key the local device no longer holds.
-    pub const LTK_MISSING: Self = Self(0x03);
+    /// Encryption failed: the local device no longer holds the key.
+    pub const LTK_MISSING_LOCAL: Self = Self(0x03);
+    /// Encryption failed: the peer no longer holds the key.
+    pub const LTK_MISSING_PEER: Self = Self(0x04);
+    /// The peer does not support encryption.
+    pub const ENCRYPTION_NOT_SUPPORTED: Self = Self(0x05);
 
     #[must_use]
     pub const fn new(code: u8) -> Self {

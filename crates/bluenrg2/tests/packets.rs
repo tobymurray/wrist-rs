@@ -680,26 +680,102 @@ fn statuses_compare_with_their_constants_and_say_whether_they_succeeded() {
     let p = [0x04, 0x0F, 0x04, 0x0C, 0x01, 0x9E, 0xFC];
     assert!(matches!(parse(&p), Ev::CommandStatus { status: BleStatus::COMMAND_DISALLOWED, .. }));
     assert_eq!(BleStatus::new(0x64), BleStatus::INSUFFICIENT_RESOURCES);
-    assert_eq!(BleStatus::REMOTE_USER_TERMINATED.into_inner(), 0x13);
+    assert_eq!(BleStatus::TERMINATED_REMOTE_USER.into_inner(), 0x13);
     assert!(BleStatus::SUCCESS.is_success());
     assert!(!BleStatus::new(0x01).is_success());
     assert!(PairingStatus::new(0).is_success());
-    for code in 1..=3 {
+    for code in 1..=5 {
         assert!(!PairingStatus::new(code).is_success());
     }
     assert_eq!(
-        [PairingStatus::TIMEOUT, PairingStatus::FAILED].map(PairingStatus::into_inner),
-        [1, 2]
+        [
+            PairingStatus::TIMEOUT,
+            PairingStatus::FAILED,
+            PairingStatus::LTK_MISSING_LOCAL,
+            PairingStatus::LTK_MISSING_PEER,
+            PairingStatus::ENCRYPTION_NOT_SUPPORTED,
+        ]
+        .map(PairingStatus::into_inner),
+        [1, 2, 3, 4, 5]
     );
     assert_eq!(BootReason::new(0x05), BootReason::WATCHDOG);
+}
+
+/// Every status `ble_status.h` defines for the chip, with its code; ST's own carry ST's name.
+#[test]
+fn every_status_st_defines_has_its_code_and_st_names_its_own() {
+    let all = [
+        (BleStatus::SUCCESS, 0x00, "SUCCESS"),
+        (BleStatus::UNKNOWN_HCI_COMMAND, 0x01, "UNKNOWN_HCI_COMMAND"),
+        (BleStatus::UNKNOWN_CONNECTION_ID, 0x02, "UNKNOWN_CONNECTION_ID"),
+        (BleStatus::HARDWARE_FAILURE, 0x03, "HARDWARE_FAILURE"),
+        (BleStatus::AUTHENTICATION_FAILURE, 0x05, "AUTHENTICATION_FAILURE"),
+        (BleStatus::KEY_MISSING, 0x06, "KEY_MISSING"),
+        (BleStatus::MEMORY_CAPACITY_EXCEEDED, 0x07, "MEMORY_CAPACITY_EXCEEDED"),
+        (BleStatus::CONNECTION_TIMEOUT, 0x08, "CONNECTION_TIMEOUT"),
+        (BleStatus::COMMAND_DISALLOWED, 0x0C, "COMMAND_DISALLOWED"),
+        (BleStatus::UNSUPPORTED_FEATURE, 0x11, "UNSUPPORTED_FEATURE"),
+        (BleStatus::INVALID_HCI_CMD_PARAMS, 0x12, "INVALID_HCI_CMD_PARAMS"),
+        (BleStatus::TERMINATED_REMOTE_USER, 0x13, "TERMINATED_REMOTE_USER"),
+        (BleStatus::TERMINATED_LOCAL_HOST, 0x16, "TERMINATED_LOCAL_HOST"),
+        (BleStatus::UNSUPP_RMT_FEATURE, 0x1A, "UNSUPP_RMT_FEATURE"),
+        (BleStatus::UNSPECIFIED, 0x1F, "UNSPECIFIED"),
+        (BleStatus::PROCEDURE_TIMEOUT, 0x22, "PROCEDURE_TIMEOUT"),
+        (BleStatus::INSTANT_PASSED, 0x28, "INSTANT_PASSED"),
+        (BleStatus::PARAMETER_OUT_OF_RANGE, 0x30, "PARAMETER_OUT_OF_RANGE"),
+        (BleStatus::HOST_BUSY_PAIRING, 0x38, "HOST_BUSY_PAIRING"),
+        (BleStatus::CONTROLLER_BUSY, 0x3A, "CONTROLLER_BUSY"),
+        (BleStatus::DIRECTED_ADVERTISING_TIMEOUT, 0x3C, "DIRECTED_ADVERTISING_TIMEOUT"),
+        (BleStatus::CONNECTION_END_WITH_MIC_FAILURE, 0x3D, "CONNECTION_END_WITH_MIC_FAILURE"),
+        (BleStatus::CONNECTION_FAILED_TO_ESTABLISH, 0x3E, "CONNECTION_FAILED_TO_ESTABLISH"),
+        (BleStatus::STATUS_UNKNOWN_CONNECTION_ID, 0x40, "STATUS_UNKNOWN_CONNECTION_ID"),
+        (BleStatus::FAILED, 0x41, "FAILED"),
+        (BleStatus::INVALID_PARAMS, 0x42, "INVALID_PARAMS"),
+        (BleStatus::BUSY, 0x43, "BUSY"),
+        (BleStatus::PENDING, 0x45, "PENDING"),
+        (BleStatus::NOT_ALLOWED, 0x46, "NOT_ALLOWED"),
+        (BleStatus::ERROR, 0x47, "ERROR"),
+        (BleStatus::OUT_OF_MEMORY, 0x48, "OUT_OF_MEMORY"),
+        (BleStatus::INVALID_CID, 0x50, "INVALID_CID"),
+        (BleStatus::DEV_IN_BLACKLIST, 0x59, "DEV_IN_BLACKLIST"),
+        (BleStatus::CSRK_NOT_FOUND, 0x5A, "CSRK_NOT_FOUND"),
+        (BleStatus::IRK_NOT_FOUND, 0x5B, "IRK_NOT_FOUND"),
+        (BleStatus::DEV_NOT_FOUND, 0x5C, "DEV_NOT_FOUND"),
+        (BleStatus::SEC_DB_FULL, 0x5D, "SEC_DB_FULL"),
+        (BleStatus::DEV_NOT_BONDED, 0x5E, "DEV_NOT_BONDED"),
+        (BleStatus::INSUFFICIENT_ENC_KEYSIZE, 0x5F, "INSUFFICIENT_ENC_KEYSIZE"),
+        (BleStatus::INVALID_HANDLE, 0x60, "INVALID_HANDLE"),
+        (BleStatus::OUT_OF_HANDLE, 0x61, "OUT_OF_HANDLE"),
+        (BleStatus::INVALID_OPERATION, 0x62, "INVALID_OPERATION"),
+        (BleStatus::CHARAC_ALREADY_EXISTS, 0x63, "CHARAC_ALREADY_EXISTS"),
+        (BleStatus::INSUFFICIENT_RESOURCES, 0x64, "INSUFFICIENT_RESOURCES"),
+        (BleStatus::SEC_PERMISSION_ERROR, 0x65, "SEC_PERMISSION_ERROR"),
+        (BleStatus::ADDRESS_NOT_RESOLVED, 0x70, "ADDRESS_NOT_RESOLVED"),
+        (BleStatus::NO_VALID_SLOT, 0x82, "NO_VALID_SLOT"),
+        (BleStatus::SCAN_WINDOW_SHORT, 0x83, "SCAN_WINDOW_SHORT"),
+        (BleStatus::NEW_INTERVAL_FAILED, 0x84, "NEW_INTERVAL_FAILED"),
+        (BleStatus::INTERVAL_TOO_LARGE, 0x85, "INTERVAL_TOO_LARGE"),
+        (BleStatus::LENGTH_FAILED, 0x86, "LENGTH_FAILED"),
+        (BleStatus::FLASH_READ_FAILED, 0xFA, "FLASH_READ_FAILED"),
+        (BleStatus::FLASH_WRITE_FAILED, 0xFB, "FLASH_WRITE_FAILED"),
+        (BleStatus::FLASH_ERASE_FAILED, 0xFC, "FLASH_ERASE_FAILED"),
+    ];
+    for (status, code, name) in all {
+        assert_eq!(status.into_inner(), code);
+        if code >= 0x40 {
+            assert_eq!(format!("{status:?}"), name);
+        }
+    }
 }
 
 #[test]
 fn a_status_is_an_error_written_with_its_code() {
     assert_eq!(BleStatus::COMMAND_DISALLOWED.to_string(), "Command Disallowed (0x0c)");
     assert_eq!(BleStatus::new(0x3F).to_string(), format!("{:?} (0x3f)", BleStatus::new(0x3F)));
-    assert_eq!(BleStatus::new(0x40).to_string(), "ST status 0x40");
-    assert_eq!(BleStatus::INSUFFICIENT_RESOURCES.to_string(), "ST status 0x64");
+    assert_eq!(BleStatus::INSUFFICIENT_RESOURCES.to_string(), "INSUFFICIENT_RESOURCES (0x64)");
+    assert_eq!(format!("{:?}", BleStatus::OUT_OF_MEMORY), "OUT_OF_MEMORY");
+    assert_eq!(BleStatus::new(0x44).to_string(), "ST status 0x44");
+    assert_eq!(format!("{:?}", BleStatus::new(0x44)), "BleStatus(0x44)");
     let e: &dyn core::error::Error = &BleStatus::new(0x48);
     assert!(e.source().is_none());
 }
@@ -777,11 +853,11 @@ fn an_st_status_is_not_named_as_an_hci_error() {
 }
 
 #[test]
-fn a_status_below_0x40_is_named_as_hci_names_it() {
+fn a_status_below_0x40_is_named_as_hci_names_it_and_from_0x40_as_st_does() {
     assert_eq!(format!("{:?}", BleStatus::SUCCESS), "Success");
     assert_ne!(format!("{:?}", BleStatus::new(0x3F)), "BleStatus(0x3f)");
-    assert_eq!(format!("{:?}", BleStatus::new(0x40)), "BleStatus(0x40)");
-    assert_eq!(format!("{:?}", BleStatus::new(0x48)), "BleStatus(0x48)");
+    assert_eq!(format!("{:?}", BleStatus::new(0x40)), "STATUS_UNKNOWN_CONNECTION_ID");
+    assert_eq!(format!("{:?}", BleStatus::new(0x48)), "OUT_OF_MEMORY");
     assert_eq!(BleStatus::new(0x48).into_inner(), 0x48);
 }
 

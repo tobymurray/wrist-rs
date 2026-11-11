@@ -1440,7 +1440,7 @@ impl Link<'_> {
 
     async fn terminate(&mut self) {
         let h = CONN_HANDLE.load(Ordering::Relaxed).to_le_bytes();
-        let _ = self.command(ACI_GAP_TERMINATE, &[h[0], h[1], BleStatus::REMOTE_USER_TERMINATED.into_inner()]).await;
+        let _ = self.command(ACI_GAP_TERMINATE, &[h[0], h[1], BleStatus::TERMINATED_REMOTE_USER.into_inner()]).await;
     }
 
     /// A random six-digit passkey from the controller's own generator, shown on the console
@@ -1788,7 +1788,7 @@ impl Link<'_> {
                     self.uart.write_line("[ble] paired");
                     self.recount_bonds = true;
                 } else {
-                    if let (PairingStatus::LTK_MISSING, Some(peer)) = (status, self.peer) {
+                    if let (PairingStatus::LTK_MISSING_LOCAL, Some(peer)) = (status, self.peer) {
                         old_key(|k| k.refused(peer));
                     }
                     self.interval_ask.pairing_failed();

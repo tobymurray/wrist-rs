@@ -66,7 +66,7 @@ fn lost_events_come_as_a_bitmap() {
 
 #[test]
 fn gap_events_decode() {
-    let status = PairingStatus::LTK_MISSING;
+    let status = PairingStatus::LTK_MISSING_LOCAL;
     whole_and_short(
         vendor::GAP_PAIRING_COMPLETE,
         &[0x01, 0x08, 0x03, 0x05],
