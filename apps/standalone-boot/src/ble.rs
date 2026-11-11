@@ -68,8 +68,8 @@ use bluenrg2::opcode::{
     ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_REQ, HCI_LE_RAND, HCI_READ_LOCAL_VERSION, HCI_SET_EVENT_MASK,
 };
 use bluenrg2::{
-    adv_filter_policy, adv_type, boot_reason, config, enc_key_size, event_code, evt_mask, gap_role, pairing_status, permission, privacy, props, service_type,
-    uuid_type, value_length, vendor, AddrKind, AttributeModified, Event, BleStatus, L2capUpdateResponse, ATT_HEADER_LEN,
+    adv_filter_policy, adv_type, config, enc_key_size, event_code, evt_mask, gap_role, permission, privacy, props, service_type,
+    uuid_type, value_length, vendor, AddrKind, AttributeModified, BootReason, Event, BleStatus, L2capUpdateResponse, PairingStatus, ATT_HEADER_LEN,
     MAX_COMMAND, RETURN_PARAMS_MAX,
 };
 use wrist_bluenrg2::transport::{self, Counts, Read, Transport};
@@ -1440,7 +1440,7 @@ impl Link<'_> {
 
     async fn terminate(&mut self) {
         let h = CONN_HANDLE.load(Ordering::Relaxed).to_le_bytes();
-        let _ = self.command(ACI_GAP_TERMINATE, &[h[0], h[1], bluenrg2::status::REMOTE_USER_TERMINATED]).await;
+        let _ = self.command(ACI_GAP_TERMINATE, &[h[0], h[1], BleStatus::REMOTE_USER_TERMINATED.into_inner()]).await;
     }
 
     /// A random six-digit passkey from the controller's own generator, shown on the console
@@ -1680,21 +1680,21 @@ impl Link<'_> {
 
     /// `ACI_BLUE_INITIALIZED`: the boot a reset waits for, or a restart nobody asked for, which
     /// leaves nothing of the link or the configuration; [`Link::serve`] brings the chip up again.
-    fn initialized(&mut self, reason: u8) {
+    fn initialized(&mut self, reason: BootReason) {
         let boot = self.restarts.initialized(self.booting, reason, Instant::now().as_ticks(), embassy_time::TICK_HZ);
         let restarted = matches!(boot, Boot::Restarted | Boot::KeptRestarting);
         self.uart.write_str(if restarted { "[ble] the chip restarted by itself, reason " } else { "[ble] chip initialised, reason " });
-        self.uart.write_hex8(reason);
+        self.uart.write_hex8(reason.into_inner());
         self.uart.write_str(" (");
-        self.uart.write_str(boot_reason::describe(reason));
+        self.uart.write_str(wrist_bluenrg2::console::boot_reason(reason));
         if !restarted {
             self.booting = false;
             self.boot = Some(boot);
             return self.uart.write_line(")");
         }
-        self.uart.write_line(if boot_reason::updater(reason) { "); resetting it out of the updater" } else { "); resetting it" });
+        self.uart.write_line(if reason.is_updater() { "); resetting it out of the updater" } else { "); resetting it" });
         RESTARTS.fetch_add(1, Ordering::Relaxed);
-        LAST_RESTART.store(reason, Ordering::Relaxed);
+        LAST_RESTART.store(reason.into_inner(), Ordering::Relaxed);
         set_state(STATE_STARTING);
         self.link_gone();
         clear_out(self.outbox.discard());
@@ -1765,7 +1765,8 @@ impl Link<'_> {
     fn vendor(&mut self, ecode: u16, rest: &[u8]) {
         let handle = bluenrg2::connection_handle;
         match ecode {
-            vendor::BLUE_INITIALIZED => self.initialized(bluenrg2::blue_initialized(rest)),
+            // A boot without its reason is a boot all the same.
+            vendor::BLUE_INITIALIZED => self.initialized(bluenrg2::blue_initialized(rest).unwrap_or(BootReason::new(0))),
             vendor::HAL_EVENTS_LOST => self.uart.write_line("[ble] the chip dropped events: the host read too slowly"),
             vendor::GAP_PASS_KEY_REQ if handle(rest).is_some() => {
                 self.pair_ask.settled();
@@ -1782,22 +1783,22 @@ impl Link<'_> {
                 self.uart.write_line(", `ble yes` on the USB console (`ble no` rejects)");
             }
             vendor::GAP_PAIRING_COMPLETE if rest.len() >= 4 => {
-                let (status, reason) = bluenrg2::pairing_complete(rest).unwrap_or_default();
-                LAST_PAIRING.store(status.saturating_add(1), Ordering::Relaxed);
+                let (status, reason) = bluenrg2::pairing_complete(rest).unwrap_or((PairingStatus::SUCCESS, 0));
+                LAST_PAIRING.store(status.into_inner().saturating_add(1), Ordering::Relaxed);
                 LAST_PAIRING_REASON.store(reason, Ordering::Relaxed);
                 self.pair_ask.settled();
                 clear_prompt();
-                if status == pairing_status::SUCCESS {
+                if status.is_success() {
                     old_key(OldKey::clear);
                     self.uart.write_line("[ble] paired");
                     self.recount_bonds = true;
                 } else {
-                    if let (pairing_status::LTK_MISSING, Some(peer)) = (status, self.peer) {
+                    if let (PairingStatus::LTK_MISSING, Some(peer)) = (status, self.peer) {
                         old_key(|k| k.refused(peer));
                     }
                     self.interval_ask.pairing_failed();
                     self.uart.write_str("[ble] pairing failed: status ");
-                    self.uart.write_hex8(status);
+                    self.uart.write_hex8(status.into_inner());
                     self.uart.write_str(" (1 timeout, 2 failed, 3/4 LTK missing), reason ");
                     self.uart.write_hex8(reason);
                     self.uart.write_line(" (4 confirm failed, B DHKey check, C comparison refused)");

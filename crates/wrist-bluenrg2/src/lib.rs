@@ -6,6 +6,7 @@
 
 pub mod bonds;
 pub mod commands;
+pub mod console;
 pub mod events;
 pub mod probe;
 pub mod transport;

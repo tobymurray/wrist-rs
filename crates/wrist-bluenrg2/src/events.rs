@@ -1,6 +1,6 @@
 //! What each packet from the BlueNRG-2 tells the core.
 
-use bluenrg2::{boot_reason, vendor, BleStatus, Event};
+use bluenrg2::{vendor, BleStatus, BootReason, Event};
 use wrist_ble::{
     BdAddr, ChipInfo, ConnHandle, Failure, FailureKind, Interval, LeConnRole, LinkParams, PairingEvent, PairingStep, PeerAddr, RadioEvent,
     ResetCause, Status, Timeout,
@@ -67,12 +67,12 @@ impl Translator {
             vendor::BLUE_INITIALIZED => {
                 self.phone = None;
                 RadioEvent::ChipReset(match bluenrg2::blue_initialized(params) {
-                    boot_reason::STARTED => return Some(RadioEvent::Ready(self.info)),
-                    boot_reason::WATCHDOG => ResetCause::Watchdog,
-                    boot_reason::LOCKUP => ResetCause::Lockup,
-                    boot_reason::BROWNOUT => ResetCause::Brownout,
-                    boot_reason::CRASH => ResetCause::Crash,
-                    r if boot_reason::updater(r) => ResetCause::Updater,
+                    Some(BootReason::STARTED) => return Some(RadioEvent::Ready(self.info)),
+                    Some(BootReason::WATCHDOG) => ResetCause::Watchdog,
+                    Some(BootReason::LOCKUP) => ResetCause::Lockup,
+                    Some(BootReason::BROWNOUT) => ResetCause::Brownout,
+                    Some(BootReason::CRASH) => ResetCause::Crash,
+                    Some(r) if r.is_updater() => ResetCause::Updater,
                     _ => ResetCause::Other,
                 })
             }
@@ -84,7 +84,7 @@ impl Translator {
             vendor::GAP_PASS_KEY_REQ => RadioEvent::Pairing(PairingEvent { link: link?, step: PairingStep::PasskeyWanted }),
             vendor::GAP_PAIRING_COMPLETE => {
                 let (status, _) = bluenrg2::pairing_complete(params)?;
-                let step = if status == bluenrg2::pairing_status::SUCCESS { PairingStep::Complete } else { PairingStep::Failed };
+                let step = if status.is_success() { PairingStep::Complete } else { PairingStep::Failed };
                 RadioEvent::Pairing(PairingEvent { link: link?, step })
             }
             vendor::GAP_BOND_LOST => RadioEvent::BondLost(self.phone?),

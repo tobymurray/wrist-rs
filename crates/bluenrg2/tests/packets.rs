@@ -4,7 +4,7 @@ use bluenrg2::{
     ad_name, bonded_devices, gatt_proc_complete, interval_hundredths_ms, parse_address, ad_uuid128s, ad_uuid16s, att_mtu, characteristics, command, descriptors, gap_proc_complete, gatt_error,
     header_sizes, notification, numeric_comparison, packet_len, packet_whole, pairing_complete, parse, read_value,
     reports, service_range, services, vendor, Address, AttributeModified, Characteristic, Event, L2capUpdateRequest,
-    L2capUpdateResponse, Service, Uuid, AddrKind, ConnHandle, ConnTiming, EncryptionEnabledLevel, LeAdvEventKind, LeConnRole, BleStatus,
+    L2capUpdateResponse, Service, Uuid, AddrKind, ConnHandle, ConnTiming, EncryptionEnabledLevel, LeAdvEventKind, LeConnRole, BleStatus, PairingStatus,
 };
 
 fn link() -> ConnHandle {
@@ -477,7 +477,8 @@ fn gap_events_decode() {
     let mut params = vec![0x01, 0x08];
     params.extend(123_456u32.to_le_bytes());
     assert_eq!(numeric_comparison(&params), Some((link(), 123_456)));
-    assert_eq!(pairing_complete(&[0x01, 0x08, 0x00, 0x00]), Some((0, 0)));
+    assert_eq!(pairing_complete(&[0x01, 0x08, 0x00, 0x00]), Some((PairingStatus::SUCCESS, 0)));
+    assert_eq!(pairing_complete(&[0x01, 0x08, 0x03, 0x05]), Some((PairingStatus::LTK_MISSING, 0x05)));
     assert_eq!(pairing_complete(&[0x01, 0x08, 0x02]), None);
 }
 
@@ -661,25 +662,42 @@ fn the_centrals_answer_to_a_parameter_request_decodes() {
 /// The start the chip reports after `ACI_UPDATER_START`.
 #[test]
 fn the_chip_says_why_it_started() {
-    use bluenrg2::{blue_initialized, boot_reason};
+    use bluenrg2::{blue_initialized, BootReason};
     let p = [0x04, 0xFF, 0x03, 0x01, 0x00, 0x02];
     let Event::Vendor { code, params } = parse(&p) else { panic!("{p:02X?}") };
-    assert_eq!((code, blue_initialized(params)), (vendor::BLUE_INITIALIZED, boot_reason::UPDATER_BY_COMMAND));
-    assert_eq!(blue_initialized(&[]), 0);
-    let updater: Vec<u8> = (0..=u8::MAX).filter(|&r| boot_reason::updater(r)).collect();
+    assert_eq!((code, blue_initialized(params)), (vendor::BLUE_INITIALIZED, Some(BootReason::UPDATER_BY_COMMAND)));
+    assert_eq!(blue_initialized(&[]), None);
+    assert_eq!(blue_initialized(&[0x00]), Some(BootReason::new(0)));
+    let updater: Vec<u8> = (0..=u8::MAX).filter(|&r| BootReason::new(r).is_updater()).collect();
     assert_eq!(updater, [0x02, 0x03, 0x04]);
-    assert_eq!(boot_reason::describe(0x02), "the updater, by command");
-    assert_eq!(boot_reason::describe(0x0A), "a reason unknown");
+    assert_eq!(BootReason::ECC_ERROR.into_inner(), 0x09);
 }
 
 #[test]
-fn every_boot_reason_is_described_apart() {
-    use bluenrg2::boot_reason::describe;
-    let known: Vec<_> = (0x01..=0x09).map(describe).collect();
-    for (i, d) in known.iter().enumerate() {
-        assert_ne!(*d, describe(0x0A), "{:#04x}", i + 1);
-        assert!(!known[..i].contains(d), "{d}");
+fn statuses_compare_with_their_constants_and_say_whether_they_succeeded() {
+    use bluenrg2::BootReason;
+    let p = [0x04, 0x0F, 0x04, 0x0C, 0x01, 0x9E, 0xFC];
+    assert!(matches!(parse(&p), Event::CommandStatus { status: BleStatus::COMMAND_DISALLOWED, .. }));
+    assert_eq!(BleStatus::new(0x64), BleStatus::INSUFFICIENT_RESOURCES);
+    assert_eq!(BleStatus::REMOTE_USER_TERMINATED.into_inner(), 0x13);
+    assert!(BleStatus::SUCCESS.is_success());
+    assert!(!BleStatus::new(0x01).is_success());
+    assert!(PairingStatus::new(0).is_success());
+    for code in 1..=3 {
+        assert!(!PairingStatus::new(code).is_success());
     }
+    assert_eq!([PairingStatus::TIMEOUT, PairingStatus::FAILED].map(PairingStatus::into_inner), [1, 2]);
+    assert_eq!(BootReason::new(0x05), BootReason::WATCHDOG);
+}
+
+#[test]
+fn a_status_is_an_error_written_with_its_code() {
+    assert_eq!(BleStatus::COMMAND_DISALLOWED.to_string(), "Command Disallowed (0x0c)");
+    assert_eq!(BleStatus::new(0x3F).to_string(), format!("{:?} (0x3f)", BleStatus::new(0x3F)));
+    assert_eq!(BleStatus::new(0x40).to_string(), "ST status 0x40");
+    assert_eq!(BleStatus::INSUFFICIENT_RESOURCES.to_string(), "ST status 0x64");
+    let e: &dyn core::error::Error = &BleStatus::new(0x48);
+    assert!(e.source().is_none());
 }
 
 #[test]

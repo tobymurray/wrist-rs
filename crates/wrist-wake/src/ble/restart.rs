@@ -7,7 +7,7 @@
 //! (install 252) left the driver `connected` to a chip in its updater, silent until the image
 //! was reinstalled.
 
-use bluenrg2::boot_reason;
+use bluenrg2::BootReason;
 
 /// Restarts the chip may make by itself in any hour before the driver holds it in reset, as the
 /// core's `RESETS_PER_HOUR`.
@@ -37,9 +37,9 @@ pub struct Restarts {
 impl Restarts {
     /// The event, with its `reason`, at `now` on a clock of `ticks_per_second`. `booting`: a
     /// reset through the pin is waiting for this event; it is the only boot that is not a restart.
-    pub fn initialized(&mut self, booting: bool, reason: u8, now: u64, ticks_per_second: u64) -> Boot {
+    pub fn initialized(&mut self, booting: bool, reason: BootReason, now: u64, ticks_per_second: u64) -> Boot {
         if booting {
-            return if boot_reason::updater(reason) { Boot::InUpdater } else { Boot::Up };
+            return if reason.is_updater() { Boot::InUpdater } else { Boot::Up };
         }
         let hour = 3_600 * ticks_per_second;
         match self.at.iter_mut().find(|at| at.is_none_or(|t| now.saturating_sub(t) >= hour)) {

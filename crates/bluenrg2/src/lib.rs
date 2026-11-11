@@ -51,7 +51,7 @@ pub mod opcode {
     /// Reads only; [`ACI_UPDATER_START`] reboots the chip into the updater.
     pub const ACI_HAL_GET_UPDATER_VERSION: u16 = 0xFC22;
     /// Reboots the chip into its updater: status 0, then `BLUE_INITIALIZED` with
-    /// [`super::boot_reason::UPDATER_BY_COMMAND`].
+    /// [`super::BootReason::UPDATER_BY_COMMAND`].
     pub const ACI_UPDATER_START: u16 = 0xFC20;
     pub const ACI_GAP_SET_NON_DISCOVERABLE: u16 = 0xFC81;
     pub const ACI_GAP_SET_DISCOVERABLE: u16 = 0xFC83;
@@ -180,62 +180,25 @@ pub mod vendor {
     pub const GATT_SERVER_CONFIRMATION: u16 = 0x0C17;
 }
 
-/// Why the chip says it started: `ACI_BLUE_INITIALIZED`'s reason code (ST's
-/// `bluenrg1_events.h`), its one parameter. The chip sends the event after every reset, asked for
-/// or not.
-pub mod boot_reason {
+/// Why the chip says it started: `ACI_BLUE_INITIALIZED`'s reason code (ST's `bluenrg1_events.h`).
+/// The chip sends the event after every reset, asked for or not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct BootReason(u8);
+
+impl BootReason {
     /// The stack started.
-    pub const STARTED: u8 = 0x01;
-    /// The updater runs, started by [`super::opcode::ACI_UPDATER_START`].
-    pub const UPDATER_BY_COMMAND: u8 = 0x02;
+    pub const STARTED: Self = Self(0x01);
+    /// The updater runs, started by [`opcode::ACI_UPDATER_START`].
+    pub const UPDATER_BY_COMMAND: Self = Self(0x02);
     /// The updater runs because the stack's image is not marked valid.
-    pub const UPDATER_BAD_FLAG: u8 = 0x03;
+    pub const UPDATER_BAD_FLAG: Self = Self(0x03);
     /// The updater runs because the IRQ pin was high at reset.
-    pub const UPDATER_BY_PIN: u8 = 0x04;
-    pub const WATCHDOG: u8 = 0x05;
-    pub const LOCKUP: u8 = 0x06;
-    pub const BROWNOUT: u8 = 0x07;
-    pub const CRASH: u8 = 0x08;
-    pub const ECC_ERROR: u8 = 0x09;
-
-    /// The updater runs instead of the stack: it answers normal commands with status `0x01`,
-    /// and only a reset brings the stack back.
-    #[must_use]
-    pub const fn updater(reason: u8) -> bool {
-        matches!(reason, UPDATER_BY_COMMAND | UPDATER_BAD_FLAG | UPDATER_BY_PIN)
-    }
-
-    /// What the reason says of the chip's last start, in a few words.
-    #[must_use]
-    pub const fn describe(reason: u8) -> &'static str {
-        match reason {
-            STARTED => "the stack started",
-            UPDATER_BY_COMMAND => "the updater, by command",
-            UPDATER_BAD_FLAG => "the updater, the stack not marked valid",
-            UPDATER_BY_PIN => "the updater, by the IRQ pin",
-            WATCHDOG => "a watchdog reset",
-            LOCKUP => "a lockup reset",
-            BROWNOUT => "a brownout reset",
-            CRASH => "a crash reset",
-            ECC_ERROR => "an ECC error reset",
-            _ => "a reason unknown",
-        }
-    }
-}
-
-/// `ACI_BLUE_INITIALIZED`'s reason ([`boot_reason`]); 0 if the event is empty.
-#[must_use]
-pub fn blue_initialized(params: &[u8]) -> u8 {
-    params.first().copied().unwrap_or(0)
-}
-
-/// A status or reason as the chip gives it (ST's `tBleStatus`): HCI's error codes below 0x40,
-/// ST's own (`ble_status.h`) from 0x40, which bt-hci's `Status` would misname.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub struct BleStatus(u8);
-
-impl BleStatus {
-    pub const SUCCESS: Self = Self(0);
+    pub const UPDATER_BY_PIN: Self = Self(0x04);
+    pub const WATCHDOG: Self = Self(0x05);
+    pub const LOCKUP: Self = Self(0x06);
+    pub const BROWNOUT: Self = Self(0x07);
+    pub const CRASH: Self = Self(0x08);
+    pub const ECC_ERROR: Self = Self(0x09);
 
     #[must_use]
     pub const fn new(code: u8) -> Self {
@@ -246,8 +209,50 @@ impl BleStatus {
     pub const fn into_inner(self) -> u8 {
         self.0
     }
+
+    /// The updater runs instead of the stack: it answers normal commands with status `0x01`,
+    /// and only a reset brings the stack back.
+    #[must_use]
+    pub const fn is_updater(self) -> bool {
+        matches!(self.0, 0x02..=0x04)
+    }
 }
 
+/// `ACI_BLUE_INITIALIZED`'s reason; `None` if the event is empty.
+#[must_use]
+pub fn blue_initialized(params: &[u8]) -> Option<BootReason> {
+    params.first().copied().map(BootReason)
+}
+
+/// A status or reason as the chip gives it (ST's `tBleStatus`): HCI's error codes below 0x40,
+/// ST's own (`ble_status.h`) from 0x40, which bt-hci's `Status` would misname.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BleStatus(u8);
+
+impl BleStatus {
+    pub const SUCCESS: Self = Self(0x00);
+    pub const COMMAND_DISALLOWED: Self = Self(0x0C);
+    pub const REMOTE_USER_TERMINATED: Self = Self(0x13);
+    /// No TX buffers for now; `GATT_TX_POOL_AVAILABLE` follows when there are.
+    pub const INSUFFICIENT_RESOURCES: Self = Self(0x64);
+
+    #[must_use]
+    pub const fn new(code: u8) -> Self {
+        Self(code)
+    }
+
+    #[must_use]
+    pub const fn into_inner(self) -> u8 {
+        self.0
+    }
+
+    #[must_use]
+    pub const fn is_success(self) -> bool {
+        self.0 == Self::SUCCESS.0
+    }
+}
+
+/// HCI's name below 0x40, else the code.
 impl core::fmt::Debug for BleStatus {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         if self.0 < 0x40 {
@@ -258,13 +263,18 @@ impl core::fmt::Debug for BleStatus {
     }
 }
 
-/// ST's command status codes (`ble_status.h`), HCI's among them.
-pub mod status {
-    pub const COMMAND_DISALLOWED: u8 = 0x0C;
-    pub const REMOTE_USER_TERMINATED: u8 = 0x13;
-    /// No TX buffers for now; `GATT_TX_POOL_AVAILABLE` follows when there are.
-    pub const INSUFFICIENT_RESOURCES: u8 = 0x64;
+/// HCI's name and the code below 0x40, `ST status 0x48` from it.
+impl core::fmt::Display for BleStatus {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        if self.0 < 0x40 {
+            write!(f, "{:?} (0x{:02x})", Status::new(self.0), self.0)
+        } else {
+            write!(f, "ST status 0x{:02x}", self.0)
+        }
+    }
 }
+
+impl core::error::Error for BleStatus {}
 
 /// `ACI_GATT_ADD_SERVICE`'s and `ACI_GATT_ADD_CHAR`'s UUID types.
 pub mod uuid_type {
@@ -497,8 +507,8 @@ impl Event<'_> {
     #[must_use]
     pub fn encryption(&self) -> Option<(ConnHandle, bool)> {
         match *self {
-            Event::EncryptionChange { handle, status, enabled } => Some((handle, status == BleStatus::SUCCESS && enabled != EncryptionEnabledLevel::Off)),
-            Event::EncryptionKeyRefresh { handle, status } => Some((handle, status == BleStatus::SUCCESS)),
+            Event::EncryptionChange { handle, status, enabled } => Some((handle, status.is_success() && enabled != EncryptionEnabledLevel::Off)),
+            Event::EncryptionKeyRefresh { handle, status } => Some((handle, status.is_success())),
             _ => None,
         }
     }
@@ -813,18 +823,37 @@ pub fn parse_address(text: &str) -> Option<Address> {
 }
 
 /// `GAP_PAIRING_COMPLETE`'s status: ST's own codes (`bluenrg1_events.h`), not HCI's.
-pub mod pairing_status {
-    pub const SUCCESS: u8 = 0x00;
-    pub const TIMEOUT: u8 = 0x01;
-    pub const FAILED: u8 = 0x02;
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PairingStatus(u8);
+
+impl PairingStatus {
+    pub const SUCCESS: Self = Self(0x00);
+    pub const TIMEOUT: Self = Self(0x01);
+    pub const FAILED: Self = Self(0x02);
     /// Encryption failed for a key the local device no longer holds.
-    pub const LTK_MISSING: u8 = 0x03;
+    pub const LTK_MISSING: Self = Self(0x03);
+
+    #[must_use]
+    pub const fn new(code: u8) -> Self {
+        Self(code)
+    }
+
+    #[must_use]
+    pub const fn into_inner(self) -> u8 {
+        self.0
+    }
+
+    #[must_use]
+    pub const fn is_success(self) -> bool {
+        self.0 == Self::SUCCESS.0
+    }
 }
 
-/// `GAP_PAIRING_COMPLETE`: status ([`pairing_status`]) and reason.
+/// `GAP_PAIRING_COMPLETE`: the status, and the SMP reason a pairing failed (Core Vol 3 Part H
+/// 3.5.5).
 #[must_use]
-pub fn pairing_complete(params: &[u8]) -> Option<(u8, u8)> {
-    Some((*params.get(2)?, *params.get(3)?))
+pub fn pairing_complete(params: &[u8]) -> Option<(PairingStatus, u8)> {
+    Some((PairingStatus(*params.get(2)?), *params.get(3)?))
 }
 
 /// The LE `ATT_MTU` before an exchange (Core Vol 3 Part G 5.2.1).

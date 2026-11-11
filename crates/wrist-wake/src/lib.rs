@@ -364,12 +364,12 @@ pub mod ble {
         /// # Errors
         /// The status, for any refusal but `INSUFFICIENT_RESOURCES`.
         pub fn sent(&mut self, chunk: [u8; N], n: usize, status: u8) -> Result<(), u8> {
-            match status {
-                0 => {
+            match bluenrg2::BleStatus::new(status) {
+                bluenrg2::BleStatus::SUCCESS => {
                     self.cut = chunk[..n].last() != Some(&b'\n');
                     Ok(())
                 }
-                bluenrg2::status::INSUFFICIENT_RESOURCES => {
+                bluenrg2::BleStatus::INSUFFICIENT_RESOURCES => {
                     self.held = Some((chunk, n));
                     Ok(())
                 }
