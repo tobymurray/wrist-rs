@@ -11,11 +11,12 @@
 //! `HCI_TL_SPI_Receive`) is the reference. With CS low, the host clocks a five-byte header out
 //! while the chip clocks its answer in ([`header_sizes`]).
 //!
-//! - **Write**: CS low, then wait for IRQ to rise; exchange [`HEADER_WRITE`]; if the room the chip
-//!   answers holds the whole packet, clock the packet out, else send nothing and try again later;
-//!   CS high.
+//! - **Write**: CS low, then wait for IRQ to rise; exchange [`HEADER_WRITE`]; unless the room the
+//!   chip answers holds the whole packet, CS high and start again; clock the packet out; CS high;
+//!   wait for IRQ to fall.
 //! - **Read**, when IRQ is high: CS low; exchange [`HEADER_READ`]; clock in as many bytes as the
-//!   chip answers waiting; CS high. Those bytes are one or more packets back to back.
+//!   chip answers waiting; wait for IRQ to fall; CS high. Those bytes are one or more packets back
+//!   to back.
 
 #![no_std]
 

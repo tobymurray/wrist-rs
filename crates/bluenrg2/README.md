@@ -46,8 +46,7 @@ assert!(rest.is_empty());
 ```
 
 The `opcode` module and the value modules beside it name a subset of the ACI; `command` builds
-any opcode. Standard events
-decode through [`bt-hci`](https://crates.io/crates/bt-hci).
+any opcode. Standard events decode through [`bt-hci`](https://crates.io/crates/bt-hci).
 
 Layouts follow:
 
