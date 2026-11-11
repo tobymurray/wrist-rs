@@ -303,7 +303,7 @@ pub mod evt_mask {
     pub const ATTRIBUTE_WRITE: u8 = 0x01;
 }
 
-/// Encryption key size bounds, in bytes, for `ACI_GATT_ADD_CHAR` and [`KeySizes`].
+/// Encryption key size bounds, in bytes (Core Vol 3 Part H 2.3.4).
 pub mod enc_key_size {
     pub const MIN: u8 = 7;
     pub const MAX: u8 = 16;
@@ -417,8 +417,7 @@ pub enum SecureConnections {
     Only = 0x02,
 }
 
-/// The encryption key sizes a pairing accepts, in bytes: from 7 to 16 (Core Vol 3 Part H 2.3.4),
-/// the least first.
+/// The encryption key sizes a pairing accepts, in bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct KeySizes {
     min: u8,
@@ -426,7 +425,7 @@ pub struct KeySizes {
 }
 
 impl KeySizes {
-    /// `None` unless `7 <= min <= max <= 16`.
+    /// `None` unless `min <= max`, both within [`enc_key_size`].
     #[must_use]
     pub const fn new(min: u8, max: u8) -> Option<Self> {
         if enc_key_size::MIN <= min && min <= max && max <= enc_key_size::MAX {
@@ -468,8 +467,8 @@ impl Passkey {
     }
 }
 
-/// The identity address a bond records: the public address, or the static random one
-/// ([`config::STATIC_RANDOM_ADDRESS`]).
+/// Which of the chip's addresses identifies it to a bonded peer; [`config::STATIC_RANDOM_ADDRESS`]
+/// sets the static random one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum IdentityAddress {
     Public,
