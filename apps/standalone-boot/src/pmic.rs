@@ -39,6 +39,7 @@ pub struct Snapshot {
     pub top_cntl3: Option<u8>,
     pub chg_status0: Option<u8>,
     pub chg_status1: Option<u8>,
+    pub chg_status2: Option<u8>,
     pub reg_status: Option<u8>,
     pub reset_monitor: Option<u8>,
     pub vcell_raw: Option<u16>,
@@ -84,7 +85,7 @@ const DIAG: [(&str, u8, Option<Unit>); 19] = [
 
 /// (chip, register, two bytes wide, read with every reading), in [`Snapshot`]'s order; the rest
 /// only with the full report.
-const READS: [(u8, u8, bool, bool); 20] = [
+const READS: [(u8, u8, bool, bool); 21] = [
     (PCA9420, pca9420::DEV_INFO, false, false),
     (PCA9420, pca9420::TOP_CNTL0, false, false),
     (PCA9420, pca9420::TOP_CNTL1, false, false),
@@ -105,6 +106,7 @@ const READS: [(u8, u8, bool, bool); 20] = [
     (MAX17262, max17262::FULL_CAP_REP, true, false),
     (MAX17262, max17262::DESIGN_CAP, true, false),
     (MAX17262, max17262::STATUS, true, true),
+    (PCA9420, pca9420::CHG_STATUS_2, false, true),
 ];
 
 impl Snapshot {
@@ -137,6 +139,7 @@ fn assemble(v: &[Option<u16>; READS.len()], diag: [Option<u16>; DIAG.len()], ful
         full_cap_raw: v[17],
         design_cap_raw: v[18],
         gauge_status: v[19],
+        chg_status2: b(20),
         diag,
         full,
     }
@@ -289,6 +292,8 @@ pub fn write_summary(uart: &mut Lines, s: &Snapshot) {
     hex_or_dashes(uart, s.chg_status0);
     uart.write_str(" ");
     hex_or_dashes(uart, s.chg_status1);
+    uart.write_str(" ");
+    hex_or_dashes(uart, s.chg_status2);
     uart.write_str("  gauge ");
     uart.write_str(match s.status2 {
         Some(st) if wrist_power::hibernating(st) => "hibernating",

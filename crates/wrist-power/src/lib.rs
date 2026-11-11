@@ -11,10 +11,13 @@ pub mod pca9420 {
     pub const TOP_CNTL3: u8 = 0x0C;
     pub const CHG_STATUS_0: u8 = 0x18;
     pub const CHG_STATUS_1: u8 = 0x19;
+    pub const CHG_STATUS_2: u8 = 0x1A;
     pub const REG_STATUS: u8 = 0x20;
     pub const RESET_MONITOR: u8 = 0x71;
     /// `CHG_STATUS_1.IN_PWR_STATUS`, bits 7:6; 0 is `VIN` below `VIN_UVLO` (Table 39).
     pub const IN_PWR_STATUS_SHIFT: u32 = 6;
+    /// `CHG_STATUS_2.BAT_CHG_STATUS` Done (Table 40).
+    pub const BAT_CHG_DONE: u8 = 0b110;
 }
 
 /// The MAX17262's registers and the bits used (ADI UG6595, UG6597).
@@ -74,6 +77,35 @@ use max17262::{
 pub fn external_power(pd_attached: Option<bool>, charger_status: Option<u8>) -> Option<bool> {
     if pd_attached == Some(true) { return Some(true); }
     charger_status.map(|v| v >> pca9420::IN_PWR_STATUS_SHIFT != 0).or(pd_attached)
+}
+
+#[must_use]
+pub const fn charge_done(chg_status_2: u8) -> bool {
+    chg_status_2 & 0b111 == pca9420::BAT_CHG_DONE
+}
+
+/// On battery or an unknown input the charge shown only falls; on external power it follows the
+/// gauge but reads 100 % only once the charger is done.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ShownCharge(Option<u8>);
+
+impl ShownCharge {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self(None)
+    }
+
+    /// `gauge` in whole percent; `None` keeps the last shown.
+    pub fn reading(&mut self, gauge: Option<u8>, external: Option<bool>, done: Option<bool>) -> Option<u8> {
+        if let Some(g) = gauge {
+            self.0 = Some(match (external, done) {
+                (Some(true), Some(true)) => 100,
+                (Some(true), _) => g.min(99),
+                _ => self.0.map_or(g, |shown| shown.min(g)),
+            });
+        }
+        self.0
+    }
 }
 
 /// Reads in a row, and the time they span, before an unanswered input counts as battery for Stop.

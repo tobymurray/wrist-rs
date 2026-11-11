@@ -892,6 +892,7 @@ async fn display(mut pwr_int: ExtiInput<'static, Async>) -> ! {
     let mut n: u32 = 0;
     let mut next_reading = Instant::now();
     let mut soc_pct = None;
+    let mut shown = wrist_power::ShownCharge::new();
     let mut cell_mv = None;
     let mut last_minute = None;
     let mut shown_page = Page::Face;
@@ -932,7 +933,7 @@ async fn display(mut pwr_int: ExtiInput<'static, Async>) -> ! {
             next_reading = Instant::now() + READING;
             n = n.wrapping_add(1);
             if let Some(bus) = pmic::BUS.lock().await.as_mut() {
-                (soc_pct, cell_mv) = read_power(uart, bus, n).await;
+                (soc_pct, cell_mv) = read_power(uart, bus, n, &mut shown).await;
             }
         }
         if let Some(panel) = panel.as_mut() {
@@ -1128,8 +1129,13 @@ fn minute_now() -> u32 {
     )
 }
 
-/// The charge in percent and the cell's voltage, for the face and the battery page.
-async fn read_power(uart: Uart, bus: &mut pmic::AsyncBus, n: u32) -> (Option<u8>, Option<u32>) {
+/// The charge shown, in percent, and the cell's voltage.
+async fn read_power(
+    uart: Uart,
+    bus: &mut pmic::AsyncBus,
+    n: u32,
+    shown: &mut wrist_power::ShownCharge,
+) -> (Option<u8>, Option<u32>) {
     let s = pmic::snapshot(bus, n.is_multiple_of(6)).await;
     pmic::restore_gauge(bus, s.gauge_status).await;
     if s.full && !s.gauge_status.is_some_and(wrist_power::gauge_reset) {
@@ -1145,7 +1151,19 @@ async fn read_power(uart: Uart, bus: &mut pmic::AsyncBus, n: u32) -> (Option<u8>
     }
     pmic::write_summary(&mut uart.lines(), &s);
     power::note_reading(&s);
-    (s.soc_raw.map(pmic::soc_percent), s.vcell_raw.map(pmic::vcell_mv))
+    let gauge = s.soc_raw.map(pmic::soc_percent);
+    let pct = shown.reading(gauge, power::external_input(), s.chg_status2.map(wrist_power::charge_done));
+    if let (Some(p), Some(g)) = (pct, gauge) {
+        if p != g {
+            let mut l = uart.lines();
+            l.write_str("[pwr] shown ");
+            l.write_u32(u32::from(p));
+            l.write_str(" %, the gauge's ");
+            l.write_u32(u32::from(g));
+            l.write_line(" %");
+        }
+    }
+    (pct, s.vcell_raw.map(pmic::vcell_mv))
 }
 
 static DISPLAY_WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
