@@ -451,7 +451,7 @@ fn a_static_random_address_has_its_top_bits_set_and_the_rest_never_all_zero_or_o
     assert_eq!(static_random(0x0000_3FFF_FFFF_FFFF), [0xFE, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
 }
 
-fn strap_report() -> Vec<u8> {
+fn heart_rate_report() -> Vec<u8> {
     let mut ad = vec![0x02, 0x01, 0x06, 0x05, 0x03, 0x0D, 0x18, 0x0F, 0x18];
     ad.extend([0x05, 0x09, b'H', b'1', b'0', b' ']);
     let mut r = vec![0x00, 0x01, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xC6, u8::try_from(ad.len()).unwrap()];
@@ -463,36 +463,36 @@ fn strap_report() -> Vec<u8> {
 #[test]
 fn advertising_reports_decode() {
     let mut p = vec![0x04, 0x3E, 0x00, 0x02, 0x02];
-    p.extend(strap_report());
+    p.extend(heart_rate_report());
     // A scan response from a public address, carrying only a name.
     p.extend([0x04, 0x00, 1, 2, 3, 4, 5, 6, 4, 3, 0x08, b'P', b'M', 0xB0]);
     p[2] = u8::try_from(p.len() - 3).unwrap();
     let Event::LeAdvertisingReport { data } = parse(&p) else { panic!("not a report") };
     let all: Vec<_> = reports(data).collect();
     assert_eq!(all.len(), 2);
-    let strap = all[0];
-    assert_eq!(strap.kind, LeAdvEventKind::AdvInd);
-    assert_eq!(strap.address, Address { kind: AddrKind::RANDOM, bytes: [0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xC6] });
-    assert_eq!(strap.rssi, -67);
-    assert_eq!(ad_name(strap.data), Some(&b"H10 "[..]));
-    assert_eq!(ad_uuid16s(strap.data).collect::<Vec<_>>(), [0x180D, 0x180F]);
+    let first = all[0];
+    assert_eq!(first.kind, LeAdvEventKind::AdvInd);
+    assert_eq!(first.address, Address { kind: AddrKind::RANDOM, bytes: [0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xC6] });
+    assert_eq!(first.rssi, -67);
+    assert_eq!(ad_name(first.data), Some(&b"H10 "[..]));
+    assert_eq!(ad_uuid16s(first.data).collect::<Vec<_>>(), [0x180D, 0x180F]);
     assert_eq!(all[1].kind, LeAdvEventKind::ScanRsp);
     assert_eq!(ad_name(all[1].data), Some(&b"PM"[..]));
     assert_eq!(all[1].rssi, -80);
     // A count past what the event holds stops at the last whole report.
     let mut cut = vec![0x03];
-    cut.extend(strap_report());
-    cut.extend(&strap_report()[..5]);
+    cut.extend(heart_rate_report());
+    cut.extend(&heart_rate_report()[..5]);
     assert_eq!(reports(&cut).count(), 1);
 }
 
 #[test]
 fn advertising_data_with_a_128_bit_uuid_and_junk() {
     // CE060000-43E5-11E4-916C-0800200C9A66, little-endian.
-    let pm5 = [0x66, 0x9A, 0x0C, 0x20, 0x00, 0x08, 0x6C, 0x91, 0xE4, 0x11, 0xE5, 0x43, 0x00, 0x00, 0x06, 0xCE];
+    let uuid = [0x66, 0x9A, 0x0C, 0x20, 0x00, 0x08, 0x6C, 0x91, 0xE4, 0x11, 0xE5, 0x43, 0x00, 0x00, 0x06, 0xCE];
     let mut ad = vec![17, 0x07];
-    ad.extend(pm5);
-    assert_eq!(ad_uuid128s(&ad).collect::<Vec<_>>(), [&pm5]);
+    ad.extend(uuid);
+    assert_eq!(ad_uuid128s(&ad).collect::<Vec<_>>(), [&uuid]);
     // A structure longer than the data, and a zero length, end the list without a panic.
     assert_eq!(ad_name(&[0x09, 0x09, b'x']), None);
     assert_eq!(ad_uuid16s(&[0x00, 0x03, 0x0D, 0x18]).count(), 0);
@@ -654,7 +654,7 @@ fn the_largest_bonded_devices_reply_fits_the_return_parameters() {
 
 #[test]
 fn an_st_status_is_not_named_as_an_hci_error() {
-    // ST's 0x48, out of memory, as the chip refused an `ACI_GATT_ADD_SERVICE`.
+    // ST's 0x48, out of memory, refusing an `ACI_GATT_ADD_SERVICE`.
     let named = [
         format!("{:?}", parse(&[0x04, 0x0E, 0x04, 0x01, 0x02, 0xFD, 0x48])),
         format!("{:?}", parse(&[0x04, 0x0F, 0x04, 0x48, 0x01, 0x02, 0xFD])),
