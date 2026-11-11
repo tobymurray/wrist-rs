@@ -1577,7 +1577,7 @@ impl Link<'_> {
                 self.pair_ask.connected(Instant::now().as_ticks(), embassy_time::TICK_HZ);
                 self.interval_ask.connected();
                 if let Some(t) = timing {
-                    INTERVAL.store(t.conn_interval, Ordering::Relaxed);
+                    INTERVAL.store(t.conn_interval.as_u16(), Ordering::Relaxed);
                     LATENCY.store(t.peripheral_latency, Ordering::Relaxed);
                 }
                 set_state(STATE_CONNECTED);
@@ -1596,10 +1596,10 @@ impl Link<'_> {
                 CONNECT_FAILURES.fetch_add(1, Ordering::Relaxed);
             }
             Event::LeConnectionUpdateComplete { conn_interval: iv, peripheral_latency: lat, .. } => {
-                INTERVAL.store(iv, Ordering::Relaxed);
+                INTERVAL.store(iv.as_u16(), Ordering::Relaxed);
                 LATENCY.store(lat, Ordering::Relaxed);
                 self.uart.write_str("[ble] connection interval ");
-                write_interval(self.uart, iv);
+                write_interval(self.uart, iv.as_u16());
                 self.uart.write_str(", latency ");
                 self.uart.write_u32(u32::from(lat));
                 self.uart.write_line("");
@@ -1880,7 +1880,7 @@ fn clear_prompt() {
 
 /// A connection interval in 1.25 ms units as milliseconds, `48.75 ms`.
 fn write_interval(uart: Uart, units: u16) {
-    let hundredths = bluenrg2::interval_hundredths_ms(units);
+    let hundredths = u32::from(units) * 125;
     uart.write_u32(hundredths / 100);
     uart.write_str(if hundredths % 100 < 10 { ".0" } else { "." });
     uart.write_u32(hundredths % 100);

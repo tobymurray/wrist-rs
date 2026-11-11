@@ -2,8 +2,8 @@
 
 use bluenrg2::{vendor, BleStatus, BootReason, Event};
 use wrist_ble::{
-    BdAddr, ChipInfo, ConnHandle, Failure, FailureKind, Interval, LeConnRole, LinkParams, PairingEvent, PairingStep, PeerAddr, RadioEvent,
-    ResetCause, Status, Timeout,
+    BdAddr, ChipInfo, ConnHandle, Failure, FailureKind, LeConnRole, LinkParams, PairingEvent, PairingStep, PeerAddr, RadioEvent, ResetCause,
+    Status,
 };
 
 /// The chip's packets as the core's events. ST's bond-lost event names no link, so the
@@ -29,11 +29,11 @@ impl Translator {
                 if role == LeConnRole::Peripheral {
                     self.phone = Some(link);
                 }
-                let params = timing.map(|t| params(t.conn_interval, t.peripheral_latency, t.supervision_timeout));
+                let params = timing.map(|t| LinkParams { interval: t.conn_interval, latency: t.peripheral_latency, timeout: t.supervision_timeout });
                 RadioEvent::LinkUp { link, role, peer: PeerAddr { kind: peer.kind, addr: BdAddr::new(peer.bytes) }, params }
             }
             Event::LeConnectionUpdateComplete { handle, conn_interval, peripheral_latency, supervision_timeout } => {
-                RadioEvent::Params { link: handle, result: Ok(params(conn_interval, peripheral_latency, supervision_timeout)) }
+                RadioEvent::Params { link: handle, result: Ok(LinkParams { interval: conn_interval, latency: peripheral_latency, timeout: supervision_timeout }) }
             }
             Event::LeConnectionUpdateFailed { handle, status } => {
                 RadioEvent::Params { link: handle, result: Err(failure(FailureKind::PeerRejected, status.into_inner())) }
@@ -104,10 +104,6 @@ impl Translator {
             _ => RadioEvent::Unknown { raw_code: code },
         })
     }
-}
-
-fn params(interval: u16, latency: u16, timeout: u16) -> LinkParams {
-    LinkParams { interval: Interval::from_u16(interval), latency, timeout: Timeout::from_u16(timeout) }
 }
 
 fn failure(kind: FailureKind, native: u8) -> Failure {

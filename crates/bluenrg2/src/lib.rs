@@ -17,7 +17,7 @@ pub mod hal;
 
 pub use bt_hci;
 pub use bt_hci::data::{AclBroadcastFlag, AclPacketBoundary};
-pub use bt_hci::param::{AddrKind, ConnHandle, EncryptionEnabledLevel, LeAdvEventKind, LeConnRole};
+pub use bt_hci::param::{AddrKind, ConnHandle, Duration, EncryptionEnabledLevel, LeAdvEventKind, LeConnRole};
 
 use bt_hci::data::AclPacket;
 use bt_hci::param::{BdAddr, Status};
@@ -446,12 +446,13 @@ pub struct Address {
     pub bytes: [u8; 6],
 }
 
-/// A connection's interval (1.25 ms units), peripheral latency and supervision timeout (10 ms units).
+/// A connection's timing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ConnTiming {
-    pub conn_interval: u16,
+    pub conn_interval: Duration<1_250>,
+    /// Connection events the peripheral may skip.
     pub peripheral_latency: u16,
-    pub supervision_timeout: u16,
+    pub supervision_timeout: Duration<10_000>,
 }
 
 /// The event in one HCI packet, by section of the Core Specification, Vol 4 Part E, whose
@@ -469,9 +470,8 @@ pub enum Event<'a> {
     LeConnectionComplete { handle: ConnHandle, role: LeConnRole, peer: Address, timing: Option<ConnTiming> },
     /// LE (Enhanced) Connection Complete with an error: no connection formed.
     LeConnectionFailed { status: BleStatus },
-    /// LE Connection Update Complete (7.7.65.3) with success: interval (1.25 ms units), latency,
-    /// supervision timeout (10 ms units).
-    LeConnectionUpdateComplete { handle: ConnHandle, conn_interval: u16, peripheral_latency: u16, supervision_timeout: u16 },
+    /// LE Connection Update Complete (7.7.65.3) with success: the link's new timing.
+    LeConnectionUpdateComplete { handle: ConnHandle, conn_interval: Duration<1_250>, peripheral_latency: u16, supervision_timeout: Duration<10_000> },
     /// LE Connection Update Complete with an error: the link keeps the parameters it had.
     LeConnectionUpdateFailed { handle: ConnHandle, status: BleStatus },
     /// Disconnection Complete (7.7.5): a status other than success is a disconnection that
@@ -591,9 +591,9 @@ fn le_meta(params: &[u8]) -> Option<Event<'_>> {
                 let e: le::LeConnectionUpdateComplete = first(params)?;
                 Event::LeConnectionUpdateComplete {
                     handle: link(e.handle.raw())?,
-                    conn_interval: e.conn_interval.as_u16(),
+                    conn_interval: e.conn_interval,
                     peripheral_latency: e.peripheral_latency,
-                    supervision_timeout: e.supervision_timeout.as_u16(),
+                    supervision_timeout: e.supervision_timeout,
                 }
             } else {
                 // A failure's interval, latency and timeout mean nothing (Core Vol 4 Part E §7.7.65.3).
@@ -642,10 +642,10 @@ fn connection_complete(code: u8, params: &[u8]) -> Option<Event<'_>> {
         role,
         // An Enhanced event says 2 or 3 for an identity it resolved: still public or random.
         peer: Address { kind: AddrKind::new(kind.as_raw() & 0x01), bytes: peer.into_inner() },
-        timing: timing.map(|(interval, latency, timeout)| ConnTiming {
-            conn_interval: interval.as_u16(),
-            peripheral_latency: latency,
-            supervision_timeout: timeout.as_u16(),
+        timing: timing.map(|(conn_interval, peripheral_latency, supervision_timeout)| ConnTiming {
+            conn_interval,
+            peripheral_latency,
+            supervision_timeout,
         }),
     })
 }
@@ -866,12 +866,6 @@ pub fn att_mtu(params: &[u8]) -> Option<u16> {
     Some(u16::from_le_bytes([v[0], v[1]]))
 }
 
-/// A connection interval in 1.25 ms units as hundredths of a millisecond.
-#[must_use]
-pub fn interval_hundredths_ms(units: u16) -> u32 {
-    u32::from(units) * 125
-}
-
 /// A UUID as an attribute carries it: 16-bit, or 128-bit little-endian.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Uuid {
@@ -1017,10 +1011,11 @@ pub fn gap_proc_complete(params: &[u8]) -> Option<(u8, BleStatus)> {
 pub struct L2capUpdateRequest {
     pub handle: ConnHandle,
     pub identifier: u8,
-    pub interval_min: u16,
-    pub interval_max: u16,
+    pub interval_min: Duration<1_250>,
+    pub interval_max: Duration<1_250>,
+    /// Connection events the peripheral may skip.
     pub latency: u16,
-    pub timeout: u16,
+    pub timeout: Duration<10_000>,
 }
 
 impl L2capUpdateRequest {
@@ -1030,7 +1025,14 @@ impl L2capUpdateRequest {
     pub fn decode(params: &[u8]) -> Option<Self> {
         let p = params.get(..13)?;
         let at = |i: usize| u16::from_le_bytes([p[i], p[i + 1]]);
-        Some(Self { handle: connection_handle(p)?, identifier: p[2], interval_min: at(5), interval_max: at(7), latency: at(9), timeout: at(11) })
+        Some(Self {
+            handle: connection_handle(p)?,
+            identifier: p[2],
+            interval_min: Duration::from_u16(at(5)),
+            interval_max: Duration::from_u16(at(7)),
+            latency: at(9),
+            timeout: Duration::from_u16(at(11)),
+        })
     }
 }
 

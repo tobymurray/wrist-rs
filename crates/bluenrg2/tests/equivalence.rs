@@ -5,7 +5,7 @@ use proptest::prelude::*;
 
 mod reference {
     use bluenrg2::bt_hci::FromHciBytes;
-    use bluenrg2::{event_code, le_subevent, packet, packet_len, packet_whole, AclBroadcastFlag, AclPacketBoundary, AddrKind, Address, ConnHandle, ConnTiming, EncryptionEnabledLevel, Event, LeConnRole, BleStatus};
+    use bluenrg2::{event_code, le_subevent, packet, packet_len, packet_whole, AclBroadcastFlag, AclPacketBoundary, AddrKind, Address, ConnHandle, ConnTiming, Duration, EncryptionEnabledLevel, Event, LeConnRole, BleStatus};
 
     /// The event in one HCI packet, read no further than the packet's own length, with no
     /// connection handle above 0x0EFF.
@@ -74,19 +74,19 @@ mod reference {
                     // An Enhanced event says 2 or 3 for an identity it resolved: still public or random.
                     peer: Address { kind: AddrKind::new(kind & 0x01), bytes: [*a0, *a1, *a2, *a3, *a4, *a5] },
                     timing: p.get(at..at + 6).map(|v| ConnTiming {
-                        conn_interval: u16::from_le_bytes([v[0], v[1]]),
+                        conn_interval: Duration::from_u16(u16::from_le_bytes([v[0], v[1]])),
                         peripheral_latency: u16::from_le_bytes([v[2], v[3]]),
-                        supervision_timeout: u16::from_le_bytes([v[4], v[5]]),
+                        supervision_timeout: Duration::from_u16(u16::from_le_bytes([v[4], v[5]])),
                     }),
                 }
             }
             [EVENT, ev::LE_META, _, le::CONNECTION_COMPLETE | le::ENHANCED_CONNECTION_COMPLETE, status @ 0x01..=0xFF, ..] => Event::LeConnectionFailed { status: BleStatus::new(*status) },
             [EVENT, ev::LE_META, _, le::CONNECTION_UPDATE_COMPLETE, 0x00, _, _, _, _, _, _, ..] => Event::LeConnectionUpdateComplete {
                 handle: handle_at(5),
-                conn_interval: u16_at(7),
+                conn_interval: Duration::from_u16(u16_at(7)),
                 peripheral_latency: u16_at(9),
                 // A shorter one is malformed, so what stands in here is never compared.
-                supervision_timeout: p.get(11..13).map_or(0, |v| u16::from_le_bytes([v[0], v[1]])),
+                supervision_timeout: Duration::from_u16(p.get(11..13).map_or(0, |v| u16::from_le_bytes([v[0], v[1]]))),
             },
             [EVENT, ev::LE_META, _, le::CONNECTION_UPDATE_COMPLETE, status @ 0x01..=0xFF, _, _, ..] => {
                 Event::LeConnectionUpdateFailed { handle: handle_at(5), status: BleStatus::new(*status) }
@@ -296,7 +296,7 @@ fn where_the_reference_takes_what_the_layout_does_not_allow() {
     assert!(matches!(reference::parse(&reserved_role), Event::LeConnectionComplete { role: LeConnRole::Peripheral, .. }));
     assert_eq!(parse(&reserved_role), Event::Malformed(&reserved_role));
     for p in [shortened(&connection, 18), reserved_accuracy] {
-        assert!(matches!(reference::parse(&p), Event::LeConnectionComplete { handle, timing: Some(ConnTiming { conn_interval: 24, .. }), .. } if handle == ConnHandle::new(0x0801)));
+        assert!(matches!(reference::parse(&p), Event::LeConnectionComplete { handle, timing: Some(ConnTiming { conn_interval, .. }), .. } if handle == ConnHandle::new(0x0801) && conn_interval.as_u16() == 24));
         assert_eq!(
             parse(&p),
             Event::LeConnectionComplete { handle: ConnHandle::new(0x0801), role: LeConnRole::Peripheral, peer, timing: None }

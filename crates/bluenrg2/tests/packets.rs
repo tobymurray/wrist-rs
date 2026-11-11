@@ -1,18 +1,18 @@
 //! Packets as the BlueNRG-2 sends them.
 
 use bluenrg2::{
-    ad_name, bonded_devices, gatt_proc_complete, interval_hundredths_ms, parse_address, ad_uuid128s, ad_uuid16s, att_mtu, characteristics, command, descriptors, gap_proc_complete, gatt_error,
+    ad_name, bonded_devices, gatt_proc_complete, parse_address, ad_uuid128s, ad_uuid16s, att_mtu, characteristics, command, descriptors, gap_proc_complete, gatt_error,
     header_sizes, notification, numeric_comparison, packet_len, packet_whole, pairing_complete, parse, read_value,
     reports, service_range, services, vendor, Address, AttributeModified, Characteristic, Event, L2capUpdateRequest,
-    L2capUpdateResponse, Service, Uuid, AddrKind, ConnHandle, ConnTiming, EncryptionEnabledLevel, LeAdvEventKind, LeConnRole, BleStatus, PairingStatus,
+    L2capUpdateResponse, Service, Uuid, AddrKind, ConnHandle, ConnTiming, EncryptionEnabledLevel, LeAdvEventKind, LeConnRole, BleStatus, Duration, PairingStatus,
 };
 
 fn link() -> ConnHandle {
     ConnHandle::new(0x0801)
 }
 
-fn timing(conn_interval: u16) -> ConnTiming {
-    ConnTiming { conn_interval, peripheral_latency: 0, supervision_timeout: 500 }
+fn timing(units: u16) -> ConnTiming {
+    ConnTiming { conn_interval: Duration::from_u16(units), peripheral_latency: 0, supervision_timeout: Duration::from_secs(5) }
 }
 
 /// A vendor event packet: `04 FF len code params`.
@@ -297,7 +297,12 @@ fn connection_update_complete_succeeds_or_fails_with_its_handle() {
     let p = le_event(0x03, &[0x00, 0x01, 0x08, 12, 0, 0, 0, 0xF4, 0x01]);
     assert_eq!(
         parse(&p),
-        Event::LeConnectionUpdateComplete { handle: link(), conn_interval: 12, peripheral_latency: 0, supervision_timeout: 500 }
+        Event::LeConnectionUpdateComplete {
+            handle: link(),
+            conn_interval: Duration::from_micros(15_000),
+            peripheral_latency: 0,
+            supervision_timeout: Duration::from_millis(5_000)
+        }
     );
     // Unacceptable Connection Parameters, Unsupported Remote Feature, LL Response Timeout:
     // the interval and latency fields mean nothing then.
@@ -625,19 +630,19 @@ fn descriptors_service_range_and_values_decode() {
 }
 
 #[test]
-fn a_connection_interval_reads_in_hundredths_of_a_millisecond() {
-    assert_eq!(interval_hundredths_ms(24), 3000);
-    assert_eq!(interval_hundredths_ms(6), 750);
-    assert_eq!(interval_hundredths_ms(3200), 400_000);
-}
-
-#[test]
 fn a_peripherals_parameter_request_decodes() {
     // Connection 0x0801, identifier 7, L2CAP length 8, 400 to 800 ms, latency 0, 6 s.
     let p = [0x01, 0x08, 7, 8, 0, 0x40, 0x01, 0x80, 0x02, 0, 0, 0x58, 0x02];
     assert_eq!(
         L2capUpdateRequest::decode(&p),
-        Some(L2capUpdateRequest { handle: link(), identifier: 7, interval_min: 320, interval_max: 640, latency: 0, timeout: 600 })
+        Some(L2capUpdateRequest {
+            handle: link(),
+            identifier: 7,
+            interval_min: Duration::from_millis(400),
+            interval_max: Duration::from_millis(800),
+            latency: 0,
+            timeout: Duration::from_secs(6)
+        })
     );
     assert_eq!(L2capUpdateRequest::decode(&p[..12]), None);
 }
