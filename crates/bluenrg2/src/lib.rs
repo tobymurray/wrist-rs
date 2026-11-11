@@ -16,8 +16,10 @@ struct ReadmeDoctests;
 pub mod hal;
 
 pub use bt_hci;
+pub use bt_hci::data::{AclBroadcastFlag, AclPacketBoundary};
 pub use bt_hci::param::{AddrKind, ConnHandle, EncryptionEnabledLevel, LeAdvEventKind, LeConnRole};
 
+use bt_hci::data::AclPacket;
 use bt_hci::param::{BdAddr, Status};
 use bt_hci::FromHciBytes;
 
@@ -411,25 +413,22 @@ const COMMAND_HEADER_LEN: usize = 4;
 /// The longest packet [`command`] writes.
 pub const MAX_COMMAND: usize = COMMAND_HEADER_LEN + u8::MAX as usize;
 
-/// The length of the HCI packet at the start of `p`, clamped to `p`; 0 if
-/// empty. A read may hold several packets back to back.
+/// The length the packet at the start of `p` gives in its header, which may run past the end of
+/// `p`; `None` unless `p` starts with a whole event or ACL header, so nothing says where a packet
+/// ends. A read may hold several packets back to back.
 #[must_use]
-pub fn packet_len(p: &[u8]) -> usize {
+pub fn packet_len(p: &[u8]) -> Option<usize> {
     match p {
-        [packet::EVENT, _, len, ..] => (3 + usize::from(*len)).min(p.len()),
-        [packet::ACL, _, _, lo, hi, ..] => (5 + usize::from(u16::from_le_bytes([*lo, *hi]))).min(p.len()),
-        _ => p.len(),
+        [packet::EVENT, _, len, ..] => Some(3 + usize::from(*len)),
+        [packet::ACL, _, _, lo, hi, ..] => Some(5 + usize::from(u16::from_le_bytes([*lo, *hi]))),
+        _ => None,
     }
 }
 
-/// True when the packet's own length field fits inside what was read.
+/// Whether `p` starts with a whole packet: its header, and as many bytes as the header says.
 #[must_use]
 pub fn packet_whole(p: &[u8]) -> bool {
-    match p {
-        [packet::EVENT, _, len, ..] => 3 + usize::from(*len) <= p.len(),
-        [packet::ACL, _, _, lo, hi, ..] => 5 + usize::from(u16::from_le_bytes([*lo, *hi])) <= p.len(),
-        _ => true,
-    }
+    packet_len(p).is_some_and(|len| len <= p.len())
 }
 
 /// A device address as the air carries it: little-endian, and public or random.
@@ -486,6 +485,9 @@ pub enum Event<'a> {
     LeUnknown { subevent_code: u8 },
     /// Another HCI event, by event code.
     Unknown { code: u8 },
+    /// ACL data (Core Vol 4 Part E 5.4.2), as the chip sends it in its link-layer-only
+    /// configuration (ST's `bluenrg1_hal_aci.h`, `LL_WITHOUT_HOST`).
+    Acl { handle: ConnHandle, boundary: AclPacketBoundary, broadcast: AclBroadcastFlag, data: &'a [u8] },
     /// Not an HCI event, cut short by the end of the read, or not fitting its layout.
     Malformed(&'a [u8]),
 }
@@ -506,15 +508,22 @@ impl Event<'_> {
 /// The event in one HCI packet, read no further than the packet's own length.
 #[must_use]
 pub fn parse(p: &[u8]) -> Event<'_> {
-    if !packet_whole(p) {
+    let Some(p) = packet_len(p).and_then(|len| p.get(..len)) else {
         return Event::Malformed(p);
-    }
-    let p = &p[..packet_len(p)];
+    };
     let event = match p {
         [packet::EVENT, code, _, params @ ..] => standard(*code, params),
+        [packet::ACL, rest @ ..] => acl(rest),
         _ => None,
     };
     event.unwrap_or(Event::Malformed(p))
+}
+
+fn acl(p: &[u8]) -> Option<Event<'_>> {
+    let acl: AclPacket = first(p)?;
+    // Checked before `AclPacket::handle`, which panics above 0x0EFF.
+    let handle = link(acl.header().handle & 0x0FFF)?;
+    Some(Event::Acl { handle, boundary: acl.boundary_flag(), broadcast: acl.broadcast_flag(), data: acl.data() })
 }
 
 /// The value at the start of `b`, the bytes after it ignored.

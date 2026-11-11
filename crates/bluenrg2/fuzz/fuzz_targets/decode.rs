@@ -54,11 +54,16 @@ fuzz_target!(|read: &[u8]| {
     let mut at = 0;
     while at < read.len() {
         let rest = &read[at..];
-        let len = packet_len(rest);
-        assert!(len > 0 && len <= rest.len());
-        let packet = &rest[..len];
+        let Some(packet) = packet_len(rest).and_then(|len| rest.get(..len)) else {
+            // Nothing says where a packet ends, so the read ends.
+            assert!(!packet_whole(rest));
+            assert_eq!(parse(rest), Event::Malformed(rest));
+            break;
+        };
+        assert!(!packet.is_empty());
         match parse(rest) {
             Event::Malformed(p) => within(rest, p),
+            Event::Acl { data, .. } => within(packet, data),
             Event::CommandComplete { return_param_bytes, .. } => within(packet, return_param_bytes),
             Event::LeAdvertisingReport { data } => {
                 within(packet, data);
@@ -77,10 +82,6 @@ fuzz_target!(|read: &[u8]| {
             Event::LeConnectionUpdateComplete { .. } => assert!(packet.len() >= 13),
             _ => assert!(packet_whole(rest)),
         }
-        // A packet cut short ends the read.
-        if !packet_whole(rest) {
-            break;
-        }
-        at += len;
+        at += packet.len();
     }
 });

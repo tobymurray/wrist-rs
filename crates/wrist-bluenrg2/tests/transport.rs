@@ -309,6 +309,17 @@ fn a_packet_cut_short_is_counted_and_drops_what_follows() {
 }
 
 #[test]
+fn a_header_too_short_for_its_length_or_bytes_starting_no_packet_end_the_read_counted() {
+    let whole = event(0x05, &[0, 1, 8, 0x13]);
+    for tail in [&[0x04, 0x0E][..], &[0x02, 0x01, 0x20, 0x02], &[0x00, 0x04, 0x05, 0x00, 0x04, 0x05, 0x04, 0x00, 0x01, 0x08, 0x13]] {
+        let counts = Counts::new();
+        let read = [&whole[..], tail].concat();
+        assert_eq!(packets(&read, &counts).take(3).collect::<Vec<_>>(), vec![&whole[..]], "{tail:02X?}");
+        assert_eq!(counts.cut_short.load(Ordering::Relaxed), 1, "{tail:02X?}");
+    }
+}
+
+#[test]
 fn an_empty_read_waits_before_the_next() {
     let (c, mut t) = chip(128);
     c.borrow_mut().queued.push(Vec::new());

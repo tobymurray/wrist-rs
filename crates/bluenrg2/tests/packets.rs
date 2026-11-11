@@ -80,8 +80,8 @@ fn two_events_in_one_read_are_measured_apart() {
     let mut read = vendor_event(vendor::GATT_PROC_COMPLETE, &[0x01, 0x08, 0x00]);
     let first = read.len();
     read.extend(vendor_event(vendor::ATT_EXCHANGE_MTU_RESP, &[0x01, 0x08, 0xDC, 0x00]));
-    assert_eq!(packet_len(&read), first);
-    assert_eq!(packet_len(&read[first..]), read.len() - first);
+    assert_eq!(packet_len(&read), Some(first));
+    assert_eq!(packet_len(&read[first..]), Some(read.len() - first));
 }
 
 #[test]
@@ -89,7 +89,28 @@ fn a_packet_cut_short_is_not_whole() {
     let p = vendor_event(vendor::GATT_ATTRIBUTE_MODIFIED, &[0u8; 225]);
     assert!(packet_whole(&p));
     assert!(!packet_whole(&p[..200]));
-    assert_eq!(packet_len(&p[..200]), 200);
+    assert_eq!(packet_len(&p[..200]), Some(p.len()));
+}
+
+#[test]
+fn a_header_too_short_to_carry_its_length_gives_none() {
+    for p in [&[][..], &[0x04], &[0x04, 0x0E], &[0x02, 0x01, 0x20, 0x02]] {
+        assert_eq!(packet_len(p), None, "{p:02X?}");
+        assert!(!packet_whole(p), "{p:02X?}");
+        assert_eq!(parse(p), Event::Malformed(p));
+    }
+    assert_eq!(packet_len(&[0x04, 0x0E, 0x00]), Some(3));
+    assert_eq!(packet_len(&[0x02, 0x01, 0x20, 0x00, 0x00]), Some(5));
+}
+
+#[test]
+fn bytes_that_start_no_packet_give_no_length() {
+    // A command packet, which only the host sends, padding, and a stray byte.
+    for p in [&[0x01, 0x01, 0x10, 0x00][..], &[0x00, 0x04, 0x05, 0x00], &[0xFF, 0x04, 0x0E, 0x00]] {
+        assert_eq!(packet_len(p), None, "{p:02X?}");
+        assert!(!packet_whole(p), "{p:02X?}");
+        assert_eq!(parse(p), Event::Malformed(p));
+    }
 }
 
 #[test]
@@ -99,11 +120,29 @@ fn an_acl_packet_is_measured_by_its_16_bit_length() {
     read.extend([0x5A; 258]);
     let acl = read.len();
     read.extend(vendor_event(vendor::GATT_PROC_COMPLETE, &[0x01, 0x08, 0x00]));
-    assert_eq!(packet_len(&read), acl);
+    assert_eq!(packet_len(&read), Some(acl));
     assert!(packet_whole(&read[..acl]));
     assert!(!packet_whole(&read[..acl - 1]));
-    assert_eq!(packet_len(&read[..acl - 1]), acl - 1);
+    assert_eq!(packet_len(&read[..acl - 1]), Some(acl));
     assert_eq!(parse(&read[acl..]), Event::Vendor { code: vendor::GATT_PROC_COMPLETE, params: &[0x01, 0x08, 0x00] });
+}
+
+#[test]
+fn acl_data_decodes_with_its_handle_flags_and_data() {
+    use bluenrg2::{AclBroadcastFlag, AclPacketBoundary};
+    // Handle 0x0801, a first automatically flushable fragment, point to point, then two bytes.
+    let p = [0x02, 0x01, 0x28, 0x02, 0x00, 0x5A, 0xA5, 0x04];
+    assert_eq!(
+        parse(&p),
+        Event::Acl { handle: link(), boundary: AclPacketBoundary::FirstFlushable, broadcast: AclBroadcastFlag::PointToPoint, data: &[0x5A, 0xA5] }
+    );
+    let continuing = [0x02, 0x01, 0x18, 0x00, 0x00];
+    assert!(matches!(parse(&continuing), Event::Acl { boundary: AclPacketBoundary::Continuing, data: [], .. }));
+    let complete = [0x02, 0x01, 0x78, 0x00, 0x00];
+    assert!(matches!(parse(&complete), Event::Acl { boundary: AclPacketBoundary::Complete, broadcast: AclBroadcastFlag::BrEdrBroadcast, .. }));
+    // A handle above 0x0EFF, whatever the flags.
+    assert_eq!(parse(&[0x02, 0x00, 0x2F, 0x00, 0x00]), Event::Malformed(&[0x02, 0x00, 0x2F, 0x00, 0x00]));
+    assert_eq!(parse(&p[..6]), Event::Malformed(&p[..6]));
 }
 
 #[test]
@@ -383,9 +422,8 @@ fn malformed_packets_are_named_not_dropped() {
         // An LE meta event with no subevent, a vendor event with half a code.
         &[0x04, 0x3E, 0x00],
         &[0x04, 0xFF, 0x01, 0x01],
-        // Not an event: a command packet, ACL data, a stray byte.
+        // Not an event: a command packet, a stray byte.
         &[0x01, 0x01, 0x10, 0x00],
-        &[0x02, 0x01, 0x20, 0x01, 0x00, 0x5A],
         &[0xFF, 0x04, 0x05],
     ] {
         assert_eq!(parse(p), Event::Malformed(p), "{p:02X?}");

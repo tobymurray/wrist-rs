@@ -5,7 +5,7 @@ use proptest::prelude::*;
 
 mod reference {
     use bluenrg2::bt_hci::FromHciBytes;
-    use bluenrg2::{event_code, le_subevent, packet, packet_len, packet_whole, AddrKind, Address, ConnHandle, ConnTiming, EncryptionEnabledLevel, Event, LeConnRole, BleStatus};
+    use bluenrg2::{event_code, le_subevent, packet, packet_len, packet_whole, AclBroadcastFlag, AclPacketBoundary, AddrKind, Address, ConnHandle, ConnTiming, EncryptionEnabledLevel, Event, LeConnRole, BleStatus};
 
     /// The event in one HCI packet, read no further than the packet's own length, with no
     /// connection handle above 0x0EFF.
@@ -21,8 +21,9 @@ mod reference {
             | Event::LeDataLengthChange { handle, .. }
                 if handle.raw() > 0x0EFF =>
             {
-                Event::Malformed(&p[..packet_len(p)])
+                Event::Malformed(&p[..packet_len(p).unwrap()])
             }
+            Event::Acl { handle, .. } if handle.raw() > 0x0EFF => Event::Malformed(&p[..packet_len(p).unwrap()]),
             e => e,
         }
     }
@@ -32,11 +33,11 @@ mod reference {
         const LEGACY_INTERVAL_AT: usize = 15;
         use event_code as ev;
         use le_subevent as le;
-        use packet::EVENT;
+        use packet::{ACL, EVENT};
         if !packet_whole(p) {
             return Event::Malformed(p);
         }
-        let p = &p[..packet_len(p)];
+        let p = &p[..packet_len(p).unwrap()];
         let u16_at = |i: usize| u16::from_le_bytes([p[i], p[i + 1]]);
         // Unchecked, for `parse` above to judge.
         let handle_at = |i: usize| ConnHandle::from_hci_bytes(&p[i..]).unwrap().0;
@@ -107,6 +108,13 @@ mod reference {
                 Event::LeUnknown { subevent_code: *sub }
             }
             [EVENT, ev::VENDOR, _, lo, hi, params @ ..] => Event::Vendor { code: u16::from_le_bytes([*lo, *hi]), params },
+            // Handle, then boundary and broadcast flags, in the first two bytes (Core Vol 4 Part E §5.4.2).
+            [ACL, lo, hi, _, _, data @ ..] => Event::Acl {
+                handle: ConnHandle::from_hci_bytes(&(u16::from_le_bytes([*lo, *hi]) & 0x0FFF).to_le_bytes()).unwrap().0,
+                boundary: [AclPacketBoundary::FirstNonFlushable, AclPacketBoundary::Continuing, AclPacketBoundary::FirstFlushable, AclPacketBoundary::Complete][usize::from((hi >> 4) & 0x03)],
+                broadcast: [AclBroadcastFlag::PointToPoint, AclBroadcastFlag::BrEdrBroadcast, AclBroadcastFlag::Reserved, AclBroadcastFlag::Reserved][usize::from(hi >> 6)],
+                data,
+            },
             [EVENT, code, _, ..]
                 if !matches!(
                     *code,
@@ -129,7 +137,7 @@ mod reference {
 /// packet the Core Specification's layout does not allow.
 fn expected(p: &[u8]) -> Event<'_> {
     let reference = reference::parse(p);
-    let whole = &p[..packet_len(p)];
+    let whole = &p[..packet_len(p).map_or(p.len(), |len| len.min(p.len()))];
     let params = whole.get(3..).unwrap_or_default();
     match reference {
         // Num_Reports starts an advertising report (Core Vol 4 Part E §7.7.65.2).
@@ -258,6 +266,9 @@ fn corpus() -> Vec<Vec<u8>> {
         vec![0x04, 0xFF, 0x01, 0x01],
         vec![0x01, 0x01, 0x10, 0x00],
         vec![0x02, 0x01, 0x20, 0x01, 0x00, 0x5A],
+        vec![0x02, 0x01, 0xF8, 0x00, 0x00],
+        vec![0x02, 0x00, 0x2F, 0x00, 0x00],
+        vec![0x00, 0x04, 0x05, 0x00],
         vec![0xFF, 0x04, 0x05],
     ];
     for code in [0x10, 0x13, 0x1A, 0x30] {
