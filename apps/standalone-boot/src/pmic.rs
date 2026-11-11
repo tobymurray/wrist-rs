@@ -9,7 +9,7 @@ use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::mutex::Mutex as AsyncMutex;
 
 use wrist_power::max17262::{self, HIB_CFG};
-use wrist_power::{pca9420, Unit};
+use wrist_power::{pca9420, Unit, GAUGE_RESTORE, GAUGE_SETTLE};
 
 use crate::uart::Lines;
 
@@ -106,6 +106,13 @@ const READS: [(u8, u8, bool, bool); 20] = [
     (MAX17262, max17262::DESIGN_CAP, true, false),
     (MAX17262, max17262::STATUS, true, true),
 ];
+
+impl Snapshot {
+    /// A [`DIAG`] register, if this full reading read it.
+    pub fn gauge(&self, reg: u8) -> Option<u16> {
+        DIAG.iter().zip(self.diag).find(|((_, r, _), _)| *r == reg).and_then(|(_, v)| v)
+    }
+}
 
 fn assemble(v: &[Option<u16>; READS.len()], diag: [Option<u16>; DIAG.len()], full: bool) -> Snapshot {
     let b = |i: usize| v[i].and_then(|x| u8::try_from(x).ok());
@@ -387,7 +394,7 @@ fn yes_no(v: Option<bool>) -> &'static str {
 
 /// [`DIAG`] from a full reading, raw and scaled, and what they decode to.
 pub fn write_gauge(uart: &mut Lines, s: &Snapshot) {
-    let reg = |r: u8| DIAG.iter().zip(s.diag).find(|((_, a, _), _)| *a == r).and_then(|(_, v)| v);
+    let reg = |r: u8| s.gauge(r);
     for (row, values) in DIAG.chunks(5).zip(s.diag.chunks(5)) {
         uart.write_str("[gauge]");
         for (&(label, _, unit), &v) in row.iter().zip(values) {
@@ -459,22 +466,11 @@ pub fn write_last_gauge(uart: &mut Lines) {
     write_gauge(uart, &s);
 }
 
-/// At boot, before any awaited transfer: `HibCfg` as read back after
-/// [`wrist_power::slow_hibernate`], or `None` if the gauge did not answer.
-pub fn slow_gauge_hibernate(bus: &mut AsyncBus) -> Option<u16> {
-    let mut b = [0u8; 2];
-    bus.blocking_write_read(MAX17262, &[HIB_CFG], &mut b).ok()?;
-    let [lo, hi] = wrist_power::slow_hibernate(u16::from_le_bytes(b)).to_le_bytes();
-    bus.blocking_write(MAX17262, &[HIB_CFG, lo, hi]).ok()?;
-    bus.blocking_write_read(MAX17262, &[HIB_CFG], &mut b).ok()?;
-    Some(u16::from_le_bytes(b))
-}
-
 /// The gauge's `Status`, whose `POR` marks a reset, and the `DesignCap`, `IChgTerm`, `VEmpty`
 /// and `ModelCfg` a reset loses (ADI UG6597, "EZ configuration").
 const GAUGE_CONFIG: [u8; 5] = [max17262::STATUS, max17262::DESIGN_CAP, max17262::ICHG_TERM, max17262::V_EMPTY, max17262::MODEL_CFG];
 
-/// Read once at boot, before [`slow_gauge_hibernate`].
+/// Read once at boot, before [`restore_gauge_blocking`].
 static GAUGE_AT_BOOT: Mutex<CriticalSectionRawMutex, Cell<[Option<u16>; 5]>> =
     Mutex::new(Cell::new([None; 5]));
 
@@ -551,12 +547,23 @@ impl wrist_power::GaugeBus for Gauge<'_> {
     }
 }
 
-/// At boot, after [`read_gauge_config_blocking`]: the gauge configured again if it has been reset.
+/// At boot, after [`read_gauge_config_blocking`]: the gauge configured again if it has been
+/// reset, or else [`wrist_power::GAUGE_SETTLE`] if it needs it.
 pub fn restore_gauge_blocking(bus: &mut AsyncBus) -> Result<bool, &'static str> {
-    let outcome = match GAUGE_AT_BOOT.lock(Cell::get)[0] {
-        None => Err("Status unread"),
-        Some(status) if !wrist_power::gauge_reset(status) => Ok(false),
-        Some(_) => embassy_futures::block_on(wrist_power::restore_gauge(&mut BlockingGauge(bus))).map(|()| true),
+    let outcome = match GAUGE_AT_BOOT.lock(Cell::get) {
+        [None, ..] => Err("Status unread"),
+        [Some(status), ..] if wrist_power::gauge_reset(status) => {
+            embassy_futures::block_on(wrist_power::configure_gauge(&mut BlockingGauge(bus), &GAUGE_RESTORE)).map(|()| true)
+        }
+        [_, _, ichg_term, ..] => {
+            let mut b = [0u8; 2];
+            let hib_cfg = bus.blocking_write_read(MAX17262, &[HIB_CFG], &mut b).ok().map(|()| u16::from_le_bytes(b));
+            match (hib_cfg, ichg_term) {
+                (Some(h), Some(t)) if !wrist_power::gauge_unsettled(h, t) => Ok(false),
+                _ => embassy_futures::block_on(wrist_power::configure_gauge(&mut BlockingGauge(bus), &GAUGE_SETTLE))
+                    .map(|()| false),
+            }
+        }
     };
     GAUGE_RESTORED.lock(|r| r.set(Some(outcome)));
     outcome
@@ -566,7 +573,7 @@ pub fn restore_gauge_blocking(bus: &mut AsyncBus) -> Result<bool, &'static str> 
 pub async fn restore_gauge(bus: &mut AsyncBus, status: Option<u16>) {
     let Some(status) = status else { return };
     let outcome = if wrist_power::gauge_reset(status) {
-        wrist_power::restore_gauge(&mut Gauge(bus)).await.map(|()| true)
+        wrist_power::configure_gauge(&mut Gauge(bus), &GAUGE_RESTORE).await.map(|()| true)
     } else if matches!(GAUGE_RESTORED.lock(Cell::get), Some(Err(_))) {
         Ok(false)
     } else {
@@ -575,21 +582,24 @@ pub async fn restore_gauge(bus: &mut AsyncBus, status: Option<u16>) {
     GAUGE_RESTORED.lock(|r| r.set(Some(outcome)));
 }
 
-/// With each reading: `HibScalar` again, if boot could not set it.
-pub async fn keep_hibernate_slow(uart: &mut Lines, bus: &mut AsyncBus, hib_cfg: Option<u16>) {
-    let Some(was) = hib_cfg.filter(|&v| wrist_power::hibernate_fast(v)) else { return };
-    let slow = wrist_power::slow_hibernate(was);
-    let ok = wrist_power::GaugeBus::write(&mut Gauge(bus), HIB_CFG, slow).await;
-    for (label, v) in [("[gauge] HibCfg ", was), (" found, ", slow)] {
+/// With a full reading: [`wrist_power::GAUGE_SETTLE`] again if something, the stock firmware or
+/// an older image, set `HibCfg` or `IChgTerm` otherwise.
+pub async fn keep_gauge_settled(uart: &mut Lines, bus: &mut AsyncBus, s: &Snapshot) {
+    let (Some(hib_cfg), Some(ichg_term)) = (s.hib_cfg, s.gauge(max17262::ICHG_TERM)) else { return };
+    if !wrist_power::gauge_unsettled(hib_cfg, ichg_term) {
+        return;
+    }
+    let ok = wrist_power::configure_gauge(&mut Gauge(bus), &GAUGE_SETTLE).await.is_ok();
+    for (label, v) in [("[gauge] HibCfg ", hib_cfg), (" IChgTerm ", ichg_term)] {
         uart.write_str(label);
         let [hi, lo] = v.to_be_bytes();
         uart.write_hex8(hi);
         uart.write_hex8(lo);
     }
-    uart.write_line(if ok { " written" } else { " not written" });
+    uart.write_line(if ok { " found; awake and 5.0 mA written" } else { " found; not written" });
 }
 
-pub const RESTORED: &str = "found; 200 mAh, 13.9 mA end of charge and 3.40 V empty written again";
+pub const RESTORED: &str = "found; awake, 200 mAh, 5.0 mA end of charge and 3.40 V empty written again";
 
 /// The PCA9420's four mode settings, `MODECFG_0_0` to `MODECFG_3_3`, in one read.
 pub type Modes = [u8; 16];

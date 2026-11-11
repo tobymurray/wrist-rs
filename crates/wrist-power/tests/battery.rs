@@ -1,4 +1,4 @@
-use wrist_power::{hibernate_fast, hibernating, slow_hibernate, tte_seconds, BatteryRun};
+use wrist_power::{gauge_unsettled, hibernating, tte_seconds, BatteryRun};
 
 #[test]
 fn a_run_averages_the_readings_it_had() {
@@ -39,21 +39,13 @@ fn hib_is_status2_bit_1() {
 }
 
 #[test]
-fn slow_hibernate_sets_hib_scalar_with_hibernate_on() {
-    assert_eq!(slow_hibernate(0x870C), 0x870F);
-    assert_eq!(slow_hibernate(0x870F), 0x870F);
-    assert_eq!(slow_hibernate(0x8000), 0x8007);
-    // Hibernate off, as a failed restore leaves it, comes back on.
-    assert_eq!(slow_hibernate(0), 0x870F);
-    assert_eq!(slow_hibernate(0x0007), 0x870F);
-}
-
-#[test]
-fn only_a_slow_hibernate_needs_no_write() {
-    assert!(hibernate_fast(0x870C));
-    assert!(hibernate_fast(0x8706));
-    assert!(hibernate_fast(0));
-    assert!(hibernate_fast(0x070F));
-    assert!(!hibernate_fast(0x870F));
-    assert!(!hibernate_fast(0x8007));
+fn only_an_awake_gauge_ending_the_charge_at_5_ma_is_settled() {
+    assert!(!gauge_unsettled(0, 0x0020));
+    // Stock: hibernating, 13.9 mA.
+    assert!(gauge_unsettled(0x870C, 0x0059));
+    // An older image's slow hibernate.
+    assert!(gauge_unsettled(0x870F, 0x0020));
+    // EnHib clear but HibScalar left.
+    assert!(gauge_unsettled(0x0007, 0x0020));
+    assert!(gauge_unsettled(0, 0x0059));
 }
