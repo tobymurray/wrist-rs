@@ -414,8 +414,7 @@ const COMMAND_HEADER_LEN: usize = 4;
 pub const MAX_COMMAND: usize = COMMAND_HEADER_LEN + u8::MAX as usize;
 
 /// The length the packet at the start of `p` gives in its header, which may run past the end of
-/// `p`; `None` unless `p` starts with a whole event or ACL header, so nothing says where a packet
-/// ends. A read may hold several packets back to back.
+/// `p`; `None` unless `p` starts with a whole event or ACL header.
 #[must_use]
 pub fn packet_len(p: &[u8]) -> Option<usize> {
     match p {
@@ -521,7 +520,6 @@ pub fn parse(p: &[u8]) -> Event<'_> {
 
 fn acl(p: &[u8]) -> Option<Event<'_>> {
     let acl: AclPacket = first(p)?;
-    // Checked before `AclPacket::handle`, which panics above 0x0EFF.
     let handle = link(acl.header().handle & 0x0FFF)?;
     Some(Event::Acl { handle, boundary: acl.boundary_flag(), broadcast: acl.broadcast_flag(), data: acl.data() })
 }
