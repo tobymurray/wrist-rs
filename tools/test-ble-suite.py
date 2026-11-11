@@ -419,17 +419,18 @@ class Judgements(unittest.TestCase):
                     open(os.path.join(where, f'{{stage}}.{{os.getpid()}}'), 'w').close()
                     while sum(f.startswith(stage + '.') for f in os.listdir(where)) < n:
                         time.sleep(0.01)
-                time.sleep(0.5)
+                while 'fork' in sys.argv and sum('#me{os.getpid()}' in p for p in m.Host().ps()) < 2:
+                    time.sleep(0.01)
                 meet('up')
                 found = m.Host().other_tools()
                 meet('looked')
                 print('found', found)
             """))
 
-            def inner(where, n):
+            def inner(where, n, *wait):
                 os.mkdir(where)
-                return subprocess.list2cmdline([sys.executable, str(probe), where, str(n)])
-            piped = f'{inner(d + "/piped", 1)} | while read l; do echo "$l"; done; : ble-suite.py #me{os.getpid()}'
+                return subprocess.list2cmdline([sys.executable, str(probe), where, str(n), *wait])
+            piped = f'{inner(d + "/piped", 1, "fork")} | while read l; do echo "$l"; done; : ble-suite.py #me{os.getpid()}'
             out = subprocess.run(['sh', '-c', piped], capture_output=True, text=True, timeout=60).stdout
             self.assertIn('found', out)
             self.assertNotIn(f'#me{os.getpid()}', out)
