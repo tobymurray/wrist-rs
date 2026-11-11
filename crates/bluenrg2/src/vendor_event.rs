@@ -18,8 +18,7 @@ pub enum VendorEvent<'a> {
     /// each kind it dropped, in ST's order.
     #[non_exhaustive]
     EventsLost { lost: u64 },
-    /// `ACI_GAP_PAIRING_COMPLETE`; the reason only when the status is
-    /// [`PairingStatus::FAILED`], the only status ST gives one for.
+    /// `ACI_GAP_PAIRING_COMPLETE`; the reason only when the status is [`PairingStatus::FAILED`].
     #[non_exhaustive]
     PairingComplete { handle: ConnHandle, status: PairingStatus, reason: Option<PairingReason> },
     /// `ACI_GAP_PASS_KEY_REQ`: the stack wants a passkey (`ACI_GAP_PASS_KEY_RESP`).
