@@ -1,0 +1,40 @@
+name: Host tools
+on:
+  pull_request:
+    paths:
+      - tools/**
+      - .github/workflows/tools.yml
+  push:
+    branches: [main]
+    paths:
+      - tools/**
+      - .github/workflows/tools.yml
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # The oldest that release/INSTALL.md promises, and the newest.
+        python: ['3.10', '3.x']
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install the tools' requirements
+        run: python -m pip install -r tools/requirements.txt -r tools/requirements-ble.txt
+      - name: Test the tools
+        run: |
+          failed=()
+          for t in wrist-ble wrist-session wrist-time ble-drop ble-suite ble-trace-fixture btsnoop-fixture; do
+            echo "::group::test-$t.py"
+            python "tools/test-$t.py" || failed+=("$t")
+            echo "::endgroup::"
+          done
+          if [ ${#failed[@]} -gt 0 ]; then echo "::error::failed: ${failed[*]}"; exit 1; fi
