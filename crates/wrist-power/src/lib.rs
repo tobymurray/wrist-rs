@@ -16,7 +16,7 @@ pub mod pca9420 {
     pub const RESET_MONITOR: u8 = 0x71;
     /// `CHG_STATUS_1.IN_PWR_STATUS`, bits 7:6; 0 is `VIN` below `VIN_UVLO` (Table 39).
     pub const IN_PWR_STATUS_SHIFT: u32 = 6;
-    /// `CHG_STATUS_2.BAT_CHG_STATUS`, bits 2:0, in its Done state (Table 40).
+    /// `CHG_STATUS_2.BAT_CHG_STATUS` Done (Table 40).
     pub const BAT_CHG_DONE: u8 = 0b110;
 }
 
@@ -79,15 +79,13 @@ pub fn external_power(pd_attached: Option<bool>, charger_status: Option<u8>) -> 
     charger_status.map(|v| v >> pca9420::IN_PWR_STATUS_SHIFT != 0).or(pd_attached)
 }
 
-/// Whether the charger has finished, from the PCA9420's `CHG_STATUS_2`.
 #[must_use]
 pub const fn charge_done(chg_status_2: u8) -> bool {
     chg_status_2 & 0b111 == pca9420::BAT_CHG_DONE
 }
 
-/// The charge the watch shows, from the gauge's. On battery, or with the input unknown, it only
-/// falls: at rest the gauge mixes toward a voltage model that reads this cell high, and would
-/// climb. On external power it follows the gauge but reads 100 % only once the charger is done.
+/// On battery or an unknown input the charge shown only falls; on external power it follows the
+/// gauge but reads 100 % only once the charger is done.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ShownCharge(Option<u8>);
 
@@ -97,8 +95,7 @@ impl ShownCharge {
         Self(None)
     }
 
-    /// `gauge` in whole percent, `external` as [`external_power`] gives it, `done` from
-    /// [`charge_done`]; a reading the gauge did not answer keeps the last.
+    /// `gauge` in whole percent; `None` keeps the last shown.
     pub fn reading(&mut self, gauge: Option<u8>, external: Option<bool>, done: Option<bool>) -> Option<u8> {
         if let Some(g) = gauge {
             self.0 = Some(match (external, done) {

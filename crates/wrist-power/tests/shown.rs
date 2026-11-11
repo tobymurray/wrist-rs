@@ -7,7 +7,6 @@ const EXTERNAL: Option<bool> = Some(true);
 fn on_battery_it_only_falls() {
     let mut s = ShownCharge::new();
     assert_eq!(s.reading(Some(94), BATTERY, None), Some(94));
-    // The night's climb toward the voltage model, and back.
     assert_eq!(s.reading(Some(95), BATTERY, None), Some(94));
     assert_eq!(s.reading(Some(94), BATTERY, None), Some(94));
     assert_eq!(s.reading(Some(93), BATTERY, None), Some(93));

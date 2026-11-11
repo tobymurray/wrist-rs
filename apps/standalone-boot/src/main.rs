@@ -1129,7 +1129,7 @@ fn minute_now() -> u32 {
     )
 }
 
-/// The charge in percent as shown, and the cell's voltage, for the face and the battery page.
+/// The charge shown, in percent, and the cell's voltage.
 async fn read_power(
     uart: Uart,
     bus: &mut pmic::AsyncBus,
