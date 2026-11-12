@@ -2,26 +2,41 @@
 
 use bluenrg2::{BleStatus, BootReason, Event, VendorEvent};
 use wrist_ble::{
-    ChipInfo, ConnHandle, Failure, FailureKind, LeConnRole, LinkParams, PairingEvent, PairingStep, PeerAddr, RadioEvent, ResetCause,
-    Status,
+    ChipInfo, ConnHandle, Failure, FailureKind, LeConnRole, LinkParams, Micros, PairingEvent, PairingStep, PeerAddr, RadioEvent,
+    ResetCause, Status,
 };
 
+use crate::gatt::Handles;
+
 /// The chip's packets as the core's events. ST's bond-lost event names no link, so the
-/// translator keeps the link a central holds.
-#[derive(Clone, Copy, Debug)]
+/// translator keeps the link a central holds, and a write names only a handle, so it keeps the
+/// local server's.
+#[derive(Clone, Copy, Debug, Default)]
 pub struct Translator {
-    pub info: ChipInfo,
+    /// `None` until a start has read it: a boot then is that start's own.
+    pub info: Option<ChipInfo>,
     phone: Option<ConnHandle>,
+    server: Option<Handles>,
 }
 
 impl Translator {
     #[must_use]
     pub const fn new(info: ChipInfo) -> Self {
-        Self { info, phone: None }
+        Self { info: Some(info), phone: None, server: None }
     }
 
-    /// `None` for a command's reply, which belongs to the operation that sent it, and for the
-    /// events the core has no use for.
+    /// The local server as the chip built it, until the chip next boots.
+    pub fn serve(&mut self, server: Handles) {
+        self.server = Some(server);
+    }
+
+    #[must_use]
+    pub fn server(&self) -> Option<&Handles> {
+        self.server.as_ref()
+    }
+
+    /// `None` for a command's reply, which belongs to the operation that sent it, for a start's own
+    /// boot, for a write outside the local server, and for the events the core has no use for.
     pub fn event(&mut self, packet: &[u8]) -> Option<RadioEvent> {
         let e = match bluenrg2::parse(packet) {
             Event::CommandComplete { .. } | Event::CommandStatus { .. } | Event::LeAdvertisingReport { .. } => return None,
@@ -48,9 +63,13 @@ impl Translator {
                 let (link, on) = e.encryption()?;
                 RadioEvent::Encryption { link, on }
             }
-            Event::LeDataLengthChange { handle, max_tx_octets, max_rx_octets, .. } => {
-                RadioEvent::DataLength { link: handle, tx: max_tx_octets, rx: max_rx_octets }
-            }
+            Event::LeDataLengthChange { handle, max_tx_octets, max_tx_time, max_rx_octets, max_rx_time, .. } => RadioEvent::DataLength {
+                link: handle,
+                tx: max_tx_octets,
+                rx: max_rx_octets,
+                tx_time: Micros(u32::from(max_tx_time)),
+                rx_time: Micros(u32::from(max_rx_time)),
+            },
             Event::Vendor(e) => self.vendor(e)?,
             Event::LeUnknown { subevent_code, .. } => RadioEvent::Unknown { raw_code: u16::from_be_bytes([0x3E, subevent_code]) },
             // Another event, a connection or disconnection that failed, a malformed packet.
@@ -64,8 +83,9 @@ impl Translator {
             // Whatever the reason, the chip's links are gone; `wrist_ble::Radio::start` consumes a start's own boot.
             VendorEvent::BlueInitialized { reason, .. } => {
                 self.phone = None;
+                self.server = None;
                 RadioEvent::ChipReset(match reason {
-                    Some(BootReason::STARTED) => return Some(RadioEvent::Ready(self.info)),
+                    Some(BootReason::STARTED) => return self.info.map(RadioEvent::Ready),
                     Some(BootReason::WATCHDOG) => ResetCause::Watchdog,
                     Some(BootReason::LOCKUP) => ResetCause::Lockup,
                     Some(BootReason::BROWNOUT) => ResetCause::Brownout,
@@ -86,10 +106,10 @@ impl Translator {
             VendorEvent::L2capUpdateResponse { handle, accepted: false, .. } => {
                 RadioEvent::Params { link: handle, result: Err(failure(FailureKind::PeerRejected, 0)) }
             }
+            VendorEvent::AttributeModified { handle, attr, offset, more, data, .. } => self.server.as_ref()?.written(handle, attr, offset, more, data)?,
             VendorEvent::L2capUpdateResponse { accepted: true, .. }
             | VendorEvent::SlaveSecurityInitiated
             | VendorEvent::GapProcComplete { .. }
-            | VendorEvent::AttributeModified { .. }
             | VendorEvent::TxPoolAvailable { .. }
             | VendorEvent::ServerConfirmation { .. } => return None,
             e => RadioEvent::Unknown { raw_code: e.code() },

@@ -23,14 +23,16 @@ pub enum RadioEvent {
     /// The peer has no bond for a link the chip had bonded keys for.
     BondLost(ConnHandle),
     Mtu(ConnHandle, u16),
-    /// The largest link-layer payload each way, in octets (Core Vol 6 Part B §4.5.10); every link
-    /// reports one.
-    DataLength { link: ConnHandle, tx: u16, rx: u16 },
+    /// The largest link-layer payload each way, in octets and in time on air (Core Vol 6 Part B
+    /// §4.5.10); every link reports one.
+    DataLength { link: ConnHandle, tx: u16, rx: u16, tx_time: Micros, rx_time: Micros },
     /// As the central, the peer asked for new parameters; answer with
     /// [`crate::Op::AnswerParamRequest`].
     PeerParamRequest { link: ConnHandle, range: ParamRange },
     Notification { link: ConnHandle, att: AttRef, data: Payload },
-    ServerWrite { link: ConnHandle, attr: ServerAttr, data: Payload },
+    /// A peer wrote `data` into a local characteristic's value from `offset`; `more` when the
+    /// write's next piece follows in another event.
+    ServerWrite { link: ConnHandle, attr: ServerAttr, offset: u16, more: bool, data: Payload },
     /// A peer turned notifications or indications of a local characteristic on or off.
     ServerSubscribe { link: ConnHandle, attr: ServerAttr, cccd: Cccd },
     Report(AdvReport),

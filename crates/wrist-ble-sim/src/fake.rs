@@ -6,7 +6,7 @@ use std::collections::{BinaryHeap, VecDeque};
 
 use wrist_ble::{
     Activities, AdvParams, AdvReport, AttRef, Bytes, Cccd, Change, ChipInfo, ConnHandle, ConnParams, CoreSpecificationVersion, DiscoverWhat,
-    Duration, Failure, FailureKind, Instant, LeConnRole, LinkParams, LinkStatus, Millis, Op, OpId, OpKind, Outcome, PairingEvent,
+    Duration, Failure, FailureKind, Instant, LeConnRole, LinkParams, LinkStatus, Micros, Millis, Op, OpId, OpKind, Outcome, PairingEvent,
     PairingStep, PeerAddr, RadioEvent, ResetCause, ScanParams, SchedKind, Schedule, ServerAttr, ServiceRef, CharRef, Snapshot, Status,
     MAX_LINKS,
 };
@@ -27,6 +27,8 @@ pub const CONSOLE: ServerAttr = wrist_wake::ble::server::TX;
 
 /// The link-layer payloads the chip reports on each link, as a host's capture shows them.
 const DATA_LENGTH: (u16, u16) = (27, 251);
+/// Their time on air on the 1M PHY (Core Vol 6 Part B §4.5.10).
+const DATA_TIME: (Micros, Micros) = (Micros(328), Micros(2120));
 
 /// Connection events before a link that never formed is dropped (Core Vol 6 Part B §4.5.2).
 const ESTABLISH_EVENTS: u64 = 6;
@@ -972,7 +974,7 @@ impl Fake {
         self.phones[i].link = Some(h);
         let _ = self.acts.apply(Change::PeripheralUp);
         self.emit(RadioEvent::LinkUp { link: h, role: LeConnRole::Peripheral, peer: p.phone.addr, params: Some(params) });
-        self.later(90, 110, Do::Emit(RadioEvent::DataLength { link: h, tx: DATA_LENGTH.0, rx: DATA_LENGTH.1 }));
+        self.later(90, 110, Do::Emit(RadioEvent::DataLength { link: h, tx: DATA_LENGTH.0, rx: DATA_LENGTH.1, tx_time: DATA_TIME.0, rx_time: DATA_TIME.1 }));
         match p.phone.keys {
             Keys::Bonded | Keys::ChipLost => {
                 let ((lo, hi), _) = p.phone.encryption();
@@ -1081,7 +1083,7 @@ impl Fake {
             return;
         }
         let dl = ms(self.rng.range(90, 110).max(iv * 2));
-        self.after(dl, Do::Emit(RadioEvent::DataLength { link: h, tx: DATA_LENGTH.0, rx: DATA_LENGTH.1 }));
+        self.after(dl, Do::Emit(RadioEvent::DataLength { link: h, tx: DATA_LENGTH.0, rx: DATA_LENGTH.1, tx_time: DATA_TIME.0, rx_time: DATA_TIME.1 }));
         if let Some((after, _)) = s.asks {
             self.after(after, Do::SensorAsks(h));
         }

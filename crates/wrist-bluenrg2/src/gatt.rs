@@ -1,7 +1,7 @@
 //! A declared GATT server as the chip's commands, and the handles the chip gives it.
 
 use bluenrg2::{enc_key_size, evt_mask, opcode, permission, service_type, uuid_type, value_length};
-use wrist_ble::{BluetoothUuid, CharDecl, Permission, Props, ServerAttr, ServiceDecl, ATT_MAX_MTU};
+use wrist_ble::{BluetoothUuid, Cccd, CharDecl, ConnHandle, Payload, Permission, Props, RadioEvent, ServerAttr, ServiceDecl, ATT_MAX_MTU};
 
 use crate::commands::Command;
 
@@ -144,5 +144,26 @@ impl Handles {
             };
             Some((ServerAttr(u8::try_from(i).ok()?), part))
         })
+    }
+
+    /// What a peer's write of `data` from `offset` into the local handle `attr` means: a value
+    /// written, a subscription changed, or `None` for a handle outside the server; a piece too long
+    /// for a [`Payload`] is lost.
+    #[must_use]
+    pub fn written(&self, link: ConnHandle, attr: u16, offset: u16, more: bool, data: &[u8]) -> Option<RadioEvent> {
+        let (attr, part) = self.find(attr)?;
+        Some(match part {
+            Part::Value => Payload::new(data).map_or(RadioEvent::EventsLost, |data| RadioEvent::ServerWrite { link, attr, offset, more, data }),
+            Part::Config => RadioEvent::ServerSubscribe { link, attr, cccd: cccd(data) },
+        })
+    }
+}
+
+/// A configuration descriptor's value (Core Vol 3 Part G §3.3.3.3), notifications first when both are on.
+fn cccd(value: &[u8]) -> Cccd {
+    match value.first() {
+        Some(b) if b & 0x01 != 0 => Cccd::Notify,
+        Some(b) if b & 0x02 != 0 => Cccd::Indicate,
+        _ => Cccd::Off,
     }
 }

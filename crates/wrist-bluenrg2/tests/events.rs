@@ -1,10 +1,12 @@
 //! The BlueNRG-2's packets as the core's events.
 
 use wrist_ble::{
-    AddrKind, BdAddr, ChipInfo, ConnHandle, CoreSpecificationVersion, Failure, FailureKind, Interval, LeConnRole, LinkParams, PairingEvent,
-    PairingStep, PeerAddr, RadioEvent, ResetCause, Status, Timeout,
+    AddrKind, BdAddr, Cccd, CharDecl, ChipInfo, ConnHandle, CoreSpecificationVersion, Failure, FailureKind, Interval, LeConnRole, LinkParams,
+    Micros, PairingEvent, PairingStep, Payload, PeerAddr, RadioEvent, ResetCause, ServiceDecl, Status, Timeout,
 };
 use wrist_bluenrg2::events::Translator;
+use wrist_bluenrg2::gatt::Handles;
+use wrist_wake::ble::server::{device_information, services, RX, TX};
 
 const INFO: ChipInfo = ChipInfo {
     hci_version: CoreSpecificationVersion::VERSION_5_2,
@@ -106,9 +108,10 @@ fn a_key_refresh_says_the_link_is_encrypted_only_when_it_succeeded() {
 }
 
 #[test]
-fn a_data_length_change_gives_the_octets_each_way() {
+fn a_data_length_change_gives_the_octets_and_the_time_each_way() {
     let p = le(0x07, &[0x01, 0x08, 251, 0, 0x48, 0x08, 27, 0, 0x48, 0x01]);
-    assert_eq!(one(&p), Some(RadioEvent::DataLength { link: link(), tx: 251, rx: 27 }));
+    let want = RadioEvent::DataLength { link: link(), tx: 251, rx: 27, tx_time: Micros(2120), rx_time: Micros(328) };
+    assert_eq!(one(&p), Some(want));
 }
 
 #[test]
@@ -164,6 +167,53 @@ fn the_chip_starting_is_ready_and_any_other_reset_is_named() {
         assert_eq!(one(&vendor(0x0001, &[reason])), Some(RadioEvent::ChipReset(cause)), "reason {reason}");
     }
     assert_eq!(one(&vendor(0x0001, &[])), Some(RadioEvent::ChipReset(ResetCause::Other)));
+}
+
+#[test]
+fn a_start_before_the_chips_identity_is_read_is_that_starts_own() {
+    let mut t = Translator::default();
+    assert_eq!(event(&mut t, &vendor(0x0001, &[0x01])), None);
+    assert_eq!(event(&mut t, &vendor(0x0001, &[0x05])), Some(RadioEvent::ChipReset(ResetCause::Watchdog)));
+}
+
+static DIS: [CharDecl; 3] = device_information(b"c629fcd8e8e0");
+static SERVER: [ServiceDecl; 2] = services(&DIS);
+
+/// The watch's server at the handles the chip gave it: RX's value at 0x0015, TX's at 0x0017 and
+/// its configuration descriptor at 0x0018.
+fn served() -> Handles {
+    let mut h = Handles::default();
+    for (s, at, decls) in [(&SERVER[0], 0x000C, &[0x000D, 0x000F, 0x0011][..]), (&SERVER[1], 0x0013, &[0x0014, 0x0016][..])] {
+        for (c, &decl) in s.chars.iter().zip(decls) {
+            assert!(h.push(at, decl, c));
+        }
+    }
+    h
+}
+
+/// `ACI_GATT_ATTRIBUTE_MODIFIED` on link 0x0801.
+fn write(attr: u16, offset: u16, data: &[u8]) -> Vec<u8> {
+    let len = u16::try_from(data.len()).unwrap().to_le_bytes();
+    vendor(0x0C01, &[&[0x01, 0x08][..], &attr.to_le_bytes(), &offset.to_le_bytes(), &len, data].concat())
+}
+
+#[test]
+fn a_write_to_the_server_is_a_value_written_or_a_subscription() {
+    let mut t = Translator::new(INFO);
+    assert_eq!(event(&mut t, &write(0x0015, 0, b"ping")), None, "nothing served yet");
+    t.serve(served());
+    let value = |offset, more, data: &[u8]| Some(RadioEvent::ServerWrite { link: link(), attr: RX, offset, more, data: Payload::new(data).unwrap() });
+    assert_eq!(event(&mut t, &write(0x0015, 0, b"ping")), value(0, false, b"ping"));
+    assert_eq!(event(&mut t, &write(0x0015, 0x8012, b"ng")), value(0x12, true, b"ng"));
+    assert_eq!(event(&mut t, &write(0x0015, 0, &[b'x'; 244])), value(0, false, &[b'x'; 244]));
+    assert_eq!(event(&mut t, &write(0x0015, 0, &[b'x'; 245])), Some(RadioEvent::EventsLost), "a piece no payload holds");
+    for (data, cccd) in [(&[0x01, 0x00][..], Cccd::Notify), (&[0x02, 0x00], Cccd::Indicate), (&[0x03, 0x00], Cccd::Notify), (&[0x00, 0x00], Cccd::Off), (&[], Cccd::Off)] {
+        assert_eq!(event(&mut t, &write(0x0018, 0, data)), Some(RadioEvent::ServerSubscribe { link: link(), attr: TX, cccd }), "{data:02x?}");
+    }
+    assert_eq!(event(&mut t, &write(0x0009, 0, &[0x02, 0x00])), None, "the chip's own Service Changed");
+    assert_eq!(event(&mut t, &write(0x0016, 0, b"x")), None, "a declaration");
+    event(&mut t, &vendor(0x0001, &[0x01]));
+    assert_eq!(event(&mut t, &write(0x0015, 0, b"ping")), None, "a chip that started again serves nothing");
 }
 
 #[test]
