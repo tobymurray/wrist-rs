@@ -422,7 +422,7 @@ pub fn migrate() -> bool {
 
 pub fn note_set(source: Source, local: Civil) {
     set_bkp(backup::LAST_SET_AT, u32::try_from(seconds_of(local)).unwrap_or(0));
-    set_bkp(backup::FLAGS, Flags { source: source as u8, ..flags() }.encode());
+    set_bkp(backup::FLAGS, Flags { source: source as u8, ..flags() }.encode_over(bkp(backup::FLAGS)));
 }
 
 /// Who last set the calendar, and to what.
@@ -473,7 +473,7 @@ pub fn radio_wanted() -> bool {
 
 #[cfg(feature = "ble")]
 pub fn set_radio_wanted(on: bool) {
-    set_bkp(backup::FLAGS, Flags { radio: on, ..flags() }.encode());
+    set_bkp(backup::FLAGS, Flags { radio: on, ..flags() }.encode_over(bkp(backup::FLAGS)));
 }
 
 pub fn clear_zone() {

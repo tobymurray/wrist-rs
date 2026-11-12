@@ -135,13 +135,27 @@ fn a_reset_backup_domain_starts_empty() {
 }
 
 #[test]
-fn flags_reject_any_word_they_could_not_have_written() {
+fn flags_read_only_a_tagged_word() {
     for f in [Flags::default(), Flags { radio: true, source: 2 }, Flags { radio: false, source: 1 }] {
         assert_eq!(Flags::decode(f.encode()), Some(f));
     }
     let on = Flags { radio: true, source: 1 }.encode();
-    assert_eq!(Flags::decode(on | 1 << 8), None);
-    assert_eq!(Flags::decode(on | 0b11 << 4), None);
     assert_eq!(Flags::decode(on ^ 1 << 20), None);
     assert_eq!(Flags::decode(old::RADIO_ON), None);
+}
+
+#[test]
+fn a_return_from_a_later_image_keeps_its_bits_and_moves_nothing() {
+    let d = previous_release();
+    assert!(d.boot());
+    let tokyo = Zone::parse("540").unwrap();
+    for (n, v) in ZONE.into_iter().zip(tokyo.encode()) {
+        d.set(n, v);
+    }
+    let later = Flags::default().encode() | 0b11 << 4 | 1 << 2;
+    d.set(FLAGS, later);
+    assert!(!d.boot());
+    assert_eq!(d.zone(), Some(tokyo));
+    assert_eq!(d.flags(), Flags { radio: false, source: 3 });
+    assert_eq!(Flags { radio: true, ..d.flags() }.encode_over(later), later | 1);
 }

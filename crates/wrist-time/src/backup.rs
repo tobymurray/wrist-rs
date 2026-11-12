@@ -26,6 +26,7 @@ pub mod old {
 }
 
 const FLAGS_TAG: u32 = 0x5752_0000;
+const TAG_MASK: u32 = 0xFFFF_0000;
 const RADIO: u32 = 1 << 0;
 const SOURCE_SHIFT: u32 = 4;
 const SOURCE_MASK: u32 = 0b11 << SOURCE_SHIFT;
@@ -34,23 +35,30 @@ const SOURCE_MASK: u32 = 0b11 << SOURCE_SHIFT;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Flags {
     pub radio: bool,
-    /// 0 for no record, 1 the host, 2 GPS.
+    /// 0 for no record, 1 the host, 2 GPS; 3 is a later image's.
     pub source: u8,
 }
 
 impl Flags {
     #[must_use]
     pub fn encode(self) -> u32 {
-        FLAGS_TAG | u32::from(self.radio) | (u32::from(self.source.min(2)) << SOURCE_SHIFT)
+        self.encode_over(FLAGS_TAG)
     }
 
-    /// `None` without the tag, or with a bit no field uses.
+    /// `word` with these flags in place, keeping the bits a later image may have set.
+    #[must_use]
+    pub fn encode_over(self, word: u32) -> u32 {
+        let kept = if word & TAG_MASK == FLAGS_TAG { word & !(RADIO | SOURCE_MASK) } else { FLAGS_TAG };
+        kept | u32::from(self.radio) | ((u32::from(self.source) << SOURCE_SHIFT) & SOURCE_MASK)
+    }
+
+    /// `None` without the tag.
     #[must_use]
     pub fn decode(w: u32) -> Option<Self> {
-        if w & !(RADIO | SOURCE_MASK) != FLAGS_TAG {
+        if w & TAG_MASK != FLAGS_TAG {
             return None;
         }
-        let source = u8::try_from((w & SOURCE_MASK) >> SOURCE_SHIFT).ok().filter(|&s| s <= 2)?;
+        let source = u8::try_from((w & SOURCE_MASK) >> SOURCE_SHIFT).unwrap_or(0);
         Some(Self { radio: w & RADIO != 0, source })
     }
 }
