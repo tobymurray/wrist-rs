@@ -1,13 +1,11 @@
-//! Which `TAMP_BKPnR` holds what, and the move out of the registers stock firmware uses (`HARDWARE.md`).
-
-use crate::zone::Zone;
+//! Which `TAMP_BKPnR` holds what, clear of the registers stock firmware uses (`HARDWARE.md`).
 
 /// The registers stock firmware reads or writes.
 pub const STOCK: [u32; 23] = [0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23];
 
 /// The daily alarm (`alarm`).
 pub const ALARM: u32 = 4;
-/// The zone and its next two changes, in [`Zone::encode`]'s order.
+/// The zone and its next two changes, in [`crate::zone::Zone::encode`]'s order.
 pub const ZONE: [u32; 5] = [24, 25, 26, 27, 28];
 pub const FLAGS: u32 = 29;
 /// The local time the calendar was last set, seconds since 1970.
@@ -16,40 +14,24 @@ pub const LAST_SET_AT: u32 = 31;
 /// Every register this image writes.
 pub const OWNED: [u32; 8] = [ALARM, ZONE[0], ZONE[1], ZONE[2], ZONE[3], ZONE[4], FLAGS, LAST_SET_AT];
 
-/// Where the records were before they moved, read once by [`migrate`].
-pub mod old {
-    pub const ZONE: [u32; 5] = [1, 11, 12, 13, 14];
-    pub const SOURCE: u32 = 2;
-    pub const SOURCE_TAG: u32 = 0x5352_0000;
-    pub const RADIO: u32 = 16;
-    pub const RADIO_ON: u32 = 0x424C_0001;
-}
-
 const FLAGS_TAG: u32 = 0x5752_0000;
 const TAG_MASK: u32 = 0xFFFF_0000;
 const RADIO: u32 = 1 << 0;
 const SOURCE_SHIFT: u32 = 4;
 const SOURCE_MASK: u32 = 0b11 << SOURCE_SHIFT;
 
-/// The radio's last word and who last set the calendar; its tag marks the move done.
+/// The radio's last word and who last set the calendar.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Flags {
     pub radio: bool,
-    /// 0 for no record, 1 the host, 2 GPS; 3 is a later image's.
+    /// 0 for no record, 1 the host, 2 GPS.
     pub source: u8,
 }
 
 impl Flags {
     #[must_use]
     pub fn encode(self) -> u32 {
-        self.encode_over(FLAGS_TAG)
-    }
-
-    /// `word` with these flags in place, keeping the bits a later image may have set.
-    #[must_use]
-    pub fn encode_over(self, word: u32) -> u32 {
-        let kept = if word & TAG_MASK == FLAGS_TAG { word & !(RADIO | SOURCE_MASK) } else { FLAGS_TAG };
-        kept | u32::from(self.radio) | ((u32::from(self.source) << SOURCE_SHIFT) & SOURCE_MASK)
+        FLAGS_TAG | u32::from(self.radio) | ((u32::from(self.source) << SOURCE_SHIFT) & SOURCE_MASK)
     }
 
     /// `None` without the tag.
@@ -61,31 +43,4 @@ impl Flags {
         let source = u8::try_from((w & SOURCE_MASK) >> SOURCE_SHIFT).unwrap_or(0);
         Some(Self { radio: w & RADIO != 0, source })
     }
-}
-
-/// Brings the records over from the old registers, `bkp(n)` reading `BKPnR` and `set(n, v)`
-/// writing it; true if it wrote. The radio comes over once; the zone and the source again
-/// whenever an older image has tagged either since, and then their old registers are zeroed.
-pub fn migrate(bkp: impl Fn(u32) -> u32, mut set: impl FnMut(u32, u32)) -> bool {
-    let word = bkp(FLAGS);
-    let moved = Flags::decode(word);
-    let zone = Zone::decode(old::ZONE.map(&bkp));
-    let w = bkp(old::SOURCE);
-    let source = (w & 0xFFFF_0000 == old::SOURCE_TAG && matches!(w & 0xFFFF, 1 | 2))
-        .then(|| u8::try_from(w & 0xFF).unwrap_or(0));
-    if moved.is_some() && zone.is_none() && source.is_none() {
-        return false;
-    }
-    for (n, v) in ZONE.into_iter().zip(zone.map_or([0; 5], |z| z.encode())) {
-        set(n, v);
-    }
-    let flags = moved.unwrap_or(Flags { radio: bkp(old::RADIO) == old::RADIO_ON, source: 0 });
-    set(FLAGS, Flags { source: source.unwrap_or(flags.source), ..flags }.encode_over(word));
-    if source.is_some() {
-        set(old::SOURCE, 0);
-    }
-    if zone.is_some() {
-        set(old::ZONE[0], 0);
-    }
-    true
 }

@@ -410,14 +410,9 @@ fn flags() -> Flags {
     Flags::decode(bkp(backup::FLAGS)).unwrap_or_default()
 }
 
-/// Moves the records out of stock's registers; true if it wrote.
-pub fn migrate() -> bool {
-    backup::migrate(bkp, set_bkp)
-}
-
 pub fn note_set(source: Source, local: Civil) {
     set_bkp(backup::LAST_SET_AT, u32::try_from(seconds_of(local)).unwrap_or(0));
-    set_bkp(backup::FLAGS, Flags { source: source as u8, ..flags() }.encode_over(bkp(backup::FLAGS)));
+    set_bkp(backup::FLAGS, Flags { source: source as u8, ..flags() }.encode());
 }
 
 /// Who last set the calendar, and to what.
@@ -468,7 +463,7 @@ pub fn radio_wanted() -> bool {
 
 #[cfg(feature = "ble")]
 pub fn set_radio_wanted(on: bool) {
-    set_bkp(backup::FLAGS, Flags { radio: on, ..flags() }.encode_over(bkp(backup::FLAGS)));
+    set_bkp(backup::FLAGS, Flags { radio: on, ..flags() }.encode());
 }
 
 pub fn clear_zone() {
