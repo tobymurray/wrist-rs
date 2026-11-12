@@ -59,15 +59,17 @@ use embassy_sync::pipe::Pipe;
 use embassy_sync::signal::Signal;
 use embassy_time::{Delay, Duration, Instant, Timer};
 use bluenrg2::opcode::{
-    ACI_GAP_ALLOW_REBOND, ACI_GAP_CLEAR_SECURITY_DB, ACI_GAP_GET_BONDED_DEVICES, ACI_GAP_REMOVE_BONDED_DEVICE,
-    ACI_GAP_NUMERIC_COMPARISON_CONFIRM, ACI_GAP_PASS_KEY_RESP, ACI_GAP_SET_DISCOVERABLE, ACI_GAP_SET_NON_DISCOVERABLE, ACI_GAP_SLAVE_SECURITY_REQ,
-    ACI_GAP_TERMINATE, ACI_HAL_GET_FW_BUILD_NUMBER, ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_REQ, HCI_LE_RAND, HCI_READ_LOCAL_VERSION,
+    ACI_GAP_CLEAR_SECURITY_DB, ACI_GAP_GET_BONDED_DEVICES, ACI_GAP_REMOVE_BONDED_DEVICE, ACI_HAL_GET_FW_BUILD_NUMBER, HCI_LE_RAND,
+    HCI_READ_LOCAL_VERSION,
 };
 use bluenrg2::{
-    adv_filter_policy, adv_type, event_code, AddrKind, BdAddr, BootReason, Event, BleStatus,
+    event_code, AddrKind, BdAddr, BootReason, Event, BleStatus,
     PairingReason, PairingStatus, VendorEvent, ATT_HEADER_LEN,
 };
-use wrist_ble::{Cccd, CharDecl, ConnHandle, Micros, Op, Payload, RadioEvent, ServerTable, ServiceDecl, ATT_MAX_MTU};
+use wrist_ble::{
+    AdvParams, Cccd, CharDecl, ConnHandle, ConnParams, DisconnectReason, Interval, LeConnRole, Micros, Op, Payload, RadioEvent, ServerTable,
+    ServiceDecl, Slots, Timeout, ATT_MAX_MTU,
+};
 use wrist_bluenrg2::commands;
 use wrist_bluenrg2::driver::{self, Driver, Got, Reply, Unanswered};
 use wrist_bluenrg2::start::{Setup, Start, Starting, Step};
@@ -744,7 +746,7 @@ impl Link<'_> {
                     if let Some(session) = self.transfer.take() {
                         crate::update::abort(session);
                     }
-                    let _ = self.command(ACI_GAP_SET_NON_DISCOVERABLE, &[]).await;
+                    let _ = self.submit(Op::Advertise(None)).await;
                     return true;
                 }
                 Either4::First(req) => self.request(req).await,
@@ -859,7 +861,7 @@ impl Link<'_> {
         let want = timing(power(), self.transfer.is_some());
         match STATE.load(Ordering::Relaxed) {
             STATE_ADVERTISING if self.advertised != Some(want) => {
-                if self.command(ACI_GAP_SET_NON_DISCOVERABLE, &[]).await.is_ok() {
+                if self.submit(Op::Advertise(None)).await.is_ok() {
                     self.advertise().await;
                 }
             }
@@ -872,13 +874,14 @@ impl Link<'_> {
     }
 
     async fn ask_connection(&mut self, min: u16, max: u16, latency: u16, timeout: u16) {
-        let mut p = [0u8; 10];
-        p[0..2].copy_from_slice(&CONN_HANDLE.load(Ordering::Relaxed).to_le_bytes());
-        p[2..4].copy_from_slice(&min.to_le_bytes());
-        p[4..6].copy_from_slice(&max.to_le_bytes());
-        p[6..8].copy_from_slice(&latency.to_le_bytes());
-        p[8..10].copy_from_slice(&timeout.to_le_bytes());
-        match self.command(ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_REQ, &p).await {
+        let params = ConnParams {
+            interval_min: Interval::from_u16(min),
+            interval_max: Interval::from_u16(max),
+            latency,
+            timeout: Timeout::from_u16(timeout),
+            ce_len: Slots::from_u16(0),
+        };
+        match self.submit(Op::UpdateParams(link(), params)).await {
             Ok(r) if r.status == 0 => {}
             Ok(r) => {
                 self.uart.write_str("[ble] interval request refused, status ");
@@ -920,7 +923,7 @@ impl Link<'_> {
             self.uart.write_line("[update] error: no data for 5 s; transfer abandoned");
         }
         if let Some(h) = self.rebond_for.take() {
-            let _ = self.command(ACI_GAP_ALLOW_REBOND, &h.to_le_bytes()).await;
+            let _ = self.submit(Op::AllowRebond(ConnHandle::new(h))).await;
             self.uart.write_line("[ble] the central lost its bond; allowing it to pair again");
         }
         if core::mem::take(&mut self.recount_bonds) {
@@ -939,8 +942,7 @@ impl Link<'_> {
             (prompt, owed)
         });
         if let Some(yes) = owed {
-            let hb = CONN_HANDLE.load(Ordering::Relaxed).to_le_bytes();
-            let _ = self.command(ACI_GAP_NUMERIC_COMPARISON_CONFIRM, &[hb[0], hb[1], u8::from(yes)]).await;
+            let _ = self.submit(Op::ConfirmNumeric(link(), yes)).await;
             self.uart.write_line(if yes {
                 "[ble] comparison confirmed"
             } else if prompt == Prompt::Answered(false) {
@@ -959,8 +961,7 @@ impl Link<'_> {
         if STATE.load(Ordering::Relaxed) != STATE_CONNECTED || ENCRYPTED.load(Ordering::Relaxed) {
             return;
         }
-        let h = CONN_HANDLE.load(Ordering::Relaxed).to_le_bytes();
-        match self.command(ACI_GAP_SLAVE_SECURITY_REQ, &h).await {
+        match self.submit(Op::RequestSecurity(link())).await {
             Ok(r) if r.status == 0 => self.uart.write_line("[ble] link still unencrypted: asked the central to pair"),
             Ok(r) => {
                 self.uart.write_str("[ble] security request refused, status ");
@@ -1190,23 +1191,11 @@ impl Link<'_> {
         self.uart.write_line("");
     }
 
-    /// `ACI_GAP_SET_DISCOVERABLE`: connectable undirected at the power source's interval,
-    /// static random address, no filter, name `UNA`, no UUIDs, no interval hint.
+    /// Connectable advertising at the power source's interval.
     async fn advertise(&mut self) {
         let want = timing(power(), false);
-        let mut p = [0u8; 20];
-        p[0] = adv_type::ADV_IND;
-        p[1..3].copy_from_slice(&want.advertise.to_le_bytes());
-        p[3..5].copy_from_slice(&want.advertise.to_le_bytes());
-        p[5] = AddrKind::RANDOM.as_raw();
-        p[6] = adv_filter_policy::NO_FILTER;
-        p[7] = u8::try_from(1 + DEVICE_NAME.len()).unwrap_or(0);
-        p[8] = bluenrg2::ad::NAME_COMPLETE;
-        p[9..9 + DEVICE_NAME.len()].copy_from_slice(DEVICE_NAME);
-        let n = 9 + DEVICE_NAME.len();
-        // Service UUID length 0, then slave connection interval min and max 0.
-        p[n..n + 5].copy_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00]);
-        match self.command(ACI_GAP_SET_DISCOVERABLE, &p[..n + 5]).await {
+        let interval = Slots::from_u16(want.advertise);
+        match self.submit(Op::Advertise(Some(AdvParams { interval_min: interval, interval_max: interval, connectable: true }))).await {
             Ok(r) if r.status == 0 => {
                 set_state(STATE_ADVERTISING);
                 self.advertised = Some(want);
@@ -1304,8 +1293,7 @@ impl Link<'_> {
     }
 
     async fn terminate(&mut self) {
-        let h = CONN_HANDLE.load(Ordering::Relaxed).to_le_bytes();
-        let _ = self.command(ACI_GAP_TERMINATE, &[h[0], h[1], BleStatus::TERMINATED_REMOTE_USER.into_inner()]).await;
+        let _ = self.submit(Op::Disconnect(link(), DisconnectReason::RemoteUserTerminatedConn)).await;
     }
 
     /// A random six-digit passkey from the controller's own generator, shown on the console
@@ -1331,24 +1319,35 @@ impl Link<'_> {
         self.uart.write_str("[ble] pairing: type this passkey on the central: ");
         write_six_digits(self.uart, key);
         self.uart.write_line("");
-        let mut p = [0u8; 6];
-        p[0..2].copy_from_slice(&handle.to_le_bytes());
-        p[2..6].copy_from_slice(&key.to_le_bytes());
-        let _ = self.command(ACI_GAP_PASS_KEY_RESP, &p).await;
+        let _ = self.submit(Op::Passkey(ConnHandle::new(handle), key)).await;
     }
 
     /// Send a command and wait for its Command Complete (or Command Status), handling every
     /// other event that arrives meanwhile.
     async fn command(&mut self, opcode: u16, params: &[u8]) -> Result<Reply, &'static str> {
+        self.exchange(opcode, params).await.map_err(unanswered)
+    }
+
+    async fn exchange(&mut self, opcode: u16, params: &[u8]) -> Result<Reply, Unanswered> {
         if self.chip.restarted() {
-            return Err(unanswered(Unanswered::Restarted));
+            return Err(Unanswered::Restarted);
         }
         trace_command(opcode, params);
-        self.chip.send(opcode, params).await.map_err(unanswered)?;
+        self.chip.send(opcode, params).await?;
         while self.chip.awaiting().await {
             self.packets().await;
         }
-        self.chip.reply().map_err(unanswered)
+        self.chip.reply()
+    }
+
+    /// `op` sent as its command, the driver told how it was answered.
+    async fn submit(&mut self, op: Op) -> Result<Reply, &'static str> {
+        let Some(c) = commands::command(&op, DEVICE_NAME, |_| Some(LeConnRole::Peripheral), self.chip.server()) else {
+            return Err("not sent: no command carries it out");
+        };
+        let reply = self.exchange(c.opcode, c.params()).await;
+        let _ = self.chip.settle(&op, &reply);
+        reply.map_err(unanswered)
     }
 
     /// Every event waiting.
@@ -1381,6 +1380,8 @@ impl Link<'_> {
                     self.uart.write_line("; backing off to one read per 500 ms");
                 }
             }
+            // The driver's own reports: no decision here reads them.
+            Got::Event(_) => {}
         }
     }
 
@@ -1727,4 +1728,9 @@ fn trace_command(opcode: u16, params: &[u8]) {
             trace::packet(trace::Dir::ToChip, &packet[..n]);
         }
     }
+}
+
+/// The link the central holds.
+fn link() -> ConnHandle {
+    ConnHandle::new(CONN_HANDLE.load(Ordering::Relaxed))
 }
