@@ -27,6 +27,8 @@ struct Script {
     security: Vec<(u16, u8, u8)>,
     /// A packet the chip sends ahead of each answer.
     ahead: Option<Vec<u8>>,
+    /// The command whose answer the chip follows by restarting.
+    restart_after: Option<u16>,
 }
 
 thread_local! {
@@ -49,7 +51,8 @@ fn answer(packet: &[u8]) -> Vec<Vec<u8>> {
             }
             _ => None,
         };
-        s.ahead.iter().cloned().chain(reply.map(|(status, p)| complete(opcode, status, &p))).collect()
+        let boot = (s.restart_after == Some(opcode)).then(|| event(0xFF, &[0x01, 0x00, 0x01]));
+        s.ahead.iter().cloned().chain(reply.map(|(status, p)| complete(opcode, status, &p))).chain(boot).collect()
     })
 }
 
@@ -141,7 +144,7 @@ fn a_snapshot_reads_the_links_the_anchor_and_each_links_security_in_turn() {
         links: Some((0x00, link_status(&[(slot::ADVERTISING, 0), (slot::PERIPHERAL, 0x0801), (slot::CENTRAL, 0x0802)]))),
         anchor: Some((0x00, anchor_period(168, 139))),
         security: vec![(0x0801, 1, 2), (0x0802, 1, 1)],
-        ahead: None,
+        ..Script::default()
     });
     drain(&c, &mut d, &[connection(0x0801, 0x01)]);
     c.borrow_mut().now = 5_000_000;
@@ -204,7 +207,7 @@ fn a_link_is_encrypted_at_security_level_2_or_above_in_mode_1() {
         links: Some((0x00, link_status(&handles.map(|h| (slot::PERIPHERAL, h))))),
         anchor: Some((0x00, anchor_period(0, 0))),
         security: vec![(0x0801, 1, 1), (0x0802, 1, 2), (0x0803, 1, 4), (0x0804, 2, 2)],
-        ahead: None,
+        ..Script::default()
     });
     let encrypted = snapshot(&mut d).1.unwrap().links.map(|l| l.and_then(|l| l.encrypted));
     assert_eq!(encrypted[..5], [Some(false), Some(true), Some(true), Some(false), None], "the last refused");
@@ -264,7 +267,7 @@ fn an_operation_on_a_link_the_snapshot_lacks_ends_as_not_connected() {
         links: Some((0x00, link_status(&[(slot::PERIPHERAL, 0x0802)]))),
         anchor: Some((0x00, anchor_period(0, 0))),
         security: vec![(0x0802, 1, 2)],
-        ahead: None,
+        ..Script::default()
     });
     let params = ConnParams { interval_min: Interval::from_u16(12), interval_max: Interval::from_u16(24), latency: 0, timeout: Timeout::from_u16(500), ce_len: Slots::from_u16(0) };
     let taken = Ok(Reply { status: 0x00, params: [0; bluenrg2::RETURN_PARAMS_MAX], len: 0 });
@@ -281,4 +284,18 @@ fn an_operation_on_a_link_the_snapshot_lacks_ends_as_not_connected() {
 fn an_anchor_with_no_slot_free_is_still_an_anchor() {
     let (_, mut d) = scripted(Script { links: Some((0x00, link_status(&[]))), anchor: Some((0x00, anchor_period(168, 0))), ..Script::default() });
     assert_eq!(snapshot(&mut d).1.unwrap().anchor, Some(Anchor { period: Micros(105_000), max_free_slot: Micros(0) }));
+}
+
+#[test]
+fn a_chip_that_restarts_after_the_last_answer_has_no_snapshot() {
+    let (_, mut d) = scripted(Script {
+        links: Some((0x00, link_status(&[(slot::PERIPHERAL, 0x0801)]))),
+        anchor: Some((0x00, anchor_period(0, 0))),
+        security: vec![(0x0801, 1, 2)],
+        restart_after: Some(ACI_GAP_GET_SECURITY_LEVEL),
+        ..Script::default()
+    });
+    assert_eq!(snapshot(&mut d).1, Err(Fault::Silent));
+    let (_, mut d) = scripted(Script { links: Some((0x00, link_status(&[]))), anchor: Some((0x00, anchor_period(0, 0))), restart_after: Some(ACI_HAL_GET_ANCHOR_PERIOD), ..Script::default() });
+    assert_eq!(snapshot(&mut d).1, Err(Fault::Silent), "no links: the anchor's answer is the last");
 }

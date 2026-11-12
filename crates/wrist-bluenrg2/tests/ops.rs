@@ -2,7 +2,8 @@
 
 use wrist_ble::{
     AddrKind, AdvParams, BdAddr, ChipInfo, ConnHandle, ConnParams, CoreSpecificationVersion, DisconnectReason, Failure, FailureKind, Interval,
-    LeConnRole, LinkParams, Op, OpId, Outcome, PairingEvent, PairingStep, PeerAddr, RadioEvent, ResetCause, SchedKind, Slots, Status, Timeout,
+    LeConnRole, LinkParams, LinkStatus, Op, OpId, Outcome, PairingEvent, PairingStep, PeerAddr, RadioEvent, ResetCause, SchedKind, Slots, Status,
+    Timeout, MAX_LINKS,
 };
 use wrist_bluenrg2::driver::Unanswered;
 use wrist_bluenrg2::ops::{refusal, unanswered, Ops, MAX_PENDING};
@@ -240,4 +241,19 @@ fn the_down_record_holds_each_link_once_and_lets_the_oldest_go_first() {
     assert_eq!(ops.ended(), Some(failed(1, FailureKind::NotConnected)), "the newest stays");
     ops.answered(&ask(link(3)), 0, 9).unwrap();
     assert_eq!(ops.ended(), None, "the oldest went");
+}
+
+#[test]
+fn a_snapshot_without_a_link_ends_what_waited_on_it_as_its_going_down_would() {
+    let mut ops = Ops::default();
+    ops.answered(&Op::Disconnect(link(1), DisconnectReason::RemoteUserTerminatedConn), 0, 9).unwrap();
+    ops.answered(&ask(link(1)), 0, 9).unwrap();
+    ops.answered(&ask(link(2)), 0, 9).unwrap();
+    let mut links = [None; MAX_LINKS];
+    let peer = PeerAddr { kind: AddrKind::PUBLIC, addr: BdAddr::new([0; 6]) };
+    links[3] = Some(LinkStatus { link: link(2), role: LeConnRole::Peripheral, peer, encrypted: None });
+    ops.resynced(&links);
+    assert_eq!(ops.ended(), Some(failed(1, FailureKind::NotConnected)), "the hang-up is over, as a link going down ends it");
+    assert_eq!(ops.ended(), None);
+    assert_eq!(ops.due(), Some(9), "the ask on the link still there waits");
 }

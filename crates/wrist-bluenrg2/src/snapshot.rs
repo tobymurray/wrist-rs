@@ -231,10 +231,15 @@ where
                 Ok(None) | Err(_) => Stage::Over,
             };
             if s.stage == Stage::Over {
-                if answered.is_ok() {
-                    self.resynced(&s.snapshot.links);
-                }
-                return Some(Snapping::Taken(answered.map(|_| s.snapshot)));
+                let taken = match answered {
+                    Ok(_) if self.restarted() => Err(Fault::Silent),
+                    Ok(_) => {
+                        self.resynced(&s.snapshot.links);
+                        Ok(s.snapshot)
+                    }
+                    Err(f) => Err(f),
+                };
+                return Some(Snapping::Taken(taken));
             }
         }
     }

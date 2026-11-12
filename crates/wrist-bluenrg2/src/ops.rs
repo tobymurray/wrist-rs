@@ -137,9 +137,10 @@ impl Ops {
         self.settle(|p| p.link == Some(link), Some(Failure { kind: FailureKind::NotConnected, native: 0 }));
     }
 
-    /// A snapshot found only `links`: an operation on any other link ends, not connected.
+    /// A snapshot found only `links`: an operation on any other link ends as its going down ends it.
     pub fn resynced(&mut self, links: &[Option<LinkStatus>]) {
         let gone = |l: ConnHandle| !links.iter().flatten().any(|k| k.link == l);
+        self.settle(|p| p.kind == OpKind::Disconnect && p.link.is_some_and(gone), None);
         self.settle(|p| p.link.is_some_and(gone), Some(Failure { kind: FailureKind::NotConnected, native: 0 }));
     }
 
