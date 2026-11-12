@@ -53,7 +53,8 @@ pub enum Unanswered {
     TooLong,
     /// The chip did not take it.
     NotTaken,
-    /// The chip restarted by itself since the last reset; nothing was sent.
+    /// The chip restarted by itself since the last reset, so nothing was sent: in its updater,
+    /// say, it takes commands of its own.
     Restarted,
     /// None came within [`REPLY_WITHIN_US`], or the chip restarted first.
     NoReply,

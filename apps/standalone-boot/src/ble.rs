@@ -992,8 +992,7 @@ impl Link<'_> {
         !Radio::from_u8(STATE.load(Ordering::Relaxed)).start_failed()
     }
 
-    /// Reset, address, TX power, event mask, GATT, GAP, name, IO capability, security
-    /// requirements, the server, then advertise: the driver's start, in ST's sample order.
+    /// The driver's start, then advertising.
     async fn bring_up(&mut self) {
         set_state(STATE_STARTING);
         clear_prompt();
@@ -1714,8 +1713,6 @@ fn unanswered(why: Unanswered) -> &'static str {
         Unanswered::TooLong => "not sent: parameters past 255 bytes",
         Unanswered::NotTaken => "the chip did not take the command",
         Unanswered::NoReply => "no reply within 1 s",
-        // A chip that restarted is reset before it hears anything: its updater, say, takes
-        // commands of its own.
         Unanswered::Restarted => "not sent: the chip restarted",
     }
 }
