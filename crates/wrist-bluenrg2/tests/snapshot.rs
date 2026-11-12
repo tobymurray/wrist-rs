@@ -276,3 +276,9 @@ fn an_operation_on_a_link_the_snapshot_lacks_ends_as_not_connected() {
     assert_eq!(after, [Snapping::Got(Got::Event(RadioEvent::Done(OpId(0), not_connected)))]);
     assert!(d.due().is_some(), "the ask on the link the snapshot found still waits");
 }
+
+#[test]
+fn an_anchor_with_no_slot_free_is_still_an_anchor() {
+    let (_, mut d) = scripted(Script { links: Some((0x00, link_status(&[]))), anchor: Some((0x00, anchor_period(168, 0))), ..Script::default() });
+    assert_eq!(snapshot(&mut d).1.unwrap().anchor, Some(Anchor { period: Micros(105_000), max_free_slot: Micros(0) }));
+}
