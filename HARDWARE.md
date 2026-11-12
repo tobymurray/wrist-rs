@@ -14,7 +14,7 @@ Primary sources: the UNAcore Rev3.2 schematic and BOM, ST's `STM32U5A5.svd` and
 `stm32u5a5xx.h`, ST's CubeMX pin database (`STM32_open_pin_data`), RM0456 Rev 7 (the
 STM32U5 reference manual), DS13543 Rev 3 (the STM32U5Axxx datasheet), the PCA9420
 datasheet Rev 4.2, the NX20P0407 datasheet Rev 1.3, and UNA's kernel source and images
-([UNAWatch/una-kernel-public](https://github.com/UNAWatch/una-kernel-public), tag v1.7.0). The ordering key decodes
+([UNAWatch/una-kernel-public](https://github.com/UNAWatch/una-kernel-public), commit `50fafb6`). The ordering key decodes
 `STM32U5A5QJI6Q` as 5A5 line, Q = 132 balls, J = 4 Mbytes, I = UFBGA, 6 = industrial,
 Q = SMPS pinout.
 
