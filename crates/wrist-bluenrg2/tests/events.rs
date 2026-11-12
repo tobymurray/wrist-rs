@@ -170,9 +170,9 @@ fn the_chip_starting_is_ready_and_any_other_reset_is_named() {
 }
 
 #[test]
-fn a_start_before_the_chips_identity_is_read_is_that_starts_own() {
+fn a_start_before_the_chips_identity_is_read_is_a_reset_from_power_on() {
     let mut t = Translator::default();
-    assert_eq!(event(&mut t, &vendor(0x0001, &[0x01])), None);
+    assert_eq!(event(&mut t, &vendor(0x0001, &[0x01])), Some(RadioEvent::ChipReset(ResetCause::PowerOn)));
     assert_eq!(event(&mut t, &vendor(0x0001, &[0x05])), Some(RadioEvent::ChipReset(ResetCause::Watchdog)));
 }
 

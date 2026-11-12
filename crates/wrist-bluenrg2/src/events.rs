@@ -12,7 +12,7 @@ use crate::gatt::Handles;
 /// central holds, for the bond-lost event, and the local server's handles, for a write.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Translator {
-    /// `None` until a start has read it: a boot then is that start's own.
+    /// The chip's identity once a start has read it; until then a boot is a reset from power-on.
     pub info: Option<ChipInfo>,
     phone: Option<ConnHandle>,
     server: Option<Handles>,
@@ -34,8 +34,8 @@ impl Translator {
         self.server.as_ref()
     }
 
-    /// `None` for a command's reply, which belongs to the operation that sent it, for a start's own
-    /// boot, for a write outside the local server, and for the events the core has no use for.
+    /// `None` for a command's reply, which belongs to the operation that sent it, for a write
+    /// outside the local server, and for the events the core has no use for.
     pub fn event(&mut self, packet: &[u8]) -> Option<RadioEvent> {
         let e = match bluenrg2::parse(packet) {
             Event::CommandComplete { .. } | Event::CommandStatus { .. } | Event::LeAdvertisingReport { .. } => return None,
@@ -84,7 +84,7 @@ impl Translator {
                 self.phone = None;
                 self.server = None;
                 RadioEvent::ChipReset(match reason {
-                    Some(BootReason::STARTED) => return self.info.map(RadioEvent::Ready),
+                    Some(BootReason::STARTED) => return Some(self.info.map_or(RadioEvent::ChipReset(ResetCause::PowerOn), RadioEvent::Ready)),
                     Some(BootReason::WATCHDOG) => ResetCause::Watchdog,
                     Some(BootReason::LOCKUP) => ResetCause::Lockup,
                     Some(BootReason::BROWNOUT) => ResetCause::Brownout,

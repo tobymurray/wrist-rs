@@ -1,0 +1,299 @@
+//! The BlueNRG-2 behind its reset pin and the SPI handshake: a command and its reply, and every
+//! packet the chip sends meanwhile handed out in order.
+
+use bluenrg2::{BootReason, Event, VendorEvent, RETURN_PARAMS_MAX};
+use embassy_futures::yield_now;
+use embedded_hal::digital::{InputPin, OutputPin};
+use embedded_hal_async::delay::DelayNs;
+use embedded_hal_async::digital::Wait;
+use embedded_hal_async::spi::SpiBus;
+use wrist_ble::RadioEvent;
+
+use crate::events::Translator;
+use crate::gatt::Handles;
+use crate::transport::{packets, Counts, Read, Transport, MAX_READ};
+
+/// A command is answered within this, or not at all.
+pub const REPLY_WITHIN_US: u64 = 1_000_000;
+/// The chip announces itself within this of leaving reset (HARDWARE.md, the Bluetooth module).
+pub const BOOT_WITHIN_US: u32 = 3_000_000;
+/// The reset pin is held low this long.
+pub const RESET_MS: u32 = 5;
+/// The most reads one drain makes while IRQ stays high.
+pub const DRAIN_READS: u32 = 8;
+
+/// Microseconds on a monotonic clock.
+pub trait Clock {
+    fn now_us(&self) -> u64;
+}
+
+/// A command's reply: its status and the parameters after it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Reply {
+    pub status: u8,
+    pub params: [u8; RETURN_PARAMS_MAX],
+    pub len: usize,
+}
+
+/// Why a command has no reply.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unanswered {
+    /// Its parameters run past 255 bytes; nothing was sent.
+    TooLong,
+    /// The chip did not take it.
+    NotTaken,
+    /// None came within [`REPLY_WITHIN_US`], or the chip restarted first.
+    NoReply,
+}
+
+/// What a drain hands out next.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant, reason = "no allocation: a value travels inline")]
+pub enum Got {
+    /// A packet, copied out, and what it tells the core.
+    Packet { len: usize, event: Option<RadioEvent> },
+    /// The boot a reset asked for, copied out: its own, never an event.
+    Boot { len: usize, reason: Option<BootReason> },
+    /// The chip's header was unreadable, and the drain ends; `first` on the read that made the run.
+    Unreadable { header: [u8; 5], first: bool },
+}
+
+pub struct Driver<'c, B, C, I, D, R, K> {
+    transport: Transport<'c, B, C, I, D>,
+    delay: D,
+    reset: R,
+    clock: K,
+    translator: Translator,
+    /// The opcode whose reply is awaited, until `deadline`, and the reply once it came.
+    awaited: Option<u16>,
+    deadline: u64,
+    reply: Option<Reply>,
+    /// The chip announced a boot while a reply was awaited.
+    restarted: bool,
+    /// A reset's boot is still to come: what arrives before it is from before the reset.
+    booting: bool,
+    /// The last read, how far its packets have been handed out, and the drain it belongs to.
+    read: [u8; MAX_READ],
+    len: usize,
+    at: usize,
+    drain: Option<Drain>,
+}
+
+/// A drain under way: the reads it made, and whether the last gave bytes, after which it yields.
+#[derive(Clone, Copy, Debug, Default)]
+struct Drain {
+    reads: u32,
+    yield_due: bool,
+}
+
+impl<'c, B, C, I, D, R, K> Driver<'c, B, C, I, D, R, K>
+where
+    B: SpiBus,
+    C: OutputPin,
+    I: InputPin + Wait,
+    D: DelayNs + Clone,
+    R: OutputPin,
+    K: Clock,
+{
+    pub fn new(bus: B, cs: C, irq: I, delay: D, counts: &'c Counts, reset: R, clock: K) -> Self {
+        Self {
+            transport: Transport::new(bus, cs, irq, delay.clone(), counts),
+            delay,
+            reset,
+            clock,
+            translator: Translator::default(),
+            awaited: None,
+            deadline: 0,
+            reply: None,
+            restarted: false,
+            booting: false,
+            read: [0; MAX_READ],
+            len: 0,
+            at: 0,
+            drain: None,
+        }
+    }
+
+    #[must_use]
+    pub fn counts(&self) -> &'c Counts {
+        self.transport.counts()
+    }
+
+    /// Until a read is waiting.
+    pub async fn wait_pending(&mut self) {
+        self.transport.wait_pending().await;
+    }
+
+    /// The last reads' headers were unreadable: the caller reads no faster than it must.
+    #[must_use]
+    pub fn backing_off(&self) -> bool {
+        self.transport.backing_off()
+    }
+
+    /// The chip held in reset.
+    pub fn hold(&mut self) {
+        let _ = self.reset.set_low();
+    }
+
+    /// The chip let out of reset, with no start waiting for its boot.
+    pub fn release(&mut self) {
+        let _ = self.reset.set_high();
+    }
+
+    /// The local server as the chip built it, until the chip next boots.
+    pub fn serve(&mut self, server: Handles) {
+        self.translator.serve(server);
+    }
+
+    #[must_use]
+    pub fn server(&self) -> Option<&Handles> {
+        self.translator.server()
+    }
+
+    /// The chip reset through its pin, CS high first; what was read before is dropped, and the
+    /// boot this reset gives is its own (see [`Driver::boot`]).
+    pub async fn reset(&mut self) {
+        self.transport.deselect();
+        self.hold();
+        self.delay.delay_ms(RESET_MS).await;
+        self.release();
+        self.awaited = None;
+        self.reply = None;
+        self.restarted = false;
+        self.len = 0;
+        self.at = 0;
+        self.drain = None;
+        self.booting = true;
+    }
+
+    /// Whether the chip announced itself within [`BOOT_WITHIN_US`] of the reset; if it did, a drain
+    /// hands out [`Got::Boot`] for its boot and drops whatever came before it.
+    pub async fn boot(&mut self) -> bool {
+        let up = self.transport.wait_pending_within(BOOT_WITHIN_US).await;
+        if up {
+            self.drain();
+        } else {
+            self.booting = false;
+        }
+        up
+    }
+
+    /// Sends `opcode` with `params` and awaits its reply: [`Driver::awaiting`], then
+    /// [`Driver::reply`].
+    ///
+    /// # Errors
+    ///
+    /// The parameters run past 255 bytes, or the chip did not take the command.
+    pub async fn send(&mut self, opcode: u16, params: &[u8]) -> Result<(), Unanswered> {
+        let mut packet = [0u8; bluenrg2::MAX_COMMAND];
+        let n = bluenrg2::command(opcode, &[params], &mut packet).ok_or(Unanswered::TooLong)?;
+        self.awaited = Some(opcode);
+        self.reply = None;
+        self.restarted = false;
+        if !self.transport.write(&packet[..n]).await {
+            self.awaited = None;
+            return Err(Unanswered::NotTaken);
+        }
+        self.deadline = self.clock.now_us() + REPLY_WITHIN_US;
+        Ok(())
+    }
+
+    /// Whether the reply is still to come: until it does, the chip restarts or the time is up, each
+    /// call waits for the chip and begins a drain for [`Driver::next`].
+    pub async fn awaiting(&mut self) -> bool {
+        if self.reply.is_some() || self.restarted {
+            return false;
+        }
+        let left = self.deadline.saturating_sub(self.clock.now_us());
+        if left == 0 || !self.transport.wait_pending_within(u32::try_from(left).unwrap_or(u32::MAX)).await {
+            return false;
+        }
+        self.drain();
+        true
+    }
+
+    /// The reply, which ends the exchange.
+    ///
+    /// # Errors
+    ///
+    /// None came in time, or the chip restarted first.
+    pub fn reply(&mut self) -> Result<Reply, Unanswered> {
+        self.awaited = None;
+        self.reply.take().ok_or(Unanswered::NoReply)
+    }
+
+    /// Begins handing out what the chip has queued: up to [`DRAIN_READS`] reads while IRQ stays high.
+    pub fn drain(&mut self) {
+        self.drain = Some(Drain::default());
+    }
+
+    /// The drain's next packet, copied into `out`, or `None` once it is over.
+    pub async fn next(&mut self, out: &mut [u8; MAX_READ]) -> Option<Got> {
+        loop {
+            if self.at < self.len {
+                let Some(packet) = packets(&self.read[self.at..self.len], self.transport.counts()).next() else {
+                    self.at = self.len;
+                    continue;
+                };
+                let len = packet.len();
+                out[..len].copy_from_slice(packet);
+                self.at += len;
+                if let Some(got) = self.take(&out[..len]) {
+                    return Some(got);
+                }
+                continue;
+            }
+            let mut drain = self.drain?;
+            if core::mem::take(&mut drain.yield_due) {
+                yield_now().await;
+            }
+            if !self.transport.pending() || drain.reads >= DRAIN_READS {
+                self.drain = None;
+                self.booting = false;
+                return None;
+            }
+            drain.reads += 1;
+            match self.transport.read(&mut self.read).await {
+                Read::Bytes(n) => {
+                    self.len = n;
+                    self.at = 0;
+                    drain.yield_due = true;
+                }
+                Read::Empty => {}
+                Read::Unreadable { header, first } => {
+                    self.drain = None;
+                    self.booting = false;
+                    return Some(Got::Unreadable { header, first });
+                }
+            }
+            self.drain = Some(drain);
+        }
+    }
+
+    /// One packet: the awaited reply kept, a reset's boot kept back, the rest translated; `None` for
+    /// a packet from before a reset.
+    fn take(&mut self, packet: &[u8]) -> Option<Got> {
+        let len = packet.len();
+        let parsed = bluenrg2::parse(packet);
+        if self.booting {
+            let Event::Vendor(VendorEvent::BlueInitialized { reason, .. }) = parsed else { return None };
+            self.booting = false;
+            // What the chip held is gone, as for any boot; the boot itself is the reset's answer.
+            let _ = self.translator.event(packet);
+            return Some(Got::Boot { len, reason });
+        }
+        match parsed {
+            Event::CommandComplete { cmd_opcode, status: Some(status), return_param_bytes: params, .. } if self.awaited == Some(cmd_opcode) => {
+                let mut reply = Reply { status: status.into_inner(), params: [0; RETURN_PARAMS_MAX], len: params.len().min(RETURN_PARAMS_MAX) };
+                reply.params[..reply.len].copy_from_slice(&params[..reply.len]);
+                self.reply = Some(reply);
+            }
+            Event::CommandStatus { cmd_opcode, status, .. } if self.awaited == Some(cmd_opcode) => {
+                self.reply = Some(Reply { status: status.into_inner(), params: [0; RETURN_PARAMS_MAX], len: 0 });
+            }
+            Event::Vendor(VendorEvent::BlueInitialized { .. }) => self.restarted |= self.awaited.is_some(),
+            _ => {}
+        }
+        Some(Got::Packet { len, event: self.translator.event(packet) })
+    }
+}
