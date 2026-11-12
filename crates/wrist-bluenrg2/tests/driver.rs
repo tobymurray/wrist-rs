@@ -327,3 +327,15 @@ fn a_read_cut_short_before_the_resets_boot_is_dropped_as_what_came_before_it_is(
     let got: Vec<Got> = drained(&mut d).into_iter().map(|(_, g)| g).collect();
     assert_eq!(got, [Got::Boot { len: 6, reason: Some(BootReason::new(0x01)) }]);
 }
+
+#[test]
+fn a_loss_of_the_drivers_own_lets_go_of_the_links_seen_down() {
+    let (c, mut d) = driver(128);
+    c.borrow_mut().queued.extend([down(1), vec![0x04, 0x3E, 0x05, 0x01]]);
+    d.drain();
+    let got: Vec<Got> = drained(&mut d).into_iter().map(|(_, g)| g).collect();
+    assert_eq!(got.last(), Some(&Got::Event(RadioEvent::EventsLost)));
+    let params = ConnParams { interval_min: Interval::from_u16(12), interval_max: Interval::from_u16(24), latency: 0, timeout: Timeout::from_u16(500), ce_len: Slots::from_u16(0) };
+    assert_eq!(d.settle(&Op::UpdateParams(ConnHandle::new(0x0801), params), &Ok(reply(0x00))), Ok(OpId(0)));
+    assert!(d.due().is_some(), "after a loss the link isn't known to be down: the ask waits");
+}

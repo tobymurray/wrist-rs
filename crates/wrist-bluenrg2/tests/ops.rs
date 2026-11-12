@@ -202,3 +202,26 @@ fn the_central_taking_an_ask_ends_the_oldest_on_its_link() {
     ops.accepted(link(1));
     assert_eq!(ops.ended(), Some(RadioEvent::Done(OpId(1), Ok(Outcome::Done))), "not the newer one in the freed slot");
 }
+
+#[test]
+fn the_down_record_holds_each_link_once_and_lets_the_oldest_go_first() {
+    let mut ops = Ops::default();
+    let peer = PeerAddr { kind: AddrKind::PUBLIC, addr: BdAddr::new([0; 6]) };
+    let down = |ops: &mut Ops, n| ops.saw(&RadioEvent::LinkDown { link: link(n), reason: Status::new(0x13) });
+    let up = |ops: &mut Ops, n| ops.saw(&RadioEvent::LinkUp { link: link(n), role: LeConnRole::Peripheral, peer, params: None });
+    down(&mut ops, 1);
+    down(&mut ops, 1);
+    up(&mut ops, 1);
+    ops.answered(&ask(link(1)), 0, 9).unwrap();
+    assert_eq!(ops.ended(), None, "down twice and up once is up");
+    for n in 2..10 {
+        down(&mut ops, n);
+    }
+    up(&mut ops, 2);
+    down(&mut ops, 10);
+    down(&mut ops, 11);
+    ops.answered(&ask(link(10)), 0, 9).unwrap();
+    assert_eq!(ops.ended(), Some(failed(1, FailureKind::NotConnected)), "the newest stays");
+    ops.answered(&ask(link(3)), 0, 9).unwrap();
+    assert_eq!(ops.ended(), None, "the oldest went");
+}
