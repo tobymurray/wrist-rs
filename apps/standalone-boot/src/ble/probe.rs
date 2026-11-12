@@ -217,9 +217,9 @@ impl Link<'_> {
         }
         #[cfg(feature = "ble-trace")]
         super::trace::packet(super::trace::Dir::Reset, &[]);
-        self.rst.set_low();
+        self.chip.hold();
         Timer::after_millis(5).await;
-        self.rst.set_high();
+        self.chip.release();
         self.uart.write_line("[ble] probe: chip reset through its pin, unannounced");
     }
 

@@ -68,13 +68,13 @@ use bluenrg2::opcode::{
 };
 use bluenrg2::{
     adv_filter_policy, adv_type, config, event_code, gap_role, privacy, AddrKind, BdAddr, BootReason, Event, BleStatus,
-    PairingReason, PairingStatus, VendorEvent, ATT_HEADER_LEN, MAX_COMMAND, RETURN_PARAMS_MAX,
+    PairingReason, PairingStatus, VendorEvent, ATT_HEADER_LEN,
 };
 use wrist_ble::{Cccd, CharDecl, ConnHandle, Micros, Op, Payload, RadioEvent, ServerTable, ServiceDecl, ATT_MAX_MTU};
 use wrist_bluenrg2::commands::{self, Command};
-use wrist_bluenrg2::events::Translator;
+use wrist_bluenrg2::driver::{self, Driver, Got, Reply, Unanswered};
 use wrist_bluenrg2::gatt;
-use wrist_bluenrg2::transport::{self, Counts, Read, Transport};
+use wrist_bluenrg2::transport::{self, Counts};
 use wrist_pages::{OldKey, Pairing, Prompt};
 use wrist_wake::ble::restart::{Boot, Restarts};
 use wrist_wake::ble::{server, timing, IntervalAsk, Lines, Outbox, PairAsk, Power, Radio, Scan, Sink, Timing};
@@ -102,8 +102,6 @@ pub struct Pins {
     pub rx_dma: Peri<'static, peripherals::GPDMA1_CH3>,
 }
 
-const BOOT_TIMEOUT: Duration = Duration::from_millis(3000);
-const REPLY_TIMEOUT: Duration = Duration::from_millis(1000);
 /// A transfer with no bytes for this long is abandoned, as over USB.
 const TRANSFER_IDLE: Duration = Duration::from_secs(5);
 
@@ -518,13 +516,6 @@ fn answer_prompt(yes: bool) -> bool {
     })
 }
 
-/// A command's reply: the status byte and the parameters after it.
-struct Reply {
-    status: u8,
-    params: [u8; RETURN_PARAMS_MAX],
-    len: usize,
-}
-
 #[embassy_executor::task]
 pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
     let uart = Uart::best_effort();
@@ -567,22 +558,19 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
         }
         crate::rtc::set_radio_wanted(true);
         let mut link = Link {
-            chip: bus(
+            chip: chip(
                 (pins.spi.reborrow(), pins.sck.reborrow(), pins.miso.reborrow(), pins.mosi.reborrow()),
                 (pins.cs.reborrow(), pins.irq.reborrow(), pins.irq_exti.reborrow()),
                 (pins.tx_dma.reborrow(), pins.rx_dma.reborrow()),
+                &mut rst,
             ),
-            rst: &mut rst,
             uart,
             flash,
             last_rx: 0,
-            waiting_for: None,
-            reply: None,
             readvertise: false,
             passkey_for: None,
             rebond_for: None,
             recount_bonds: false,
-            translator: Translator::default(),
             line: [0; 192],
             line_len: 0,
             mtu: DEFAULT_MTU,
@@ -600,7 +588,6 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
             interval_ask: IntervalAsk::default(),
             scanner: scan::Scanner::default(),
             seen: Seen::default(),
-            booting: false,
             boot: None,
             restart: None,
             restarts: Restarts::default(),
@@ -609,13 +596,13 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
         if !(link.start().await && link.serve(&mut changes).await) {
             set_state(STATE_FAILED);
             old_key(OldKey::clear);
-            link.rst.set_low();
+            link.chip.hold();
             uart.write_line("[ble] start failed: chip held in reset; `ble on` retries");
             on = false;
             continue;
         }
         // `ble off`: the chip in reset first, then SPI1, CS and IRQ dropped back to analog.
-        link.rst.set_low();
+        link.chip.hold();
         drop(link);
         MIRROR.store(false, Ordering::Relaxed);
         set_encrypted(false);
@@ -628,46 +615,52 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
     }
 }
 
-type Bus<'d> = Transport<'static, Spi<'d, Async, spi::mode::Master>, Output<'d>, ExtiInput<'d, Async>, Delay>;
+type Chip<'d> = Driver<'static, Spi<'d, Async, spi::mode::Master>, Output<'d>, ExtiInput<'d, Async>, Delay, &'d mut Output<'static>, Now>;
 
-/// SPI1, CS and IRQ while the radio is on.
-fn bus<'d>(
+/// The driver's clock: embassy's.
+struct Now;
+
+impl driver::Clock for Now {
+    fn now_us(&self) -> u64 {
+        Instant::now().as_micros()
+    }
+}
+
+/// SPI1, CS and IRQ while the radio is on, and the reset pin.
+fn chip<'d>(
     (spi, sck, miso, mosi): (Peri<'d, peripherals::SPI1>, Peri<'d, peripherals::PG2>, Peri<'d, peripherals::PG3>, Peri<'d, peripherals::PB5>),
     (cs, irq, irq_exti): (Peri<'d, peripherals::PA15>, Peri<'d, peripherals::PA9>, Peri<'d, peripherals::EXTI9>),
     (tx_dma, rx_dma): (Peri<'d, peripherals::GPDMA1_CH2>, Peri<'d, peripherals::GPDMA1_CH3>),
-) -> Bus<'d> {
+    rst: &'d mut Output<'static>,
+) -> Chip<'d> {
     let mut config = spi::Config::default();
     config.frequency = Hertz(1_000_000);
     // ST's bus setup for the BlueNRG-2 in X-CUBE-BLE2.
     config.mode = spi::MODE_1;
-    Transport::new(
+    Driver::new(
         Spi::new(spi, sck, mosi, miso, tx_dma, rx_dma, Irqs, config),
         Output::new(cs, Level::High, Speed::VeryHigh),
         ExtiInput::new(irq, irq_exti, Pull::Down, Irqs),
         Delay,
         &TRANSPORT,
+        rst,
+        Now,
     )
 }
 
 // Each flag is one piece of work an event left for the loop.
 #[allow(clippy::struct_excessive_bools)]
 struct Link<'d> {
-    chip: Bus<'d>,
-    rst: &'d mut Output<'static>,
+    chip: Chip<'d>,
     uart: Uart,
     flash: &'static FlashMutex,
     /// CRC of the last console write, to spot one delivered twice.
     last_rx: u32,
-    /// The opcode whose reply [`Link::command`] is waiting for, and the reply.
-    waiting_for: Option<u16>,
-    reply: Option<Reply>,
     /// Deferred work raised by events, done from the main loop.
     readvertise: bool,
     passkey_for: Option<u16>,
     rebond_for: Option<u16>,
     recount_bonds: bool,
-    /// The chip's packets as the driver's events, with the handles it gave [`SERVER`].
-    translator: Translator,
     line: [u8; 192],
     line_len: usize,
     /// The negotiated ATT MTU; notifications carry `mtu - 3`.
@@ -692,8 +685,7 @@ struct Link<'d> {
     interval_ask: IntervalAsk,
     scanner: scan::Scanner,
     seen: Seen,
-    /// A reset through the pin is waiting for the chip's boot, and how that boot came up.
-    booting: bool,
+    /// How the boot a reset asked for came up.
     boot: Option<Boot>,
     /// The chip restarted by itself and has not been brought up again.
     restart: Option<Boot>,
@@ -789,7 +781,7 @@ impl Link<'_> {
                 Some(s) if s.started() => Transfer::Started,
                 Some(_) => Transfer::Claimed,
             },
-            console: (self.translator.server().is_some() && MIRROR.load(Ordering::Relaxed))
+            console: (self.chip.server().is_some() && MIRROR.load(Ordering::Relaxed))
                 .then(|| Console { pending: !OUT.is_empty() || self.outbox.holding(), next_at: tick(self.console_at) }),
             abandon_at: self.transfer.as_ref().map(|_| tick(self.last_data + TRANSFER_IDLE + one)),
             ask_at: self.pair_ask.due(),
@@ -1112,7 +1104,7 @@ impl Link<'_> {
             self.fail("finding the console in the server");
             return false;
         }
-        self.translator.serve(handles);
+        self.chip.serve(handles);
         true
     }
 
@@ -1127,7 +1119,7 @@ impl Link<'_> {
 
     /// Console output to a subscribed central, one notification per pass.
     async fn console_tick(&mut self) {
-        if self.translator.server().is_none() {
+        if self.chip.server().is_none() {
             return;
         }
         // While image bytes arrive the mirror waits: notifications refused for want of TX
@@ -1146,7 +1138,7 @@ impl Link<'_> {
         let link = ConnHandle::new(CONN_HANDLE.load(Ordering::Relaxed));
         let notify = Payload::new(&chunk[..n]).map(|value| Op::Notify(link, server::TX, value));
         // 0xFF, as for no reply, if it could not be built.
-        let status = match notify.and_then(|op| commands::command(&op, DEVICE_NAME, |_| None, self.translator.server())) {
+        let status = match notify.and_then(|op| commands::command(&op, DEVICE_NAME, |_| None, self.chip.server())) {
             Some(c) => self.command(c.opcode, c.params()).await.map_or(0xFF, |r| r.status),
             None => 0xFF,
         };
@@ -1400,23 +1392,16 @@ impl Link<'_> {
     async fn reset(&mut self) {
         #[cfg(feature = "ble-trace")]
         trace::packet(trace::Dir::Reset, &[]);
-        self.chip.deselect();
-        self.rst.set_low();
-        Timer::after_millis(5).await;
-        self.rst.set_high();
-        self.waiting_for = None;
-        self.reply = None;
+        self.chip.reset().await;
         self.restart = None;
         self.boot = None;
-        self.booting = true;
         CONN_HANDLE.store(0, Ordering::Relaxed);
         // The chip takes no command until its stack announces itself.
-        if self.chip.wait_pending_within(micros(BOOT_TIMEOUT)).await {
-            self.drain().await;
+        if self.chip.boot().await {
+            self.packets().await;
         } else {
             self.uart.write_line("[ble] no sign of life after reset (no module, or not ST's firmware)");
         }
-        self.booting = false;
     }
 
     /// Send a command and wait for its Command Complete (or Command Status), handling every
@@ -1427,62 +1412,51 @@ impl Link<'_> {
         if self.restart.is_some() {
             return Err("not sent: the chip restarted");
         }
-        let mut packet = [0u8; MAX_COMMAND];
-        let n = bluenrg2::command(opcode, &[params], &mut packet).ok_or("not sent: parameters past 255 bytes")?;
         #[cfg(feature = "ble-trace")]
-        trace::packet(trace::Dir::ToChip, &packet[..n]);
-        self.waiting_for = Some(opcode);
-        self.reply = None;
-        if !self.chip.write(&packet[..n]).await {
-            self.waiting_for = None;
-            return Err("the chip did not take the command");
-        }
-        let deadline = Instant::now() + REPLY_TIMEOUT;
-        while self.reply.is_none() && self.restart.is_none() {
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left == Duration::from_ticks(0) {
-                break;
+        {
+            let mut packet = [0u8; bluenrg2::MAX_COMMAND];
+            if let Some(n) = bluenrg2::command(opcode, &[params], &mut packet) {
+                trace::packet(trace::Dir::ToChip, &packet[..n]);
             }
-            if !self.chip.wait_pending_within(micros(left)).await {
-                break;
-            }
-            self.drain().await;
         }
-        self.waiting_for = None;
-        self.reply.take().ok_or("no reply within 1 s")
+        self.chip.send(opcode, params).await.map_err(unanswered)?;
+        while self.chip.awaiting().await {
+            self.packets().await;
+        }
+        self.chip.reply().map_err(unanswered)
     }
 
-    /// Every event waiting, one `0B` read each, while IRQ stays high.
+    /// Every event waiting, read while IRQ stays high.
     async fn drain(&mut self) {
-        let mut rounds = 0;
-        while self.chip.pending() && rounds < 8 {
-            rounds += 1;
-            let mut buf = [0u8; transport::MAX_READ];
-            match self.chip.read(&mut buf).await {
-                Read::Bytes(count) => {
-                    for packet in transport::packets(&buf[..count], &TRANSPORT) {
-                        self.handle(packet);
-                    }
-                }
-                Read::Empty => continue,
-                Read::Unreadable { header, first } => {
+        self.chip.drain();
+        self.packets().await;
+    }
+
+    /// What the drain under way hands out, each in turn.
+    async fn packets(&mut self) {
+        let mut packet = [0u8; transport::MAX_READ];
+        while let Some(got) = self.chip.next(&mut packet).await {
+            #[cfg(feature = "ble-trace")]
+            if let Got::Packet { len, .. } | Got::Boot { len, .. } = got {
+                trace::packet(trace::Dir::FromChip, &packet[..len]);
+            }
+            match got {
+                Got::Packet { len, event } => self.handle(&packet[..len], event),
+                Got::Boot { reason, .. } => self.initialized(true, reason.unwrap_or(BootReason::new(0))),
+                Got::Unreadable { header, first } => {
                     if first {
                         self.uart.write_str("[ble] headers unreadable with IRQ high, last ");
                         write_hex(self.uart, &header);
                         self.uart.write_line("; backing off to one read per 500 ms");
                     }
-                    return;
                 }
             }
-            embassy_futures::yield_now().await;
         }
     }
 
     /// One packet from the chip: capture a reply, act on an event.
-    fn handle(&mut self, p: &[u8]) {
-        #[cfg(feature = "ble-trace")]
-        trace::packet(trace::Dir::FromChip, p);
-        match self.translator.event(p) {
+    fn handle(&mut self, p: &[u8], event: Option<RadioEvent>) {
+        match event {
             Some(RadioEvent::DataLength { tx, rx, tx_time, rx_time, .. }) => return self.data_length((tx, tx_time), (rx, rx_time)),
             Some(RadioEvent::ServerWrite { attr: server::RX, offset, more, data, .. }) => return self.console_write(offset != 0 || more, data.as_slice()),
             Some(RadioEvent::ServerSubscribe { attr: server::TX, cccd, .. }) => {
@@ -1492,19 +1466,8 @@ impl Link<'_> {
             _ => {}
         }
         match bluenrg2::parse(p) {
-            Event::CommandComplete { cmd_opcode, status: Some(status), return_param_bytes: params, .. } => {
-                if self.waiting_for == Some(cmd_opcode) {
-                    let mut reply = Reply { status: status.into_inner(), params: [0; RETURN_PARAMS_MAX], len: params.len().min(RETURN_PARAMS_MAX) };
-                    reply.params[..reply.len].copy_from_slice(&params[..reply.len]);
-                    self.reply = Some(reply);
-                }
-            }
-            Event::CommandComplete { status: None, .. } => {}
-            Event::CommandStatus { cmd_opcode, status, .. } => {
-                if self.waiting_for == Some(cmd_opcode) {
-                    self.reply = Some(Reply { status: status.into_inner(), params: [0; RETURN_PARAMS_MAX], len: 0 });
-                }
-            }
+            // Replies are the driver's.
+            Event::CommandComplete { .. } | Event::CommandStatus { .. } => {}
             Event::LeConnectionComplete { handle, peer, timing, .. } => {
                 CONN_HANDLE.store(handle.raw(), Ordering::Relaxed);
                 self.peer = Some(peer);
@@ -1611,15 +1574,14 @@ impl Link<'_> {
 
     /// `ACI_BLUE_INITIALIZED`: the boot a reset waits for, or a restart nobody asked for, which
     /// leaves nothing of the link or the configuration; [`Link::serve`] brings the chip up again.
-    fn initialized(&mut self, reason: BootReason) {
-        let boot = self.restarts.initialized(self.booting, reason, Instant::now().as_ticks(), embassy_time::TICK_HZ);
+    fn initialized(&mut self, booting: bool, reason: BootReason) {
+        let boot = self.restarts.initialized(booting, reason, Instant::now().as_ticks(), embassy_time::TICK_HZ);
         let restarted = matches!(boot, Boot::Restarted | Boot::KeptRestarting);
         self.uart.write_str(if restarted { "[ble] the chip restarted by itself, reason " } else { "[ble] chip initialised, reason " });
         self.uart.write_hex8(reason.into_inner());
         self.uart.write_str(" (");
         self.uart.write_str(wrist_bluenrg2::console::boot_reason(reason));
         if !restarted {
-            self.booting = false;
             self.boot = Some(boot);
             return self.uart.write_line(")");
         }
@@ -1684,7 +1646,7 @@ impl Link<'_> {
 
     fn vendor(&mut self, e: VendorEvent) {
         match e {
-            VendorEvent::BlueInitialized { reason, .. } => self.initialized(reason.unwrap_or(BootReason::new(0))),
+            VendorEvent::BlueInitialized { reason, .. } => self.initialized(false, reason.unwrap_or(BootReason::new(0))),
             VendorEvent::EventsLost { .. } => self.uart.write_line("[ble] the chip dropped events: the host read too slowly"),
             VendorEvent::PassKeyRequest { handle, .. } => {
                 self.pair_ask.settled();
@@ -1766,10 +1728,6 @@ fn redraw() {
     crate::redraw(wrist_pages::Page::Bluetooth);
 }
 
-fn micros(d: Duration) -> u32 {
-    u32::try_from(d.as_micros()).unwrap_or(u32::MAX)
-}
-
 fn write_address(uart: Uart, a: bluenrg2::Address) {
     use core::fmt::Write;
     struct Out(Uart);
@@ -1817,5 +1775,13 @@ fn write_hex(uart: Uart, bytes: &[u8]) {
             uart.write_str(" ");
         }
         uart.write_hex8(*b);
+    }
+}
+
+fn unanswered(why: Unanswered) -> &'static str {
+    match why {
+        Unanswered::TooLong => "not sent: parameters past 255 bytes",
+        Unanswered::NotTaken => "the chip did not take the command",
+        Unanswered::NoReply => "no reply within 1 s",
     }
 }
