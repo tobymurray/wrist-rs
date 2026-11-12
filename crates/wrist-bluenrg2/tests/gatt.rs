@@ -59,7 +59,7 @@ fn the_server_is_built_with_the_bytes_ble_rs_sent() {
     want.extend(string(0x10, 0x17, 0x2A26, b"0123456789abcdef0123456789abcdef-dirty"));
     want.push((0xFD02, [&[0x02][..], &nus(0x01), &[0x01, 6]].concat()));
     // RX: write and write without response, authenticated and encrypted writes, writes reported;
-    // TX: notify, open, none reported. 244 bytes each, variable.
+    // TX: notify, open, none reported; both variable.
     want.push((0xFD04, [&[0x20, 0x00, 0x02][..], &nus(0x02), &[244, 0, 0x0C, 0x28, 0x01, 7, 0x01]].concat()));
     want.push((0xFD04, [&[0x20, 0x00, 0x02][..], &nus(0x03), &[244, 0, 0x10, 0x00, 0x00, 7, 0x01]].concat()));
     assert_eq!(got, want);

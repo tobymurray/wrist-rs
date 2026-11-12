@@ -1,5 +1,4 @@
-//! The watch's GATT server: Device Information, and the console in the Nordic UART Service's
-//! shape, which nRF Connect's UART tab recognises.
+//! The watch's GATT server: Device Information, and the console in the Nordic UART Service's shape.
 
 use wrist_ble::bt_hci::uuid::BluetoothUuid128;
 use wrist_ble::{BluetoothUuid, CharDecl, Permission, Props, ServerAttr, ServiceDecl, ATT_MAX_MTU};
@@ -35,8 +34,7 @@ pub const fn device_information(firmware: &'static [u8]) -> [CharDecl; 3] {
 pub const DEVICE_INFORMATION: BluetoothUuid = BluetoothUuid::from_u16(0x180A);
 
 /// The console: the central writes commands and image bytes to RX, and the watch notifies its
-/// output on TX. ST's stack checks a write's permission only when the write wants a response,
-/// so the watch checks the link's encryption itself too.
+/// output on TX; RX's properties and permission are measured in HARDWARE.md's Bluetooth module.
 pub const CONSOLE: ServiceDecl = ServiceDecl {
     name: "console",
     uuid: nus(0x01),

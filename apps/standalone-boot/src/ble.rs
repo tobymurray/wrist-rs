@@ -118,7 +118,7 @@ static SERVICES: [ServiceDecl; 2] = server::services(&DEVICE_INFORMATION);
 static SERVER: ServerTable = ServerTable { services: &SERVICES };
 /// The largest ATT MTU the console takes.
 const MAX_MTU: usize = 247;
-/// The characteristics' value size: the most [`MAX_MTU`] carries.
+/// The most a console notification carries: what [`MAX_MTU`] holds.
 const NUS_VALUE_LEN: usize = MAX_MTU - ATT_HEADER_LEN;
 /// Until an exchange raises it.
 const DEFAULT_MTU: usize = bluenrg2::ATT_DEFAULT_MTU;

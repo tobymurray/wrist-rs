@@ -11,7 +11,7 @@ pub const MAX_VALUE: usize = ATT_MAX_MTU - 3;
 /// The longest parameters here: a whole value after its handles, offset and length.
 pub const MAX_PARAMS: usize = 6 + MAX_VALUE;
 
-/// [`permission::AUTHEN_WRITE`] and [`permission::ENCRY_WRITE`]: writes only over a link encrypted with authenticated keys.
+/// [`permission::AUTHEN_WRITE`] and [`permission::ENCRY_WRITE`] together.
 const AUTHENTICATED_WRITE: u8 = 0x28;
 
 /// The most characteristics a server here holds.
@@ -53,9 +53,9 @@ pub fn add_service(s: &ServiceDecl) -> Option<Command<MAX_PARAMS>> {
     Command::new(opcode::ACI_GATT_ADD_SERVICE, &[&[kind], bytes, &[service_type::PRIMARY, records]])
 }
 
-/// `ACI_GATT_ADD_CHAR` for `c` in the service at `service`, its value variable up to its length,
-/// and every write reported. `None` for a readable characteristic that is not open, whose read
-/// permission no command here sets yet.
+/// `ACI_GATT_ADD_CHAR` for `c` in the service at `service`, its value variable up to its length
+/// and every write reported; `None` for a readable characteristic that is not open, since no
+/// command here sets a read permission.
 #[must_use]
 pub fn add_char(service: u16, c: &CharDecl) -> Option<Command<MAX_PARAMS>> {
     let (kind, bytes, n) = uuid(&c.uuid);
@@ -83,7 +83,7 @@ pub fn add_char(service: u16, c: &CharDecl) -> Option<Command<MAX_PARAMS>> {
 }
 
 /// `ACI_GATT_UPDATE_CHAR_VALUE`: the characteristic at `char` in the service at `service` holds
-/// `value` from its start, and a subscribed peer is notified. `None` for a value longer than
+/// `value` from its start, and a subscribed peer is notified; `None` for a value longer than
 /// [`MAX_VALUE`].
 #[must_use]
 pub fn set_value(service: u16, char: u16, value: &[u8]) -> Option<Command<MAX_PARAMS>> {
