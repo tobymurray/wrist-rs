@@ -1,8 +1,4 @@
-//! Which `TAMP_BKPnR` holds what, and the move out of the registers stock firmware uses.
-//!
-//! Stock keeps its own state in `BKP0R` to `BKP3R` and `BKP5R` to `BKP23R`, so this image
-//! keeps its records in the rest. `BKP5R` is stock's haptic calibration: readable, never
-//! written here.
+//! Which `TAMP_BKPnR` holds what, and the move out of the registers stock firmware uses (`HARDWARE.md`).
 
 use crate::zone::Zone;
 
@@ -13,7 +9,6 @@ pub const STOCK: [u32; 23] = [0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
 pub const ALARM: u32 = 4;
 /// The zone and its next two changes, in [`Zone::encode`]'s order.
 pub const ZONE: [u32; 5] = [24, 25, 26, 27, 28];
-/// [`Flags`].
 pub const FLAGS: u32 = 29;
 /// The local time the calendar was last set, seconds since 1970.
 pub const LAST_SET_AT: u32 = 31;
@@ -35,8 +30,7 @@ const RADIO: u32 = 1 << 0;
 const SOURCE_SHIFT: u32 = 4;
 const SOURCE_MASK: u32 = 0b11 << SOURCE_SHIFT;
 
-/// The radio's last word and who last set the calendar. Its tag also says the records are in
-/// their present registers.
+/// The radio's last word and who last set the calendar; its tag marks the move done.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Flags {
     pub radio: bool,
@@ -61,10 +55,7 @@ impl Flags {
     }
 }
 
-/// The writes that bring the records over from the old registers, `bkp(n)` reading
-/// `BKPnR`; `None` once [`FLAGS`] holds its tag. Each old record comes over only if its tag
-/// holds, so stock's values there are left behind, and the old registers are not written:
-/// after a return to stock they may be stock's again.
+/// The zone and flags to write, `bkp(n)` reading `BKPnR`; `None` once [`FLAGS`] holds its tag.
 pub fn migrate(bkp: impl Fn(u32) -> u32) -> Option<([u32; 5], Flags)> {
     if Flags::decode(bkp(FLAGS)).is_some() {
         return None;

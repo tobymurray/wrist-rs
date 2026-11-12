@@ -21,7 +21,6 @@ const RTC_SCR: u32 = RTC_BASE + 0x5C;
 const WPR_KEY1: u32 = 0xCA;
 const WPR_KEY2: u32 = 0x53;
 const WPR_LOCK: u32 = 0xFF;
-/// Stock's; read for the report only.
 const TAMP_BKP0R: u32 = tamp_bkpr(0);
 
 const ICSR_INITS: u32 = 1 << 4;
@@ -449,7 +448,7 @@ pub fn set_zone(z: &Zone) {
     }
 }
 
-/// `BKP4R` as it stands.
+/// The alarm's register as it stands.
 #[must_use]
 pub fn alarm_word() -> u32 {
     bkp(backup::ALARM)

@@ -2,8 +2,8 @@
 //! application updates over the air, for a bonded central only (`ble` feature).
 //!
 //! The radio is off until `ble on`, and `ble off` holds it in reset again; the choice is kept
-//! in `BKP29R` across resets (`rtc::radio_wanted`), so an image that arrived over the air
-//! comes back with its radio on. When on, the task resets the chip, gives it an address,
+//! in a backup register (`rtc::radio_wanted`), so an image that arrived over the air comes
+//! back with its radio on. When on, the task resets the chip, gives it an address,
 //! brings up ST's GATT and GAP, and advertises as `UNA`.
 //!
 //! Security. Pairing is LE Secure Connections with numeric comparison, MITM required: the

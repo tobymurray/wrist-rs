@@ -4,7 +4,7 @@ use wrist_time::alarm::Alarm;
 use wrist_time::backup::{migrate, old, Flags, ALARM, FLAGS, LAST_SET_AT, OWNED, STOCK, ZONE};
 use wrist_time::zone::Zone;
 
-/// Stock's word for a 16-bit value under its magic, as its RTC driver keeps time zone and DST.
+/// A 16-bit value over stock's magic (`HARDWARE.md`).
 fn stock_word(value: i16) -> u32 {
     (u32::from(value.cast_unsigned()) << 16) | 0x32F2
 }
@@ -24,7 +24,7 @@ impl Domain {
         self.0.borrow_mut()[usize::try_from(n).unwrap()] = v;
     }
 
-    /// What the image does at boot.
+    /// As `rtc::migrate`.
     fn boot(&self) -> bool {
         let Some((zone, flags)) = migrate(|n| self.get(n)) else { return false };
         for (n, v) in ZONE.into_iter().zip(zone) {
