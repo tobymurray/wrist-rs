@@ -63,6 +63,7 @@ pub mod opcode {
     pub const ACI_HAL_GET_FIRMWARE_DETAILS: u16 = 0xFC01;
     pub const ACI_HAL_WRITE_CONFIG_DATA: u16 = 0xFC0C;
     pub const ACI_HAL_SET_TX_POWER_LEVEL: u16 = 0xFC0F;
+    pub const ACI_HAL_GET_LINK_STATUS: u16 = 0xFC17;
     pub const ACI_HAL_GET_ANCHOR_PERIOD: u16 = 0xFC19;
     /// Reads only; [`ACI_UPDATER_START`] reboots the chip into the updater.
     pub const ACI_HAL_GET_UPDATER_VERSION: u16 = 0xFC22;
@@ -76,6 +77,8 @@ pub mod opcode {
     pub const ACI_GAP_PASS_KEY_RESP: u16 = 0xFC88;
     pub const ACI_GAP_INIT: u16 = 0xFC8A;
     pub const ACI_GAP_SLAVE_SECURITY_REQ: u16 = 0xFC8D;
+    /// A connection handle.
+    pub const ACI_GAP_GET_SECURITY_LEVEL: u16 = 0xFC90;
     pub const ACI_GAP_TERMINATE: u16 = 0xFC93;
     pub const ACI_GAP_CLEAR_SECURITY_DB: u16 = 0xFC94;
     pub const ACI_GAP_ALLOW_REBOND: u16 = 0xFC95;
@@ -162,6 +165,9 @@ pub mod permission {
     pub const AUTHOR_WRITE: u8 = 0x10;
     /// Writes only over an encrypted link.
     pub const ENCRY_WRITE: u8 = 0x20;
+    /// [`AUTHEN_WRITE`] and [`ENCRY_WRITE`] together: writes only over a link encrypted with
+    /// authenticated keys.
+    pub const AUTHENTICATED_WRITE: u8 = 0x28;
 }
 
 /// ST's vendor event codes (event 0xFF).
@@ -987,6 +993,34 @@ pub fn bonded_devices(params: &[u8]) -> impl Iterator<Item = Address> + '_ {
         let [kind, a0, a1, a2, a3, a4, a5] = *e;
         Address { kind: AddrKind::new(kind & 0x01), addr: BdAddr([a0, a1, a2, a3, a4, a5]) }
     })
+}
+
+/// `ACI_GAP_GET_SECURITY_LEVEL`'s return parameters (ST's `bluenrg1_types.h`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SecurityLevel {
+    /// LE security mode 1 (encryption) or 2 (data signing).
+    pub security_mode: u8,
+    /// 1 to 4 (Core Vol 3 Part C 10.2).
+    pub security_level: u8,
+}
+
+impl SecurityLevel {
+    /// From a Command Complete's return parameters, the bytes after its status.
+    #[must_use]
+    pub fn decode(p: &[u8]) -> Option<Self> {
+        let [security_mode, security_level, ..] = *p else {
+            return None;
+        };
+        Some(Self { security_mode, security_level })
+    }
+
+    /// Whether the link is encrypted: LE security mode 1 at level 2 or above (Core Vol 3 Part C
+    /// 10.2.1).
+    #[must_use]
+    pub const fn encrypted(&self) -> bool {
+        self.security_mode == 1 && self.security_level >= 2
+    }
 }
 
 /// `0A:1B:2C:3D:4E:5F`, the most significant byte first; the kind is not written.
