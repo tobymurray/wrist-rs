@@ -1,6 +1,7 @@
 //! A declared GATT server as the chip's commands; the watch's own server in the bytes ble.rs sent
 //! when it built each command by hand.
 
+use bluenrg2::permission;
 use wrist_ble::{BluetoothUuid, CharDecl, Permission, Props, ServerAttr, ServiceDecl};
 use wrist_bluenrg2::gatt::{add_char, add_service, initial, records, set_value, Handles, Part, MAX_CHARS, MAX_PARAMS, MAX_VALUE};
 use wrist_wake::ble::server::{device_information, services, CONSOLE, RX, TX};
@@ -99,7 +100,7 @@ fn a_write_asks_for_the_permission_declared_and_a_read_only_open() {
     let security = |c: &CharDecl| add_char(1, c).map(|c| (c.params()[8], c.params()[9]));
     assert_eq!(security(&decl(Props::WRITE, Permission::Open)), Some((0x00, 0x01)));
     assert_eq!(security(&decl(Props::WRITE_WITHOUT_RESPONSE, Permission::Encrypted)), Some((0x20, 0x01)));
-    assert_eq!(security(&decl(Props::WRITE, Permission::Authenticated)), Some((0x28, 0x01)));
+    assert_eq!(security(&decl(Props::WRITE, Permission::Authenticated)), Some((permission::AUTHEN_WRITE | permission::ENCRY_WRITE, 0x01)));
     assert_eq!(security(&decl(Props::NOTIFY, Permission::Authenticated)), Some((0x00, 0x00)), "nothing to write");
     assert_eq!(security(&decl(Props::READ, Permission::Open)), Some((0x00, 0x00)));
     assert_eq!(security(&decl(Props::READ, Permission::Encrypted)), None);
