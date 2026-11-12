@@ -69,9 +69,12 @@ pub enum Starting {
     Up(Handles),
 }
 
+/// [`gap_role::PERIPHERAL`] and [`gap_role::CENTRAL`] together.
+const PERIPHERAL_AND_CENTRAL: u8 = 0x05;
+
 /// The roles `ACI_GAP_INIT` is asked for, in turn: the peripheral alone if the chip refuses both,
 /// so updates never depend on the central role.
-const ROLES: [u8; 2] = [gap_role::PERIPHERAL | gap_role::CENTRAL, gap_role::PERIPHERAL];
+const ROLES: [u8; 2] = [PERIPHERAL_AND_CENTRAL, gap_role::PERIPHERAL];
 
 const EARLY: [Step; 5] = [Step::StaticRandomAddress, Step::PublicAddressSlot, Step::TxPower, Step::EventMask, Step::GattInit];
 const LATE: [Step; 3] = [Step::DeviceName, Step::IoCapability, Step::SecurityRequirements];
