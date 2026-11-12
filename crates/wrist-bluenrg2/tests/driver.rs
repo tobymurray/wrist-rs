@@ -7,7 +7,7 @@ use std::pin::pin;
 use std::task::{Context, Poll, Waker};
 
 use bluenrg2::BootReason;
-use common::{driver, event, Shared, TestDriver};
+use common::{driver, driver_at, event, Shared, TestDriver};
 use embassy_futures::block_on;
 use wrist_ble::{ConnHandle, RadioEvent, ResetCause, Status};
 use wrist_bluenrg2::driver::{Got, Reply, Unanswered, BOOT_WITHIN_US, DRAIN_READS, RESET_MS, REPLY_WITHIN_US};
@@ -129,6 +129,30 @@ fn a_reply_that_comes_after_the_deadline_is_not_waited_for() {
     c.borrow_mut().queued.push(complete(OPCODE, 0x00, &[]));
     assert!(!block_on(d.awaiting()));
     assert_eq!(d.reply(), Err(Unanswered::NoReply));
+}
+
+#[test]
+fn an_unanswered_exchange_ends_on_the_tick_its_second_is_up() {
+    for start in 0..64 {
+        for handling in 1..48 {
+            let (c, mut d) = driver_at::<32_768>(128);
+            c.borrow_mut().now = start;
+            block_on(d.send(OPCODE, &[])).unwrap();
+            c.borrow_mut().queued.push(down(1));
+            let mut out = [0u8; MAX_READ];
+            for round in 0.. {
+                if !block_on(d.awaiting()) {
+                    break;
+                }
+                assert!(round < 2, "the packet's drain, then the wait for the rest of the second");
+                while block_on(d.next(&mut out)).is_some() {
+                    c.borrow_mut().now += handling;
+                }
+            }
+            assert_eq!(d.reply(), Err(Unanswered::NoReply));
+            assert_eq!(now(&c) - start, 32_768, "sent on tick {start}, a packet handled in {handling} ticks");
+        }
+    }
 }
 
 #[test]

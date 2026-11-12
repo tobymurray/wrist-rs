@@ -21,7 +21,7 @@ use wrist_bluenrg2::transport::{Counts, Transport};
 #[derive(Default)]
 #[allow(clippy::struct_excessive_bools, reason = "each is one line of the script")]
 pub struct Chip {
-    /// Microseconds on the virtual clock.
+    /// Ticks of the virtual clock, a microsecond each unless a test runs it at another rate.
     pub now: u64,
     pub cs_low: bool,
     /// Bytes clocked in the current CS-low span, and every span so far.
@@ -68,7 +68,7 @@ pub struct Cs(pub Shared);
 pub struct Irq(pub Shared);
 pub struct Rst(pub Shared);
 #[derive(Clone)]
-pub struct Clock(pub Shared);
+pub struct Clock<const HZ: u64 = 1_000_000>(pub Shared);
 
 impl spi::ErrorType for Bus {
     type Error = Infallible;
@@ -200,9 +200,9 @@ impl Wait for Irq {
     }
 }
 
-impl DelayNs for Clock {
+impl<const HZ: u64> DelayNs for Clock<HZ> {
     async fn delay_ns(&mut self, ns: u32) {
-        self.0.borrow_mut().now += u64::from(ns) / 1_000;
+        self.0.borrow_mut().now += (u64::from(ns) * HZ).div_ceil(1_000_000_000);
     }
 }
 
@@ -245,15 +245,22 @@ impl OutputPin for Rst {
     }
 }
 
-impl driver::Clock for Clock {
-    fn now_us(&self) -> u64 {
+impl<const HZ: u64> driver::Clock for Clock<HZ> {
+    const HZ: u64 = HZ;
+
+    fn now(&self) -> u64 {
         self.0.borrow().now
     }
 }
 
-pub type TestDriver = Driver<'static, Bus, Cs, Irq, Clock, Rst, Clock>;
+pub type TestDriver<const HZ: u64 = 1_000_000> = Driver<'static, Bus, Cs, Irq, Clock<HZ>, Rst, Clock<HZ>>;
 
 pub fn driver(room: u16) -> (Shared, TestDriver) {
+    driver_at(room)
+}
+
+/// A driver on a clock of `HZ` ticks a second, every wait rounded up to whole ticks.
+pub fn driver_at<const HZ: u64>(room: u16) -> (Shared, TestDriver<HZ>) {
     let shared = Rc::new(RefCell::new(Chip { room, ..Chip::default() }));
     let counts: &'static Counts = Box::leak(Box::new(Counts::new()));
     let d = Driver::new(Bus(shared.clone()), Cs(shared.clone()), Irq(shared.clone()), Clock(shared.clone()), counts, Rst(shared.clone()), Clock(shared.clone()));

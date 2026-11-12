@@ -22,9 +22,20 @@ pub const RESET_MS: u32 = 5;
 /// The most reads one drain makes while IRQ stays high.
 pub const DRAIN_READS: u32 = 8;
 
-/// Microseconds on a monotonic clock.
+/// A monotonic clock, counting [`Clock::HZ`] ticks a second.
 pub trait Clock {
-    fn now_us(&self) -> u64;
+    const HZ: u64;
+    fn now(&self) -> u64;
+}
+
+/// `us` in `K`'s ticks, rounded up.
+fn ticks<K: Clock>(us: u64) -> u64 {
+    (us * K::HZ).div_ceil(1_000_000)
+}
+
+/// `ticks` of `K` in whole microseconds, rounded down.
+fn micros<K: Clock>(ticks: u64) -> u64 {
+    ticks * 1_000_000 / K::HZ
 }
 
 /// A command's reply: its status and the parameters after it.
@@ -194,7 +205,7 @@ where
             self.awaited = None;
             return Err(Unanswered::NotTaken);
         }
-        self.deadline = self.clock.now_us() + REPLY_WITHIN_US;
+        self.deadline = self.clock.now() + ticks::<K>(REPLY_WITHIN_US);
         Ok(())
     }
 
@@ -204,8 +215,8 @@ where
         if self.reply.is_some() || self.restarted {
             return false;
         }
-        let left = self.deadline.saturating_sub(self.clock.now_us());
-        if left == 0 || !self.transport.wait_pending_within(u32::try_from(left).unwrap_or(u32::MAX)).await {
+        let left = self.deadline.saturating_sub(self.clock.now());
+        if left == 0 || !self.transport.wait_pending_within(u32::try_from(micros::<K>(left)).unwrap_or(u32::MAX)).await {
             return false;
         }
         self.drain();

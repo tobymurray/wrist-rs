@@ -621,8 +621,10 @@ type Chip<'d> = Driver<'static, Spi<'d, Async, spi::mode::Master>, Output<'d>, E
 struct Now;
 
 impl driver::Clock for Now {
-    fn now_us(&self) -> u64 {
-        Instant::now().as_micros()
+    const HZ: u64 = embassy_time::TICK_HZ;
+
+    fn now(&self) -> u64 {
+        Instant::now().as_ticks()
     }
 }
 
