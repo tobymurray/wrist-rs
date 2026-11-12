@@ -83,13 +83,17 @@ code the watch runs, with a made-up CRC:
   filesystem, which the commit erases, still exists.
 - The commit copies flash to flash from code already in RAM, with interrupts masked; the
   release recipe refuses a build whose commit path branches outside RAM.
-- The kernel write starts at page 48 or not at all (`plan::Refusal::WouldEraseBootloader`).
+- The kernel write starts at page 48 or not at all (`plan::Refusal::WouldEraseBootloader`):
+  below it are UNA's bootloader and shared library, which an `.ota` does not restore.
+- The self-test's scratch page is opposite a page the library leaves blank, so an erase that
+  lost its bank select would erase only blank flash
+  ([`LAYOUT.md`](../wrist-loader/LAYOUT.md#bank-2)).
 - Every wait is bounded, and every erase and program is read back.
 
 `install.log` and `stage.log` stay on the watch's storage. The outcome record a commit
-leaves in the bootloader partition's tail is defined in [`crates/wrist-flash/src/commit.rs`](../../crates/wrist-flash/src/commit.rs),
-and the next dry run reports it. UNA's recovery leaves it in place, so a dry run after a
-return to stock reports the last install.
+leaves in a blank page of the library's partition is defined in [`crates/wrist-flash/src/commit.rs`](../../crates/wrist-flash/src/commit.rs),
+and the next dry run reports it. An `.ota` leaves it in place, so a dry run after a
+return to stock reports the last install; installing UNA's library erases it.
 
 ## Building
 

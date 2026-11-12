@@ -5,7 +5,7 @@ it.
 
 ## Rules
 
-- Never modify the vendor bootloader's code. The image writes only its own partitions, and
+- Never modify UNA's bootloader or shared library. The image writes only its own partitions, and
   the installer only the pages [apps/wrist-loader/LAYOUT.md](apps/wrist-loader/LAYOUT.md)
   gives it.
 - Keep the way back: the button-hold reset into the bootloader, Select's hard reset, and

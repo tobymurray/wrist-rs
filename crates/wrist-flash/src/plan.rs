@@ -9,7 +9,7 @@ pub const QUADWORD: usize = 16;
 
 pub const KERNEL_BASE: u32 = 0x0806_0000;
 
-/// No plan starts below this: the pages under it are the vendor bootloader's.
+/// No plan starts below this: the pages under it are the vendor bootloader and UNA's library.
 pub const FIRST_KERNEL_PAGE: u8 = 48;
 
 /// The loader and the active slot (`apps/wrist-loader/memory.x`).
@@ -27,7 +27,7 @@ pub const FLASH_END: u32 = 0x0840_0000;
 /// A generous bound on how far into bank 2 a stock kernel reaches.
 pub const STOCK_KERNEL_BANK2_PAGES: u8 = 24;
 /// In bank 2.
-pub const SELF_TEST_PAGE: u8 = 34;
+pub const SELF_TEST_PAGE: u8 = 46;
 
 pub const STAGING_FIRST_PAGE: u8 = 128;
 pub const STAGING_ADDRESS: u32 = 0x0830_0000;
@@ -77,7 +77,7 @@ impl Refusal {
             Refusal::NotKernelBase => "target is not 0x08060000",
             Refusal::Empty => "image is empty",
             Refusal::TooLarge => "image needs more pages than allowed",
-            Refusal::WouldEraseBootloader => "refused: would erase a bootloader page",
+            Refusal::WouldEraseBootloader => "refused: would erase a bootloader or library page",
         }
     }
 }

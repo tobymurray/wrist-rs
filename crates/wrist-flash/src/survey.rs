@@ -419,7 +419,7 @@ mod tests {
             assert!(r.area != Area::System, "{r:?}");
             assert!(r.pages.start < r.pages.end && usize::from(r.pages.end) <= PAGES_PER_BANK, "{r:?}");
         }
-        assert!(REGIONS[0].pages.start >= bank1::BOOTLOADER.end, "the vendor bootloader's pages are never read");
+        assert!(REGIONS[0].pages.start >= bank1::LIBRARY.end, "UNA's bootloader and library are never read");
         for w in REGIONS.windows(2) {
             let ordered = w[0].area == w[1].area && w[0].pages.end <= w[1].pages.start;
             assert!(ordered || (w[0].area, w[1].area) == (Area::Bank1, Area::Bank2), "{w:?}");
@@ -433,7 +433,7 @@ mod tests {
         assert_eq!(region_at(Area::Bank1, 47), None);
         assert_eq!(region_at(Area::Bank1, 48).map(|i| REGIONS[i].name), Some("loader"));
         assert_eq!(region_at(Area::Bank1, 181).map(|i| REGIONS[i].name), Some("state"));
-        assert_eq!(region_at(Area::Bank2, 34).map(|i| REGIONS[i].name), Some("self-test"));
+        assert_eq!(region_at(Area::Bank2, 46).map(|i| REGIONS[i].name), Some("self-test"));
         assert_eq!(region_at(Area::Bank2, 255).map(|i| REGIONS[i].name), Some("glyph store"));
         assert_eq!(region_at(Area::System, 8), None);
     }

@@ -1,10 +1,12 @@
 # Flash layout behind the vendor bootloader
 
-Bank 1. The vendor bootloader's code below the loader is never written, and its
-recovery puts the stock kernel back over everything here.
+Bank 1. The vendor bootloader's recovery puts the stock kernel back over everything from the
+loader up, and nothing below it.
 
 | Region | Address | Size | Holds |
 |---|---|---|---|
+| bootloader | `0x08000000` | 160 KiB | UNA's bootloader; never written |
+| library | `0x08028000` | 224 KiB | UNA's shared C library, which the stock kernel calls into; never written but for the installer's record. An `.ota` does not restore it |
 | loader | `0x08060000` | 32 KiB | `wrist-loader`, which the vendor bootloader jumps to |
 | active | `0x08068000` | 512 KiB | `standalone-boot`, the running application |
 | dfu | `0x080E8000` | 520 KiB | the next application; one page more than active, for the swap |
@@ -12,8 +14,8 @@ recovery puts the stock kernel back over everything here.
 
 Both [`memory.x`](memory.x) files spell out these numbers; embassy-boot takes them as offsets from bank
 1's base. They are fixed for the life of the project: moving dfu or state means replacing
-the loader, which has no second slot. The installer's pages are bank 1 page 45, blank at the
-end of the bootloader's partition, and bank 2 pages 34 and 128 to 195
+the loader, which has no second slot. The installer's pages are bank 1 page 45, blank in the
+library's partition between its code and its info block, and bank 2 pages 46 and 128 to 195
 ([`crates/wrist-flash/src/plan.rs`](../../crates/wrist-flash/src/plan.rs), `commit.rs`, `hw.rs`).
 
 ## Bank 2
@@ -24,9 +26,9 @@ while the region is written.
 
 | Region | Pages | Address | Holds | Opposite in bank 1 |
 |---|---|---|---|---|
-| stock spill | 0–23 | `0x08200000` | the stock kernel's last pages, under stock | the vendor bootloader |
-| unerased | 24–33, 35–47 | `0x08230000` | nothing; never erased by wrist-rs | the vendor bootloader |
-| self-test | 34 | `0x08244000` | the installer's erase self-test, under stock only | bootloader code: `hw.rs` reads the bank select back first |
+| stock spill | 0–23 | `0x08200000` | the stock kernel's last pages, under stock | the vendor bootloader, then the library |
+| unerased | 24–45, 47 | `0x08230000` | nothing; never erased by wrist-rs | the library |
+| self-test | 46 | `0x0825C000` | the installer's erase self-test, under stock only | a page the library leaves blank, which wrist-rs does not use |
 | reserve | 48–115 | `0x08260000` | unused | the loader and active |
 | settings | 116–127 | `0x082E8000` | settings, written only once the running image has kept itself and no update is received or waiting to swap | the start of dfu, then holding nothing needed |
 | staging | 128–195 | `0x08300000` | the installer's staged image, under stock; a stale copy stays after an install | the running stock kernel, which the way back to stock restores |
@@ -36,7 +38,8 @@ The bank 2 map is fixed for the life of the project. Nothing records where the g
 is and nothing migrates it: the store is a cache, and each pack written outranks every pack
 already there. Bank 1 pages 196–255, opposite the store, stay unused.
 
-Nothing of ours erases bank 2 below page 48 except the self-test. The numbers are in
+Nothing of ours erases bank 2 below page 48 except the self-test, which `hw.rs` also arms only
+after reading the bank select back. The numbers are in
 [`crates/wrist-flash/src/layout.rs`](../../crates/wrist-flash/src/layout.rs), whose
 compile-time checks tile the bank with the regions and hold the installer's plan to them, and whose
 tests hold both `memory.x` files to bank 1's. `flash survey` on the console reports which

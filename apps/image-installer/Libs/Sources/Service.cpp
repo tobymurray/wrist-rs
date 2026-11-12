@@ -384,7 +384,7 @@ int Service::describeProtection(char* out, size_t capacity, int32_t st_erase)
                     "WRP1BR %08lX  (pages %lu..%lu, %s)\n"
                     "WRP2AR %08lX   WRP2BR %08lX\n"
                     "  page 48 write-protected by a bank 1 area: %s\n"
-                    "-- erase self-test on scratch page 34 (0x08244000) --\n"
+                    "-- erase self-test on scratch page 46 (0x0825C000) --\n"
                     "  raw %08lX -> erase %s, blank %s, program %s, readback %s,"
                     " re-erase %s, blank %s\n"
                     "  NSSR after erase %04lX : EOP %s%s\n",

@@ -39,8 +39,8 @@ stock version is not supported until they name it.
   bonded to. The radio stays off until you turn it on, on the Bluetooth page, which also confirms
   a pairing ([INSTALL.md](release/INSTALL.md#bluetooth)). The console's `ble scan` lists the
   Bluetooth LE devices around it.
-- Never writes UNA's bootloader code, so the stock firmware is always one recovery away.
-  The installer records its outcome in a blank page at the end of the bootloader's partition.
+- Never writes UNA's bootloader or shared library, so the stock firmware is always one recovery
+  away. The installer records its outcome in a page the library leaves blank.
 
 It runs on the watch's STM32U5A5, is built on [Embassy](https://embassy.dev), and needs the
 original modules and LS012 display.

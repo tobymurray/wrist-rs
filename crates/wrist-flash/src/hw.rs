@@ -288,7 +288,7 @@ unsafe fn commit(plan: Plan, image_crc: u32) -> i32 {
     }
 }
 
-const SELF_TEST_ADDRESS: u32 = 0x0824_4000;
+const SELF_TEST_ADDRESS: u32 = plan::BANK2_BASE + SELF_TEST_PAGE as u32 * plan::PAGE_SIZE_U32;
 const SELF_TEST_PATTERN: u32 = u32::from_le_bytes(*b"TEST");
 
 /// The [`commit::SELF_TEST_STEPS`] that passed, [`commit::SELF_TEST_TIMED_OUT`], and `NSSR`

@@ -313,7 +313,7 @@ pub async fn survey(uart: Uart) {
     }
     clear_ecc();
 
-    uart.write_line("[flash] map: # holds anything, . blank, ! ECC error, space not read (the vendor bootloader)");
+    uart.write_line("[flash] map: # holds anything, . blank, ! ECC error, space not read (UNA's bootloader and library)");
     write_map(uart, "bank1", &bank1, usize::from(first)).await;
     write_map(uart, "bank2", &bank2, 0).await;
     for (r, crc) in REGIONS.iter().zip(crcs) {
