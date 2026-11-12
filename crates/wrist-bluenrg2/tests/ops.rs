@@ -1,0 +1,155 @@
+//! The operations the chip has taken: ids, deadlines, and the event that ends each.
+
+use wrist_ble::{
+    AdvParams, ChipInfo, ConnHandle, ConnParams, CoreSpecificationVersion, DisconnectReason, Failure, FailureKind, Interval, LinkParams,
+    Op, OpId, Outcome, PairingEvent, PairingStep, RadioEvent, ResetCause, SchedKind, Slots, Status, Timeout,
+};
+use wrist_bluenrg2::driver::Unanswered;
+use wrist_bluenrg2::ops::{refusal, unanswered, Ops, MAX_PENDING};
+
+fn link(n: u16) -> ConnHandle {
+    ConnHandle::new(0x0800 + n)
+}
+
+const ADV: AdvParams = AdvParams { interval_min: Slots::from_u16(160), interval_max: Slots::from_u16(160), connectable: true };
+
+fn ask(l: ConnHandle) -> Op {
+    let params = ConnParams {
+        interval_min: Interval::from_u16(12),
+        interval_max: Interval::from_u16(24),
+        latency: 0,
+        timeout: Timeout::from_u16(500),
+        ce_len: Slots::from_u16(0),
+    };
+    Op::UpdateParams(l, params)
+}
+
+fn done(id: u16) -> RadioEvent {
+    RadioEvent::Done(OpId(id), Ok(Outcome::Done))
+}
+
+fn failed(id: u16, kind: FailureKind) -> RadioEvent {
+    RadioEvent::Done(OpId(id), Err(Failure { kind, native: 0 }))
+}
+
+#[test]
+fn an_operation_its_answer_ends_is_done_at_once_and_ids_count_up() {
+    let mut ops = Ops::default();
+    assert_eq!(ops.answered(&Op::Advertise(Some(ADV)), 0, 0), Ok(OpId(0)));
+    assert_eq!(ops.answered(&Op::AllowRebond(link(1)), 0, 0), Ok(OpId(1)));
+    assert_eq!((ops.ended(), ops.ended(), ops.ended()), (Some(done(0)), Some(done(1)), None));
+    assert_eq!(ops.due(), None);
+}
+
+#[test]
+fn a_refusal_keeps_the_chips_code_and_takes_no_id() {
+    let mut ops = Ops::default();
+    let r = ops.answered(&Op::Advertise(Some(ADV)), 0x0C, 0);
+    assert_eq!(r, Err(Failure { kind: FailureKind::ModeExclusion, native: 0x0C }));
+    assert_eq!(ops.ended(), None);
+    assert_eq!(ops.answered(&Op::Advertise(None), 0, 0), Ok(OpId(0)), "the refused one used no id");
+}
+
+#[test]
+fn the_chips_refusals_read_as_the_core_reads_them() {
+    for (status, kind) in [
+        (0x0C, FailureKind::ModeExclusion),
+        (0x46, FailureKind::ModeExclusion),
+        (0x82, FailureKind::Schedule(SchedKind::NoSlot)),
+        (0x84, FailureKind::Schedule(SchedKind::NewIntervalFailed)),
+        (0x85, FailureKind::Schedule(SchedKind::IntervalTooLarge)),
+        (0x86, FailureKind::Schedule(SchedKind::LengthFailed)),
+        (0x64, FailureKind::NoResources),
+        (0x02, FailureKind::NotConnected),
+        (0x3E, FailureKind::NotEstablished),
+        (0x41, FailureKind::Unknown),
+    ] {
+        assert_eq!(refusal(status), Failure { kind, native: u16::from(status) }, "{status:02x}");
+    }
+    assert_eq!(unanswered(Unanswered::NoReply).kind, FailureKind::Timeout);
+    assert_eq!(unanswered(Unanswered::NotTaken).kind, FailureKind::Busy);
+    assert_eq!(unanswered(Unanswered::Restarted).kind, FailureKind::Busy);
+    assert_eq!(unanswered(Unanswered::TooLong).kind, FailureKind::Unknown);
+}
+
+#[test]
+fn an_operation_ended_by_an_event_waits_for_it_and_no_other() {
+    let mut ops = Ops::default();
+    let params = LinkParams { interval: Interval::from_u16(24), latency: 0, timeout: Timeout::from_u16(500) };
+    ops.answered(&ask(link(1)), 0, 0).unwrap();
+    ops.answered(&Op::RequestSecurity(link(1)), 0, 0).unwrap();
+    ops.answered(&Op::Disconnect(link(2), DisconnectReason::RemoteUserTerminatedConn), 0, 0).unwrap();
+    ops.saw(&RadioEvent::Params { link: link(2), result: Ok(params) });
+    ops.saw(&RadioEvent::Params { link: link(1), result: Ok(params) });
+    ops.saw(&RadioEvent::Pairing(PairingEvent { link: link(1), step: PairingStep::Numeric(123_456) }));
+    ops.saw(&RadioEvent::LinkDown { link: link(2), reason: Status::new(0x16) });
+    assert_eq!((ops.ended(), ops.due()), (None, None), "each ended by its own event, which is its report");
+}
+
+#[test]
+fn a_link_going_down_fails_what_waited_on_it() {
+    let mut ops = Ops::default();
+    ops.answered(&ask(link(1)), 0, 0).unwrap();
+    ops.answered(&ask(link(2)), 0, 0).unwrap();
+    ops.saw(&RadioEvent::LinkDown { link: link(1), reason: Status::new(0x13) });
+    assert_eq!(ops.ended(), Some(failed(0, FailureKind::NotConnected)));
+    assert_eq!(ops.ended(), None);
+    assert!(ops.due().is_some(), "link 2's ask still waits");
+}
+
+#[test]
+fn the_central_taking_the_ask_ends_it() {
+    let mut ops = Ops::default();
+    ops.answered(&ask(link(1)), 0, 0).unwrap();
+    ops.accepted(link(2));
+    assert_eq!(ops.ended(), None);
+    ops.accepted(link(1));
+    assert_eq!(ops.ended(), Some(done(0)));
+}
+
+#[test]
+fn a_chip_that_restarts_holds_nothing() {
+    for event in [RadioEvent::ChipReset(ResetCause::Watchdog), RadioEvent::Ready(INFO)] {
+        let mut ops = Ops::default();
+        ops.answered(&ask(link(1)), 0, 0).unwrap();
+        ops.saw(&event);
+        assert_eq!((ops.due(), ops.ended()), (None, None), "{event:?}");
+    }
+}
+
+const INFO: ChipInfo = ChipInfo {
+    hci_version: CoreSpecificationVersion::VERSION_5_2,
+    lmp_version: CoreSpecificationVersion::VERSION_5_2,
+    manufacturer: 0x30,
+    firmware: 2353,
+};
+
+#[test]
+fn an_operation_past_its_deadline_times_out() {
+    let mut ops = Ops::default();
+    ops.answered(&ask(link(1)), 0, 5_000).unwrap();
+    assert_eq!(ops.due(), Some(5_000));
+    ops.expire(4_999);
+    assert_eq!(ops.ended(), None);
+    ops.expire(5_000);
+    assert_eq!(ops.ended(), Some(failed(0, FailureKind::Timeout)));
+}
+
+#[test]
+fn more_waiting_than_fit_is_refused() {
+    let mut ops = Ops::default();
+    for n in 0..MAX_PENDING {
+        ops.answered(&ask(link(u16::try_from(n).unwrap())), 0, 0).unwrap();
+    }
+    assert_eq!(ops.answered(&ask(link(99)), 0, 0).map_err(|f| f.kind), Err(FailureKind::NoResources));
+}
+
+#[test]
+fn endings_past_what_the_queue_holds_are_lost_and_said_to_be() {
+    let mut ops = Ops::default();
+    for _ in 0..17 {
+        ops.answered(&Op::Advertise(None), 0, 0).unwrap();
+    }
+    assert_eq!(ops.ended(), Some(RadioEvent::EventsLost));
+    assert_eq!(ops.ended(), Some(done(0)), "the oldest first");
+}

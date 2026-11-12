@@ -194,3 +194,11 @@ fn a_reset_finds_cs_high() {
     t.deselect();
     assert!(!c.borrow().cs_low);
 }
+
+#[test]
+fn a_packet_longer_than_a_command_is_refused_unsent() {
+    let (c, mut t) = chip(1024);
+    assert!(!block_on(t.write(&[0x01; bluenrg2::MAX_COMMAND + 1])));
+    assert!(c.borrow().spans.is_empty(), "nothing clocked");
+    assert!(block_on(t.write(&[0x01; bluenrg2::MAX_COMMAND])), "the longest command goes");
+}

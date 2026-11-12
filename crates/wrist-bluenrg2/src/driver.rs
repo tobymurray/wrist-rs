@@ -7,10 +7,12 @@ use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal_async::delay::DelayNs;
 use embedded_hal_async::digital::Wait;
 use embedded_hal_async::spi::SpiBus;
-use wrist_ble::RadioEvent;
+use wrist_ble::{Failure, Op, OpId, RadioEvent};
 
 use crate::events::Translator;
 use crate::gatt::Handles;
+use crate::op_deadline;
+use crate::ops::{self, Ops};
 use crate::transport::{packets, Counts, Read, Transport, MAX_READ};
 
 /// A command is answered within this, or not at all.
@@ -70,6 +72,8 @@ pub enum Got {
     Boot { len: usize, reason: Option<BootReason> },
     /// The chip's header was unreadable, and the drain ends; `first` on the read that made the run.
     Unreadable { header: [u8; 5], first: bool },
+    /// What the driver itself reports: an operation's end, or packets it dropped.
+    Event(RadioEvent),
 }
 
 pub struct Driver<'c, B, C, I, D, R, K> {
@@ -78,6 +82,7 @@ pub struct Driver<'c, B, C, I, D, R, K> {
     reset: R,
     clock: K,
     translator: Translator,
+    ops: Ops,
     /// The opcode whose reply is awaited, until `deadline`, and the reply once it came.
     awaited: Option<u16>,
     deadline: u64,
@@ -116,6 +121,7 @@ where
             reset,
             clock,
             translator: Translator::default(),
+            ops: Ops::default(),
             awaited: None,
             deadline: 0,
             reply: None,
@@ -180,6 +186,7 @@ where
         self.awaited = None;
         self.reply = None;
         self.restarted = false;
+        self.ops.saw(&RadioEvent::ChipReset(wrist_ble::ResetCause::Other));
         self.len = 0;
         self.at = 0;
         self.drain = None;
@@ -250,13 +257,37 @@ where
         self.drain = Some(Drain::default());
     }
 
-    /// The drain's next packet, copied into `out`, or `None` once it is over.
+    /// `op`, sent as its command and answered with `reply`: taken, with its id, or refused; its
+    /// end comes as [`Got::Event`].
+    ///
+    /// # Errors
+    ///
+    /// The chip refused it or never answered.
+    pub fn settle(&mut self, op: &Op, reply: &Result<Reply, Unanswered>) -> Result<OpId, Failure> {
+        match reply {
+            Ok(r) => self.ops.answered(op, r.status, self.clock.now() + ticks::<K>(u64::from(op_deadline(op.kind()).0) * 1_000)),
+            Err(why) => Err(ops::unanswered(*why)),
+        }
+    }
+
+    /// The earliest deadline on the clock of the operations taken and not ended.
+    #[must_use]
+    pub fn due(&self) -> Option<u64> {
+        self.ops.due()
+    }
+
+    /// What the driver has to report, then the drain's next packet, copied into `out`; `None` once
+    /// the drain is over.
     pub async fn next(&mut self, out: &mut [u8; MAX_READ]) -> Option<Got> {
+        self.ops.expire(self.clock.now());
+        if let Some(e) = self.ops.ended() {
+            return Some(Got::Event(e));
+        }
         loop {
             if self.at < self.len {
                 let Some(packet) = packets(&self.read[self.at..self.len], self.transport.counts()).next() else {
                     self.at = self.len;
-                    continue;
+                    return Some(Got::Event(RadioEvent::EventsLost));
                 };
                 let len = packet.len();
                 out[..len].copy_from_slice(packet);
@@ -302,7 +333,9 @@ where
             let Event::Vendor(VendorEvent::BlueInitialized { reason, .. }) = parsed else { return None };
             self.booting = false;
             // What the chip held is gone, as for any boot; the boot itself is the reset's answer.
-            let _ = self.translator.event(packet);
+            if let Some(e) = self.translator.event(packet) {
+                self.ops.saw(&e);
+            }
             return Some(Got::Boot { len, reason });
         }
         match parsed {
@@ -315,8 +348,13 @@ where
                 self.reply = Some(Reply { status: status.into_inner(), params: [0; RETURN_PARAMS_MAX], len: 0 });
             }
             Event::Vendor(VendorEvent::BlueInitialized { .. }) => self.restarted = true,
+            Event::Vendor(VendorEvent::L2capUpdateResponse { handle, accepted: true, .. }) => self.ops.accepted(handle),
             _ => {}
         }
-        Some(Got::Packet { len, event: self.translator.event(packet) })
+        let event = self.translator.event(packet);
+        if let Some(e) = &event {
+            self.ops.saw(e);
+        }
+        Some(Got::Packet { len, event })
     }
 }
