@@ -154,6 +154,9 @@ enum Request {
     /// `ble probe drop <hex>`: `ACI_GAP_TERMINATE` with this reason.
     #[cfg(feature = "ble-probe")]
     ProbeDrop(u8),
+    /// `ble probe snapshot`: the driver's snapshot of the chip.
+    #[cfg(feature = "ble-probe")]
+    ProbeSnapshot,
 }
 
 static REQUESTS: Channel<CriticalSectionRawMutex, Request, 4> = Channel::new();
@@ -309,6 +312,8 @@ pub fn command(args: &[u8], uart: Uart) {
         b"restart updater" => Request::Restart(true),
         #[cfg(feature = "ble-probe")]
         b"probe adv" => Request::ProbeAdvertising,
+        #[cfg(feature = "ble-probe")]
+        b"probe snapshot" => Request::ProbeSnapshot,
         #[cfg(feature = "ble-probe")]
         rest if rest.starts_with(b"probe drop ") => {
             match core::str::from_utf8(&rest[11..]).ok().and_then(|t| u8::from_str_radix(t.trim(), 16).ok()) {
@@ -539,7 +544,12 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
                     uart.write_line("[ble] off; `ble on` starts it");
                 }
                 #[cfg(feature = "ble-probe")]
-                Request::Probe | Request::ProbeGatt(_) | Request::Restart(_) | Request::ProbeAdvertising | Request::ProbeDrop(_) => {
+                Request::Probe
+                | Request::ProbeGatt(_)
+                | Request::Restart(_)
+                | Request::ProbeAdvertising
+                | Request::ProbeDrop(_)
+                | Request::ProbeSnapshot => {
                     uart.write_line("[ble] off; `ble on` starts it");
                 }
                 Request::Off => {
@@ -830,6 +840,8 @@ impl Link<'_> {
             Request::ProbeAdvertising => self.probe_advertising().await,
             #[cfg(feature = "ble-probe")]
             Request::ProbeDrop(reason) => self.probe_drop(reason).await,
+            #[cfg(feature = "ble-probe")]
+            Request::ProbeSnapshot => self.probe_snapshot().await,
         }
     }
 

@@ -4,6 +4,7 @@ use core::fmt;
 
 use bluenrg2::opcode;
 use bluenrg2::hal::{updater_version, AnchorPeriod, FirmwareDetails};
+use wrist_ble::{AddrKind, Fault, LeConnRole, LinkStatus, Snapshot};
 
 /// Microseconds in the 0.625 ms unit of the anchor period and advertising intervals.
 const SLOT_US: u64 = 625;
@@ -98,6 +99,52 @@ impl fmt::Display for Line<'_> {
                 ),
                 None => short(f),
             },
+        }
+    }
+}
+
+/// `ble probe snapshot`'s lines: the activities and anchor, or why there is no snapshot; then one
+/// per link.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Taken<'a> {
+    Snapshot(&'a Result<Snapshot, Fault>),
+    Link(&'a LinkStatus),
+}
+
+impl fmt::Display for Taken<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("probe snapshot")?;
+        match *self {
+            Self::Snapshot(Ok(s)) => {
+                write!(f, " advertising={} scanning={} initiating={}", u8::from(s.advertising), u8::from(s.scanning), u8::from(s.initiating))?;
+                match s.anchor {
+                    Some(a) => write!(f, " anchor_period_us={} max_free_slot_us={}", a.period.0, a.max_free_slot.0),
+                    None => f.write_str(" anchor=none"),
+                }
+            }
+            Self::Snapshot(Err(Fault::Silent)) => f.write_str(" error=no-reply"),
+            Self::Snapshot(Err(Fault::Bus)) => f.write_str(" error=not-taken"),
+            Self::Snapshot(Err(Fault::Refused(r))) => write!(f, " status=0x{:02x}", r.native),
+            Self::Link(l) => {
+                let role = if l.role == LeConnRole::Central { "central" } else { "peripheral" };
+                let kind = if l.peer.kind == AddrKind::RANDOM { "random" } else { "public" };
+                let a = l.peer.addr.0;
+                write!(
+                    f,
+                    " link=0x{:04x} role={role} peer={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} peer_type={kind}",
+                    l.link.raw(),
+                    a[5],
+                    a[4],
+                    a[3],
+                    a[2],
+                    a[1],
+                    a[0]
+                )?;
+                match l.encrypted {
+                    Some(on) => write!(f, " encrypted={}", u8::from(on)),
+                    None => f.write_str(" encrypted=unknown"),
+                }
+            }
         }
     }
 }
