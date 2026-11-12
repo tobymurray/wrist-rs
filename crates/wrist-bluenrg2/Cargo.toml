@@ -7,7 +7,7 @@ publish = false
 description = "The BlueNRG-2 as the Bluetooth core sees it: its limits, its link-layer scheduler from ST's PM0257, its own refusal codes, its packets as the core's events, and the SPI handshake that carries them. no_std, no allocation"
 
 [dependencies]
-bluenrg2 = "0.1.0"
+bluenrg2 = "0.1.1"
 wrist-ble = { path = "../wrist-ble" }
 embassy-futures = "0.1.2"
 embedded-hal = "1.0.0"

@@ -7,7 +7,7 @@ publish = false
 description = "The BLE task's decisions without hardware: when it next has timed work, the radio's timing, its states, its GATT server and the console's notifications"
 
 [dependencies]
-bluenrg2 = "0.1.0"
+bluenrg2 = "0.1.1"
 wrist-ble = { path = "../wrist-ble" }
 
 [lints.clippy]
