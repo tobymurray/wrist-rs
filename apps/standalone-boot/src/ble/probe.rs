@@ -10,6 +10,7 @@ use bluenrg2::opcode::{
     ACI_UPDATER_START,
 };
 use bluenrg2::{ad, adv_filter_policy, adv_type, enc_key_size, evt_mask, permission, props, service_type, uuid_type, value_length, AddrKind};
+use wrist_bluenrg2::driver::RESET_MS;
 use wrist_bluenrg2::probe::{Beside, Line, Probe};
 
 use embassy_time::Timer;
@@ -218,7 +219,7 @@ impl Link<'_> {
         #[cfg(feature = "ble-trace")]
         super::trace::packet(super::trace::Dir::Reset, &[]);
         self.chip.hold();
-        Timer::after_millis(5).await;
+        Timer::after_millis(u64::from(RESET_MS)).await;
         self.chip.release();
         self.uart.write_line("[ble] probe: chip reset through its pin, unannounced");
     }
