@@ -201,7 +201,9 @@ fn write(attr: u16, offset: u16, data: &[u8]) -> Vec<u8> {
 fn a_write_to_the_server_is_a_value_written_or_a_subscription() {
     let mut t = Translator::new(INFO);
     assert_eq!(event(&mut t, &write(0x0015, 0, b"ping")), None, "nothing served yet");
+    assert_eq!(t.server(), None);
     t.serve(served());
+    assert_eq!(t.server(), Some(&served()));
     let value = |offset, more, data: &[u8]| Some(RadioEvent::ServerWrite { link: link(), attr: RX, offset, more, data: Payload::new(data).unwrap() });
     assert_eq!(event(&mut t, &write(0x0015, 0, b"ping")), value(0, false, b"ping"));
     assert_eq!(event(&mut t, &write(0x0015, 0x8012, b"ng")), value(0x12, true, b"ng"));
@@ -213,7 +215,8 @@ fn a_write_to_the_server_is_a_value_written_or_a_subscription() {
     assert_eq!(event(&mut t, &write(0x0009, 0, &[0x02, 0x00])), None, "the chip's own Service Changed");
     assert_eq!(event(&mut t, &write(0x0016, 0, b"x")), None, "a declaration");
     event(&mut t, &vendor(0x0001, &[0x01]));
-    assert_eq!(event(&mut t, &write(0x0015, 0, b"ping")), None, "a chip that started again serves nothing");
+    assert_eq!(t.server(), None, "a chip that started again serves nothing");
+    assert_eq!(event(&mut t, &write(0x0015, 0, b"ping")), None);
 }
 
 #[test]
