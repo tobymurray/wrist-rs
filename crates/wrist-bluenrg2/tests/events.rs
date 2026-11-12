@@ -212,7 +212,7 @@ fn a_write_to_the_server_is_a_value_written_or_a_subscription() {
     for (data, cccd) in [(&[0x01, 0x00][..], Cccd::Notify), (&[0x02, 0x00], Cccd::Indicate), (&[0x03, 0x00], Cccd::Notify), (&[0x00, 0x00], Cccd::Off), (&[], Cccd::Off)] {
         assert_eq!(event(&mut t, &write(0x0018, 0, data)), Some(RadioEvent::ServerSubscribe { link: link(), attr: TX, cccd }), "{data:02x?}");
     }
-    assert_eq!(event(&mut t, &write(0x0009, 0, &[0x02, 0x00])), None, "the chip's own Service Changed");
+    assert_eq!(event(&mut t, &write(0x0009, 0, &[0x02, 0x00])), None, "a handle outside the server");
     assert_eq!(event(&mut t, &write(0x0016, 0, b"x")), None, "a declaration");
     event(&mut t, &vendor(0x0001, &[0x01]));
     assert_eq!(t.server(), None, "a chip that started again serves nothing");
