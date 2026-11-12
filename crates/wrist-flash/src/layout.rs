@@ -10,10 +10,9 @@ pub mod bank1 {
 
     /// The vendor bootloader; never written.
     pub const BOOTLOADER: Range<u16> = 0..20;
-    /// UNA's shared C library, which the stock kernel calls into. An `.ota` restores none of it;
-    /// wrist-rs writes only [`RECORD_PAGE`] in it.
+    /// UNA's shared C library (`HARDWARE.md`); wrist-rs writes only [`RECORD_PAGE`] in it.
     pub const LIBRARY: Range<u16> = 20..48;
-    /// Blank in the library stock ships, between its code and its info block.
+    /// Blank in the library stock ships (`HARDWARE.md`).
     pub const LIBRARY_BLANK: Range<u16> = 38..47;
     /// The installer's outcome record.
     pub const RECORD_PAGE: u16 = 45;
@@ -133,9 +132,8 @@ const _: () = assert!(bank2::SELF_TEST != bank1::RECORD_PAGE);
 const _: () = assert!(within(&bank2::UNERASED_LOW, &bank1::LIBRARY));
 const _: () = assert!(within(&bank2::UNERASED_HIGH, &bank1::LIBRARY));
 
-/// Whether erasing bank 2 `pages` under wrist-rs could, with a lost bank select, erase the
-/// vendor bootloader, the library's code or info block, the record, the loader, the active
-/// slot or the state page.
+/// Whether erasing bank 2 `pages` under wrist-rs could, with a lost bank select, erase a bank 1
+/// page that UNA or wrist-rs keeps.
 #[must_use]
 pub const fn mirror_endangers_boot(pages: &Range<u16>) -> bool {
     !(disjoint(pages, &bank1::BOOTLOADER)

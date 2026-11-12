@@ -6,7 +6,7 @@ loader up, and nothing below it.
 | Region | Address | Size | Holds |
 |---|---|---|---|
 | bootloader | `0x08000000` | 160 KiB | UNA's bootloader; never written |
-| library | `0x08028000` | 224 KiB | UNA's shared C library, which the stock kernel calls into; never written but for the installer's record. An `.ota` does not restore it |
+| library | `0x08028000` | 224 KiB | UNA's shared C library; never written but for the installer's record |
 | loader | `0x08060000` | 32 KiB | `wrist-loader`, which the vendor bootloader jumps to |
 | active | `0x08068000` | 512 KiB | `standalone-boot`, the running application |
 | dfu | `0x080E8000` | 520 KiB | the next application; one page more than active, for the swap |
@@ -14,8 +14,8 @@ loader up, and nothing below it.
 
 Both [`memory.x`](memory.x) files spell out these numbers; embassy-boot takes them as offsets from bank
 1's base. They are fixed for the life of the project: moving dfu or state means replacing
-the loader, which has no second slot. The installer's pages are bank 1 page 45, blank in the
-library's partition between its code and its info block, and bank 2 pages 46 and 128 to 195
+the loader, which has no second slot. The installer's pages are bank 1 page 45, which the
+library leaves blank, and bank 2 pages 46 and 128 to 195
 ([`crates/wrist-flash/src/plan.rs`](../../crates/wrist-flash/src/plan.rs), `commit.rs`, `hw.rs`).
 
 ## Bank 2
@@ -38,8 +38,7 @@ The bank 2 map is fixed for the life of the project. Nothing records where the g
 is and nothing migrates it: the store is a cache, and each pack written outranks every pack
 already there. Bank 1 pages 196–255, opposite the store, stay unused.
 
-Nothing of ours erases bank 2 below page 48 except the self-test, which `hw.rs` also arms only
-after reading the bank select back. The numbers are in
+Nothing of ours erases bank 2 below page 48 except the self-test. The numbers are in
 [`crates/wrist-flash/src/layout.rs`](../../crates/wrist-flash/src/layout.rs), whose
 compile-time checks tile the bank with the regions and hold the installer's plan to them, and whose
 tests hold both `memory.x` files to bank 1's. `flash survey` on the console reports which

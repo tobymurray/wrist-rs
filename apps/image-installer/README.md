@@ -93,7 +93,7 @@ code the watch runs, with a made-up CRC:
 `install.log` and `stage.log` stay on the watch's storage. The outcome record a commit
 leaves in a blank page of the library's partition is defined in [`crates/wrist-flash/src/commit.rs`](../../crates/wrist-flash/src/commit.rs),
 and the next dry run reports it. An `.ota` leaves it in place, so a dry run after a
-return to stock reports the last install; installing UNA's library erases it.
+return to stock reports the last install.
 
 ## Building
 
