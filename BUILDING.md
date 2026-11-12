@@ -27,7 +27,8 @@ adds `ble restart`, which resets the chip through its pin behind the driver's ba
 restart updater`, which starts the chip's updater, so a check can watch the driver find the
 restart and bring the chip back. `ble probe gatt services|records|values` fills the GATT table
 until the chip refuses, to measure how much room is left; `ble off` then `ble on` after it puts
-the image's own table back.
+the image's own table back. `ble probe snapshot` prints the driver's snapshot of the chip: a line
+for what it is doing and its anchor, then one per link.
 
 The console's `version` prints the image's version, build ID and CRC:
 
@@ -170,4 +171,5 @@ and `result.json` under `target/ble-suite/`; `--help` lists the scenarios and th
 
 The face is drawn with [InscribedDisc](https://crates.io/crates/inscribed-disc), developed
 in [tobymurray/watch-apps](https://github.com/tobymurray/watch-apps). To build against a
-checkout beside this repository, uncomment the `[patch]` in the root [`Cargo.toml`](Cargo.toml).
+checkout beside this repository, uncomment its line under `[patch.crates-io]` in the root
+[`Cargo.toml`](Cargo.toml).
