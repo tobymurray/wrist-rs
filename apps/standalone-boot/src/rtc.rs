@@ -410,14 +410,9 @@ fn flags() -> Flags {
     Flags::decode(bkp(backup::FLAGS)).unwrap_or_default()
 }
 
-/// Moves the records out of stock's registers once; true if it did.
+/// Moves the records out of stock's registers; true if it wrote.
 pub fn migrate() -> bool {
-    let Some((zone, flags)) = backup::migrate(bkp) else { return false };
-    for (n, v) in backup::ZONE.into_iter().zip(zone) {
-        set_bkp(n, v);
-    }
-    set_bkp(backup::FLAGS, flags.encode());
-    true
+    backup::migrate(bkp, set_bkp)
 }
 
 pub fn note_set(source: Source, local: Civil) {

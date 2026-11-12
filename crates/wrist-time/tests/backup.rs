@@ -24,14 +24,8 @@ impl Domain {
         self.0.borrow_mut()[usize::try_from(n).unwrap()] = v;
     }
 
-    /// As `rtc::migrate`.
     fn boot(&self) -> bool {
-        let Some((zone, flags)) = migrate(|n| self.get(n)) else { return false };
-        for (n, v) in ZONE.into_iter().zip(zone) {
-            self.set(n, v);
-        }
-        self.set(FLAGS, flags.encode());
-        true
+        migrate(|n| self.get(n), |n, v| self.set(n, v))
     }
 
     fn zone(&self) -> Option<Zone> {
@@ -83,16 +77,41 @@ fn an_update_keeps_the_zone_the_radio_the_alarm_and_the_last_set() {
 }
 
 #[test]
-fn the_old_registers_are_read_once_and_never_written() {
+fn only_the_old_records_own_tags_are_zeroed_and_only_once() {
     let d = previous_release();
     let before: Vec<u32> = STOCK.iter().map(|&n| d.get(n)).collect();
     assert!(d.boot());
-    assert_eq!(STOCK.map(|n| d.get(n)).to_vec(), before);
+    for (&n, &was) in STOCK.iter().zip(&before) {
+        let now = if n == old::ZONE[0] || n == old::SOURCE { 0 } else { was };
+        assert_eq!(d.get(n), now, "BKP{n}R");
+    }
     for n in ZONE {
         d.set(n, 0);
     }
     assert!(!d.boot());
     assert_eq!(d.zone(), None, "a cleared zone stays cleared");
+}
+
+#[test]
+fn a_change_an_older_image_applied_after_a_revert_is_not_applied_twice() {
+    let d = Domain::new();
+    let gmt = Zone::parse("0 1806195600 60").unwrap();
+    for (n, v) in old::ZONE.into_iter().zip(gmt.encode()) {
+        d.set(n, v);
+    }
+    assert!(d.boot());
+    assert_eq!(d.zone(), Some(gmt));
+    let (shift, after) = gmt.due(1_806_195_600 + 600).unwrap();
+    assert_eq!(shift, 60);
+    for (n, v) in old::ZONE.into_iter().zip(after.encode()) {
+        d.set(n, v);
+    }
+    d.set(old::SOURCE, old::SOURCE_TAG | 2);
+    assert!(d.boot());
+    assert_eq!(d.zone(), Some(after));
+    assert_eq!(d.zone().unwrap().due(1_806_195_600 + 3600 + 600), None);
+    assert_eq!(d.flags().source, 2);
+    assert!(!d.boot());
 }
 
 #[test]
@@ -158,4 +177,62 @@ fn a_return_from_a_later_image_keeps_its_bits_and_moves_nothing() {
     assert_eq!(d.zone(), Some(tokyo));
     assert_eq!(d.flags(), Flags { radio: false, source: 3 });
     assert_eq!(Flags { radio: true, ..d.flags() }.encode_over(later), later | 1);
+}
+
+#[test]
+fn a_time_set_on_an_older_image_clears_the_moved_zone() {
+    let d = previous_release();
+    assert!(d.boot());
+    d.set(old::SOURCE, old::SOURCE_TAG | 1);
+    assert!(d.boot());
+    assert_eq!(d.zone(), None);
+    assert_eq!(d.flags(), Flags { radio: true, source: 1 });
+}
+
+#[test]
+fn an_older_image_after_a_later_one_keeps_the_later_bits() {
+    let d = previous_release();
+    assert!(d.boot());
+    let later = Flags::default().encode() | 0b11 << 4 | 1 << 2 | 1;
+    d.set(FLAGS, later);
+    assert_eq!(Flags { radio: false, ..d.flags() }.encode_over(later), later & !1);
+    for (n, v) in old::ZONE.into_iter().zip(london().encode()) {
+        d.set(n, v);
+    }
+    assert!(d.boot());
+    assert_eq!(d.get(FLAGS), later);
+}
+
+#[test]
+fn a_reset_at_any_write_of_the_move_loses_nothing() {
+    let start = || {
+        let d = previous_release();
+        assert!(d.boot());
+        d.set(old::SOURCE, old::SOURCE_TAG | 1);
+        for (n, v) in old::ZONE.into_iter().zip(london().encode()) {
+            d.set(n, v);
+        }
+        d
+    };
+    let whole = start();
+    assert!(whole.boot());
+    for cut in 0.. {
+        let d = start();
+        let writes = RefCell::new(0);
+        let done = migrate(
+            |n| d.get(n),
+            |n, v| {
+                if *writes.borrow() < cut {
+                    d.set(n, v);
+                }
+                *writes.borrow_mut() += 1;
+            },
+        );
+        assert!(done);
+        d.boot();
+        assert_eq!(d.0.borrow().to_vec(), whole.0.borrow().to_vec(), "reset after {cut} writes");
+        if *writes.borrow() <= cut {
+            break;
+        }
+    }
 }

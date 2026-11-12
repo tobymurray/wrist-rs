@@ -63,17 +63,29 @@ impl Flags {
     }
 }
 
-/// The zone and flags to write, `bkp(n)` reading `BKPnR`; `None` once [`FLAGS`] holds its tag.
-pub fn migrate(bkp: impl Fn(u32) -> u32) -> Option<([u32; 5], Flags)> {
-    if Flags::decode(bkp(FLAGS)).is_some() {
-        return None;
-    }
-    let zone = Zone::decode(old::ZONE.map(&bkp)).map_or([0; 5], |z| z.encode());
+/// Brings the records over from the old registers, `bkp(n)` reading `BKPnR` and `set(n, v)`
+/// writing it; true if it wrote. The radio comes over once; the zone and the source again
+/// whenever an older image has tagged either since, and then their old registers are zeroed.
+pub fn migrate(bkp: impl Fn(u32) -> u32, mut set: impl FnMut(u32, u32)) -> bool {
+    let word = bkp(FLAGS);
+    let moved = Flags::decode(word);
+    let zone = Zone::decode(old::ZONE.map(&bkp));
     let w = bkp(old::SOURCE);
-    let source = if w & 0xFFFF_0000 == old::SOURCE_TAG && matches!(w & 0xFFFF, 1 | 2) {
-        u8::try_from(w & 0xFF).unwrap_or(0)
-    } else {
-        0
-    };
-    Some((zone, Flags { radio: bkp(old::RADIO) == old::RADIO_ON, source }))
+    let source = (w & 0xFFFF_0000 == old::SOURCE_TAG && matches!(w & 0xFFFF, 1 | 2))
+        .then(|| u8::try_from(w & 0xFF).unwrap_or(0));
+    if moved.is_some() && zone.is_none() && source.is_none() {
+        return false;
+    }
+    for (n, v) in ZONE.into_iter().zip(zone.map_or([0; 5], |z| z.encode())) {
+        set(n, v);
+    }
+    let flags = moved.unwrap_or(Flags { radio: bkp(old::RADIO) == old::RADIO_ON, source: 0 });
+    set(FLAGS, Flags { source: source.unwrap_or(flags.source), ..flags }.encode_over(word));
+    if source.is_some() {
+        set(old::SOURCE, 0);
+    }
+    if zone.is_some() {
+        set(old::ZONE[0], 0);
+    }
+    true
 }
