@@ -35,6 +35,8 @@ thread_local! {
     static SENT: Cell<usize> = const { Cell::new(0) };
     /// An opcode the chip answers by restarting.
     static RESTART_ON: Cell<Option<u16>> = const { Cell::new(None) };
+    /// An opcode the chip takes with no handle in its answer.
+    static SHORT: Cell<Option<u16>> = const { Cell::new(None) };
 }
 
 fn complete(opcode: u16, status: u8, params: &[u8]) -> Vec<u8> {
@@ -59,6 +61,7 @@ fn answer(packet: &[u8]) -> Vec<Vec<u8>> {
         _ => 0,
     };
     let params = match opcode {
+        _ if SHORT.with(Cell::get) == Some(opcode) => Vec::new(),
         opcode::ACI_GAP_INIT => vec![0x05, 0x00, 0x06, 0x00, 0x08, 0x00],
         opcode::ACI_GATT_ADD_SERVICE | opcode::ACI_GATT_ADD_CHAR if status == 0 => NEXT.with(|n| {
             let h = n.get();
@@ -91,6 +94,7 @@ fn booted() -> (Shared, common::TestDriver) {
     REFUSE.with(|r| r.set(None));
     SENT.with(|s| s.set(0));
     RESTART_ON.with(|r| r.set(None));
+    SHORT.with(|s| s.set(None));
     let (c, d) = driver(128);
     c.borrow_mut().boot = Some(boot(0x01));
     (c, d)
@@ -182,6 +186,25 @@ fn a_restart_during_the_start_refuses_what_follows_as_ble_rs_did() {
     );
     let gaps = written(&c).iter().filter(|&&(op, _)| op == opcode::ACI_GAP_INIT).count();
     assert_eq!(gaps, 1, "the second ask is never sent");
+}
+
+#[test]
+fn a_refused_late_step_or_value_ends_the_start_there() {
+    for (refused, nth, step) in [
+        (opcode::ACI_GAP_SET_IO_CAPABILITY, 0, Step::IoCapability),
+        (opcode::ACI_GATT_UPDATE_CHAR_VALUE, 1, Step::Value("Device Information")),
+    ] {
+        let (c, mut d) = booted();
+        REFUSE.with(|r| r.set(Some((refused, 0x12, nth))));
+        assert_eq!(start(&c, &mut d).last(), Some(&Starting::Failed(step)));
+    }
+}
+
+#[test]
+fn a_service_taken_with_no_handle_in_its_answer_ends_the_start() {
+    let (c, mut d) = booted();
+    SHORT.with(|s| s.set(Some(opcode::ACI_GATT_ADD_SERVICE)));
+    assert_eq!(start(&c, &mut d).last(), Some(&Starting::Failed(Step::Service("Device Information"))));
 }
 
 #[test]
