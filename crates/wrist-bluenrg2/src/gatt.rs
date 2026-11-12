@@ -11,8 +11,8 @@ pub const MAX_VALUE: usize = ATT_MAX_MTU - 3;
 /// The longest parameters here: a whole value after its handles, offset and length.
 pub const MAX_PARAMS: usize = 6 + MAX_VALUE;
 
-/// Writes only over a link encrypted with authenticated keys.
-const AUTHENTICATED_WRITE: u8 = permission::AUTHEN_WRITE | permission::ENCRY_WRITE;
+/// [`permission::AUTHEN_WRITE`] and [`permission::ENCRY_WRITE`]: writes only over a link encrypted with authenticated keys.
+const AUTHENTICATED_WRITE: u8 = 0x28;
 
 /// The most characteristics a server here holds.
 pub const MAX_CHARS: usize = 16;
