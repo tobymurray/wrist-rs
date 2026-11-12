@@ -2,11 +2,16 @@
 
 mod common;
 
+use std::future::Future;
+use std::pin::pin;
+use std::task::{Context, Poll, Waker};
+
 use bluenrg2::BootReason;
 use common::{driver, event, Shared, TestDriver};
 use embassy_futures::block_on;
 use wrist_ble::{ConnHandle, RadioEvent, ResetCause, Status};
 use wrist_bluenrg2::driver::{Got, Reply, Unanswered, BOOT_WITHIN_US, DRAIN_READS, RESET_MS, REPLY_WITHIN_US};
+use wrist_bluenrg2::gatt::Handles;
 use wrist_bluenrg2::transport::MAX_READ;
 
 const OPCODE: u16 = 0xFC81;
@@ -52,10 +57,13 @@ fn exchange(c: &Shared, d: &mut TestDriver, reads: Vec<Vec<u8>>) -> (Handed, Res
     block_on(d.send(OPCODE, &[])).unwrap();
     c.borrow_mut().queued.extend(reads);
     let mut all = Vec::new();
-    while block_on(d.awaiting()) {
+    for _ in 0..100 {
+        if !block_on(d.awaiting()) {
+            return (all, d.reply());
+        }
         all.extend(drained(d));
     }
-    (all, d.reply())
+    panic!("the exchange never ended");
 }
 
 fn now(c: &Shared) -> u64 {
@@ -142,7 +150,9 @@ fn an_unreadable_run_ends_the_drain() {
     c.borrow_mut().sticky_header = Some([0xFF; 5]);
     c.borrow_mut().queued.extend([down(1), down(2), down(3)]);
     d.drain();
+    assert!(!d.backing_off());
     let got: Vec<Got> = drained(&mut d).into_iter().map(|(_, g)| g).collect();
+    assert!(d.backing_off());
     assert_eq!(got, [Got::Packet { len: 7, event: Some(link_down(1)) }, Got::Packet { len: 7, event: Some(link_down(2)) }, Got::Unreadable { header: [0xFF; 5], first: true }]);
     assert_eq!(drained(&mut d), [], "the drain is over");
 }
@@ -197,4 +207,31 @@ fn a_reset_forgets_the_command_it_cut_off() {
     d.drain();
     drained(&mut d);
     assert_eq!(d.reply(), Err(Unanswered::NoReply));
+}
+
+#[test]
+fn waiting_for_the_chip_lasts_until_it_has_something() {
+    let (c, mut d) = driver(128);
+    let mut cx = Context::from_waker(Waker::noop());
+    {
+        let mut wait = pin!(d.wait_pending());
+        assert_eq!(wait.as_mut().poll(&mut cx), Poll::Pending);
+        c.borrow_mut().queued.push(down(1));
+        assert_eq!(wait.as_mut().poll(&mut cx), Poll::Ready(()));
+    }
+}
+
+#[test]
+fn the_server_is_the_one_served_until_the_chip_boots() {
+    let (c, mut d) = driver(128);
+    assert_eq!(d.server(), None);
+    let mut h = Handles::default();
+    let tx = wrist_wake::ble::server::CONSOLE.chars[1];
+    assert!(h.push(0x0013, 0x0016, &tx));
+    d.serve(h);
+    assert_eq!(d.server(), Some(&h));
+    c.borrow_mut().queued.push(boot(0x05));
+    d.drain();
+    drained(&mut d);
+    assert_eq!(d.server(), None);
 }
