@@ -12,7 +12,7 @@ pub mod bank1 {
     pub const BOOTLOADER: Range<u16> = 0..20;
     /// UNA's shared C library (`HARDWARE.md`); wrist-rs writes only [`RECORD_PAGE`] in it.
     pub const LIBRARY: Range<u16> = 20..48;
-    /// Blank in the library stock ships (`HARDWARE.md`).
+    /// Blank in the library image UNA publishes (`HARDWARE.md`).
     pub const LIBRARY_BLANK: Range<u16> = 38..47;
     /// The installer's outcome record.
     pub const RECORD_PAGE: u16 = 45;
