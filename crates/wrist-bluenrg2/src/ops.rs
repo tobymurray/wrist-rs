@@ -1,6 +1,6 @@
 //! The operations the chip has taken: their ids, their deadlines, and what ends each.
 
-use wrist_ble::{ConnHandle, Failure, FailureKind, Op, OpId, OpKind, Outcome, PairingEvent, RadioEvent, SchedKind, MAX_LINKS};
+use wrist_ble::{ConnHandle, Failure, FailureKind, LinkStatus, Op, OpId, OpKind, Outcome, PairingEvent, RadioEvent, SchedKind, MAX_LINKS};
 
 use crate::driver::Unanswered;
 
@@ -135,6 +135,12 @@ impl Ops {
     fn went_down(&mut self, link: ConnHandle) {
         self.settle(|p| p.kind == OpKind::Disconnect && p.link == Some(link), None);
         self.settle(|p| p.link == Some(link), Some(Failure { kind: FailureKind::NotConnected, native: 0 }));
+    }
+
+    /// A snapshot found only `links`: an operation on any other link ends, not connected.
+    pub fn resynced(&mut self, links: &[Option<LinkStatus>]) {
+        let gone = |l: ConnHandle| !links.iter().flatten().any(|k| k.link == l);
+        self.settle(|p| p.link.is_some_and(gone), Some(Failure { kind: FailureKind::NotConnected, native: 0 }));
     }
 
     /// Operations past their deadline, ended with a timeout.

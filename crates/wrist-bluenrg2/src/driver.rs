@@ -13,6 +13,7 @@ use crate::events::Translator;
 use crate::gatt::Handles;
 use crate::op_deadline;
 use crate::ops::{self, Ops};
+use crate::snapshot::Peers;
 use crate::transport::{packets, Counts, Read, Transport, MAX_READ};
 
 /// A command is answered within this, or not at all.
@@ -83,6 +84,7 @@ pub struct Driver<'c, B, C, I, D, R, K> {
     clock: K,
     translator: Translator,
     ops: Ops,
+    peers: Peers,
     /// The opcode whose reply is awaited, until `deadline`, and the reply once it came.
     awaited: Option<u16>,
     deadline: u64,
@@ -124,6 +126,7 @@ where
             clock,
             translator: Translator::default(),
             ops: Ops::default(),
+            peers: Peers::default(),
             awaited: None,
             deadline: 0,
             reply: None,
@@ -189,7 +192,7 @@ where
         self.awaited = None;
         self.reply = None;
         self.restarted = false;
-        self.ops.saw(&RadioEvent::ChipReset(wrist_ble::ResetCause::Other));
+        self.saw(&RadioEvent::ChipReset(wrist_ble::ResetCause::Other));
         self.len = 0;
         self.at = 0;
         self.drain = None;
@@ -353,7 +356,7 @@ where
             self.lost_early = false;
             // What the chip held is gone, as for any boot; the boot itself is the reset's answer.
             if let Some(e) = self.translator.event(packet) {
-                self.ops.saw(&e);
+                self.saw(&e);
             }
             return Some(Got::Boot { len, reason });
         }
@@ -372,8 +375,28 @@ where
         }
         let event = self.translator.event(packet);
         if let Some(e) = &event {
-            self.ops.saw(e);
+            self.saw(e);
         }
         Some(Got::Packet { len, event })
+    }
+
+    /// What the operations and the links' peers make of `event`.
+    fn saw(&mut self, event: &RadioEvent) {
+        self.ops.saw(event);
+        self.peers.saw(event);
+    }
+
+    /// A snapshot found only `links`: operations on the others end.
+    pub(crate) fn resynced(&mut self, links: &[Option<wrist_ble::LinkStatus>]) {
+        self.ops.resynced(links);
+    }
+
+    pub(crate) fn peers(&self) -> &Peers {
+        &self.peers
+    }
+
+    /// Milliseconds on the clock.
+    pub(crate) fn now_ms(&self) -> u64 {
+        micros::<K>(self.clock.now()) / 1_000
     }
 }
