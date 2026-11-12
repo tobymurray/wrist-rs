@@ -59,21 +59,18 @@ use embassy_sync::pipe::Pipe;
 use embassy_sync::signal::Signal;
 use embassy_time::{Delay, Duration, Instant, Timer};
 use bluenrg2::opcode::{
-    ACI_GAP_ALLOW_REBOND, ACI_GAP_CLEAR_SECURITY_DB, ACI_GAP_GET_BONDED_DEVICES, ACI_GAP_REMOVE_BONDED_DEVICE, ACI_GAP_INIT,
-    ACI_GAP_NUMERIC_COMPARISON_CONFIRM, ACI_GAP_PASS_KEY_RESP,
-    ACI_GAP_SET_AUTHENTICATION_REQUIREMENT, ACI_GAP_SET_DISCOVERABLE, ACI_GAP_SET_IO_CAPABILITY,
-    ACI_GAP_SET_NON_DISCOVERABLE, ACI_GAP_SLAVE_SECURITY_REQ, ACI_GAP_TERMINATE, ACI_GATT_INIT,
-    ACI_GATT_UPDATE_CHAR_VALUE, ACI_HAL_GET_FW_BUILD_NUMBER, ACI_HAL_SET_TX_POWER_LEVEL, ACI_HAL_WRITE_CONFIG_DATA,
-    ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_REQ, HCI_LE_RAND, HCI_READ_LOCAL_VERSION, HCI_SET_EVENT_MASK,
+    ACI_GAP_ALLOW_REBOND, ACI_GAP_CLEAR_SECURITY_DB, ACI_GAP_GET_BONDED_DEVICES, ACI_GAP_REMOVE_BONDED_DEVICE,
+    ACI_GAP_NUMERIC_COMPARISON_CONFIRM, ACI_GAP_PASS_KEY_RESP, ACI_GAP_SET_DISCOVERABLE, ACI_GAP_SET_NON_DISCOVERABLE, ACI_GAP_SLAVE_SECURITY_REQ,
+    ACI_GAP_TERMINATE, ACI_HAL_GET_FW_BUILD_NUMBER, ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_REQ, HCI_LE_RAND, HCI_READ_LOCAL_VERSION,
 };
 use bluenrg2::{
-    adv_filter_policy, adv_type, config, event_code, gap_role, privacy, AddrKind, BdAddr, BootReason, Event, BleStatus,
+    adv_filter_policy, adv_type, event_code, AddrKind, BdAddr, BootReason, Event, BleStatus,
     PairingReason, PairingStatus, VendorEvent, ATT_HEADER_LEN,
 };
 use wrist_ble::{Cccd, CharDecl, ConnHandle, Micros, Op, Payload, RadioEvent, ServerTable, ServiceDecl, ATT_MAX_MTU};
-use wrist_bluenrg2::commands::{self, Command};
+use wrist_bluenrg2::commands;
 use wrist_bluenrg2::driver::{self, Driver, Got, Reply, Unanswered};
-use wrist_bluenrg2::gatt;
+use wrist_bluenrg2::start::{Setup, Start, Starting, Step};
 use wrist_bluenrg2::transport::{self, Counts};
 use wrist_pages::{OldKey, Pairing, Prompt};
 use wrist_wake::ble::restart::{Boot, Restarts};
@@ -996,127 +993,70 @@ impl Link<'_> {
     }
 
     /// Reset, address, TX power, event mask, GATT, GAP, name, IO capability, security
-    /// requirements, advertise: ST's sample order.
+    /// requirements, the server, then advertise: the driver's start, in ST's sample order.
     async fn bring_up(&mut self) {
         set_state(STATE_STARTING);
         clear_prompt();
-        self.reset().await;
-        if self.boot == Some(Boot::InUpdater) {
-            return self.fail("reset: the chip came up in its updater");
-        }
+        #[cfg(feature = "ble-trace")]
+        trace::packet(trace::Dir::Reset, &[]);
+        self.restart = None;
+        self.boot = None;
+        CONN_HANDLE.store(0, Ordering::Relaxed);
         let addr = address_from_uid();
-        for (slot, b) in ADDRESS.iter().zip(addr.iter()) {
-            slot.store(*b, Ordering::Relaxed);
-        }
-        let mut random = [0u8; 8];
-        random[0] = config::STATIC_RANDOM_ADDRESS;
-        random[1] = u8::try_from(addr.len()).unwrap_or(0);
-        random[2..].copy_from_slice(&addr);
-        let mut public = random;
-        public[0] = config::PUBLIC_ADDRESS;
-        let early: [(&str, u16, &[u8]); 5] = [
-            ("static random address", ACI_HAL_WRITE_CONFIG_DATA, &random),
-            // Pairing failed at the `DHKey` check until this slot had been written (HARDWARE.md).
-            ("public address slot", ACI_HAL_WRITE_CONFIG_DATA, &public),
-            ("TX power", ACI_HAL_SET_TX_POWER_LEVEL, &TX_POWER),
-            ("event mask", HCI_SET_EVENT_MASK, &EVENT_MASK),
-            ("GATT init", ACI_GATT_INIT, &[]),
-        ];
-        for (what, opcode, params) in early {
-            if !self.step(what, opcode, params).await {
-                return;
-            }
-        }
-        // Peripheral alone if the chip refuses both roles, so updates never depend on the
-        // central role.
-        let mut handles = None;
-        for roles in [gap_role::PERIPHERAL | gap_role::CENTRAL, gap_role::PERIPHERAL] {
-            match self.command(ACI_GAP_INIT, &[roles, privacy::DISABLED, GAP_NAME_LEN]).await {
-                Ok(r) if r.status == 0 && r.len >= 6 => {
-                    let service = u16::from_le_bytes([r.params[0], r.params[1]]);
-                    let name_char = u16::from_le_bytes([r.params[2], r.params[3]]);
-                    handles = Some((service, name_char, roles & gap_role::CENTRAL != 0));
-                    break;
+        let setup = Setup {
+            address: addr,
+            tx_power: TX_POWER,
+            event_mask: EVENT_MASK,
+            name: DEVICE_NAME,
+            name_room: GAP_NAME_LEN,
+            io_capability: IO_CAP_DISPLAY_YES_NO,
+            pairing: wrist_bluenrg2::bonds::PAIRING,
+        };
+        let mut start = Start::new(&SERVER, setup);
+        let mut packet = [0u8; transport::MAX_READ];
+        let mut central = false;
+        let handles = loop {
+            let Some(note) = self.chip.starting(&mut start, &mut packet).await else { return };
+            match note {
+                Starting::Got(got) => self.got(&packet, got),
+                Starting::Sending(c) => trace_command(c.opcode, c.params()),
+                Starting::Silent => self.uart.write_line("[ble] no sign of life after reset (no module, or not ST's firmware)"),
+                Starting::Booted => {
+                    if self.boot == Some(Boot::InUpdater) {
+                        return self.fail("reset: the chip came up in its updater");
+                    }
+                    for (slot, b) in ADDRESS.iter().zip(addr.iter()) {
+                        slot.store(*b, Ordering::Relaxed);
+                    }
                 }
-                Ok(r) => {
+                Starting::GapRefused { roles, status } => {
                     self.uart.write_str("[ble] GAP init refused roles ");
                     self.uart.write_hex8(roles);
                     self.uart.write_str(", status ");
-                    self.uart.write_hex8(r.status);
+                    self.uart.write_hex8(status);
                     self.uart.write_line("");
                 }
-                Err(why) => {
+                Starting::GapUnanswered { why } => {
                     self.uart.write_str("[ble] GAP init: ");
-                    self.uart.write_line(why);
+                    self.uart.write_line(unanswered(why));
                 }
+                Starting::Roles { central: c } => {
+                    central = c;
+                    self.scanner.started(c);
+                }
+                Starting::Failed(step) => return self.failed(step),
+                Starting::Up(handles) => break handles,
             }
-        }
-        let Some((service, name_char, central)) = handles else {
-            return self.fail("GAP init");
         };
-        self.scanner.started(central);
-        let mut name = [0u8; 16];
-        name[0..2].copy_from_slice(&service.to_le_bytes());
-        name[2..4].copy_from_slice(&name_char.to_le_bytes());
-        name[4] = 0;
-        name[5] = u8::try_from(DEVICE_NAME.len()).unwrap_or(0);
-        name[6..6 + DEVICE_NAME.len()].copy_from_slice(DEVICE_NAME);
-        let late: [(&str, u16, &[u8]); 3] = [
-            ("device name", ACI_GATT_UPDATE_CHAR_VALUE, &name[..6 + DEVICE_NAME.len()]),
-            ("IO capability", ACI_GAP_SET_IO_CAPABILITY, &[IO_CAP_DISPLAY_YES_NO]),
-            ("security requirements", ACI_GAP_SET_AUTHENTICATION_REQUIREMENT, &wrist_bluenrg2::bonds::PAIRING.params()),
-        ];
-        for (what, opcode, params) in late {
-            if !self.step(what, opcode, params).await {
-                return;
-            }
+        if handles.get(server::RX).is_none() || handles.get(server::TX).is_none() {
+            return self.fail("finding the console in the server");
         }
-        if !self.add_services().await {
-            return;
-        }
+        self.chip.serve(handles);
         self.uart.write_str("[ble] up: ST stack, address ");
         write_address(self.uart, bluenrg2::Address { kind: AddrKind::RANDOM, addr: BdAddr(addr) });
         self.uart.write_line(if central { ", peripheral and central" } else { ", peripheral only" });
         self.list_bonds(false).await;
         self.advertise().await;
-    }
-
-    /// [`SERVER`]'s services and characteristics, each with the value it starts with.
-    async fn add_services(&mut self) -> bool {
-        let mut handles = gatt::Handles::default();
-        for service in SERVER.services {
-            let Some(s) = self.added(gatt::add_service(service).as_ref()).await else {
-                self.fail_at(&["adding the ", service.name, " service"]);
-                return false;
-            };
-            for c in service.chars {
-                let Some(h) = self.added(gatt::add_char(s, c).as_ref()).await.filter(|&h| handles.push(s, h, c)) else {
-                    self.fail_at(&["adding a ", service.name, " characteristic"]);
-                    return false;
-                };
-                if let Some(value) = gatt::initial(s, h, c) {
-                    if self.command(value.opcode, value.params()).await.map_or(0xFF, |r| r.status) != 0 {
-                        self.fail_at(&["setting a ", service.name, " value"]);
-                        return false;
-                    }
-                }
-            }
-        }
-        if handles.get(server::RX).is_none() || handles.get(server::TX).is_none() {
-            self.fail("finding the console in the server");
-            return false;
-        }
-        self.chip.serve(handles);
-        true
-    }
-
-    /// The handle the chip gave what `command` added.
-    async fn added(&mut self, command: Option<&Command>) -> Option<u16> {
-        let c = command?;
-        match self.command(c.opcode, c.params()).await {
-            Ok(r) if r.status == 0 && r.len >= 2 => Some(u16::from_le_bytes([r.params[0], r.params[1]])),
-            _ => None,
-        }
     }
 
     /// Console output to a subscribed central, one notification per pass.
@@ -1220,14 +1160,21 @@ impl Link<'_> {
         }
     }
 
-    /// One start-up command; false (and the failure logged) if refused.
-    async fn step(&mut self, what: &str, opcode: u16, params: &[u8]) -> bool {
-        match self.command(opcode, params).await {
-            Ok(r) if r.status == 0 => true,
-            _ => {
-                self.fail(what);
-                false
-            }
+    /// The line for the step a start stopped at.
+    fn failed(&mut self, step: Step) {
+        match step {
+            Step::StaticRandomAddress => self.fail("static random address"),
+            Step::PublicAddressSlot => self.fail("public address slot"),
+            Step::TxPower => self.fail("TX power"),
+            Step::EventMask => self.fail("event mask"),
+            Step::GattInit => self.fail("GATT init"),
+            Step::GapInit => self.fail("GAP init"),
+            Step::DeviceName => self.fail("device name"),
+            Step::IoCapability => self.fail("IO capability"),
+            Step::SecurityRequirements => self.fail("security requirements"),
+            Step::Service(name) => self.fail_at(&["adding the ", name, " service"]),
+            Step::Characteristic(name) => self.fail_at(&["adding a ", name, " characteristic"]),
+            Step::Value(name) => self.fail_at(&["setting a ", name, " value"]),
         }
     }
 
@@ -1391,36 +1338,13 @@ impl Link<'_> {
         let _ = self.command(ACI_GAP_PASS_KEY_RESP, &p).await;
     }
 
-    async fn reset(&mut self) {
-        #[cfg(feature = "ble-trace")]
-        trace::packet(trace::Dir::Reset, &[]);
-        self.chip.reset().await;
-        self.restart = None;
-        self.boot = None;
-        CONN_HANDLE.store(0, Ordering::Relaxed);
-        // The chip takes no command until its stack announces itself.
-        if self.chip.boot().await {
-            self.packets().await;
-        } else {
-            self.uart.write_line("[ble] no sign of life after reset (no module, or not ST's firmware)");
-        }
-    }
-
     /// Send a command and wait for its Command Complete (or Command Status), handling every
     /// other event that arrives meanwhile.
     async fn command(&mut self, opcode: u16, params: &[u8]) -> Result<Reply, &'static str> {
-        // A chip that restarted is reset before it hears anything: its updater, say, takes
-        // commands of its own.
-        if self.restart.is_some() {
-            return Err("not sent: the chip restarted");
+        if self.chip.restarted() {
+            return Err(unanswered(Unanswered::Restarted));
         }
-        #[cfg(feature = "ble-trace")]
-        {
-            let mut packet = [0u8; bluenrg2::MAX_COMMAND];
-            if let Some(n) = bluenrg2::command(opcode, &[params], &mut packet) {
-                trace::packet(trace::Dir::ToChip, &packet[..n]);
-            }
-        }
+        trace_command(opcode, params);
         self.chip.send(opcode, params).await.map_err(unanswered)?;
         while self.chip.awaiting().await {
             self.packets().await;
@@ -1438,19 +1362,24 @@ impl Link<'_> {
     async fn packets(&mut self) {
         let mut packet = [0u8; transport::MAX_READ];
         while let Some(got) = self.chip.next(&mut packet).await {
-            #[cfg(feature = "ble-trace")]
-            if let Got::Packet { len, .. } | Got::Boot { len, .. } = got {
-                trace::packet(trace::Dir::FromChip, &packet[..len]);
-            }
-            match got {
-                Got::Packet { len, event } => self.handle(&packet[..len], event),
-                Got::Boot { reason, .. } => self.initialized(true, reason.unwrap_or(BootReason::new(0))),
-                Got::Unreadable { header, first } => {
-                    if first {
-                        self.uart.write_str("[ble] headers unreadable with IRQ high, last ");
-                        write_hex(self.uart, &header);
-                        self.uart.write_line("; backing off to one read per 500 ms");
-                    }
+            self.got(&packet, got);
+        }
+    }
+
+    /// One thing a drain handed out, its bytes in `packet`.
+    fn got(&mut self, packet: &[u8; transport::MAX_READ], got: Got) {
+        #[cfg(feature = "ble-trace")]
+        if let Got::Packet { len, .. } | Got::Boot { len, .. } = got {
+            trace::packet(trace::Dir::FromChip, &packet[..len]);
+        }
+        match got {
+            Got::Packet { len, event } => self.handle(&packet[..len], event),
+            Got::Boot { reason, .. } => self.initialized(true, reason.unwrap_or(BootReason::new(0))),
+            Got::Unreadable { header, first } => {
+                if first {
+                    self.uart.write_str("[ble] headers unreadable with IRQ high, last ");
+                    write_hex(self.uart, &header);
+                    self.uart.write_line("; backing off to one read per 500 ms");
                 }
             }
         }
@@ -1785,5 +1714,20 @@ fn unanswered(why: Unanswered) -> &'static str {
         Unanswered::TooLong => "not sent: parameters past 255 bytes",
         Unanswered::NotTaken => "the chip did not take the command",
         Unanswered::NoReply => "no reply within 1 s",
+        // A chip that restarted is reset before it hears anything: its updater, say, takes
+        // commands of its own.
+        Unanswered::Restarted => "not sent: the chip restarted",
+    }
+}
+
+/// `ble-trace`: a command as it goes to the chip.
+#[cfg_attr(not(feature = "ble-trace"), allow(unused_variables))]
+fn trace_command(opcode: u16, params: &[u8]) {
+    #[cfg(feature = "ble-trace")]
+    {
+        let mut packet = [0u8; bluenrg2::MAX_COMMAND];
+        if let Some(n) = bluenrg2::command(opcode, &[params], &mut packet) {
+            trace::packet(trace::Dir::ToChip, &packet[..n]);
+        }
     }
 }
