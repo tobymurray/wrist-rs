@@ -87,6 +87,22 @@ fn an_operation_ended_by_an_event_waits_for_it_and_no_other() {
 }
 
 #[test]
+fn an_event_leaves_what_waits_on_another_link_or_for_another_event() {
+    let mut ops = Ops::default();
+    let params = LinkParams { interval: Interval::from_u16(24), latency: 0, timeout: Timeout::from_u16(500) };
+    let peer = PeerAddr { kind: AddrKind::PUBLIC, addr: BdAddr::new([0; 6]) };
+    for op in [ask(link(1)), ask(link(2)), Op::RequestSecurity(link(1)), Op::RequestSecurity(link(2))] {
+        ops.answered(&op, 0, 9).unwrap();
+    }
+    ops.saw(&RadioEvent::LinkUp { link: link(3), role: LeConnRole::Peripheral, peer, params: None });
+    ops.saw(&RadioEvent::Params { link: link(1), result: Ok(params) });
+    ops.saw(&RadioEvent::Encryption { link: link(2), on: true });
+    ops.expire(9);
+    let left = (ops.ended(), ops.ended(), ops.ended());
+    assert_eq!(left, (Some(failed(1, FailureKind::Timeout)), Some(failed(2, FailureKind::Timeout)), None));
+}
+
+#[test]
 fn a_link_going_down_fails_what_waited_on_it() {
     let mut ops = Ops::default();
     ops.answered(&ask(link(1)), 0, 0).unwrap();
