@@ -101,6 +101,15 @@ fn another_commands_reply_is_handed_out_and_the_wait_goes_on_to_its_end() {
 }
 
 #[test]
+fn another_commands_status_is_handed_out_and_the_wait_goes_on_to_its_end() {
+    let (c, mut d) = driver(128);
+    let (got, r) = exchange(&c, &mut d, vec![event(0x0F, &[&[0x00, 0x01][..], &0xFC83u16.to_le_bytes()].concat())]);
+    assert_eq!(got.len(), 1);
+    assert_eq!(r, Err(Unanswered::NoReply));
+    assert!(now(&c) >= REPLY_WITHIN_US, "{}", now(&c));
+}
+
+#[test]
 fn a_chip_that_restarts_ends_the_wait_once_the_rest_of_its_read_is_handed_out() {
     let (c, mut d) = driver(128);
     let (got, r) = exchange(&c, &mut d, vec![[boot(0x05), down(1)].concat()]);

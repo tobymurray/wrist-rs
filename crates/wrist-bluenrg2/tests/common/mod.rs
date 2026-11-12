@@ -206,7 +206,21 @@ impl<const HZ: u64> DelayNs for Clock<HZ> {
     }
 }
 
+/// Ends the test binary a minute after its first chip, so a loop that never yields fails its test
+/// instead of stalling the run.
+fn watchdog() {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
+        std::thread::spawn(|| {
+            std::thread::sleep(std::time::Duration::from_secs(60));
+            eprintln!("a test was still running a minute in");
+            std::process::exit(101);
+        });
+    });
+}
+
 pub fn chip(room: u16) -> (Shared, Transport<'static, Bus, Cs, Irq, Clock>) {
+    watchdog();
     let shared = Rc::new(RefCell::new(Chip { room, ..Chip::default() }));
     let counts: &'static Counts = Box::leak(Box::new(Counts::new()));
     let t = Transport::new(Bus(shared.clone()), Cs(shared.clone()), Irq(shared.clone()), Clock(shared.clone()), counts);
@@ -261,6 +275,7 @@ pub fn driver(room: u16) -> (Shared, TestDriver) {
 
 /// A driver on a clock of `HZ` ticks a second, every wait rounded up to whole ticks.
 pub fn driver_at<const HZ: u64>(room: u16) -> (Shared, TestDriver<HZ>) {
+    watchdog();
     let shared = Rc::new(RefCell::new(Chip { room, ..Chip::default() }));
     let counts: &'static Counts = Box::leak(Box::new(Counts::new()));
     let d = Driver::new(Bus(shared.clone()), Cs(shared.clone()), Irq(shared.clone()), Clock(shared.clone()), counts, Rst(shared.clone()), Clock(shared.clone()));
