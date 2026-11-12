@@ -63,7 +63,7 @@ use bluenrg2::opcode::{
     HCI_READ_LOCAL_VERSION,
 };
 use bluenrg2::{
-    event_code, AddrKind, BdAddr, BootReason, Event, BleStatus,
+    event_code, io_capability, AddrKind, BdAddr, BootReason, Event, BleStatus,
     PairingReason, PairingStatus, VendorEvent, ATT_HEADER_LEN,
 };
 use wrist_ble::{
@@ -118,8 +118,6 @@ static SERVER: ServerTable = ServerTable { services: &SERVICES };
 const DEFAULT_MTU: usize = bluenrg2::ATT_DEFAULT_MTU;
 /// The value a default-MTU write or notification carries.
 const DEFAULT_VALUE_LEN: usize = DEFAULT_MTU - ATT_HEADER_LEN;
-/// `IO_CAP_DISPLAY_YES_NO`: the console shows the number, `ble yes` answers.
-const IO_CAP_DISPLAY_YES_NO: u8 = 0x01;
 /// Console notifications at most this often.
 const CONSOLE_PACE: Duration = Duration::from_millis(10);
 
@@ -1021,7 +1019,8 @@ impl Link<'_> {
             event_mask: EVENT_MASK,
             name: DEVICE_NAME,
             name_room: GAP_NAME_LEN,
-            io_capability: IO_CAP_DISPLAY_YES_NO,
+            // The console shows the number; `ble yes` answers.
+            io_capability: io_capability::DISPLAY_YES_NO,
             pairing: wrist_bluenrg2::bonds::PAIRING,
         };
         let mut start = Start::new(&SERVER, setup);

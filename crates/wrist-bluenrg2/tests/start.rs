@@ -5,7 +5,7 @@ mod common;
 
 use std::cell::Cell;
 
-use bluenrg2::{gap_role, opcode, BootReason};
+use bluenrg2::{gap_role, io_capability, opcode, BootReason};
 use common::{driver, event, Shared};
 use embassy_futures::block_on;
 use wrist_ble::{CharDecl, RadioEvent, ResetCause, ServerTable, ServiceDecl};
@@ -23,7 +23,7 @@ const ADDRESS: [u8; 6] = [0x11, 0x22, 0x33, 0x44, 0x55, 0xC6];
 const EVENT_MASK: [u8; 8] = [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xBF, 0x3D];
 
 fn setup() -> Setup<'static> {
-    Setup { address: ADDRESS, tx_power: [0x01, 0x04], event_mask: EVENT_MASK, name: b"UNA", name_room: 7, io_capability: 0x01, pairing: PAIRING }
+    Setup { address: ADDRESS, tx_power: [0x01, 0x04], event_mask: EVENT_MASK, name: b"UNA", name_room: 7, io_capability: io_capability::DISPLAY_YES_NO, pairing: PAIRING }
 }
 
 thread_local! {

@@ -28,9 +28,6 @@ pub mod slot {
     pub const CENTRAL: u8 = 0x05;
 }
 
-/// The highest connection handle (Core Vol 4 Part E 5.4.2).
-const MAX_HANDLE: u16 = 0x0EFF;
-
 /// The peer of a link whose connection the driver never saw.
 pub const UNSEEN: PeerAddr = PeerAddr { kind: AddrKind::PUBLIC, addr: BdAddr([0; 6]) };
 
@@ -157,8 +154,7 @@ impl Snap {
                 slot::CENTRAL => LeConnRole::Central,
                 _ => continue,
             };
-            if handle <= MAX_HANDLE {
-                let link = ConnHandle::new(handle);
+            if let Some(link) = bluenrg2::conn_handle(handle) {
                 *out = Some(LinkStatus { link, role, peer: peers.of(link).unwrap_or(UNSEEN), encrypted: None });
             }
         }
