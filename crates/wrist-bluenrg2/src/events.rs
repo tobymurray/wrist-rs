@@ -8,9 +8,8 @@ use wrist_ble::{
 
 use crate::gatt::Handles;
 
-/// The chip's packets as the core's events. ST's bond-lost event names no link, so the
-/// translator keeps the link a central holds, and a write names only a handle, so it keeps the
-/// local server's.
+/// The chip's packets as the core's events, keeping what ST's events leave out: the link a
+/// central holds, for the bond-lost event, and the local server's handles, for a write.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Translator {
     /// `None` until a start has read it: a boot then is that start's own.

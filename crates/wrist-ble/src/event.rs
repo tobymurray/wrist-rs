@@ -24,7 +24,7 @@ pub enum RadioEvent {
     BondLost(ConnHandle),
     Mtu(ConnHandle, u16),
     /// The largest link-layer payload each way, in octets and in time on air (Core Vol 6 Part B
-    /// §4.5.10); every link reports one.
+    /// §4.5.10).
     DataLength { link: ConnHandle, tx: u16, rx: u16, tx_time: Micros, rx_time: Micros },
     /// As the central, the peer asked for new parameters; answer with
     /// [`crate::Op::AnswerParamRequest`].

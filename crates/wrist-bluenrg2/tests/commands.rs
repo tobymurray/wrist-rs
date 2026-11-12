@@ -124,8 +124,8 @@ fn what_no_command_here_carries_out_is_none() {
 static DIS: [CharDecl; 3] = device_information(b"c629fcd8e8e0");
 static SERVER: [ServiceDecl; 2] = services(&DIS);
 
-/// The watch's server at the handles the chip gave it: Device Information at 0x000C, the console
-/// at 0x0013 with RX declared at 0x0014 and TX at 0x0016.
+/// The watch's server built from 0x000C: Device Information there, the console at 0x0013 with RX
+/// declared at 0x0014 and TX at 0x0016.
 fn served() -> Handles {
     let mut h = Handles::default();
     for (s, at, decls) in [(&SERVER[0], 0x000C, &[0x000D, 0x000F, 0x0011][..]), (&SERVER[1], 0x0013, &[0x0014, 0x0016][..])] {

@@ -179,8 +179,8 @@ fn a_start_before_the_chips_identity_is_read_is_that_starts_own() {
 static DIS: [CharDecl; 3] = device_information(b"c629fcd8e8e0");
 static SERVER: [ServiceDecl; 2] = services(&DIS);
 
-/// The watch's server at the handles the chip gave it: RX's value at 0x0015, TX's at 0x0017 and
-/// its configuration descriptor at 0x0018.
+/// The watch's server built from 0x000C: RX's value at 0x0015, TX's at 0x0017 and its
+/// configuration descriptor at 0x0018.
 fn served() -> Handles {
     let mut h = Handles::default();
     for (s, at, decls) in [(&SERVER[0], 0x000C, &[0x000D, 0x000F, 0x0011][..]), (&SERVER[1], 0x0013, &[0x0014, 0x0016][..])] {

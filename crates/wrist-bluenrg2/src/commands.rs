@@ -39,7 +39,7 @@ impl Command {
 
 /// The command that carries `op` out, the watch advertising as `name` (the complete local name),
 /// holding each link in the role `role` gives it and serving `server`. `None` for an operation no
-/// command here carries out yet: as the central, scanning, GATT as a client, and advertising that
+/// command here carries out: as the central, scanning, GATT as a client, and advertising that
 /// takes no connection; for a name longer than [`MAX_NAME`]; for a notification of a
 /// characteristic `server` lacks; and for a disconnect reason ST does not list.
 pub fn command(op: &Op, name: &[u8], role: impl Fn(ConnHandle) -> Option<LeConnRole>, server: Option<&Handles>) -> Option<Command> {

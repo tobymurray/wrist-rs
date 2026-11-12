@@ -145,7 +145,7 @@ impl Handles {
 
     /// What a peer's write of `data` from `offset` into the local handle `attr` means: a value
     /// written, a subscription changed, or `None` for a handle outside the server; a piece too long
-    /// for a [`Payload`] is lost.
+    /// for a [`Payload`] is [`RadioEvent::EventsLost`].
     #[must_use]
     pub fn written(&self, link: ConnHandle, attr: u16, offset: u16, more: bool, data: &[u8]) -> Option<RadioEvent> {
         let (attr, part) = self.find(attr)?;
