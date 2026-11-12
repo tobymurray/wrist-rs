@@ -1,9 +1,9 @@
 //! The local zone and its next changes, kept in five backup registers.
 //!
-//! `BKP1R` holds `TZ` and the offset in force, minutes east of UTC, as the low
-//! half; `BKP11R` and `BKP13R` hold `T1` and `T2` with each change's new
-//! offset, `BKP12R` and `BKP14R` the UTC instant it takes effect, seconds
-//! since 1970. A register without its tag is no record.
+//! The first word holds `TZ` and the offset in force, minutes east of UTC, as
+//! the low half; the second and fourth hold `T1` and `T2` with each change's
+//! new offset, the third and fifth the UTC instant it takes effect, seconds
+//! since 1970. A word without its tag is no record.
 
 pub const ZONE_TAG: u32 = 0x545A_0000;
 pub const CHANGE_TAGS: [u32; 2] = [0x5431_0000, 0x5432_0000];
@@ -42,7 +42,7 @@ fn untag(word: u32, tag: u32) -> Option<i32> {
 }
 
 impl Zone {
-    /// `BKP1R`, `BKP11R` to `BKP14R`.
+    /// In [`crate::backup::ZONE`]'s order.
     #[must_use]
     pub fn encode(&self) -> [u32; 5] {
         let mut w = [tagged(ZONE_TAG, self.offset), 0, 0, 0, 0];

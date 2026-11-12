@@ -171,7 +171,7 @@ class Judgements(unittest.TestCase):
 
     def test_the_radio_is_judged_from_the_status_line(self):
         status = '[ble] up, not advertising, timing cable, address 0'
-        usb = Usb({'ble': ['[ble] on at boot: `ble on` was the last word (BKP16R)', '[ble] advertising refused, status 0C', status],
+        usb = Usb({'ble': ['[ble] on at boot: `ble on` was the last word (BKP29R)', '[ble] advertising refused, status 0C', status],
                    'version': ['[usb] standalone-boot 0.3.0 build b']})
         self.assertFalse(run(suite.update, usb, Phone(), 'b', update_image=None))
         self.assertEqual(asyncio.run(suite.snapshot(usb))['ble'], status)

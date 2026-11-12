@@ -341,6 +341,9 @@ fn main() -> ! {
         (true, false) => "[9] embassy-stm32 initialised: MSIS 48 MHz, time driver on LPTIM4/LSE WITHOUT LSESYS: NO TIMERS, UART re-divided",
         (false, _) => "[9] embassy-stm32 initialised: MSIS 48 MHz, time driver on LPTIM4/LSI (NO LSE: timers 2.3 % slow), UART re-divided",
     });
+    if rtc::migrate() {
+        uart.write_line("[9b] backup records moved out of stock's registers");
+    }
     uart.flush();
 
     // Blocking transfers only before the first awaited one (`HARDWARE.md`, "Debug and boot").
