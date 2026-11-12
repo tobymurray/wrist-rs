@@ -70,8 +70,9 @@ use bluenrg2::{
     adv_filter_policy, adv_type, config, event_code, gap_role, privacy, AddrKind, BdAddr, BootReason, Event, BleStatus,
     PairingReason, PairingStatus, VendorEvent, ATT_HEADER_LEN, MAX_COMMAND, RETURN_PARAMS_MAX,
 };
-use wrist_ble::{CharDecl, ServerTable, ServiceDecl};
-use wrist_bluenrg2::commands::Command;
+use wrist_ble::{Cccd, CharDecl, ConnHandle, Micros, Op, Payload, RadioEvent, ServerTable, ServiceDecl, ATT_MAX_MTU};
+use wrist_bluenrg2::commands::{self, Command};
+use wrist_bluenrg2::events::Translator;
 use wrist_bluenrg2::gatt;
 use wrist_bluenrg2::transport::{self, Counts, Read, Transport};
 use wrist_pages::{OldKey, Pairing, Prompt};
@@ -116,10 +117,6 @@ const EVENT_MASK: [u8; 8] = [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xBF, 0x3D];
 static DEVICE_INFORMATION: [CharDecl; 3] = server::device_information(crate::version::BUILD_ID.as_bytes());
 static SERVICES: [ServiceDecl; 2] = server::services(&DEVICE_INFORMATION);
 static SERVER: ServerTable = ServerTable { services: &SERVICES };
-/// The largest ATT MTU the console takes.
-const MAX_MTU: usize = 247;
-/// The most a console notification carries: what [`MAX_MTU`] holds.
-const NUS_VALUE_LEN: usize = MAX_MTU - ATT_HEADER_LEN;
 /// Until an exchange raises it.
 const DEFAULT_MTU: usize = bluenrg2::ATT_DEFAULT_MTU;
 /// The value a default-MTU write or notification carries.
@@ -585,7 +582,7 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
             passkey_for: None,
             rebond_for: None,
             recount_bonds: false,
-            handles: None,
+            translator: Translator::default(),
             line: [0; 192],
             line_len: 0,
             mtu: DEFAULT_MTU,
@@ -669,8 +666,8 @@ struct Link<'d> {
     passkey_for: Option<u16>,
     rebond_for: Option<u16>,
     recount_bonds: bool,
-    /// The chip's handles for [`SERVER`], once it is built.
-    handles: Option<gatt::Handles>,
+    /// The chip's packets as the driver's events, with the handles it gave [`SERVER`].
+    translator: Translator,
     line: [u8; 192],
     line_len: usize,
     /// The negotiated ATT MTU; notifications carry `mtu - 3`.
@@ -690,7 +687,7 @@ struct Link<'d> {
     finish_transfer: bool,
     /// The next console notification may go at this instant ([`CONSOLE_PACE`]).
     console_at: Instant,
-    outbox: Outbox<NUS_VALUE_LEN>,
+    outbox: Outbox<{ server::CONSOLE_VALUE_LEN }>,
     pair_ask: PairAsk,
     interval_ask: IntervalAsk,
     scanner: scan::Scanner,
@@ -792,7 +789,7 @@ impl Link<'_> {
                 Some(s) if s.started() => Transfer::Started,
                 Some(_) => Transfer::Claimed,
             },
-            console: (self.handles.is_some() && MIRROR.load(Ordering::Relaxed))
+            console: (self.translator.server().is_some() && MIRROR.load(Ordering::Relaxed))
                 .then(|| Console { pending: !OUT.is_empty() || self.outbox.holding(), next_at: tick(self.console_at) }),
             abandon_at: self.transfer.as_ref().map(|_| tick(self.last_data + TRANSFER_IDLE + one)),
             ask_at: self.pair_ask.due(),
@@ -1115,12 +1112,12 @@ impl Link<'_> {
             self.fail("finding the console in the server");
             return false;
         }
-        self.handles = Some(handles);
+        self.translator.serve(handles);
         true
     }
 
     /// The handle the chip gave what `command` added.
-    async fn added(&mut self, command: Option<&Command<{ gatt::MAX_PARAMS }>>) -> Option<u16> {
+    async fn added(&mut self, command: Option<&Command>) -> Option<u16> {
         let c = command?;
         match self.command(c.opcode, c.params()).await {
             Ok(r) if r.status == 0 && r.len >= 2 => Some(u16::from_le_bytes([r.params[0], r.params[1]])),
@@ -1128,23 +1125,11 @@ impl Link<'_> {
         }
     }
 
-    /// The command's status; 0xFF if the chip did not answer.
-    async fn update_value(&mut self, service: u16, ch: u16, value: &[u8]) -> u8 {
-        let mut p = [0u8; 6 + NUS_VALUE_LEN];
-        p[0..2].copy_from_slice(&service.to_le_bytes());
-        p[2..4].copy_from_slice(&ch.to_le_bytes());
-        p[4] = 0;
-        let n = value.len().min(NUS_VALUE_LEN);
-        p[5] = u8::try_from(n).unwrap_or(0);
-        p[6..6 + n].copy_from_slice(&value[..n]);
-        self.command(ACI_GATT_UPDATE_CHAR_VALUE, &p[..6 + n]).await.map_or(0xFF, |r| r.status)
-    }
-
     /// Console output to a subscribed central, one notification per pass.
     async fn console_tick(&mut self) {
-        let Some((service, tx)) = self.handles.and_then(|h| h.get(server::TX)) else {
+        if self.translator.server().is_none() {
             return;
-        };
+        }
         // While image bytes arrive the mirror waits: notifications refused for want of TX
         // buffers were followed by the chip reporting the central's writes twice.
         if !MIRROR.load(Ordering::Relaxed)
@@ -1153,12 +1138,18 @@ impl Link<'_> {
         {
             return;
         }
-        let most = (self.mtu.saturating_sub(ATT_HEADER_LEN)).clamp(DEFAULT_VALUE_LEN, NUS_VALUE_LEN);
+        let most = (self.mtu.saturating_sub(ATT_HEADER_LEN)).clamp(DEFAULT_VALUE_LEN, server::CONSOLE_VALUE_LEN);
         let (chunk, n) = self.outbox.next(most, |buf| OUT.try_read(buf).unwrap_or(0));
         if n == 0 {
             return;
         }
-        let status = self.update_value(service, tx, &chunk[..n]).await;
+        let link = ConnHandle::new(CONN_HANDLE.load(Ordering::Relaxed));
+        let notify = Payload::new(&chunk[..n]).map(|value| Op::Notify(link, server::TX, value));
+        // 0xFF, as for no reply, if it could not be built.
+        let status = match notify.and_then(|op| commands::command(&op, DEVICE_NAME, |_| None, self.translator.server())) {
+            Some(c) => self.command(c.opcode, c.params()).await.map_or(0xFF, |r| r.status),
+            None => 0xFF,
+        };
         self.console_at = Instant::now() + CONSOLE_PACE;
         if self.outbox.sent(chunk, n, status).is_err() {
             self.uart.write_line("[ble] a console notification was refused");
@@ -1491,6 +1482,15 @@ impl Link<'_> {
     fn handle(&mut self, p: &[u8]) {
         #[cfg(feature = "ble-trace")]
         trace::packet(trace::Dir::FromChip, p);
+        match self.translator.event(p) {
+            Some(RadioEvent::DataLength { tx, rx, tx_time, rx_time, .. }) => return self.data_length((tx, tx_time), (rx, rx_time)),
+            Some(RadioEvent::ServerWrite { attr: server::RX, offset, more, data, .. }) => return self.console_write(offset != 0 || more, data.as_slice()),
+            Some(RadioEvent::ServerSubscribe { attr: server::TX, cccd, .. }) => {
+                self.subscribed = cccd == Cccd::Notify;
+                return self.set_mirror();
+            }
+            _ => {}
+        }
         match bluenrg2::parse(p) {
             Event::CommandComplete { cmd_opcode, status: Some(status), return_param_bytes: params, .. } => {
                 if self.waiting_for == Some(cmd_opcode) {
@@ -1567,9 +1567,6 @@ impl Link<'_> {
                 let on = matches!(e.encryption(), Some((_, true)));
                 self.set_link_encrypted(on, if status == BleStatus::SUCCESS { "[ble] link keys refreshed" } else { "[ble] link key refresh failed" });
             }
-            Event::LeDataLengthChange { max_tx_octets, max_tx_time, max_rx_octets, max_rx_time, .. } => {
-                self.data_length((max_tx_octets, max_tx_time), (max_rx_octets, max_rx_time));
-            }
             Event::LeAdvertisingReport { data, .. } => self.scanner.advertising(data, self.uart),
             Event::Vendor(e) => self.vendor(e),
             Event::LeUnknown { subevent_code, .. } => self.unknown("[ble] LE event ", event_code::LE_META, subevent_code),
@@ -1633,7 +1630,6 @@ impl Link<'_> {
         self.link_gone();
         clear_out(self.outbox.discard());
         self.outbox = Outbox::default();
-        self.handles = None;
         self.mtu = DEFAULT_MTU;
         self.asked = None;
         self.advertised = None;
@@ -1646,12 +1642,12 @@ impl Link<'_> {
     }
 
     /// `[ble] data length TX 251 octets in 2120 us, RX 27 octets in 328 us`.
-    fn data_length(&self, tx: (u16, u16), rx: (u16, u16)) {
+    fn data_length(&self, tx: (u16, Micros), rx: (u16, Micros)) {
         for (label, (octets, time)) in [("[ble] data length TX ", tx), (" us, RX ", rx)] {
             self.uart.write_str(label);
             self.uart.write_u32(u32::from(octets));
             self.uart.write_str(" octets in ");
-            self.uart.write_u32(u32::from(time));
+            self.uart.write_u32(time.0);
         }
         self.uart.write_line(" us");
     }
@@ -1666,34 +1662,24 @@ impl Link<'_> {
         }
     }
 
-    /// A central wrote one of our attributes: the console's RX (bytes for the parser or a
-    /// transfer) or TX's CCCD (the mirror on or off).
-    fn attribute_modified(&mut self, attr: u16, piece: bool, data: &[u8]) {
-        let Some(handles) = self.handles else {
-            return;
-        };
-        let part = handles.find(attr);
-        if part == Some((server::RX, gatt::Part::Value)) {
-            if !ENCRYPTED.load(Ordering::Relaxed) {
-                UNSECURED.fetch_add(1, Ordering::Relaxed);
-                return self.uart.write_line("[ble] a console write over an unencrypted link: dropped");
-            }
-            if piece {
-                FRAGMENTS.fetch_add(1, Ordering::Relaxed);
-            }
-            let crc = wrist_flash::plan::crc32(data);
-            if data.len() > DEFAULT_VALUE_LEN && crc == self.last_rx {
-                REPEATS.fetch_add(1, Ordering::Relaxed);
-                self.uart.write_str("[ble] console write repeated, events ");
-                self.uart.write_u32(TRANSPORT.reads.load(Ordering::Relaxed));
-                self.uart.write_line("");
-            }
-            self.last_rx = crc;
-            self.console_bytes(data);
-        } else if part == Some((server::TX, gatt::Part::Config)) {
-            self.subscribed = data.first().is_some_and(|b| b & 0x01 != 0);
-            self.set_mirror();
+    /// A central wrote the console's RX: bytes for the parser or a transfer.
+    fn console_write(&mut self, piece: bool, data: &[u8]) {
+        if !ENCRYPTED.load(Ordering::Relaxed) {
+            UNSECURED.fetch_add(1, Ordering::Relaxed);
+            return self.uart.write_line("[ble] a console write over an unencrypted link: dropped");
         }
+        if piece {
+            FRAGMENTS.fetch_add(1, Ordering::Relaxed);
+        }
+        let crc = wrist_flash::plan::crc32(data);
+        if data.len() > DEFAULT_VALUE_LEN && crc == self.last_rx {
+            REPEATS.fetch_add(1, Ordering::Relaxed);
+            self.uart.write_str("[ble] console write repeated, events ");
+            self.uart.write_u32(TRANSPORT.reads.load(Ordering::Relaxed));
+            self.uart.write_line("");
+        }
+        self.last_rx = crc;
+        self.console_bytes(data);
     }
 
     fn vendor(&mut self, e: VendorEvent) {
@@ -1738,13 +1724,12 @@ impl Link<'_> {
             VendorEvent::SlaveSecurityInitiated => self.uart.write_line("[ble] security request sent"),
             VendorEvent::BondLost => self.rebond_for = Some(CONN_HANDLE.load(Ordering::Relaxed)),
             VendorEvent::ExchangeMtuResponse { server_mtu, .. } => {
-                self.mtu = usize::from(server_mtu).clamp(DEFAULT_MTU, MAX_MTU);
+                self.mtu = usize::from(server_mtu).clamp(DEFAULT_MTU, ATT_MAX_MTU);
                 self.uart.write_str("[ble] ATT MTU ");
                 self.uart.write_u32(u32::try_from(self.mtu).unwrap_or(0));
                 self.uart.write_line("");
             }
-            VendorEvent::TxPoolAvailable { .. } => {}
-            VendorEvent::AttributeModified { attr, offset, more, data, .. } => self.attribute_modified(attr, offset != 0 || more, data),
+            VendorEvent::TxPoolAvailable { .. } | VendorEvent::AttributeModified { .. } => {}
             VendorEvent::L2capUpdateResponse { accepted, .. } => {
                 if !accepted {
                     UPDATES_REFUSED.fetch_add(1, Ordering::Relaxed);
