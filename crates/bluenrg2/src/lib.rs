@@ -418,6 +418,15 @@ pub mod privacy {
     pub const DISABLED: u8 = 0x00;
 }
 
+/// `ACI_GAP_SET_IO_CAPABILITY`'s capability.
+pub mod io_capability {
+    pub const DISPLAY_ONLY: u8 = 0x00;
+    pub const DISPLAY_YES_NO: u8 = 0x01;
+    pub const KEYBOARD_ONLY: u8 = 0x02;
+    pub const NO_INPUT_NO_OUTPUT: u8 = 0x03;
+    pub const KEYBOARD_DISPLAY: u8 = 0x04;
+}
+
 /// `ACI_GAP_SET_DISCOVERABLE`'s advertising type.
 pub mod adv_type {
     /// Connectable undirected.
@@ -751,7 +760,7 @@ pub fn parse(p: &[u8]) -> Event<'_> {
 
 fn acl(p: &[u8]) -> Option<Event<'_>> {
     let acl: AclPacket = first(p)?;
-    let handle = link(acl.header().handle & 0x0FFF)?;
+    let handle = conn_handle(acl.header().handle & 0x0FFF)?;
     Some(Event::Acl {
         handle,
         boundary: acl.boundary_flag(),
@@ -788,7 +797,7 @@ fn standard(code: u8, params: &[u8]) -> Option<Event<'_>> {
         ev::DISCONNECTION_COMPLETE => {
             let e: hci::DisconnectionComplete = first(params)?;
             Event::DisconnectionComplete {
-                handle: link(e.handle.raw())?,
+                handle: conn_handle(e.handle.raw())?,
                 status: ble(e.status),
                 reason: ble(e.reason),
             }
@@ -796,14 +805,17 @@ fn standard(code: u8, params: &[u8]) -> Option<Event<'_>> {
         ev::ENCRYPTION_CHANGE => {
             let e: hci::EncryptionChangeV1 = first(params)?;
             Event::EncryptionChange {
-                handle: link(e.handle.raw())?,
+                handle: conn_handle(e.handle.raw())?,
                 status: ble(e.status),
                 enabled: e.enabled,
             }
         }
         ev::ENCRYPTION_KEY_REFRESH_COMPLETE => {
             let e: hci::EncryptionKeyRefreshComplete = first(params)?;
-            Event::EncryptionKeyRefresh { handle: link(e.handle.raw())?, status: ble(e.status) }
+            Event::EncryptionKeyRefresh {
+                handle: conn_handle(e.handle.raw())?,
+                status: ble(e.status),
+            }
         }
         ev::LE_META => le_meta(params)?,
         ev::VENDOR => {
@@ -828,20 +840,23 @@ fn le_meta(params: &[u8]) -> Option<Event<'_>> {
             if status == Status::SUCCESS {
                 let e: le::LeConnectionUpdateComplete = first(params)?;
                 Event::LeConnectionUpdateComplete {
-                    handle: link(e.handle.raw())?,
+                    handle: conn_handle(e.handle.raw())?,
                     conn_interval: e.conn_interval,
                     peripheral_latency: e.peripheral_latency,
                     supervision_timeout: e.supervision_timeout,
                 }
             } else {
                 // A failure's interval, latency and timeout mean nothing (Core Vol 4 Part E §7.7.65.3).
-                Event::LeConnectionUpdateFailed { handle: link(first(rest)?)?, status: ble(status) }
+                Event::LeConnectionUpdateFailed {
+                    handle: conn_handle(first(rest)?)?,
+                    status: ble(status),
+                }
             }
         }
         sub::DATA_LENGTH_CHANGE => {
             let e: le::LeDataLengthChange = first(params)?;
             Event::LeDataLengthChange {
-                handle: link(e.handle.raw())?,
+                handle: conn_handle(e.handle.raw())?,
                 max_tx_octets: e.max_tx_octets,
                 max_tx_time: e.max_tx_time,
                 max_rx_octets: e.max_rx_octets,
@@ -878,7 +893,7 @@ fn connection_complete(code: u8, params: &[u8]) -> Option<Event<'_>> {
             .map(|e| (e.conn_interval, e.peripheral_latency, e.supervision_timeout))
     };
     Some(Event::LeConnectionComplete {
-        handle: link(handle)?,
+        handle: conn_handle(handle)?,
         role,
         // An Enhanced event says 2 or 3 for an identity it resolved: still public or random.
         peer: Address { kind: AddrKind::new(kind.as_raw() & 0x01), addr: peer },
@@ -978,7 +993,8 @@ fn ble(status: Status) -> BleStatus {
 }
 
 /// A connection handle, which is at most 0x0EFF (Core Vol 4 Part E 5.4.2).
-fn link(handle: u16) -> Option<ConnHandle> {
+#[must_use]
+pub fn conn_handle(handle: u16) -> Option<ConnHandle> {
     (handle <= 0x0EFF).then(|| ConnHandle::new(handle))
 }
 

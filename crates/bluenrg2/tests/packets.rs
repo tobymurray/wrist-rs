@@ -3,9 +3,9 @@
 mod common;
 
 use bluenrg2::{
-    ad_name, ad_uuid128s, ad_uuid16s, bonded_devices, command, header_sizes, packet_len,
-    packet_whole, reports, vendor, AddrKind, Address, BdAddr, BleStatus, ConnHandle, Duration,
-    EncryptionEnabledLevel, LeAdvEventKind, LeConnRole, PairingReason, PairingStatus,
+    ad_name, ad_uuid128s, ad_uuid16s, bonded_devices, command, conn_handle, header_sizes,
+    packet_len, packet_whole, reports, vendor, AddrKind, Address, BdAddr, BleStatus, ConnHandle,
+    Duration, EncryptionEnabledLevel, LeAdvEventKind, LeConnRole, PairingReason, PairingStatus,
     SecurityLevel,
 };
 use common::{parse, Ev, Timing, Vn};
@@ -924,4 +924,11 @@ fn a_security_level_is_its_mode_then_its_level_and_encrypted_from_mode_1_level_2
         let s = SecurityLevel::decode(&[mode, level]).unwrap();
         assert_eq!(s.encrypted(), encrypted, "mode {mode}, level {level}");
     }
+}
+
+#[test]
+fn a_connection_handle_is_at_most_0x0eff() {
+    assert_eq!(conn_handle(0x0000), Some(ConnHandle::new(0x0000)));
+    assert_eq!(conn_handle(0x0EFF), Some(ConnHandle::new(0x0EFF)));
+    assert_eq!(conn_handle(0x0F00), None);
 }

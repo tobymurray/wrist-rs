@@ -2,8 +2,8 @@
 //! `bluenrg1_events.h`.
 
 use crate::{
-    link, vendor, BleStatus, BootReason, Characteristic, ConnHandle, Duration, PairingReason,
-    PairingStatus, Service, Uuid,
+    conn_handle, vendor, BleStatus, BootReason, Characteristic, ConnHandle, Duration,
+    PairingReason, PairingStatus, Service, Uuid,
 };
 
 /// One of ST's vendor events, by its code. Each starts with its connection handle where it has
@@ -142,7 +142,7 @@ pub(crate) fn decode(code: u16, p: &[u8]) -> Option<VendorEvent<'_>> {
     use VendorEvent as E;
     let byte = |i: usize| p.get(i).copied();
     let u16_at = |i: usize| Some(u16::from_le_bytes([byte(i)?, byte(i + 1)?]));
-    let handle = || link(u16_at(0)?);
+    let handle = || conn_handle(u16_at(0)?);
     Some(match code {
         v::BLUE_INITIALIZED => E::BlueInitialized { reason: byte(0).map(BootReason::new) },
         v::BLUE_EVENTS_LOST => E::EventsLost { lost: u64::from_le_bytes(*p.first_chunk()?) },
