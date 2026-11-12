@@ -1426,7 +1426,7 @@ impl Link<'_> {
         self.chip.reply().map_err(unanswered)
     }
 
-    /// Every event waiting, read while IRQ stays high.
+    /// Every event waiting.
     async fn drain(&mut self) {
         self.chip.drain();
         self.packets().await;
