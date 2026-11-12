@@ -11,6 +11,7 @@ pub mod driver;
 pub mod events;
 pub mod gatt;
 pub mod probe;
+pub mod start;
 pub mod transport;
 
 use wrist_ble::{

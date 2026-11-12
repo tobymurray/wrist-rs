@@ -53,6 +53,8 @@ pub enum Unanswered {
     TooLong,
     /// The chip did not take it.
     NotTaken,
+    /// The chip restarted by itself since the last reset; nothing was sent.
+    Restarted,
     /// None came within [`REPLY_WITHIN_US`], or the chip restarted first.
     NoReply,
 }
@@ -79,7 +81,7 @@ pub struct Driver<'c, B, C, I, D, R, K> {
     awaited: Option<u16>,
     deadline: u64,
     reply: Option<Reply>,
-    /// The chip announced a boot while a reply was awaited.
+    /// The chip announced a boot nobody asked for since the last reset.
     restarted: bool,
     /// A reset's boot is still to come: what arrives before it is from before the reset.
     booting: bool,
@@ -151,6 +153,12 @@ where
         let _ = self.reset.set_high();
     }
 
+    /// The chip announced a boot nobody asked for since the last reset: [`Driver::send`] refuses.
+    #[must_use]
+    pub fn restarted(&self) -> bool {
+        self.restarted
+    }
+
     /// The local server as the chip built it, until the chip next boots.
     pub fn serve(&mut self, server: Handles) {
         self.translator.serve(server);
@@ -194,13 +202,16 @@ where
     ///
     /// # Errors
     ///
-    /// The parameters run past 255 bytes, or the chip did not take the command.
+    /// The chip restarted by itself, the parameters run past 255 bytes, or the chip did not take
+    /// the command.
     pub async fn send(&mut self, opcode: u16, params: &[u8]) -> Result<(), Unanswered> {
+        if self.restarted {
+            return Err(Unanswered::Restarted);
+        }
         let mut packet = [0u8; bluenrg2::MAX_COMMAND];
         let n = bluenrg2::command(opcode, &[params], &mut packet).ok_or(Unanswered::TooLong)?;
         self.awaited = Some(opcode);
         self.reply = None;
-        self.restarted = false;
         if !self.transport.write(&packet[..n]).await {
             self.awaited = None;
             return Err(Unanswered::NotTaken);
@@ -302,7 +313,7 @@ where
             Event::CommandStatus { cmd_opcode, status, .. } if self.awaited == Some(cmd_opcode) => {
                 self.reply = Some(Reply { status: status.into_inner(), params: [0; RETURN_PARAMS_MAX], len: 0 });
             }
-            Event::Vendor(VendorEvent::BlueInitialized { .. }) => self.restarted |= self.awaited.is_some(),
+            Event::Vendor(VendorEvent::BlueInitialized { .. }) => self.restarted = true,
             _ => {}
         }
         Some(Got::Packet { len, event: self.translator.event(packet) })
