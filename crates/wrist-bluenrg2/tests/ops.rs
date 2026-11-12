@@ -1,8 +1,8 @@
 //! The operations the chip has taken: ids, deadlines, and the event that ends each.
 
 use wrist_ble::{
-    AdvParams, ChipInfo, ConnHandle, ConnParams, CoreSpecificationVersion, DisconnectReason, Failure, FailureKind, Interval, LinkParams,
-    Op, OpId, Outcome, PairingEvent, PairingStep, RadioEvent, ResetCause, SchedKind, Slots, Status, Timeout,
+    AddrKind, AdvParams, BdAddr, ChipInfo, ConnHandle, ConnParams, CoreSpecificationVersion, DisconnectReason, Failure, FailureKind, Interval,
+    LeConnRole, LinkParams, Op, OpId, Outcome, PairingEvent, PairingStep, PeerAddr, RadioEvent, ResetCause, SchedKind, Slots, Status, Timeout,
 };
 use wrist_bluenrg2::driver::Unanswered;
 use wrist_bluenrg2::ops::{refusal, unanswered, Ops, MAX_PENDING};
@@ -152,4 +152,53 @@ fn endings_past_what_the_queue_holds_are_lost_and_said_to_be() {
     }
     assert_eq!(ops.ended(), Some(RadioEvent::EventsLost));
     assert_eq!(ops.ended(), Some(done(0)), "the oldest first");
+}
+
+#[test]
+fn an_operation_taken_on_a_link_already_down_is_ended_at_once() {
+    let mut ops = Ops::default();
+    ops.saw(&RadioEvent::LinkDown { link: link(1), reason: Status::new(0x13) });
+    assert_eq!(ops.answered(&ask(link(1)), 0, 9), Ok(OpId(0)));
+    assert_eq!(ops.ended(), Some(failed(0, FailureKind::NotConnected)));
+    assert_eq!(ops.answered(&Op::Disconnect(link(1), DisconnectReason::RemoteUserTerminatedConn), 0, 9), Ok(OpId(1)));
+    assert_eq!(ops.ended(), Some(RadioEvent::Done(OpId(1), Ok(Outcome::Done))), "its going down came first: the hang-up is done");
+    assert_eq!(ops.due(), None);
+    let peer = PeerAddr { kind: AddrKind::PUBLIC, addr: BdAddr::new([0; 6]) };
+    ops.saw(&RadioEvent::LinkUp { link: link(1), role: LeConnRole::Peripheral, peer, params: None });
+    ops.answered(&ask(link(1)), 0, 9).unwrap();
+    ops.saw(&RadioEvent::LinkDown { link: link(2), reason: Status::new(0x13) });
+    ops.saw(&RadioEvent::EventsLost);
+    ops.answered(&ask(link(2)), 0, 9).unwrap();
+    assert_eq!((ops.ended(), ops.due()), (None, Some(9)), "made again, the link holds an ask; after a loss, nothing is known to be down");
+}
+
+#[test]
+fn a_link_stays_down_while_others_come_and_go() {
+    let mut ops = Ops::default();
+    let peer = PeerAddr { kind: AddrKind::PUBLIC, addr: BdAddr::new([0; 6]) };
+    ops.saw(&RadioEvent::LinkDown { link: link(1), reason: Status::new(0x13) });
+    for _ in 0..9 {
+        ops.saw(&RadioEvent::LinkUp { link: link(2), role: LeConnRole::Peripheral, peer, params: None });
+        ops.saw(&RadioEvent::LinkDown { link: link(2), reason: Status::new(0x13) });
+    }
+    for n in 3..9 {
+        ops.saw(&RadioEvent::LinkDown { link: link(n), reason: Status::new(0x13) });
+    }
+    ops.answered(&ask(link(1)), 0, 9).unwrap();
+    assert_eq!(ops.ended(), Some(failed(0, FailureKind::NotConnected)), "eight links down fill the record; link 1 is still in it");
+    ops.saw(&RadioEvent::LinkDown { link: link(10), reason: Status::new(0x13) });
+    ops.answered(&ask(link(1)), 0, 9).unwrap();
+    assert_eq!((ops.ended(), ops.due()), (None, Some(9)), "a ninth pushes out the oldest");
+}
+
+#[test]
+fn the_central_taking_an_ask_ends_the_oldest_on_its_link() {
+    let mut ops = Ops::default();
+    ops.answered(&ask(link(1)), 0, 9).unwrap();
+    ops.answered(&ask(link(1)), 0, 9).unwrap();
+    ops.accepted(link(1));
+    assert_eq!(ops.ended(), Some(RadioEvent::Done(OpId(0), Ok(Outcome::Done))));
+    ops.answered(&ask(link(1)), 0, 9).unwrap();
+    ops.accepted(link(1));
+    assert_eq!(ops.ended(), Some(RadioEvent::Done(OpId(1), Ok(Outcome::Done))), "not the newer one in the freed slot");
 }

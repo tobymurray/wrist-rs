@@ -293,3 +293,37 @@ fn an_operation_the_chip_took_ends_in_what_the_next_drain_hands_out() {
     assert_eq!(got[2], Got::Event(RadioEvent::Done(OpId(1), Ok(Outcome::Done))), "the ask it ends, next");
     assert_eq!(d.due(), None);
 }
+
+#[test]
+fn an_operation_answered_around_a_restart_is_not_taken() {
+    let (c, mut d) = driver(128);
+    let (_, r) = exchange(&c, &mut d, vec![[complete(OPCODE, 0x00, &[]), boot(0x01)].concat()]);
+    assert!(r.is_ok(), "the reply came before the restart");
+    let params = ConnParams { interval_min: Interval::from_u16(12), interval_max: Interval::from_u16(24), latency: 0, timeout: Timeout::from_u16(500), ce_len: Slots::from_u16(0) };
+    assert_eq!(d.settle(&Op::UpdateParams(ConnHandle::new(0x0801), params), &r).map_err(|f| f.kind), Err(FailureKind::Busy));
+    assert_eq!(d.due(), None, "nothing waits on a chip that restarted");
+    let refused = Ok(Reply { status: 0x0C, params: [0; bluenrg2::RETURN_PARAMS_MAX], len: 0 });
+    assert_eq!(d.settle(&Op::UpdateParams(ConnHandle::new(0x0801), params), &refused).map_err(|f| f.native), Err(0x0C), "a refusal stays one");
+    assert!(d.settle(&Op::AllowRebond(ConnHandle::new(0x0801)), &r).is_ok(), "what its answer ends is done");
+}
+
+#[test]
+fn a_boot_cut_short_is_reported_lost() {
+    let (c, mut d) = driver(128);
+    c.borrow_mut().boot = Some(vec![0x04, 0xFF, 0x03, 0x01]);
+    block_on(d.reset());
+    assert!(block_on(d.boot()));
+    let got: Vec<Got> = drained(&mut d).into_iter().map(|(_, g)| g).collect();
+    assert_eq!(got, [Got::Event(RadioEvent::EventsLost)]);
+}
+
+#[test]
+fn a_read_cut_short_before_the_resets_boot_is_dropped_as_what_came_before_it_is() {
+    let (c, mut d) = driver(128);
+    c.borrow_mut().boot = Some(boot(0x01));
+    block_on(d.reset());
+    c.borrow_mut().queued.insert(0, vec![0x04, 0x3E, 0x05, 0x01]);
+    assert!(block_on(d.boot()));
+    let got: Vec<Got> = drained(&mut d).into_iter().map(|(_, g)| g).collect();
+    assert_eq!(got, [Got::Boot { len: 6, reason: Some(BootReason::new(0x01)) }]);
+}

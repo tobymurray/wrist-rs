@@ -91,6 +91,8 @@ pub struct Driver<'c, B, C, I, D, R, K> {
     restarted: bool,
     /// A reset's boot is still to come: what arrives before it is from before the reset.
     booting: bool,
+    /// A read was cut short while the boot was still to come: lost, unless the boot follows it.
+    lost_early: bool,
     /// The last read, how far its packets have been handed out, and the drain it belongs to.
     read: [u8; MAX_READ],
     len: usize,
@@ -127,6 +129,7 @@ where
             reply: None,
             restarted: false,
             booting: false,
+            lost_early: false,
             read: [0; MAX_READ],
             len: 0,
             at: 0,
@@ -191,6 +194,7 @@ where
         self.at = 0;
         self.drain = None;
         self.booting = true;
+        self.lost_early = false;
     }
 
     /// Whether the chip announced itself within [`BOOT_WITHIN_US`] of the reset; if it did, a drain
@@ -262,9 +266,10 @@ where
     ///
     /// # Errors
     ///
-    /// The chip refused it or never answered.
+    /// The chip refused it, never answered, or restarted around its answer.
     pub fn settle(&mut self, op: &Op, reply: &Result<Reply, Unanswered>) -> Result<OpId, Failure> {
         match reply {
+            Ok(r) if self.restarted && r.status == 0 && op.kind().ends_with_event() => Err(ops::unanswered(Unanswered::Restarted)),
             Ok(r) => self.ops.answered(op, r.status, self.clock.now() + ticks::<K>(u64::from(op_deadline(op.kind()).0) * 1_000)),
             Err(why) => Err(ops::unanswered(*why)),
         }
@@ -287,7 +292,11 @@ where
             if self.at < self.len {
                 let Some(packet) = packets(&self.read[self.at..self.len], self.transport.counts()).next() else {
                     self.at = self.len;
-                    return Some(Got::Event(RadioEvent::EventsLost));
+                    if self.booting {
+                        self.lost_early = true;
+                        continue;
+                    }
+                    return Some(self.lost());
                 };
                 let len = packet.len();
                 out[..len].copy_from_slice(packet);
@@ -304,6 +313,9 @@ where
             if !self.transport.pending() || drain.reads >= DRAIN_READS {
                 self.drain = None;
                 self.booting = false;
+                if core::mem::take(&mut self.lost_early) {
+                    return Some(self.lost());
+                }
                 return None;
             }
             drain.reads += 1;
@@ -324,6 +336,12 @@ where
         }
     }
 
+    /// Events lost: what the operations knew of the links is let go.
+    fn lost(&mut self) -> Got {
+        self.ops.saw(&RadioEvent::EventsLost);
+        Got::Event(RadioEvent::EventsLost)
+    }
+
     /// One packet: the awaited reply kept, a reset's boot kept back, the rest translated; `None` for
     /// a packet from before a reset.
     fn take(&mut self, packet: &[u8]) -> Option<Got> {
@@ -332,6 +350,7 @@ where
         if self.booting {
             let Event::Vendor(VendorEvent::BlueInitialized { reason, .. }) = parsed else { return None };
             self.booting = false;
+            self.lost_early = false;
             // What the chip held is gone, as for any boot; the boot itself is the reset's answer.
             if let Some(e) = self.translator.event(packet) {
                 self.ops.saw(&e);
