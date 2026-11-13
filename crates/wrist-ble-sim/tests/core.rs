@@ -12,7 +12,7 @@ use wrist_ble_core::profile::{Cadence, Contact, Kind, Profile, Reading, Security
 use wrist_ble_core::status::{status, PeerState, PhoneStatus};
 use wrist_ble_sim::fake::INFO;
 use wrist_bluenrg2::{Scheduler, CAPABILITIES};
-use wrist_ble_sim::menu::MENU;
+use wrist_ble_shadow::menu::MENU;
 
 fn hr(data: &[u8]) -> Option<Reading> {
     data.get(1).map(|&v| Reading { value: u16::from(v), contact: Contact::Detected })
@@ -501,7 +501,7 @@ fn a_centrals_acceptance_ends_the_request_though_nothing_changes() {
     h.at(1_800, done(asked));
     // Nothing is left pending: the console's own ask goes out at once.
     assert!(h.core.pending().is_none());
-    let now = wrist_ble_sim::menu::interval_now(6, 6);
+    let now = wrist_ble_shadow::menu::interval_now_ask(6, 6);
     h.at(2_000, Input::Goals(Goals { radio_on: true, phone_params: Some(now), ..Goals::OFF }));
     let asks = h.ops.iter().filter(|op| matches!(op, Op::UpdateParams(l, _) if *l == link)).count();
     assert_eq!(asks, 2, "{:?}", h.ops);

@@ -11,7 +11,7 @@ use wrist_bluenrg2::{Scheduler, CAPABILITIES};
 
 use crate::checks::Checks;
 use crate::fake::Fake;
-use crate::menu::MENU;
+use wrist_ble_shadow::menu::MENU;
 
 /// Steps at one instant beyond which the core is spinning.
 const SPIN: u32 = 200;

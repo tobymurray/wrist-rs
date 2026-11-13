@@ -16,7 +16,7 @@ use wrist_bluenrg2::{Scheduler, CAPABILITIES};
 mod agree;
 
 use crate::fake::INFO;
-use crate::menu::{interval_now, MENU};
+use wrist_ble_shadow::menu::{interval_now_ask, MENU};
 
 /// One line of the replay's timeline.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -301,7 +301,7 @@ impl Replay<'_> {
                 c if c.starts_with("ble interval now ") => {
                     let mut units = c[17..].split_whitespace().filter_map(|w| w.parse::<u16>().ok());
                     if let (Some(min), Some(max)) = (units.next(), units.next()) {
-                        self.goals.phone_params = Some(interval_now(min, max));
+                        self.goals.phone_params = Some(interval_now_ask(min, max));
                         self.goals();
                     }
                 }
@@ -350,7 +350,7 @@ impl Replay<'_> {
                     // over the air (which the trace does not show): the core is given it as a goal.
                     if let DriverOp::AskParams(min, max, latency) = op {
                         let menu = MENU.phone.iter().any(|c| (c.params.interval_min.as_u16(), c.params.interval_max.as_u16(), c.params.latency) == (min, max, latency));
-                        let now = interval_now(min, max);
+                        let now = interval_now_ask(min, max);
                         if !menu && self.goals.phone_params != Some(now) {
                             self.goals.phone_params = Some(now);
                             self.goals();

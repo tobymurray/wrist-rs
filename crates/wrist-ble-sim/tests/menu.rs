@@ -1,6 +1,6 @@
 use wrist_bluenrg2::Scheduler;
 use wrist_ble::{Activities, Change, ConnParams, Schedule};
-use wrist_ble_sim::menu::MENU;
+use wrist_ble_shadow::menu::MENU;
 
 fn central(a: &Activities, p: ConnParams) -> Activities {
     a.walk(&Scheduler, &[Change::Initiate(Some(p)), Change::Connected]).unwrap()

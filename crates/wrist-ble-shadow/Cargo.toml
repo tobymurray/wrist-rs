@@ -1,0 +1,15 @@
+[package]
+name = "wrist-ble-shadow"
+version = "0.0.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+publish = false
+description = "The Bluetooth core beside the BlueNRG-2 driver: fed what the driver sends and the chip answers, its operations taken as done and set beside the driver's. no_std, no allocation"
+
+[dependencies]
+wrist-ble = { path = "../wrist-ble" }
+wrist-ble-core = { path = "../wrist-ble-core" }
+wrist-wake = { path = "../wrist-wake" }
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }

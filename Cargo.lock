@@ -1495,6 +1495,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "wrist-ble-shadow"
+version = "0.0.0"
+dependencies = [
+ "wrist-ble",
+ "wrist-ble-core",
+ "wrist-wake",
+]
+
+[[package]]
 name = "wrist-ble-sim"
 version = "0.0.0"
 dependencies = [
@@ -1503,6 +1512,7 @@ dependencies = [
  "stateright",
  "wrist-ble",
  "wrist-ble-core",
+ "wrist-ble-shadow",
  "wrist-bluenrg2",
  "wrist-wake",
 ]

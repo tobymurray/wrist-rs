@@ -21,7 +21,7 @@ const fn link(min: u16, max: u16, latency: u16, timeout: u16) -> ConnParams {
 
 /// `ble interval now <min> <max>`'s ask, at the driver's latency and supervision timeout.
 #[must_use]
-pub const fn interval_now(min: u16, max: u16) -> ConnParams {
+pub const fn interval_now_ask(min: u16, max: u16) -> ConnParams {
     link(min, max, wake::NOW_LATENCY, wake::NOW_TIMEOUT)
 }
 

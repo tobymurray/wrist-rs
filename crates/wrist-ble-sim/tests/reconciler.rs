@@ -9,7 +9,7 @@ use wrist_ble_core::engine::{Core, Input, Outputs, ASKS_PER_WANT, BUSY_BUDGET};
 use wrist_ble_core::goals::{Goals, PhoneGoal, Power};
 use wrist_ble_core::phone::SETTLE;
 use wrist_ble_sim::fake::INFO;
-use wrist_ble_sim::menu::MENU;
+use wrist_ble_shadow::menu::MENU;
 use wrist_bluenrg2::{Scheduler, CAPABILITIES};
 
 fn link() -> ConnHandle {
@@ -282,7 +282,7 @@ fn a_chip_that_stays_busy_is_restarted_under_the_phones_link() {
     let mut restarted = 0;
     for i in 1..u16::from(BUSY_BUDGET) {
         // A new want each time (the console's ask), so each is asked at once and refused busy.
-        let now = wrist_ble_sim::menu::interval_now(8 + i, 8 + i);
+        let now = wrist_ble_shadow::menu::interval_now_ask(8 + i, 8 + i);
         let t = 2_000 + u64::from(i) * 40_000;
         let out = b.at(t, Input::Goals(Goals { phone_params: Some(now), ..battery() }));
         let out = if out.op.is_some() { out } else { b.at(t + 33_000, Input::Tick) };

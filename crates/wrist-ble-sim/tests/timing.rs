@@ -5,7 +5,7 @@ use wrist_ble::{AddrKind, BdAddr, ConnHandle, Duration, Instant, LeConnRole, Lin
 use wrist_ble_core::engine::{Core, Input};
 use wrist_ble_core::goals::{Goals, Power};
 use wrist_ble_sim::fake::INFO;
-use wrist_ble_sim::menu::MENU;
+use wrist_ble_shadow::menu::MENU;
 use wrist_bluenrg2::{Scheduler, CAPABILITIES};
 use wrist_wake::ble::{self as wake, timing};
 
