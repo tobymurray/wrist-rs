@@ -7,10 +7,13 @@ use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal_async::delay::DelayNs;
 use embedded_hal_async::digital::Wait;
 use embedded_hal_async::spi::SpiBus;
-use wrist_ble::RadioEvent;
+use wrist_ble::{Failure, Op, OpId, RadioEvent};
 
 use crate::events::Translator;
 use crate::gatt::Handles;
+use crate::op_deadline;
+use crate::ops::{self, Ops};
+use crate::snapshot::Peers;
 use crate::transport::{packets, Counts, Read, Transport, MAX_READ};
 
 /// A command is answered within this, or not at all.
@@ -53,6 +56,9 @@ pub enum Unanswered {
     TooLong,
     /// The chip did not take it.
     NotTaken,
+    /// The chip restarted by itself since the last reset, so nothing was sent: in its updater,
+    /// say, it takes commands of its own.
+    Restarted,
     /// None came within [`REPLY_WITHIN_US`], or the chip restarted first.
     NoReply,
 }
@@ -67,6 +73,8 @@ pub enum Got {
     Boot { len: usize, reason: Option<BootReason> },
     /// The chip's header was unreadable, and the drain ends; `first` on the read that made the run.
     Unreadable { header: [u8; 5], first: bool },
+    /// What the driver itself reports: an operation's end, or packets it dropped.
+    Event(RadioEvent),
 }
 
 pub struct Driver<'c, B, C, I, D, R, K> {
@@ -75,14 +83,18 @@ pub struct Driver<'c, B, C, I, D, R, K> {
     reset: R,
     clock: K,
     translator: Translator,
+    ops: Ops,
+    peers: Peers,
     /// The opcode whose reply is awaited, until `deadline`, and the reply once it came.
     awaited: Option<u16>,
     deadline: u64,
     reply: Option<Reply>,
-    /// The chip announced a boot while a reply was awaited.
+    /// The chip announced a boot nobody asked for since the last reset.
     restarted: bool,
     /// A reset's boot is still to come: what arrives before it is from before the reset.
     booting: bool,
+    /// A read was cut short while the boot was still to come: lost, unless the boot follows it.
+    lost_early: bool,
     /// The last read, how far its packets have been handed out, and the drain it belongs to.
     read: [u8; MAX_READ],
     len: usize,
@@ -113,11 +125,14 @@ where
             reset,
             clock,
             translator: Translator::default(),
+            ops: Ops::default(),
+            peers: Peers::default(),
             awaited: None,
             deadline: 0,
             reply: None,
             restarted: false,
             booting: false,
+            lost_early: false,
             read: [0; MAX_READ],
             len: 0,
             at: 0,
@@ -151,6 +166,12 @@ where
         let _ = self.reset.set_high();
     }
 
+    /// The chip announced a boot nobody asked for since the last reset: [`Driver::send`] refuses.
+    #[must_use]
+    pub fn restarted(&self) -> bool {
+        self.restarted
+    }
+
     /// The local server as the chip built it, until the chip next boots.
     pub fn serve(&mut self, server: Handles) {
         self.translator.serve(server);
@@ -171,10 +192,12 @@ where
         self.awaited = None;
         self.reply = None;
         self.restarted = false;
+        self.saw(&RadioEvent::ChipReset(wrist_ble::ResetCause::Other));
         self.len = 0;
         self.at = 0;
         self.drain = None;
         self.booting = true;
+        self.lost_early = false;
     }
 
     /// Whether the chip announced itself within [`BOOT_WITHIN_US`] of the reset; if it did, a drain
@@ -194,13 +217,16 @@ where
     ///
     /// # Errors
     ///
-    /// The parameters run past 255 bytes, or the chip did not take the command.
+    /// The chip restarted by itself, the parameters run past 255 bytes, or the chip did not take
+    /// the command.
     pub async fn send(&mut self, opcode: u16, params: &[u8]) -> Result<(), Unanswered> {
+        if self.restarted {
+            return Err(Unanswered::Restarted);
+        }
         let mut packet = [0u8; bluenrg2::MAX_COMMAND];
         let n = bluenrg2::command(opcode, &[params], &mut packet).ok_or(Unanswered::TooLong)?;
         self.awaited = Some(opcode);
         self.reply = None;
-        self.restarted = false;
         if !self.transport.write(&packet[..n]).await {
             self.awaited = None;
             return Err(Unanswered::NotTaken);
@@ -238,13 +264,42 @@ where
         self.drain = Some(Drain::default());
     }
 
-    /// The drain's next packet, copied into `out`, or `None` once it is over.
+    /// `op`, sent as its command and answered with `reply`: taken, with its id, or refused; its
+    /// end comes as [`Got::Event`].
+    ///
+    /// # Errors
+    ///
+    /// The chip refused it, never answered, or restarted around its answer.
+    pub fn settle(&mut self, op: &Op, reply: &Result<Reply, Unanswered>) -> Result<OpId, Failure> {
+        match reply {
+            Ok(r) if self.restarted && r.status == 0 && op.kind().ends_with_event() => Err(ops::unanswered(Unanswered::Restarted)),
+            Ok(r) => self.ops.answered(op, r.status, self.clock.now() + ticks::<K>(u64::from(op_deadline(op.kind()).0) * 1_000)),
+            Err(why) => Err(ops::unanswered(*why)),
+        }
+    }
+
+    /// The earliest deadline on the clock of the operations taken and not ended.
+    #[must_use]
+    pub fn due(&self) -> Option<u64> {
+        self.ops.due()
+    }
+
+    /// What the driver has to report, then the drain's next packet, copied into `out`; `None` once
+    /// the drain is over.
     pub async fn next(&mut self, out: &mut [u8; MAX_READ]) -> Option<Got> {
+        self.ops.expire(self.clock.now());
+        if let Some(e) = self.ops.ended() {
+            return Some(Got::Event(e));
+        }
         loop {
             if self.at < self.len {
                 let Some(packet) = packets(&self.read[self.at..self.len], self.transport.counts()).next() else {
                     self.at = self.len;
-                    continue;
+                    if self.booting {
+                        self.lost_early = true;
+                        continue;
+                    }
+                    return Some(self.lost());
                 };
                 let len = packet.len();
                 out[..len].copy_from_slice(packet);
@@ -261,6 +316,9 @@ where
             if !self.transport.pending() || drain.reads >= DRAIN_READS {
                 self.drain = None;
                 self.booting = false;
+                if core::mem::take(&mut self.lost_early) {
+                    return Some(self.lost());
+                }
                 return None;
             }
             drain.reads += 1;
@@ -281,6 +339,12 @@ where
         }
     }
 
+    /// Events lost: what the operations knew of the links is let go.
+    fn lost(&mut self) -> Got {
+        self.ops.saw(&RadioEvent::EventsLost);
+        Got::Event(RadioEvent::EventsLost)
+    }
+
     /// One packet: the awaited reply kept, a reset's boot kept back, the rest translated; `None` for
     /// a packet from before a reset.
     fn take(&mut self, packet: &[u8]) -> Option<Got> {
@@ -289,8 +353,11 @@ where
         if self.booting {
             let Event::Vendor(VendorEvent::BlueInitialized { reason, .. }) = parsed else { return None };
             self.booting = false;
+            self.lost_early = false;
             // What the chip held is gone, as for any boot; the boot itself is the reset's answer.
-            let _ = self.translator.event(packet);
+            if let Some(e) = self.translator.event(packet) {
+                self.saw(&e);
+            }
             return Some(Got::Boot { len, reason });
         }
         match parsed {
@@ -302,9 +369,33 @@ where
             Event::CommandStatus { cmd_opcode, status, .. } if self.awaited == Some(cmd_opcode) => {
                 self.reply = Some(Reply { status: status.into_inner(), params: [0; RETURN_PARAMS_MAX], len: 0 });
             }
-            Event::Vendor(VendorEvent::BlueInitialized { .. }) => self.restarted |= self.awaited.is_some(),
+            Event::Vendor(VendorEvent::BlueInitialized { .. }) => self.restarted = true,
+            Event::Vendor(VendorEvent::L2capUpdateResponse { handle, accepted: true, .. }) => self.ops.accepted(handle),
             _ => {}
         }
-        Some(Got::Packet { len, event: self.translator.event(packet) })
+        let event = self.translator.event(packet);
+        if let Some(e) = &event {
+            self.saw(e);
+        }
+        Some(Got::Packet { len, event })
+    }
+
+    /// What the operations and the links' peers make of `event`.
+    fn saw(&mut self, event: &RadioEvent) {
+        self.ops.saw(event);
+        self.peers.saw(event);
+    }
+
+    /// A snapshot found only `links`: operations on the others end.
+    pub(crate) fn resynced(&mut self, links: &[Option<wrist_ble::LinkStatus>]) {
+        self.ops.resynced(links);
+    }
+
+    pub(crate) fn peers(&self) -> &Peers {
+        &self.peers
+    }
+
+    pub(crate) fn now_ms(&self) -> u64 {
+        micros::<K>(self.clock.now()) / 1_000
     }
 }

@@ -1,6 +1,7 @@
 //! `ble probe`: the chip's firmware and updater versions, and its anchor period (PM0257 §4)
 //! idle and beside advertising, or beside a central's link. `ble restart [updater]`: the chip
 //! restarted under the driver, to check that the driver finds it and brings the chip back.
+//! `ble probe snapshot`: the driver's snapshot, to check it against what the watch is doing.
 
 use core::fmt::{self, Write};
 use core::sync::atomic::Ordering;
@@ -11,11 +12,13 @@ use bluenrg2::opcode::{
 };
 use bluenrg2::{ad, adv_filter_policy, adv_type, enc_key_size, evt_mask, permission, props, service_type, uuid_type, value_length, AddrKind};
 use wrist_bluenrg2::driver::RESET_MS;
-use wrist_bluenrg2::probe::{Beside, Line, Probe};
+use wrist_bluenrg2::probe::{Beside, Line, Probe, Taken};
+use wrist_bluenrg2::snapshot::{Snap, Snapping};
+use wrist_bluenrg2::transport;
 
 use embassy_time::Timer;
 
-use super::{Link, CONN_HANDLE, DEVICE_NAME, INTERVAL, LATENCY, STATE, STATE_ADVERTISING, STATE_CONNECTED, STATE_IDLE};
+use super::{trace_command, Link, CONN_HANDLE, DEVICE_NAME, INTERVAL, LATENCY, STATE, STATE_ADVERTISING, STATE_CONNECTED, STATE_IDLE};
 use crate::uart::Uart;
 
 /// `ble probe adv`'s steps: the interval (0.625 ms units) each `ACI_GAP_SET_DISCOVERABLE` asks
@@ -252,9 +255,26 @@ impl Link<'_> {
         let reply = self.command(probe.opcode(), &[]).await.ok();
         write(self.uart, Line { probe, reply: reply.as_ref().map(|r| (r.status, &r.params[..r.len])) });
     }
+
+    pub(super) async fn probe_snapshot(&mut self) {
+        let mut snap = Snap::default();
+        let mut packet = [0u8; transport::MAX_READ];
+        while let Some(note) = self.chip.snapshotting(&mut snap, &mut packet).await {
+            match note {
+                Snapping::Got(got) => self.got(&packet, got),
+                Snapping::Sending(c) => trace_command(c.opcode, c.params()),
+                Snapping::Taken(r) => {
+                    write(self.uart, Taken::Snapshot(&r));
+                    for l in r.iter().flat_map(|s| s.links.iter().flatten()) {
+                        write(self.uart, Taken::Link(l));
+                    }
+                }
+            }
+        }
+    }
 }
 
-fn write(uart: Uart, line: Line<'_>) {
+fn write(uart: Uart, line: impl fmt::Display) {
     let _ = write!(Text(uart), "[ble] {line}");
     uart.write_line("");
 }

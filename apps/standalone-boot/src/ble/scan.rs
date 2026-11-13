@@ -3,7 +3,7 @@
 use core::sync::atomic::Ordering;
 
 use embassy_time::{Duration, Instant};
-use bluenrg2::opcode::{ACI_GAP_SET_NON_DISCOVERABLE, ACI_GAP_START_GENERAL_DISCOVERY_PROC, ACI_GAP_TERMINATE_GAP_PROC};
+use bluenrg2::opcode::{ACI_GAP_START_GENERAL_DISCOVERY_PROC, ACI_GAP_TERMINATE_GAP_PROC};
 use bluenrg2::{filter_duplicates, gap_proc, AddrKind, Address, BleStatus, LeAdvEventKind, Uuid};
 use wrist_wake::ble::{scan, Scan};
 
@@ -189,7 +189,7 @@ impl Link<'_> {
         if status != BleStatus::COMMAND_DISALLOWED.into_inner() || STATE.load(Ordering::Relaxed) != STATE_ADVERTISING {
             return Ok(status);
         }
-        if self.command(ACI_GAP_SET_NON_DISCOVERABLE, &[]).await.is_ok() {
+        if self.submit(wrist_ble::Op::Advertise(None)).await.is_ok() {
             STATE.store(STATE_IDLE, Ordering::Relaxed);
             self.scanner.paused_advertising = true;
             self.uart.write_line("[ble] advertising paused: the chip will not do both");

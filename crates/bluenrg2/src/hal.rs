@@ -1,6 +1,6 @@
-//! What the chip is and what its link-layer scheduler holds (PM0257 §4): the replies to
-//! `ACI_HAL_GET_FIRMWARE_DETAILS`, `ACI_HAL_GET_UPDATER_VERSION` and `ACI_HAL_GET_ANCHOR_PERIOD`.
-//! Layouts from ST's `bluenrg1_types.h`.
+//! What the chip is and what its link layer holds (PM0257 §4): the replies to
+//! `ACI_HAL_GET_FIRMWARE_DETAILS`, `ACI_HAL_GET_UPDATER_VERSION`, `ACI_HAL_GET_ANCHOR_PERIOD` and
+//! `ACI_HAL_GET_LINK_STATUS`. Layouts from ST's `bluenrg1_types.h`.
 
 /// `ACI_HAL_GET_FIRMWARE_DETAILS`'s return parameters.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,4 +66,30 @@ impl AnchorPeriod {
 #[must_use]
 pub fn updater_version(p: &[u8]) -> Option<u8> {
     p.first().copied()
+}
+
+/// The links `ACI_HAL_GET_LINK_STATUS` reports.
+pub const LINKS: usize = 8;
+
+/// `ACI_HAL_GET_LINK_STATUS`'s return parameters: each link's state, then each link's connection
+/// handle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct LinkStatus {
+    pub link_status: [u8; LINKS],
+    pub link_connection_handle: [u16; LINKS],
+}
+
+impl LinkStatus {
+    /// From a Command Complete's return parameters, the bytes after its status.
+    #[must_use]
+    pub fn decode(p: &[u8]) -> Option<Self> {
+        let (states, handles) = p.get(..3 * LINKS)?.split_at(LINKS);
+        let mut s = Self { link_status: [0; LINKS], link_connection_handle: [0; LINKS] };
+        s.link_status.copy_from_slice(states);
+        for (h, b) in s.link_connection_handle.iter_mut().zip(handles.as_chunks::<2>().0) {
+            *h = u16::from_le_bytes(*b);
+        }
+        Some(s)
+    }
 }

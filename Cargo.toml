@@ -7,7 +7,8 @@ opt-level = "s"
 lto = true
 panic = "abort"
 
-# Uncomment to build against a watch-apps checkout beside this repository, or this one's bluenrg2.
-# [patch.crates-io]
+# This repository's bluenrg2. Uncomment inscribed-disc to build against a watch-apps checkout beside
+# this repository.
+[patch.crates-io]
+bluenrg2 = { path = "crates/bluenrg2" }
 # inscribed-disc = { path = "../watch-apps/InscribedDisc" }
-# bluenrg2 = { path = "crates/bluenrg2" }

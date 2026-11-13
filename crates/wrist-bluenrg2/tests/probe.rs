@@ -5,8 +5,11 @@ use std::collections::HashMap;
 
 use bluenrg2::opcode::{ACI_HAL_GET_ANCHOR_PERIOD, ACI_HAL_GET_FIRMWARE_DETAILS, ACI_HAL_GET_UPDATER_VERSION};
 use bluenrg2::{command, parse, Event};
-use wrist_ble::{Activities, AdvParams, Change, ConnParams, Duration};
-use wrist_bluenrg2::probe::{Beside, Line, Probe};
+use wrist_ble::{
+    Activities, AddrKind, AdvParams, Anchor, BdAddr, Change, ConnHandle, ConnParams, Duration, Failure, FailureKind, Fault, Instant, LeConnRole,
+    LinkStatus, Micros, PeerAddr, Snapshot, MAX_LINKS,
+};
+use wrist_bluenrg2::probe::{Beside, Line, Probe, Taken};
 use wrist_bluenrg2::{anchor_reading, Scheduler};
 
 /// `04 0E len 01 opcode status params`.
@@ -125,4 +128,26 @@ fn the_free_slot_is_the_longest_a_new_link_gets() {
     assert_eq!(anchor_reading(&a).map(|r| r.max_free_slot.0), Some(25_000));
     assert!(connect(&a, 40).is_ok());
     assert!(connect(&a, 41).is_err());
+}
+
+#[test]
+fn a_snapshot_is_a_line_then_one_per_link() {
+    let peer = PeerAddr { kind: AddrKind::RANDOM, addr: BdAddr::new([0x11, 0x22, 0x33, 0x44, 0x55, 0xC6]) };
+    let link = LinkStatus { link: ConnHandle::new(0x0801), role: LeConnRole::Peripheral, peer, encrypted: Some(true) };
+    let mut links = [None; MAX_LINKS];
+    links[1] = Some(link);
+    let anchor = Some(Anchor { period: Micros(105_000), max_free_slot: Micros(86_875) });
+    let s = Snapshot { at: Instant(0), links, advertising: true, scanning: false, initiating: false, anchor };
+    assert_eq!(Taken::Snapshot(&Ok(s)).to_string(), "probe snapshot advertising=1 scanning=0 initiating=0 anchor_period_us=105000 max_free_slot_us=86875");
+    let idle = Snapshot { advertising: false, scanning: true, initiating: true, anchor: None, ..s };
+    assert_eq!(Taken::Snapshot(&Ok(idle)).to_string(), "probe snapshot advertising=0 scanning=1 initiating=1 anchor=none");
+    assert_eq!(Taken::Link(&link).to_string(), "probe snapshot link=0x0801 role=peripheral peer=c6:55:44:33:22:11 peer_type=random encrypted=1");
+    let central = LinkStatus { role: LeConnRole::Central, peer: PeerAddr { kind: AddrKind::PUBLIC, ..peer }, encrypted: Some(false), ..link };
+    assert_eq!(Taken::Link(&central).to_string(), "probe snapshot link=0x0801 role=central peer=c6:55:44:33:22:11 peer_type=public encrypted=0");
+    let unknown = LinkStatus { encrypted: None, ..link };
+    assert!(Taken::Link(&unknown).to_string().ends_with(" encrypted=unknown"));
+    let refused = Fault::Refused(Failure { kind: FailureKind::Unknown, native: 0x12 });
+    for (fault, line) in [(Fault::Silent, "error=no-reply"), (Fault::Bus, "error=not-taken"), (refused, "status=0x12")] {
+        assert_eq!(Taken::Snapshot(&Err(fault)).to_string(), format!("probe snapshot {line}"));
+    }
 }

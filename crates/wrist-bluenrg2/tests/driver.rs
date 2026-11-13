@@ -9,9 +9,10 @@ use std::task::{Context, Poll, Waker};
 use bluenrg2::BootReason;
 use common::{driver, driver_at, event, Shared, TestDriver};
 use embassy_futures::block_on;
-use wrist_ble::{ConnHandle, RadioEvent, ResetCause, Status};
+use wrist_ble::{ConnHandle, ConnParams, FailureKind, Interval, Op, OpId, OpKind, Outcome, RadioEvent, ResetCause, Slots, Status, Timeout};
 use wrist_bluenrg2::driver::{Got, Reply, Unanswered, BOOT_WITHIN_US, DRAIN_READS, RESET_MS, REPLY_WITHIN_US};
 use wrist_bluenrg2::gatt::Handles;
+use wrist_bluenrg2::op_deadline;
 use wrist_bluenrg2::transport::MAX_READ;
 
 const OPCODE: u16 = 0xFC81;
@@ -44,7 +45,7 @@ fn drained(d: &mut TestDriver) -> Handed {
     while let Some(got) = block_on(d.next(&mut out)) {
         let len = match got {
             Got::Packet { len, .. } | Got::Boot { len, .. } => len,
-            Got::Unreadable { .. } => 0,
+            Got::Unreadable { .. } | Got::Event(_) => 0,
         };
         all.push((out[..len].to_vec(), got));
     }
@@ -186,7 +187,8 @@ fn an_unreadable_run_ends_the_drain() {
     assert!(!d.backing_off());
     let got: Vec<Got> = drained(&mut d).into_iter().map(|(_, g)| g).collect();
     assert!(d.backing_off());
-    assert_eq!(got, [Got::Packet { len: 7, event: Some(link_down(1)) }, Got::Packet { len: 7, event: Some(link_down(2)) }, Got::Unreadable { header: [0xFF; 5], first: true }]);
+    let lost = Got::Event(RadioEvent::EventsLost);
+    assert_eq!(got, [Got::Packet { len: 7, event: Some(link_down(1)) }, lost, Got::Packet { len: 7, event: Some(link_down(2)) }, lost, Got::Unreadable { header: [0xFF; 5], first: true }], "each read's cut-short tail is lost");
     assert_eq!(drained(&mut d), [], "the drain is over");
 }
 
@@ -267,4 +269,73 @@ fn the_server_is_the_one_served_until_the_chip_boots() {
     d.drain();
     drained(&mut d);
     assert_eq!(d.server(), None);
+}
+
+fn reply(status: u8) -> Reply {
+    Reply { status, params: [0; bluenrg2::RETURN_PARAMS_MAX], len: 0 }
+}
+
+#[test]
+fn an_operation_the_chip_took_ends_in_what_the_next_drain_hands_out() {
+    let (c, mut d) = driver(128);
+    assert_eq!(d.settle(&Op::Advertise(None), &Ok(reply(0x00))), Ok(OpId(0)));
+    assert_eq!(d.settle(&Op::Advertise(None), &Ok(reply(0x0C))).map_err(|f| f.native), Err(0x0C), "refused, the chip's code kept");
+    assert_eq!(d.settle(&Op::Advertise(None), &Err(Unanswered::NoReply)).map_err(|f| f.kind), Err(FailureKind::Timeout));
+    let params = ConnParams { interval_min: Interval::from_u16(12), interval_max: Interval::from_u16(24), latency: 0, timeout: Timeout::from_u16(500), ce_len: Slots::from_u16(0) };
+    assert_eq!(d.settle(&Op::UpdateParams(ConnHandle::new(0x0801), params), &Ok(reply(0x00))), Ok(OpId(1)));
+    assert_eq!(d.due(), Some(u64::from(op_deadline(OpKind::UpdateParams).0) * 1_000), "the ask waits for the central");
+    c.borrow_mut().queued.push(event(0xFF, &[0x00, 0x08, 0x01, 0x08, 0x00, 0x00]));
+    d.drain();
+    let got: Vec<Got> = drained(&mut d).into_iter().map(|(_, g)| g).collect();
+    assert_eq!(got.len(), 3, "{got:?}");
+    assert_eq!(got[0], Got::Event(RadioEvent::Done(OpId(0), Ok(Outcome::Done))));
+    assert!(matches!(got[1], Got::Packet { len: 9, .. }), "the central's answer");
+    assert_eq!(got[2], Got::Event(RadioEvent::Done(OpId(1), Ok(Outcome::Done))), "the ask it ends, next");
+    assert_eq!(d.due(), None);
+}
+
+#[test]
+fn an_operation_answered_around_a_restart_is_not_taken() {
+    let (c, mut d) = driver(128);
+    let (_, r) = exchange(&c, &mut d, vec![[complete(OPCODE, 0x00, &[]), boot(0x01)].concat()]);
+    assert!(r.is_ok(), "the reply came before the restart");
+    let params = ConnParams { interval_min: Interval::from_u16(12), interval_max: Interval::from_u16(24), latency: 0, timeout: Timeout::from_u16(500), ce_len: Slots::from_u16(0) };
+    assert_eq!(d.settle(&Op::UpdateParams(ConnHandle::new(0x0801), params), &r).map_err(|f| f.kind), Err(FailureKind::Busy));
+    assert_eq!(d.due(), None, "nothing waits on a chip that restarted");
+    let refused = Ok(Reply { status: 0x0C, params: [0; bluenrg2::RETURN_PARAMS_MAX], len: 0 });
+    assert_eq!(d.settle(&Op::UpdateParams(ConnHandle::new(0x0801), params), &refused).map_err(|f| f.native), Err(0x0C), "a refusal stays one");
+    assert!(d.settle(&Op::AllowRebond(ConnHandle::new(0x0801)), &r).is_ok(), "what its answer ends is done");
+}
+
+#[test]
+fn a_boot_cut_short_is_reported_lost() {
+    let (c, mut d) = driver(128);
+    c.borrow_mut().boot = Some(vec![0x04, 0xFF, 0x03, 0x01]);
+    block_on(d.reset());
+    assert!(block_on(d.boot()));
+    let got: Vec<Got> = drained(&mut d).into_iter().map(|(_, g)| g).collect();
+    assert_eq!(got, [Got::Event(RadioEvent::EventsLost)]);
+}
+
+#[test]
+fn a_read_cut_short_before_the_resets_boot_is_dropped_as_what_came_before_it_is() {
+    let (c, mut d) = driver(128);
+    c.borrow_mut().boot = Some(boot(0x01));
+    block_on(d.reset());
+    c.borrow_mut().queued.insert(0, vec![0x04, 0x3E, 0x05, 0x01]);
+    assert!(block_on(d.boot()));
+    let got: Vec<Got> = drained(&mut d).into_iter().map(|(_, g)| g).collect();
+    assert_eq!(got, [Got::Boot { len: 6, reason: Some(BootReason::new(0x01)) }]);
+}
+
+#[test]
+fn a_loss_of_the_drivers_own_lets_go_of_the_links_seen_down() {
+    let (c, mut d) = driver(128);
+    c.borrow_mut().queued.extend([down(1), vec![0x04, 0x3E, 0x05, 0x01]]);
+    d.drain();
+    let got: Vec<Got> = drained(&mut d).into_iter().map(|(_, g)| g).collect();
+    assert_eq!(got.last(), Some(&Got::Event(RadioEvent::EventsLost)));
+    let params = ConnParams { interval_min: Interval::from_u16(12), interval_max: Interval::from_u16(24), latency: 0, timeout: Timeout::from_u16(500), ce_len: Slots::from_u16(0) };
+    assert_eq!(d.settle(&Op::UpdateParams(ConnHandle::new(0x0801), params), &Ok(reply(0x00))), Ok(OpId(0)));
+    assert!(d.due().is_some(), "after a loss the link isn't known to be down: the ask waits");
 }

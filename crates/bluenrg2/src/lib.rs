@@ -63,6 +63,7 @@ pub mod opcode {
     pub const ACI_HAL_GET_FIRMWARE_DETAILS: u16 = 0xFC01;
     pub const ACI_HAL_WRITE_CONFIG_DATA: u16 = 0xFC0C;
     pub const ACI_HAL_SET_TX_POWER_LEVEL: u16 = 0xFC0F;
+    pub const ACI_HAL_GET_LINK_STATUS: u16 = 0xFC17;
     pub const ACI_HAL_GET_ANCHOR_PERIOD: u16 = 0xFC19;
     /// Reads only; [`ACI_UPDATER_START`] reboots the chip into the updater.
     pub const ACI_HAL_GET_UPDATER_VERSION: u16 = 0xFC22;
@@ -76,6 +77,7 @@ pub mod opcode {
     pub const ACI_GAP_PASS_KEY_RESP: u16 = 0xFC88;
     pub const ACI_GAP_INIT: u16 = 0xFC8A;
     pub const ACI_GAP_SLAVE_SECURITY_REQ: u16 = 0xFC8D;
+    pub const ACI_GAP_GET_SECURITY_LEVEL: u16 = 0xFC90;
     pub const ACI_GAP_TERMINATE: u16 = 0xFC93;
     pub const ACI_GAP_CLEAR_SECURITY_DB: u16 = 0xFC94;
     pub const ACI_GAP_ALLOW_REBOND: u16 = 0xFC95;
@@ -162,6 +164,9 @@ pub mod permission {
     pub const AUTHOR_WRITE: u8 = 0x10;
     /// Writes only over an encrypted link.
     pub const ENCRY_WRITE: u8 = 0x20;
+    /// [`AUTHEN_WRITE`] and [`ENCRY_WRITE`] together: writes only over a link encrypted with
+    /// authenticated keys.
+    pub const AUTHENTICATED_WRITE: u8 = 0x28;
 }
 
 /// ST's vendor event codes (event 0xFF).
@@ -410,6 +415,15 @@ pub mod value_length {
 /// `ACI_GAP_INIT`'s privacy flag.
 pub mod privacy {
     pub const DISABLED: u8 = 0x00;
+}
+
+/// `ACI_GAP_SET_IO_CAPABILITY`'s capability.
+pub mod io_capability {
+    pub const DISPLAY_ONLY: u8 = 0x00;
+    pub const DISPLAY_YES_NO: u8 = 0x01;
+    pub const KEYBOARD_ONLY: u8 = 0x02;
+    pub const NO_INPUT_NO_OUTPUT: u8 = 0x03;
+    pub const KEYBOARD_DISPLAY: u8 = 0x04;
 }
 
 /// `ACI_GAP_SET_DISCOVERABLE`'s advertising type.
@@ -745,7 +759,7 @@ pub fn parse(p: &[u8]) -> Event<'_> {
 
 fn acl(p: &[u8]) -> Option<Event<'_>> {
     let acl: AclPacket = first(p)?;
-    let handle = link(acl.header().handle & 0x0FFF)?;
+    let handle = conn_handle(acl.header().handle & 0x0FFF)?;
     Some(Event::Acl {
         handle,
         boundary: acl.boundary_flag(),
@@ -782,7 +796,7 @@ fn standard(code: u8, params: &[u8]) -> Option<Event<'_>> {
         ev::DISCONNECTION_COMPLETE => {
             let e: hci::DisconnectionComplete = first(params)?;
             Event::DisconnectionComplete {
-                handle: link(e.handle.raw())?,
+                handle: conn_handle(e.handle.raw())?,
                 status: ble(e.status),
                 reason: ble(e.reason),
             }
@@ -790,14 +804,17 @@ fn standard(code: u8, params: &[u8]) -> Option<Event<'_>> {
         ev::ENCRYPTION_CHANGE => {
             let e: hci::EncryptionChangeV1 = first(params)?;
             Event::EncryptionChange {
-                handle: link(e.handle.raw())?,
+                handle: conn_handle(e.handle.raw())?,
                 status: ble(e.status),
                 enabled: e.enabled,
             }
         }
         ev::ENCRYPTION_KEY_REFRESH_COMPLETE => {
             let e: hci::EncryptionKeyRefreshComplete = first(params)?;
-            Event::EncryptionKeyRefresh { handle: link(e.handle.raw())?, status: ble(e.status) }
+            Event::EncryptionKeyRefresh {
+                handle: conn_handle(e.handle.raw())?,
+                status: ble(e.status),
+            }
         }
         ev::LE_META => le_meta(params)?,
         ev::VENDOR => {
@@ -822,20 +839,23 @@ fn le_meta(params: &[u8]) -> Option<Event<'_>> {
             if status == Status::SUCCESS {
                 let e: le::LeConnectionUpdateComplete = first(params)?;
                 Event::LeConnectionUpdateComplete {
-                    handle: link(e.handle.raw())?,
+                    handle: conn_handle(e.handle.raw())?,
                     conn_interval: e.conn_interval,
                     peripheral_latency: e.peripheral_latency,
                     supervision_timeout: e.supervision_timeout,
                 }
             } else {
                 // A failure's interval, latency and timeout mean nothing (Core Vol 4 Part E §7.7.65.3).
-                Event::LeConnectionUpdateFailed { handle: link(first(rest)?)?, status: ble(status) }
+                Event::LeConnectionUpdateFailed {
+                    handle: conn_handle(first(rest)?)?,
+                    status: ble(status),
+                }
             }
         }
         sub::DATA_LENGTH_CHANGE => {
             let e: le::LeDataLengthChange = first(params)?;
             Event::LeDataLengthChange {
-                handle: link(e.handle.raw())?,
+                handle: conn_handle(e.handle.raw())?,
                 max_tx_octets: e.max_tx_octets,
                 max_tx_time: e.max_tx_time,
                 max_rx_octets: e.max_rx_octets,
@@ -872,7 +892,7 @@ fn connection_complete(code: u8, params: &[u8]) -> Option<Event<'_>> {
             .map(|e| (e.conn_interval, e.peripheral_latency, e.supervision_timeout))
     };
     Some(Event::LeConnectionComplete {
-        handle: link(handle)?,
+        handle: conn_handle(handle)?,
         role,
         // An Enhanced event says 2 or 3 for an identity it resolved: still public or random.
         peer: Address { kind: AddrKind::new(kind.as_raw() & 0x01), addr: peer },
@@ -972,7 +992,8 @@ fn ble(status: Status) -> BleStatus {
 }
 
 /// A connection handle, which is at most 0x0EFF (Core Vol 4 Part E 5.4.2).
-fn link(handle: u16) -> Option<ConnHandle> {
+#[must_use]
+pub fn conn_handle(handle: u16) -> Option<ConnHandle> {
     (handle <= 0x0EFF).then(|| ConnHandle::new(handle))
 }
 
@@ -987,6 +1008,34 @@ pub fn bonded_devices(params: &[u8]) -> impl Iterator<Item = Address> + '_ {
         let [kind, a0, a1, a2, a3, a4, a5] = *e;
         Address { kind: AddrKind::new(kind & 0x01), addr: BdAddr([a0, a1, a2, a3, a4, a5]) }
     })
+}
+
+/// `ACI_GAP_GET_SECURITY_LEVEL`'s return parameters (ST's `bluenrg1_types.h`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SecurityLevel {
+    /// LE security mode 1 (encryption) or 2 (data signing).
+    pub security_mode: u8,
+    /// 1 to 4 (Core Vol 3 Part C 10.2).
+    pub security_level: u8,
+}
+
+impl SecurityLevel {
+    /// From a Command Complete's return parameters, the bytes after its status.
+    #[must_use]
+    pub fn decode(p: &[u8]) -> Option<Self> {
+        let [security_mode, security_level, ..] = *p else {
+            return None;
+        };
+        Some(Self { security_mode, security_level })
+    }
+
+    /// Whether the link is encrypted: LE security mode 1 at level 2 or above (Core Vol 3 Part C
+    /// 10.2.1).
+    #[must_use]
+    pub const fn encrypted(&self) -> bool {
+        self.security_mode == 1 && self.security_level >= 2
+    }
 }
 
 /// `0A:1B:2C:3D:4E:5F`, the most significant byte first; the kind is not written.

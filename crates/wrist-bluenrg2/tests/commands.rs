@@ -107,7 +107,6 @@ fn what_no_command_here_carries_out_is_none() {
     };
     let quiet = AdvParams { interval_min: Slots::from_u16(160), interval_max: Slots::from_u16(160), connectable: false };
     assert_eq!(command(&Op::Advertise(Some(quiet)), NAME, |_| Some(LeConnRole::Peripheral), None), None);
-    assert_eq!(command(&Op::UpdateParams(link, params), NAME, |_| Some(LeConnRole::Central), None), None);
     assert_eq!(command(&Op::UpdateParams(link, params), NAME, |_| None, None), None);
     assert_eq!(command(&Op::Scan(None), NAME, |_| Some(LeConnRole::Peripheral), None), None);
     assert_eq!(command(&Op::Disconnect(link, DisconnectReason::PairingWithUnitKeyNotSupported), NAME, |_| None, None), None);
@@ -154,4 +153,18 @@ fn a_notification_needs_the_characteristic_in_the_server() {
     let op = |attr| Op::Notify(ConnHandle::new(0x0801), attr, Payload::new(b"ok").unwrap());
     assert_eq!(command(&op(TX), NAME, |_| None, None), None, "no server built");
     assert_eq!(command(&op(ServerAttr(5)), NAME, |_| None, Some(&served())), None);
+}
+
+#[test]
+fn a_central_retimes_its_link_with_the_event_length_as_both_bounds() {
+    let link = ConnHandle::new(0x0801);
+    let params = ConnParams {
+        interval_min: Interval::from_u16(12),
+        interval_max: Interval::from_u16(24),
+        latency: 2,
+        timeout: Timeout::from_u16(500),
+        ce_len: Slots::from_u16(6),
+    };
+    let c = command(&Op::UpdateParams(link, params), NAME, |_| Some(LeConnRole::Central), None).unwrap();
+    assert_eq!((c.opcode, c.params()), (0xFC9E, &[0x01, 0x08, 12, 0, 24, 0, 2, 0, 0xF4, 0x01, 6, 0, 6, 0][..]));
 }

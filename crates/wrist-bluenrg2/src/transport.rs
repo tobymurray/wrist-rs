@@ -113,9 +113,12 @@ where
         self.unreadable >= UNREADABLE_RUN
     }
 
-    /// Whether the chip took `packet`, at most [`bluenrg2::MAX_COMMAND`] bytes, within
-    /// [`WRITE_ATTEMPTS`].
+    /// Whether the chip took `packet` within [`WRITE_ATTEMPTS`]; one longer than
+    /// [`bluenrg2::MAX_COMMAND`] is refused unsent.
     pub async fn write(&mut self, packet: &[u8]) -> bool {
+        if packet.len() > bluenrg2::MAX_COMMAND {
+            return false;
+        }
         for _ in 0..WRITE_ATTEMPTS {
             let _ = self.cs.set_low();
             if !within(&mut self.delay, READY_WITHIN_MS, self.irq.wait_for_high()).await {
@@ -130,9 +133,9 @@ where
             let taken = (1..=MAX_ROOM).contains(&room) && room >= packet.len();
             if taken {
                 let mut out = [0u8; bluenrg2::MAX_COMMAND];
-                let n = packet.len().min(out.len());
-                out[..n].copy_from_slice(&packet[..n]);
-                let _ = self.bus.transfer_in_place(&mut out[..n]).await;
+                let out = &mut out[..packet.len()];
+                out.copy_from_slice(packet);
+                let _ = self.bus.transfer_in_place(out).await;
             }
             let _ = self.cs.set_high();
             if taken {

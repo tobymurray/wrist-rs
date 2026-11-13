@@ -46,6 +46,10 @@ pub struct Chip {
     pub resets: Vec<(u64, bool)>,
     /// What the chip hands over first once let out of reset, its queue gone.
     pub boot: Option<Vec<u8>>,
+    /// The reads the chip answers each command written with, raised once the host next waits for
+    /// IRQ, and those waiting to be.
+    pub answer: Option<Answer>,
+    pub answering: Vec<Vec<u8>>,
 }
 
 impl Chip {
@@ -62,6 +66,9 @@ impl Chip {
 }
 
 pub type Shared = Rc<RefCell<Chip>>;
+
+/// The reads a command is answered with.
+pub type Answer = fn(&[u8]) -> Vec<Vec<u8>>;
 
 pub struct Bus(pub Shared);
 pub struct Cs(pub Shared);
@@ -139,6 +146,10 @@ impl OutputPin for Cs {
         let mut c = self.0.borrow_mut();
         if c.cs_low {
             let span = std::mem::take(&mut c.span);
+            if let (Some(answer), Some(0x0A), true) = (c.answer, c.phase, span.len() > 5) {
+                let reads = answer(&span[5..]);
+                c.answering.extend(reads);
+            }
             c.spans.push(span);
         }
         c.cs_low = false;
@@ -170,6 +181,12 @@ impl Future for Level {
     type Output = Result<(), Infallible>;
 
     fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut c = self.0.borrow_mut();
+        if self.1 && !c.irq() && !c.cs_low {
+            let answers = std::mem::take(&mut c.answering);
+            c.queued.extend(answers);
+        }
+        drop(c);
         if self.0.borrow().irq() == self.1 {
             Poll::Ready(Ok(()))
         } else {

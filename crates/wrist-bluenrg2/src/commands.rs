@@ -39,7 +39,7 @@ impl Command {
 
 /// The command that carries `op` out, the watch advertising as `name` (the complete local name),
 /// holding each link in the role `role` gives it and serving `server`. `None` for an operation no
-/// command here carries out: as the central, scanning, GATT as a client, and advertising that
+/// command here carries out: scanning and connecting, GATT as a client, and advertising that
 /// takes no connection; for a name longer than [`MAX_NAME`]; for a notification of a
 /// characteristic `server` lacks; and for a disconnect reason ST does not list.
 pub fn command(op: &Op, name: &[u8], role: impl Fn(ConnHandle) -> Option<LeConnRole>, server: Option<&Handles>) -> Option<Command> {
@@ -70,6 +70,19 @@ pub fn command(op: &Op, name: &[u8], role: impl Fn(ConnHandle) -> Option<LeConnR
                 &p.interval_max.as_u16().to_le_bytes(),
                 &p.latency.to_le_bytes(),
                 &p.timeout.as_u16().to_le_bytes(),
+            ],
+        ),
+        // `ce_len` as both the least and the most.
+        Op::UpdateParams(l, p) if role(*l) == Some(LeConnRole::Central) => Command::new(
+            opcode::ACI_GAP_START_CONNECTION_UPDATE,
+            &[
+                &h(l),
+                &p.interval_min.as_u16().to_le_bytes(),
+                &p.interval_max.as_u16().to_le_bytes(),
+                &p.latency.to_le_bytes(),
+                &p.timeout.as_u16().to_le_bytes(),
+                &p.ce_len.as_u16().to_le_bytes(),
+                &p.ce_len.as_u16().to_le_bytes(),
             ],
         ),
         Op::RequestSecurity(l) => Command::new(opcode::ACI_GAP_SLAVE_SECURITY_REQ, &[&h(l)]),

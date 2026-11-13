@@ -71,7 +71,9 @@ impl Translator {
             },
             Event::Vendor(e) => self.vendor(e)?,
             Event::LeUnknown { subevent_code, .. } => RadioEvent::Unknown { raw_code: u16::from_be_bytes([0x3E, subevent_code]) },
-            // Another event, a connection or disconnection that failed, a malformed packet.
+            // A packet no decoder can read is one the driver drops.
+            Event::Malformed(_) => RadioEvent::EventsLost,
+            // Another event, or a connection or disconnection that failed.
             _ => RadioEvent::Unknown { raw_code: packet.get(1).map_or(0, |&c| u16::from(c)) },
         };
         Some(e)
