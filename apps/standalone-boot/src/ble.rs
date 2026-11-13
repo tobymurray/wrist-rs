@@ -72,7 +72,7 @@ use bluenrg2::{
     PairingReason, PairingStatus, VendorEvent, ATT_HEADER_LEN,
 };
 use wrist_ble::{
-    AdvParams, Cccd, CharDecl, ConnHandle, ConnParams, DisconnectReason, Interval, LeConnRole, Micros, Op, Payload, RadioEvent, ServerTable,
+    AdvParams, Cccd, CharDecl, ConnHandle, ConnParams, DisconnectReason, Failure, FailureKind, Interval, LeConnRole, Micros, Op, Payload, RadioEvent, ServerTable,
     ServiceDecl, Slots, Timeout, ATT_MAX_MTU,
 };
 use wrist_ble_core::goals::{self, Goals, PhoneGoal};
@@ -84,7 +84,7 @@ use wrist_bluenrg2::start::{Setup, Start, Starting, Step};
 use wrist_bluenrg2::transport::{self, Counts};
 use wrist_pages::{OldKey, Pairing, Prompt};
 use wrist_wake::ble::restart::{Boot, Restarts};
-use wrist_wake::ble::{server, timing, IntervalAsk, Lines, Outbox, PairAsk, Power, Radio, Scan, Sink, Timing};
+use wrist_wake::ble::{server, timing, HeldAsk, IntervalAsk, Lines, Outbox, PairAsk, Power, Radio, Scan, Sink, Timing};
 
 use crate::console::Target;
 use crate::uart::Uart;
@@ -682,6 +682,7 @@ struct Link<'d> {
     outbox: Outbox<{ server::CONSOLE_VALUE_LEN }>,
     pair_ask: PairAsk,
     interval_ask: IntervalAsk,
+    held_ask: HeldAsk<ConnParams>,
     scanner: scan::Scanner,
     seen: Seen,
     /// How the boot a reset asked for came up.
@@ -718,6 +719,7 @@ impl<'d> Link<'d> {
             outbox: Outbox::default(),
             pair_ask: PairAsk::default(),
             interval_ask: IntervalAsk::default(),
+            held_ask: HeldAsk::default(),
             scanner: scan::Scanner::default(),
             seen: Seen::default(),
             boot: None,
@@ -808,6 +810,7 @@ impl Link<'_> {
         let state = State {
             now: tick(Instant::now()),
             work: self.request_interval.is_some()
+                || self.held_ask.due()
                 || self.finish_transfer
                 || self.rebond_for.is_some()
                 || self.recount_bonds
@@ -923,8 +926,17 @@ impl Link<'_> {
             timeout: Timeout::from_u16(timeout),
             ce_len: Slots::from_u16(0),
         };
-        match self.submit(Op::UpdateParams(link(), params)).await {
+        self.ask(params).await;
+    }
+
+    /// One ask; refused busy, it is held for the central's answer to the one before.
+    async fn ask(&mut self, params: ConnParams) {
+        let (reply, taken) = self.settled(Op::UpdateParams(link(), params)).await;
+        let busy = reply.is_ok() && matches!(taken, Err(Failure { kind: FailureKind::Busy, .. }));
+        self.held_ask.answered(params, busy);
+        match reply {
             Ok(r) if r.status == 0 => {}
+            Ok(_) if busy => self.uart.write_line("[ble] interval request held: the central has yet to answer the one before"),
             Ok(r) => {
                 self.uart.write_str("[ble] interval request refused, status ");
                 self.uart.write_hex8(r.status);
@@ -946,6 +958,9 @@ impl Link<'_> {
         }
         if let Some((min, max)) = self.request_interval.take() {
             self.ask_connection(min, max, wrist_wake::ble::NOW_LATENCY, wrist_wake::ble::NOW_TIMEOUT).await;
+        }
+        if let Some(params) = self.held_ask.take() {
+            self.ask(params).await;
         }
         if self.finish_transfer {
             self.finish_transfer = false;
@@ -1400,12 +1415,17 @@ impl Link<'_> {
 
     /// `op` sent as its command, the driver told how it was answered.
     async fn submit(&mut self, op: Op) -> Result<Reply, &'static str> {
+        self.settled(op).await.0
+    }
+
+    /// [`Link::submit`], with what the driver made of the answer.
+    async fn settled(&mut self, op: Op) -> (Result<Reply, &'static str>, Result<wrist_ble::OpId, Failure>) {
         let Some(c) = commands::command(&op, DEVICE_NAME, |_| Some(LeConnRole::Peripheral), self.chip.server()) else {
-            return Err("not sent: no command carries it out");
+            return (Err("not sent: no command carries it out"), Err(Failure { kind: FailureKind::Unknown, native: 0 }));
         };
         let reply = self.exchange(c.opcode, c.params()).await;
-        let _ = self.chip.settle(&op, &reply);
-        reply.map_err(unanswered)
+        let taken = self.chip.settle(&op, &reply);
+        (reply.map_err(unanswered), taken)
     }
 
     /// Every event waiting.
@@ -1476,6 +1496,7 @@ impl Link<'_> {
                 // bonded macOS central's link (HARDWARE.md).
                 self.mtu = DEFAULT_MTU;
                 self.asked = None;
+                self.held_ask.clear();
                 self.advertised = None;
                 self.uart.write_line("[ble] connected");
             }
@@ -1554,6 +1575,7 @@ impl Link<'_> {
         self.peer = None;
         self.set_mirror();
         self.request_interval = None;
+        self.held_ask.clear();
         self.pair_ask.settled();
         self.interval_ask.disconnected();
         clear_prompt();
@@ -1683,6 +1705,7 @@ impl Link<'_> {
             }
             VendorEvent::TxPoolAvailable { .. } | VendorEvent::AttributeModified { .. } => {}
             VendorEvent::L2capUpdateResponse { accepted, .. } => {
+                self.held_ask.central_answered();
                 if !accepted {
                     UPDATES_REFUSED.fetch_add(1, Ordering::Relaxed);
                     self.uart.write_line("[ble] the central refused the interval request");
