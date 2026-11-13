@@ -164,9 +164,6 @@ pub mod permission {
     pub const AUTHOR_WRITE: u8 = 0x10;
     /// Writes only over an encrypted link.
     pub const ENCRY_WRITE: u8 = 0x20;
-    /// [`AUTHEN_WRITE`] and [`ENCRY_WRITE`] together: writes only over a link encrypted with
-    /// authenticated keys.
-    pub const AUTHENTICATED_WRITE: u8 = 0x28;
 }
 
 /// ST's vendor event codes (event 0xFF).
