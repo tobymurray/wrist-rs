@@ -142,14 +142,12 @@ fn settling_wakes_a_stock_gauge_and_leaves_the_rest() {
 
 #[test]
 fn only_the_watch_model_settles() {
-    // 220 mAh, empty at 3.30 V.
     assert!(!gauge_model_differs(0x01B8, 0xA561));
-    // Stock's and the images before: 200 mAh, empty at 3.40 V.
-    assert!(gauge_model_differs(0x0190, 0xAA63));
-    assert!(gauge_model_differs(0x0190, 0xA561));
-    assert!(gauge_model_differs(0x01B8, 0xAA63));
-    // The chip's own after a reset: 1500 mAh.
-    assert!(gauge_model_differs(0x0BB8, 0xA561));
+    for (design_cap, v_empty) in
+        [(0x0190, 0xAA63), (0x0190, 0xA561), (0x01B8, 0xAA63), (0x0BB8, 0xA561)]
+    {
+        assert!(gauge_model_differs(design_cap, v_empty), "{design_cap:#06x} {v_empty:#06x}");
+    }
 }
 
 #[test]

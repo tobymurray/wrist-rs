@@ -244,16 +244,14 @@ pub const HIB_CFG_AWAKE: u16 = 0;
 /// the cell full early.
 pub const ICHG_TERM_WATCH: u16 = 0x0020;
 
-/// `DesignCap` 220 mAh, a UNA cell down to [`V_EMPTY_WATCH`] (`HARDWARE.md`); each gauge learns
-/// its own cell from there.
+/// `DesignCap` 220 mAh, a UNA cell's capacity down to [`V_EMPTY_WATCH`] (`HARDWARE.md`).
 pub const DESIGN_CAP_WATCH: u16 = 0x01B8;
 
-/// `VEmpty` empty at 3.30 V, recovery 3.88 V, the MAX17262's default: above where the watch's draw
-/// rises (`HARDWARE.md`).
+/// `VEmpty` empty at 3.30 V and recovered at 3.88 V, above where the watch's draw rises
+/// (`HARDWARE.md`).
 pub const V_EMPTY_WATCH: u16 = 0xA561;
 
-/// Whether `DesignCap` and `VEmpty` were left by stock or an older image, and need
-/// [`GAUGE_RESTORE`]. Its `Refresh` keeps the learned `FullCapRep` and `Cycles` (`HARDWARE.md`).
+/// Whether `DesignCap` and `VEmpty` need [`GAUGE_RESTORE`].
 #[must_use]
 pub const fn gauge_model_differs(design_cap: u16, v_empty: u16) -> bool {
     design_cap != DESIGN_CAP_WATCH || v_empty != V_EMPTY_WATCH
@@ -288,9 +286,8 @@ const WAKE: [GaugeStep; 3] = [
     GaugeStep::Write(COMMAND, 0),
 ];
 
-/// After a reset, or over a configuration [`gauge_model_differs`] finds: awake, then
-/// [`DESIGN_CAP_WATCH`], [`ICHG_TERM_WATCH`], [`V_EMPTY_WATCH`], and stock's `ModelCfg`, charged
-/// above 4.275 V, carrying `Refresh`.
+/// After a reset or when [`gauge_model_differs`]: awake, then the watch's model, `ModelCfg`
+/// charging above 4.275 V and carrying `Refresh`.
 pub const GAUGE_RESTORE: [GaugeStep; 10] = [
     GaugeStep::WaitClear(FSTAT, FSTAT_DNR),
     WAKE[0],
