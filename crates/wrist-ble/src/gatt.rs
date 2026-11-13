@@ -60,10 +60,14 @@ pub struct CharDecl {
     pub props: Props,
     pub permission: Permission,
     pub max_len: u16,
+    /// What it holds from the start; empty for none.
+    pub value: &'static [u8],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ServiceDecl {
+    /// What the log calls it.
+    pub name: &'static str,
     pub uuid: BluetoothUuid,
     pub chars: &'static [CharDecl],
 }

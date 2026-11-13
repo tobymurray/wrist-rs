@@ -1517,6 +1517,7 @@ dependencies = [
  "embedded-hal-async",
  "proptest",
  "wrist-ble",
+ "wrist-wake",
 ]
 
 [[package]]
@@ -1614,6 +1615,7 @@ name = "wrist-wake"
 version = "0.0.0"
 dependencies = [
  "bluenrg2 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "wrist-ble",
 ]
 
 [[package]]

@@ -9,24 +9,24 @@ pub const MAX_NAME: usize = 31 - 3 - 3 - 2;
 /// The longest parameters a command here writes: `ACI_GAP_SET_DISCOVERABLE` with the longest name.
 pub const MAX_PARAMS: usize = 14 + MAX_NAME;
 
-/// One command: its opcode and its parameters.
+/// One command: its opcode and at most `N` bytes of parameters.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Command {
+pub struct Command<const N: usize = MAX_PARAMS> {
     pub opcode: u16,
-    params: [u8; MAX_PARAMS],
+    params: [u8; N],
     len: usize,
 }
 
-impl Command {
+impl<const N: usize> Command<N> {
     #[must_use]
     pub fn params(&self) -> &[u8] {
         &self.params[..self.len]
     }
 
-    fn new(opcode: u16, parts: &[&[u8]]) -> Option<Self> {
-        let mut c = Self { opcode, params: [0; MAX_PARAMS], len: 0 };
+    pub(crate) fn new(opcode: u16, parts: &[&[u8]]) -> Option<Self> {
+        let mut c = Self { opcode, params: [0; N], len: 0 };
         for part in parts {
-            let end = c.len.checked_add(part.len()).filter(|&e| e <= MAX_PARAMS)?;
+            let end = c.len.checked_add(part.len()).filter(|&e| e <= N)?;
             c.params[c.len..end].copy_from_slice(part);
             c.len = end;
         }

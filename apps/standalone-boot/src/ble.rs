@@ -62,20 +62,21 @@ use bluenrg2::opcode::{
     ACI_GAP_ALLOW_REBOND, ACI_GAP_CLEAR_SECURITY_DB, ACI_GAP_GET_BONDED_DEVICES, ACI_GAP_REMOVE_BONDED_DEVICE, ACI_GAP_INIT,
     ACI_GAP_NUMERIC_COMPARISON_CONFIRM, ACI_GAP_PASS_KEY_RESP,
     ACI_GAP_SET_AUTHENTICATION_REQUIREMENT, ACI_GAP_SET_DISCOVERABLE, ACI_GAP_SET_IO_CAPABILITY,
-    ACI_GAP_SET_NON_DISCOVERABLE, ACI_GAP_SLAVE_SECURITY_REQ, ACI_GAP_TERMINATE, ACI_GATT_ADD_CHAR,
-    ACI_GATT_ADD_SERVICE, ACI_GATT_INIT,
+    ACI_GAP_SET_NON_DISCOVERABLE, ACI_GAP_SLAVE_SECURITY_REQ, ACI_GAP_TERMINATE, ACI_GATT_INIT,
     ACI_GATT_UPDATE_CHAR_VALUE, ACI_HAL_GET_FW_BUILD_NUMBER, ACI_HAL_SET_TX_POWER_LEVEL, ACI_HAL_WRITE_CONFIG_DATA,
     ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_REQ, HCI_LE_RAND, HCI_READ_LOCAL_VERSION, HCI_SET_EVENT_MASK,
 };
 use bluenrg2::{
-    adv_filter_policy, adv_type, config, enc_key_size, event_code, evt_mask, gap_role, permission, privacy, props, service_type,
-    uuid_type, value_length, AddrKind, BdAddr, BootReason, Event, BleStatus, PairingReason, PairingStatus, VendorEvent, ATT_HEADER_LEN,
-    MAX_COMMAND, RETURN_PARAMS_MAX,
+    adv_filter_policy, adv_type, config, event_code, gap_role, privacy, AddrKind, BdAddr, BootReason, Event, BleStatus,
+    PairingReason, PairingStatus, VendorEvent, ATT_HEADER_LEN, MAX_COMMAND, RETURN_PARAMS_MAX,
 };
+use wrist_ble::{CharDecl, ServerTable, ServiceDecl};
+use wrist_bluenrg2::commands::Command;
+use wrist_bluenrg2::gatt;
 use wrist_bluenrg2::transport::{self, Counts, Read, Transport};
 use wrist_pages::{OldKey, Pairing, Prompt};
 use wrist_wake::ble::restart::{Boot, Restarts};
-use wrist_wake::ble::{timing, IntervalAsk, Lines, Outbox, PairAsk, Power, Radio, Scan, Sink, Timing};
+use wrist_wake::ble::{server, timing, IntervalAsk, Lines, Outbox, PairAsk, Power, Radio, Scan, Sink, Timing};
 
 use crate::console::Target;
 use crate::uart::Uart;
@@ -112,24 +113,12 @@ const GAP_NAME_LEN: u8 = 7;
 const TX_POWER: [u8; 2] = [0x01, 0x04];
 /// `HCI_SET_EVENT_MASK` (Core Vol 4 Part E 7.3.1).
 const EVENT_MASK: [u8; 8] = [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xBF, 0x3D];
-// Bluetooth SIG assigned numbers: the Device Information service.
-const UUID_DEVICE_INFORMATION: u16 = 0x180A;
-const UUID_MANUFACTURER_NAME: u16 = 0x2A29;
-const UUID_MODEL_NUMBER: u16 = 0x2A24;
-const UUID_FIRMWARE_REVISION: u16 = 0x2A26;
-const MANUFACTURER: &[u8] = b"wrist-rs";
-const MODEL: &[u8] = b"UNA Watch";
-// The Nordic UART Service shape, which nRF Connect's UART tab recognises:
-// 6E40000x-B5A3-F393-E0A9-E50E24DCCA9E, little-endian as the chip wants it.
-const NUS_BASE: [u8; 16] = [0x9E, 0xCA, 0xDC, 0x24, 0x0E, 0xE5, 0xA9, 0xE0, 0x93, 0xF3, 0xA3, 0xB5, 0x00, 0x00, 0x40, 0x6E];
-const NUS_SERVICE: u8 = 0x01;
-/// The central writes commands and image bytes here.
-const NUS_RX: u8 = 0x02;
-/// The watch notifies console output here.
-const NUS_TX: u8 = 0x03;
+static DEVICE_INFORMATION: [CharDecl; 3] = server::device_information(crate::version::BUILD_ID.as_bytes());
+static SERVICES: [ServiceDecl; 2] = server::services(&DEVICE_INFORMATION);
+static SERVER: ServerTable = ServerTable { services: &SERVICES };
 /// The largest ATT MTU the console takes.
 const MAX_MTU: usize = 247;
-/// The characteristics' value size: the most [`MAX_MTU`] carries.
+/// The most a console notification carries: what [`MAX_MTU`] holds.
 const NUS_VALUE_LEN: usize = MAX_MTU - ATT_HEADER_LEN;
 /// Until an exchange raises it.
 const DEFAULT_MTU: usize = bluenrg2::ATT_DEFAULT_MTU;
@@ -596,7 +585,7 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
             passkey_for: None,
             rebond_for: None,
             recount_bonds: false,
-            nus: None,
+            handles: None,
             line: [0; 192],
             line_len: 0,
             mtu: DEFAULT_MTU,
@@ -680,8 +669,8 @@ struct Link<'d> {
     passkey_for: Option<u16>,
     rebond_for: Option<u16>,
     recount_bonds: bool,
-    /// The console service: service, RX and TX characteristic handles.
-    nus: Option<(u16, u16, u16)>,
+    /// The chip's handles for [`SERVER`], once it is built.
+    handles: Option<gatt::Handles>,
     line: [u8; 192],
     line_len: usize,
     /// The negotiated ATT MTU; notifications carry `mtu - 3`.
@@ -803,7 +792,7 @@ impl Link<'_> {
                 Some(s) if s.started() => Transfer::Started,
                 Some(_) => Transfer::Claimed,
             },
-            console: (self.nus.is_some() && MIRROR.load(Ordering::Relaxed))
+            console: (self.handles.is_some() && MIRROR.load(Ordering::Relaxed))
                 .then(|| Console { pending: !OUT.is_empty() || self.outbox.holding(), next_at: tick(self.console_at) }),
             abandon_at: self.transfer.as_ref().map(|_| tick(self.last_data + TRANSFER_IDLE + one)),
             ask_at: self.pair_ask.due(),
@@ -1101,103 +1090,41 @@ impl Link<'_> {
         self.advertise().await;
     }
 
-    /// Device Information (manufacturer, model, the build) and the console (RX, TX).
+    /// [`SERVER`]'s services and characteristics, each with the value it starts with.
     async fn add_services(&mut self) -> bool {
-        let Some(dis) = self.add_service(UUID_DEVICE_INFORMATION, 7).await else {
-            return false;
-        };
-        let strings: [(u16, &[u8]); 3] = [
-            (UUID_MANUFACTURER_NAME, MANUFACTURER),
-            (UUID_MODEL_NUMBER, MODEL),
-            (UUID_FIRMWARE_REVISION, crate::version::BUILD_ID.as_bytes()),
-        ];
-        for (uuid, value) in strings {
-            let n = value.len().min(32);
-            let Some(ch) = self.add_char(dis, uuid, n).await else {
+        let mut handles = gatt::Handles::default();
+        for service in SERVER.services {
+            let Some(s) = self.added(gatt::add_service(service).as_ref()).await else {
+                self.fail_at(&["adding the ", service.name, " service"]);
                 return false;
             };
-            if self.update_value(dis, ch, &value[..n]).await != 0 {
-                return false;
+            for c in service.chars {
+                let Some(h) = self.added(gatt::add_char(s, c).as_ref()).await.filter(|&h| handles.push(s, h, c)) else {
+                    self.fail_at(&["adding a ", service.name, " characteristic"]);
+                    return false;
+                };
+                if let Some(value) = gatt::initial(s, h, c) {
+                    if self.command(value.opcode, value.params()).await.map_or(0xFF, |r| r.status) != 0 {
+                        self.fail_at(&["setting a ", service.name, " value"]);
+                        return false;
+                    }
+                }
             }
         }
-        let Some(nus) = self.add_service_128(NUS_SERVICE, 6).await else {
-            self.fail("adding the console service");
+        if handles.get(server::RX).is_none() || handles.get(server::TX).is_none() {
+            self.fail("finding the console in the server");
             return false;
-        };
-        // Write alone is not enough: with it, a bonded central's writes were neither answered nor
-        // reported (installs 140 to 143). ST's stack checks `secured` only on writes with
-        // response; `attribute_modified` drops the rest unless the link is encrypted.
-        let secured = permission::AUTHEN_WRITE | permission::ENCRY_WRITE;
-        let (Some(rx), Some(tx)) = (
-            self.add_char_128(nus, NUS_RX, props::WRITE | props::WRITE_WITHOUT_RESPONSE, secured, evt_mask::ATTRIBUTE_WRITE).await,
-            self.add_char_128(nus, NUS_TX, props::NOTIFY, permission::NONE, evt_mask::NONE).await,
-        ) else {
-            self.fail("adding a console characteristic");
-            return false;
-        };
-        self.nus = Some((nus, rx, tx));
+        }
+        self.handles = Some(handles);
         true
     }
 
-    /// A primary service with the console's 128-bit UUID, byte 12 `last`.
-    async fn add_service_128(&mut self, last: u8, max_records: u8) -> Option<u16> {
-        let mut p = [0u8; 19];
-        p[0] = uuid_type::U128;
-        p[1..17].copy_from_slice(&NUS_BASE);
-        p[13] = last;
-        p[17] = service_type::PRIMARY;
-        p[18] = max_records;
-        match self.command(ACI_GATT_ADD_SERVICE, &p).await {
+    /// The handle the chip gave what `command` added.
+    async fn added(&mut self, command: Option<&Command<{ gatt::MAX_PARAMS }>>) -> Option<u16> {
+        let c = command?;
+        match self.command(c.opcode, c.params()).await {
             Ok(r) if r.status == 0 && r.len >= 2 => Some(u16::from_le_bytes([r.params[0], r.params[1]])),
             _ => None,
-        }
-    }
-
-    /// A variable-length characteristic with the console's 128-bit UUID, byte 12 `last`.
-    async fn add_char_128(&mut self, service: u16, last: u8, props: u8, security: u8, evt_mask: u8) -> Option<u16> {
-        let mut p = [0u8; 26];
-        p[0..2].copy_from_slice(&service.to_le_bytes());
-        p[2] = uuid_type::U128;
-        p[3..19].copy_from_slice(&NUS_BASE);
-        p[15] = last;
-        p[19..21].copy_from_slice(&u16::try_from(NUS_VALUE_LEN).unwrap_or(0).to_le_bytes());
-        p[21] = props;
-        p[22] = security;
-        p[23] = evt_mask;
-        p[24] = enc_key_size::MIN;
-        p[25] = value_length::VARIABLE;
-        match self.command(ACI_GATT_ADD_CHAR, &p).await {
-            Ok(r) if r.status == 0 && r.len >= 2 => Some(u16::from_le_bytes([r.params[0], r.params[1]])),
-            _ => None,
-        }
-    }
-
-    async fn add_service(&mut self, uuid: u16, max_records: u8) -> Option<u16> {
-        let u = uuid.to_le_bytes();
-        match self.command(ACI_GATT_ADD_SERVICE, &[uuid_type::U16, u[0], u[1], service_type::PRIMARY, max_records]).await {
-            Ok(r) if r.status == 0 && r.len >= 2 => Some(u16::from_le_bytes([r.params[0], r.params[1]])),
-            _ => {
-                self.fail("adding a service");
-                None
-            }
-        }
-    }
-
-    /// A readable, variable-length characteristic with a 16-bit UUID.
-    async fn add_char(&mut self, service: u16, uuid: u16, len: usize) -> Option<u16> {
-        let sv = service.to_le_bytes();
-        let u = uuid.to_le_bytes();
-        let l = u16::try_from(len).unwrap_or(0).to_le_bytes();
-        let p = [
-            sv[0], sv[1], uuid_type::U16, u[0], u[1], l[0], l[1], props::READ, permission::NONE, evt_mask::NONE, enc_key_size::MIN,
-            value_length::VARIABLE,
-        ];
-        match self.command(ACI_GATT_ADD_CHAR, &p).await {
-            Ok(r) if r.status == 0 && r.len >= 2 => Some(u16::from_le_bytes([r.params[0], r.params[1]])),
-            _ => {
-                self.fail("adding a characteristic");
-                None
-            }
         }
     }
 
@@ -1215,7 +1142,7 @@ impl Link<'_> {
 
     /// Console output to a subscribed central, one notification per pass.
     async fn console_tick(&mut self) {
-        let Some((nus, _rx, tx)) = self.nus else {
+        let Some((service, tx)) = self.handles.and_then(|h| h.get(server::TX)) else {
             return;
         };
         // While image bytes arrive the mirror waits: notifications refused for want of TX
@@ -1231,7 +1158,7 @@ impl Link<'_> {
         if n == 0 {
             return;
         }
-        let status = self.update_value(nus, tx, &chunk[..n]).await;
+        let status = self.update_value(service, tx, &chunk[..n]).await;
         self.console_at = Instant::now() + CONSOLE_PACE;
         if self.outbox.sent(chunk, n, status).is_err() {
             self.uart.write_line("[ble] a console notification was refused");
@@ -1320,9 +1247,16 @@ impl Link<'_> {
     }
 
     fn fail(&mut self, step: &str) {
+        self.fail_at(&[step]);
+    }
+
+    fn fail_at(&mut self, step: &[&str]) {
         set_state(STATE_FAILED);
         self.uart.write_str("[ble] start failed at ");
-        self.uart.write_line(step);
+        for part in step {
+            self.uart.write_str(part);
+        }
+        self.uart.write_line("");
     }
 
     /// `ACI_GAP_SET_DISCOVERABLE`: connectable undirected at the power source's interval,
@@ -1699,7 +1633,7 @@ impl Link<'_> {
         self.link_gone();
         clear_out(self.outbox.discard());
         self.outbox = Outbox::default();
-        self.nus = None;
+        self.handles = None;
         self.mtu = DEFAULT_MTU;
         self.asked = None;
         self.advertised = None;
@@ -1735,10 +1669,11 @@ impl Link<'_> {
     /// A central wrote one of our attributes: the console's RX (bytes for the parser or a
     /// transfer) or TX's CCCD (the mirror on or off).
     fn attribute_modified(&mut self, attr: u16, piece: bool, data: &[u8]) {
-        let Some((_, rx, tx)) = self.nus else {
+        let Some(handles) = self.handles else {
             return;
         };
-        if attr == rx + 1 {
+        let part = handles.find(attr);
+        if part == Some((server::RX, gatt::Part::Value)) {
             if !ENCRYPTED.load(Ordering::Relaxed) {
                 UNSECURED.fetch_add(1, Ordering::Relaxed);
                 return self.uart.write_line("[ble] a console write over an unencrypted link: dropped");
@@ -1755,7 +1690,7 @@ impl Link<'_> {
             }
             self.last_rx = crc;
             self.console_bytes(data);
-        } else if attr == tx + 2 {
+        } else if part == Some((server::TX, gatt::Part::Config)) {
             self.subscribed = data.first().is_some_and(|b| b & 0x01 != 0);
             self.set_mirror();
         }

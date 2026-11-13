@@ -938,6 +938,7 @@ dependencies = [
  "embassy-usb",
  "log",
  "static_cell",
+ "wrist-ble",
  "wrist-bluenrg2",
  "wrist-board",
  "wrist-crash",
@@ -1239,6 +1240,7 @@ name = "wrist-wake"
 version = "0.0.0"
 dependencies = [
  "bluenrg2",
+ "wrist-ble",
 ]
 
 [[package]]

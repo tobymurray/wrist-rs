@@ -266,10 +266,14 @@ class Packaging(unittest.TestCase):
     def test_the_tools_carry_the_images_console_service(self):
         rust = lambda path, name: re.search(rf'const {name}: [^=]+= ([^;]+);', (r.ROOT/path).read_text())[1]
         ble = 'apps/standalone-boot/src/ble.rs'
-        base = [int(b, 16) for b in re.findall(r'0x([0-9A-F]{2})', rust(ble, 'NUS_BASE'))]
-        for name in ('RX', 'TX'):
+        server = (r.ROOT/'crates/wrist-wake/src/ble/server.rs').read_text()
+        base = [int(b, 16) for b in re.findall(r'0x([0-9A-F]{2})', re.search(r'let mut b = \[([^\]]+)\];', server)[1])]
+        # The console's service, then RX and TX, in the order the table declares them.
+        _, *chars = re.findall(r'uuid: nus\((0x[0-9A-F]{2})\)', server)
+        self.assertEqual(len(chars), 2)
+        for name, last in zip(('RX', 'TX'), chars):
             b = base.copy()
-            b[12] = int(rust(ble, f'NUS_{name}'), 16)
+            b[12] = int(last, 16)
             h = bytes(reversed(b)).hex()
             self.assertEqual(tool_constant('wrist_port.py', name), f'{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:]}', name)
         default, header = (int(rust('crates/bluenrg2/src/lib.rs', n)) for n in ('ATT_DEFAULT_MTU', 'ATT_HEADER_LEN'))
@@ -277,6 +281,7 @@ class Packaging(unittest.TestCase):
         self.assertEqual((tool_constant('wrist-ble.py', 'DEFAULT_MTU'), tool_constant('wrist-ble.py', 'ATT_HEADER')), (default, header))
         self.assertEqual(tool_constant('wrist-ble.py', 'VALUE_LEN'), largest - header)
         self.assertEqual(rust(ble, 'NUS_VALUE_LEN'), 'MAX_MTU - ATT_HEADER_LEN')
+        self.assertEqual(rust('crates/wrist-wake/src/ble/server.rs', 'CONSOLE_VALUE_LEN'), f'ATT_MAX_MTU - {header}')
         self.assertEqual(rust(ble, 'DEFAULT_MTU'), 'bluenrg2::ATT_DEFAULT_MTU')
         self.assertEqual(rust('crates/wrist-ble/src/lib.rs', 'ATT_MAX_MTU'), str(largest))
         self.assertIn(f'pub type Payload = Bytes<{{ ATT_MAX_MTU - {header} }}>;', (r.ROOT/'crates/wrist-ble/src/lib.rs').read_text())
