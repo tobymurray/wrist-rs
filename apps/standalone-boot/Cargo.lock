@@ -83,6 +83,8 @@ dependencies = [
 [[package]]
 name = "bluenrg2"
 version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "faf4c9b82751c2bddfd10ecae499ebae9e140bafca66289505c8d3f084e1bd72"
 dependencies = [
  "bt-hci",
 ]

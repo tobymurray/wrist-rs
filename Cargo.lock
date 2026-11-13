@@ -54,6 +54,15 @@ checksum = "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06"
 [[package]]
 name = "bluenrg2"
 version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "faf4c9b82751c2bddfd10ecae499ebae9e140bafca66289505c8d3f084e1bd72"
+dependencies = [
+ "bt-hci",
+]
+
+[[package]]
+name = "bluenrg2"
+version = "0.1.2"
 dependencies = [
  "bt-hci",
  "proptest",
@@ -1489,7 +1498,7 @@ dependencies = [
 name = "wrist-ble-sim"
 version = "0.0.0"
 dependencies = [
- "bluenrg2",
+ "bluenrg2 0.1.1",
  "proptest",
  "stateright",
  "wrist-ble",
@@ -1502,7 +1511,7 @@ dependencies = [
 name = "wrist-bluenrg2"
 version = "0.0.0"
 dependencies = [
- "bluenrg2",
+ "bluenrg2 0.1.1",
  "embassy-futures",
  "embedded-hal",
  "embedded-hal-async",
@@ -1605,7 +1614,7 @@ version = "0.0.0"
 name = "wrist-wake"
 version = "0.0.0"
 dependencies = [
- "bluenrg2",
+ "bluenrg2 0.1.1",
  "wrist-ble",
 ]
 

@@ -10,5 +10,4 @@ panic = "abort"
 # This repository's bluenrg2. Uncomment inscribed-disc to build against a watch-apps checkout beside
 # this repository.
 [patch.crates-io]
-bluenrg2 = { path = "crates/bluenrg2" }
 # inscribed-disc = { path = "../watch-apps/InscribedDisc" }

@@ -82,8 +82,6 @@ embassy-crypto = { git = "https://github.com/embassy-rs/embassy", rev = "cf9beb7
 embassy-usb-driver = { git = "https://github.com/embassy-rs/embassy", rev = "cf9beb7173159ce1b60dadb9be11583c20c7949a" }
 embassy-usb-synopsys-otg = { git = "https://github.com/embassy-rs/embassy", rev = "cf9beb7173159ce1b60dadb9be11583c20c7949a" }
 embassy-usb = { git = "https://github.com/embassy-rs/embassy", rev = "cf9beb7173159ce1b60dadb9be11583c20c7949a" }
-# This repository's bluenrg2.
-bluenrg2 = { path = "../../crates/bluenrg2" }
 
 # What draws the face is built for speed rather than size.
 [profile.release.package.wrist-glass]
