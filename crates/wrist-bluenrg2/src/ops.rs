@@ -1,6 +1,6 @@
 //! The operations the chip has taken: their ids, their deadlines, and what ends each.
 
-use wrist_ble::{ConnHandle, Failure, FailureKind, LinkStatus, Op, OpId, OpKind, Outcome, PairingEvent, RadioEvent, SchedKind, MAX_LINKS};
+use wrist_ble::{ConnHandle, Failure, FailureKind, LeConnRole, LinkStatus, Op, OpId, OpKind, Outcome, PairingEvent, RadioEvent, SchedKind, MAX_LINKS};
 
 use crate::driver::Unanswered;
 
@@ -27,11 +27,20 @@ pub struct Ops {
     lost: bool,
     /// Links seen going down and not up since, oldest first; let go when events are lost.
     down: [Option<ConnHandle>; MAX_LINKS],
+    /// Links the watch holds as peripheral: an ask on one ends with the central's L2CAP answer.
+    peripheral: [Option<ConnHandle>; MAX_LINKS],
 }
 
 impl Default for Ops {
     fn default() -> Self {
-        Self { pending: [None; MAX_PENDING], next: 0, ended: [None; MAX_ENDED], lost: false, down: [None; MAX_LINKS] }
+        Self {
+            pending: [None; MAX_PENDING],
+            next: 0,
+            ended: [None; MAX_ENDED],
+            lost: false,
+            down: [None; MAX_LINKS],
+            peripheral: [None; MAX_LINKS],
+        }
     }
 }
 
@@ -50,6 +59,16 @@ pub fn refusal(status: u8) -> Failure {
         _ => FailureKind::Unknown,
     };
     Failure { kind, native: u16::from(status) }
+}
+
+/// `op`'s refusal: as [`refusal`] reads it, but an interval ask refused `BLE_STATUS_NOT_ALLOWED`
+/// is busy, since the chip holds one L2CAP request at a time until the central answers it.
+#[must_use]
+pub fn refused(op: &Op, status: u8) -> Failure {
+    match (op.kind(), status) {
+        (OpKind::UpdateParams, 0x46) => Failure { kind: FailureKind::Busy, native: 0x46 },
+        _ => refusal(status),
+    }
 }
 
 /// A command that got no answer, as the core sees it.
@@ -73,7 +92,7 @@ impl Ops {
     /// The chip refused it, or more are waiting than fit.
     pub fn answered(&mut self, op: &Op, status: u8, deadline: u64) -> Result<OpId, Failure> {
         if status != 0 {
-            return Err(refusal(status));
+            return Err(refused(op, status));
         }
         let kind = op.kind();
         let id = OpId(self.next);
@@ -94,10 +113,19 @@ impl Ops {
     /// that restarted holds none.
     pub fn saw(&mut self, event: &RadioEvent) {
         match *event {
-            RadioEvent::Ready(_) | RadioEvent::ChipReset(_) => self.pending = [None; MAX_PENDING],
+            RadioEvent::Ready(_) | RadioEvent::ChipReset(_) => {
+                self.pending = [None; MAX_PENDING];
+                self.peripheral = [None; MAX_LINKS];
+            }
             RadioEvent::EventsLost => self.down = [None; MAX_LINKS],
-            RadioEvent::LinkUp { link, .. } => {
+            RadioEvent::LinkUp { link, role, .. } => {
                 self.settle(|p| p.kind == OpKind::Connect, None);
+                self.forget_role(link);
+                if role == LeConnRole::Peripheral {
+                    if let Some(free) = self.peripheral.iter_mut().find(|p| p.is_none()) {
+                        *free = Some(link);
+                    }
+                }
                 if let Some(i) = self.down.iter().position(|d| *d == Some(link)) {
                     self.down.copy_within(i + 1.., i);
                     self.down[MAX_LINKS - 1] = None;
@@ -105,6 +133,7 @@ impl Ops {
             }
             RadioEvent::LinkDown { link, .. } => {
                 self.went_down(link);
+                self.forget_role(link);
                 if !self.down.contains(&Some(link)) {
                     if let Some(i) = self.down.iter().position(Option::is_none) {
                         self.down[i] = Some(link);
@@ -114,7 +143,11 @@ impl Ops {
                     }
                 }
             }
-            RadioEvent::Params { link, .. } => self.settle(|p| p.kind == OpKind::UpdateParams && p.link == Some(link), None),
+            // On a peripheral link the central's answer has ended the ask (`Ops::responded`): an
+            // update completing there may be an earlier ask's, with a newer one now on air.
+            RadioEvent::Params { link, .. } if !self.peripheral.contains(&Some(link)) => {
+                self.settle(|p| p.kind == OpKind::UpdateParams && p.link == Some(link), None);
+            }
             RadioEvent::Encryption { link, .. } | RadioEvent::Pairing(PairingEvent { link, .. }) => {
                 self.settle(|p| p.kind == OpKind::RequestSecurity && p.link == Some(link), None);
             }
@@ -122,12 +155,23 @@ impl Ops {
         }
     }
 
-    /// The central took the parameters asked of it on `link`: the oldest ask is done.
-    pub fn accepted(&mut self, link: ConnHandle) {
+    /// The central answered the parameters asked of it on `link`: the oldest ask is done if it
+    /// took them, and ended by the refusal's own event if not.
+    pub fn responded(&mut self, link: ConnHandle, accepted: bool) {
         let next = self.next;
         let asks = self.pending.iter_mut().filter(|p| p.is_some_and(|p| p.kind == OpKind::UpdateParams && p.link == Some(link)));
         if let Some(p) = asks.max_by_key(|p| p.map_or(0, |p| next.wrapping_sub(p.id.0))).and_then(Option::take) {
-            self.end(p.id, Ok(()));
+            if accepted {
+                self.end(p.id, Ok(()));
+            }
+        }
+    }
+
+    fn forget_role(&mut self, link: ConnHandle) {
+        for p in &mut self.peripheral {
+            if *p == Some(link) {
+                *p = None;
+            }
         }
     }
 
