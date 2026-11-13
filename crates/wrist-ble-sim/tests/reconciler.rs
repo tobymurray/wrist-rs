@@ -8,7 +8,7 @@ use wrist_ble::{
 use wrist_ble_core::engine::{Core, Input, Outputs, ASKS_PER_WANT, BUSY_BUDGET};
 use wrist_ble_core::goals::{Goals, PhoneGoal, Power};
 use wrist_ble_core::phone::SETTLE;
-use wrist_ble_sim::fake::INFO;
+use wrist_bluenrg2::INFO;
 use wrist_ble_shadow::menu::MENU;
 use wrist_bluenrg2::{Scheduler, CAPABILITIES};
 

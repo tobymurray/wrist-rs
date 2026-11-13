@@ -10,7 +10,7 @@ use wrist_ble_core::peripheral::{Stage, StopReason, GIVE_UP};
 use wrist_ble_core::phone::{ASK_TO_PAIR_AFTER, NUMERIC_DEADLINE};
 use wrist_ble_core::profile::{Cadence, Contact, Kind, Profile, Reading, SecurityNeed, Silence};
 use wrist_ble_core::status::{status, PeerState, PhoneStatus};
-use wrist_ble_sim::fake::INFO;
+use wrist_bluenrg2::INFO;
 use wrist_bluenrg2::{Scheduler, CAPABILITIES};
 use wrist_ble_shadow::menu::MENU;
 

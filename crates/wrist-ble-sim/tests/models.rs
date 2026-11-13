@@ -9,7 +9,7 @@ use wrist_ble_core::phone::{self, Phone, Security};
 use wrist_ble_core::plan::Conflict;
 use wrist_ble_core::profile::{Cadence, Contact, Kind, Profile, Reading, SecurityNeed, Silence};
 use wrist_ble_core::status::{peer_state, PeerState};
-use wrist_ble_sim::fake::INFO;
+use wrist_bluenrg2::INFO;
 use wrist_bluenrg2::CAPABILITIES;
 
 /// Acts of the radio or the user between two moves of time.

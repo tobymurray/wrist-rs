@@ -396,7 +396,7 @@ fn a_reset_takes_every_link_and_operation_with_it() {
 #[test]
 fn a_reboot_drops_every_link_and_says_why_once_up() {
     for (cause, event, up) in [
-        (ResetCause::PowerOn, RadioEvent::Ready(wrist_ble_sim::fake::INFO), true),
+        (ResetCause::PowerOn, RadioEvent::Ready(wrist_bluenrg2::INFO), true),
         (ResetCause::Watchdog, RadioEvent::ChipReset(ResetCause::Watchdog), true),
         (ResetCause::Updater, RadioEvent::ChipReset(ResetCause::Updater), false),
     ] {

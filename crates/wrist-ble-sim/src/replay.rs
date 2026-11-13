@@ -12,8 +12,7 @@ use wrist_ble_core::goals::{Goals, PhoneGoal, Power};
 use wrist_ble_core::{status, State};
 use wrist_ble_shadow::verdict::Disagreement;
 use wrist_ble_shadow::{DriverOp, Observer, Shadow};
-
-use crate::fake::INFO;
+use wrist_bluenrg2::INFO;
 
 /// One line of the replay's timeline.
 #[derive(Clone, Debug, PartialEq, Eq)]
