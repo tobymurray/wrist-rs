@@ -137,7 +137,7 @@ impl Snap {
             }
             Ask::Security(i) => {
                 if let Some(l) = &mut self.snapshot.links[i] {
-                    l.encrypted = SecurityLevel::decode(&r.params[..r.len]).filter(|_| r.status == 0).map(|s| s.encrypted());
+                    l.encrypted = SecurityLevel::decode(&r.params[..r.len]).filter(|_| r.status == 0).map(SecurityLevel::is_encrypted);
                 }
                 Ok(self.security_from(i + 1))
             }
