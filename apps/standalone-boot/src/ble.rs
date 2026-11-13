@@ -564,8 +564,8 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
             continue;
         }
         crate::rtc::set_radio_wanted(true);
-        let mut link = Link {
-            chip: chip(
+        let mut link = Link::new(
+            chip(
                 (pins.spi.reborrow(), pins.sck.reborrow(), pins.miso.reborrow(), pins.mosi.reborrow()),
                 (pins.cs.reborrow(), pins.irq.reborrow(), pins.irq_exti.reborrow()),
                 (pins.tx_dma.reborrow(), pins.rx_dma.reborrow()),
@@ -573,32 +573,7 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
             ),
             uart,
             flash,
-            last_rx: 0,
-            readvertise: false,
-            passkey_for: None,
-            rebond_for: None,
-            recount_bonds: false,
-            line: [0; 192],
-            line_len: 0,
-            mtu: DEFAULT_MTU,
-            asked: None,
-            advertised: None,
-            request_interval: None,
-            subscribed: false,
-            peer: None,
-            transfer: None,
-            last_data: Instant::from_ticks(0),
-            finish_transfer: false,
-            console_at: Instant::from_ticks(0),
-            outbox: Outbox::default(),
-            pair_ask: PairAsk::default(),
-            interval_ask: IntervalAsk::default(),
-            scanner: scan::Scanner::default(),
-            seen: Seen::default(),
-            boot: None,
-            restart: None,
-            restarts: Restarts::default(),
-        };
+        );
         // A start, or a restart's recovery, that failed.
         if !(link.start().await && link.serve(&mut changes).await) {
             set_state(STATE_FAILED);
@@ -699,6 +674,41 @@ struct Link<'d> {
     /// The chip restarted by itself and has not been brought up again.
     restart: Option<Boot>,
     restarts: Restarts,
+}
+
+impl<'d> Link<'d> {
+    fn new(chip: Chip<'d>, uart: Uart, flash: &'static FlashMutex) -> Self {
+        Self {
+            chip,
+            uart,
+            flash,
+            last_rx: 0,
+            readvertise: false,
+            passkey_for: None,
+            rebond_for: None,
+            recount_bonds: false,
+            line: [0; 192],
+            line_len: 0,
+            mtu: DEFAULT_MTU,
+            asked: None,
+            advertised: None,
+            request_interval: None,
+            subscribed: false,
+            peer: None,
+            transfer: None,
+            last_data: Instant::from_ticks(0),
+            finish_transfer: false,
+            console_at: Instant::from_ticks(0),
+            outbox: Outbox::default(),
+            pair_ask: PairAsk::default(),
+            interval_ask: IntervalAsk::default(),
+            scanner: scan::Scanner::default(),
+            seen: Seen::default(),
+            boot: None,
+            restart: None,
+            restarts: Restarts::default(),
+        }
+    }
 }
 
 /// Codes of unknown events already named on the console: each is named once.
