@@ -1,6 +1,6 @@
 //! The `ACI_HAL` reads' return parameters, decoded.
 
-use bluenrg2::hal::{updater_version, AnchorPeriod, FirmwareDetails, LinkStatus};
+use bluenrg2::hal::{link_status, updater_version, AnchorPeriod, FirmwareDetails, LinkStatus};
 
 const FIRMWARE: [u8; 14] = [2, 1, 0, 0x02, 0x34, 0x12, 2, 2, 1, 0, 0x0F, 0x00, 0x31, 0x09];
 
@@ -48,8 +48,20 @@ fn the_updater_version_is_the_first_byte() {
 #[test]
 fn link_status_is_eight_states_then_eight_handles_little_endian() {
     let p: Vec<u8> = (0..24).collect();
-    let LinkStatus { link_status, link_connection_handle, .. } = LinkStatus::decode(&p).unwrap();
-    assert_eq!(link_status, [0, 1, 2, 3, 4, 5, 6, 7]);
+    let LinkStatus { link_status: states, link_connection_handle, .. } =
+        LinkStatus::decode(&p).unwrap();
+    assert_eq!(states, [0, 1, 2, 3, 4, 5, 6, 7]);
+    let named = [
+        link_status::IDLE,
+        link_status::ADVERTISING,
+        link_status::PERIPHERAL,
+        link_status::SCANNING,
+        link_status::INITIATING,
+        link_status::CENTRAL,
+        link_status::TX_TEST,
+        link_status::RX_TEST,
+    ];
+    assert_eq!(states, named);
     assert_eq!(
         link_connection_handle,
         [0x0908, 0x0B0A, 0x0D0C, 0x0F0E, 0x1110, 0x1312, 0x1514, 0x1716]

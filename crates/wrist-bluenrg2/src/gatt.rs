@@ -11,6 +11,8 @@ pub const MAX_VALUE: usize = ATT_MAX_MTU - 3;
 /// The most characteristics a server here holds.
 pub const MAX_CHARS: usize = 16;
 
+const AUTHENTICATED_WRITE: u8 = 0x28;
+
 /// The chip's UUID type and the bytes, little-endian; a 32-bit UUID goes as its 128 bits.
 fn uuid(u: &BluetoothUuid) -> (u8, [u8; 16], usize) {
     match u {
@@ -61,7 +63,7 @@ pub fn add_char(service: u16, c: &CharDecl) -> Option<Command> {
         _ if !writable(c) => permission::NONE,
         Permission::Open => permission::NONE,
         Permission::Encrypted => permission::ENCRY_WRITE,
-        Permission::Authenticated => permission::AUTHENTICATED_WRITE,
+        Permission::Authenticated => AUTHENTICATED_WRITE,
     };
     let events = if writable(c) { evt_mask::ATTRIBUTE_WRITE } else { evt_mask::NONE };
     Command::new(

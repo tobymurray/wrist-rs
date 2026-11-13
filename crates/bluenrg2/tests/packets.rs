@@ -922,8 +922,9 @@ fn a_security_level_is_its_mode_then_its_level_and_encrypted_from_mode_1_level_2
         [(1, 1, false), (1, 2, true), (1, 4, true), (2, 1, false), (2, 2, false)]
     {
         let s = SecurityLevel::decode(&[mode, level]).unwrap();
-        assert_eq!(s.encrypted(), encrypted, "mode {mode}, level {level}");
+        assert_eq!(s.is_encrypted(), encrypted, "mode {mode}, level {level}");
     }
+    assert_eq!(SecurityLevel::decode(&[1, 3]).map(SecurityLevel::is_encrypted), Some(true));
 }
 
 #[test]

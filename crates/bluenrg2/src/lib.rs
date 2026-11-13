@@ -149,7 +149,7 @@ pub const fn static_random(bits: u64) -> BdAddr {
     BdAddr(a)
 }
 
-/// `ACI_GATT_ADD_CHAR`'s security permissions (ST's `ble_defs.h`).
+/// `ACI_GATT_ADD_CHAR`'s security permissions (ST's `bluenrg1_gatt_server.h`).
 pub mod permission {
     pub const NONE: u8 = 0x00;
     /// Reads only over a link encrypted with authenticated (MITM-protected) keys.
@@ -158,15 +158,12 @@ pub mod permission {
     pub const AUTHOR_READ: u8 = 0x02;
     /// Reads only over an encrypted link.
     pub const ENCRY_READ: u8 = 0x04;
-    /// Writes only over a link encrypted with authenticated (MITM-protected) keys.
+    /// Writes only with authenticated (MITM-protected) keys.
     pub const AUTHEN_WRITE: u8 = 0x08;
     /// Writes only once the application authorizes each.
     pub const AUTHOR_WRITE: u8 = 0x10;
     /// Writes only over an encrypted link.
     pub const ENCRY_WRITE: u8 = 0x20;
-    /// [`AUTHEN_WRITE`] and [`ENCRY_WRITE`] together: writes only over a link encrypted with
-    /// authenticated keys.
-    pub const AUTHENTICATED_WRITE: u8 = 0x28;
 }
 
 /// ST's vendor event codes (event 0xFF).
@@ -1030,10 +1027,9 @@ impl SecurityLevel {
         Some(Self { security_mode, security_level })
     }
 
-    /// Whether the link is encrypted: LE security mode 1 at level 2 or above (Core Vol 3 Part C
-    /// 10.2.1).
+    /// LE security mode 1 at level 2 or above (Core Vol 3 Part C 10.2.1).
     #[must_use]
-    pub const fn encrypted(&self) -> bool {
+    pub const fn is_encrypted(self) -> bool {
         self.security_mode == 1 && self.security_level >= 2
     }
 }

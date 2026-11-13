@@ -1,7 +1,7 @@
 //! The chip's own account of its links: `ACI_HAL_GET_LINK_STATUS`, `ACI_HAL_GET_ANCHOR_PERIOD`,
 //! then `ACI_GAP_GET_SECURITY_LEVEL` for each link, pulled a command at a time.
 
-use bluenrg2::hal::{self, AnchorPeriod};
+use bluenrg2::hal::{self, link_status, AnchorPeriod};
 use bluenrg2::opcode::{ACI_GAP_GET_SECURITY_LEVEL, ACI_HAL_GET_ANCHOR_PERIOD, ACI_HAL_GET_LINK_STATUS};
 use bluenrg2::SecurityLevel;
 use embedded_hal::digital::{InputPin, OutputPin};
@@ -17,16 +17,6 @@ use crate::commands::Command;
 use crate::driver::{Clock, Driver, Got, Reply, Unanswered};
 use crate::transport::MAX_READ;
 use crate::{ops, SLOT};
-
-/// A link's state in `ACI_HAL_GET_LINK_STATUS`'s reply, numbered as the radio's activities are in
-/// ST's `bluenrg1_events.h`.
-pub mod slot {
-    pub const ADVERTISING: u8 = 0x01;
-    pub const PERIPHERAL: u8 = 0x02;
-    pub const SCANNING: u8 = 0x03;
-    pub const INITIATING: u8 = 0x04;
-    pub const CENTRAL: u8 = 0x05;
-}
 
 /// The peer of a link whose connection the driver never saw.
 pub const UNSEEN: PeerAddr = PeerAddr { kind: AddrKind::PUBLIC, addr: BdAddr([0; 6]) };
@@ -137,7 +127,7 @@ impl Snap {
             }
             Ask::Security(i) => {
                 if let Some(l) = &mut self.snapshot.links[i] {
-                    l.encrypted = SecurityLevel::decode(&r.params[..r.len]).filter(|_| r.status == 0).map(|s| s.encrypted());
+                    l.encrypted = SecurityLevel::decode(&r.params[..r.len]).filter(|_| r.status == 0).map(SecurityLevel::is_encrypted);
                 }
                 Ok(self.security_from(i + 1))
             }
@@ -150,17 +140,17 @@ impl Snap {
         s.at = Instant(now);
         for ((out, &state), &handle) in s.links.iter_mut().zip(&links.link_status).zip(&links.link_connection_handle) {
             let role = match state {
-                slot::PERIPHERAL => LeConnRole::Peripheral,
-                slot::CENTRAL => LeConnRole::Central,
+                link_status::PERIPHERAL => LeConnRole::Peripheral,
+                link_status::CENTRAL => LeConnRole::Central,
                 _ => continue,
             };
             if let Some(link) = bluenrg2::conn_handle(handle) {
                 *out = Some(LinkStatus { link, role, peer: peers.of(link).unwrap_or(UNSEEN), encrypted: None });
             }
         }
-        s.advertising = links.link_status.contains(&slot::ADVERTISING);
-        s.scanning = links.link_status.contains(&slot::SCANNING);
-        s.initiating = links.link_status.contains(&slot::INITIATING);
+        s.advertising = links.link_status.contains(&link_status::ADVERTISING);
+        s.scanning = links.link_status.contains(&link_status::SCANNING);
+        s.initiating = links.link_status.contains(&link_status::INITIATING);
     }
 }
 
