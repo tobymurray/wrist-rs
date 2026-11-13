@@ -166,6 +166,9 @@ enum Request {
 }
 
 static REQUESTS: Channel<CriticalSectionRawMutex, Request, 4> = Channel::new();
+/// A line from the central's RX and its length, for [`commands`].
+type Line = ([u8; 192], usize);
+static LINES_IN: Channel<CriticalSectionRawMutex, Line, 4> = Channel::new();
 /// Raised by other tasks that leave the loop work it cannot see coming: console output for a
 /// subscribed central. The loop clears it before it reads that state.
 static WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
@@ -612,6 +615,16 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
     }
 }
 
+/// The central's commands, run by the USB console's parser in a task of their own, so the
+/// radio's task is never held while one writes its output.
+#[embassy_executor::task]
+pub async fn commands(flash: &'static FlashMutex) -> ! {
+    loop {
+        let (line, n) = LINES_IN.receive().await;
+        crate::console::command(&line[..n], flash);
+    }
+}
+
 type Chip<'d> = Driver<'static, Spi<'d, Async, spi::mode::Master>, Output<'d>, ExtiInput<'d, Async>, Delay, &'d mut Output<'static>, Now>;
 
 /// The driver's clock: embassy's.
@@ -660,8 +673,7 @@ struct Link<'d> {
     passkey_for: Option<u16>,
     rebond_for: Option<u16>,
     recount_bonds: bool,
-    line: [u8; 192],
-    line_len: usize,
+    line: Line,
     /// The negotiated ATT MTU; notifications carry `mtu - 3`.
     mtu: usize,
     /// The timing last asked of this connection, and the one advertising runs at.
@@ -704,8 +716,7 @@ impl<'d> Link<'d> {
             passkey_for: None,
             rebond_for: None,
             recount_bonds: false,
-            line: [0; 192],
-            line_len: 0,
+            line: ([0; 192], 0),
             mtu: DEFAULT_MTU,
             asked: None,
             advertised: None,
@@ -1187,9 +1198,9 @@ impl Link<'_> {
         for &b in data {
             match b {
                 b'\r' | b'\n' => self.run_line(),
-                _ if self.line_len < self.line.len() => {
-                    self.line[self.line_len] = b;
-                    self.line_len += 1;
+                _ if self.line.1 < self.line.0.len() => {
+                    self.line.0[self.line.1] = b;
+                    self.line.1 += 1;
                 }
                 _ => {}
             }
@@ -1199,18 +1210,21 @@ impl Link<'_> {
         self.run_line();
     }
 
+    /// A transfer starts here; any other command goes to [`commands`], since one can take
+    /// milliseconds to write its output.
     fn run_line(&mut self) {
-        if self.line_len == 0 {
+        let (line, n) = core::mem::replace(&mut self.line, ([0; 192], 0));
+        if n == 0 {
             return;
         }
-        let mut line = [0u8; 192];
-        let n = self.line_len;
-        line[..n].copy_from_slice(&self.line[..n]);
-        self.line_len = 0;
         match crate::console::parse_transfer(&line[..n]) {
             Some((Target::Application, len, crc)) => self.start_transfer(len, crc),
             Some((Target::Loader, ..)) => self.uart.write_line("[loader] error: not over the air; USB only"),
-            None => crate::console::command(&line[..n], self.flash),
+            None => {
+                if LINES_IN.try_send((line, n)).is_err() {
+                    self.uart.write_line("[ble] command dropped: four already waiting");
+                }
+            }
         }
     }
 

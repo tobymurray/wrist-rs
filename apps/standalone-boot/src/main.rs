@@ -462,6 +462,8 @@ fn main() -> ! {
             )
             .unwrap(),
         );
+        #[cfg(feature = "ble")]
+        spawn(spawner, "air", ble::commands(flash).unwrap());
     })
 }
 
