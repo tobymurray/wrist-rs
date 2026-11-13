@@ -32,6 +32,8 @@ jobs:
           set -euo pipefail
           git diff "$BASE"...HEAD > "$RUNNER_TEMP/diff"
           cargo mutants --cargo-arg=--locked --in-diff "$RUNNER_TEMP/diff" -p bluenrg2 -p wrist-ble -p wrist-bluenrg2 -p wrist-ble-sim --timeout 300 -o "$RUNNER_TEMP"
+          # Every mutant unviable means none was tested.
+          jq -e '.total_mutants == 0 or .unviable < .total_mutants' "$RUNNER_TEMP/mutants.out/outcomes.json" > /dev/null
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
