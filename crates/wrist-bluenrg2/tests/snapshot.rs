@@ -5,7 +5,7 @@ mod common;
 
 use std::cell::RefCell;
 
-use bluenrg2::hal::link_state;
+use bluenrg2::hal::link_status;
 use bluenrg2::opcode::{ACI_GAP_GET_SECURITY_LEVEL, ACI_HAL_GET_ANCHOR_PERIOD, ACI_HAL_GET_LINK_STATUS};
 use common::{driver, event, Shared, TestDriver};
 use embassy_futures::block_on;
@@ -142,7 +142,7 @@ fn sent(notes: &[Snapping]) -> Vec<(u16, Vec<u8>)> {
 #[test]
 fn a_snapshot_reads_the_links_the_anchor_and_each_links_security_in_turn() {
     let (c, mut d) = scripted(Script {
-        links: Some((0x00, link_status(&[(link_state::ADVERTISING, 0), (link_state::PERIPHERAL, 0x0801), (link_state::CENTRAL, 0x0802)]))),
+        links: Some((0x00, link_status(&[(link_status::ADVERTISING, 0), (link_status::PERIPHERAL, 0x0801), (link_status::CENTRAL, 0x0802)]))),
         anchor: Some((0x00, anchor_period(168, 139))),
         security: vec![(0x0801, 1, 2), (0x0802, 1, 1)],
         ..Script::default()
@@ -164,12 +164,12 @@ fn a_snapshot_reads_the_links_the_anchor_and_each_links_security_in_turn() {
 #[test]
 fn each_slots_state_says_what_it_holds() {
     let slots = [
-        (link_state::SCANNING, 0),
-        (link_state::INITIATING, 0),
-        (link_state::PERIPHERAL, 0x0F00),
+        (link_status::SCANNING, 0),
+        (link_status::INITIATING, 0),
+        (link_status::PERIPHERAL, 0x0F00),
         (0x00, 0x0803),
         (0x06, 0x0804),
-        (link_state::CENTRAL, 0x0EFF),
+        (link_status::CENTRAL, 0x0EFF),
     ];
     let (_, mut d) = scripted(Script { links: Some((0x00, link_status(&slots))), anchor: Some((0x00, anchor_period(0, 0))), ..Script::default() });
     let s = snapshot(&mut d).1.unwrap();
@@ -183,7 +183,7 @@ fn each_slots_state_says_what_it_holds() {
 #[test]
 fn a_link_seen_to_go_down_or_reset_away_has_no_peer_the_driver_knows() {
     let script = Script {
-        links: Some((0x00, link_status(&[(link_state::PERIPHERAL, 0x0801), (link_state::PERIPHERAL, 0x0802)]))),
+        links: Some((0x00, link_status(&[(link_status::PERIPHERAL, 0x0801), (link_status::PERIPHERAL, 0x0802)]))),
         anchor: Some((0x0C, vec![])),
         ..Script::default()
     };
@@ -205,7 +205,7 @@ fn a_link_seen_to_go_down_or_reset_away_has_no_peer_the_driver_knows() {
 fn a_link_is_encrypted_at_security_level_2_or_above_in_mode_1() {
     let handles = [0x0801, 0x0802, 0x0803, 0x0804, 0x0805];
     let (_, mut d) = scripted(Script {
-        links: Some((0x00, link_status(&handles.map(|h| (link_state::PERIPHERAL, h))))),
+        links: Some((0x00, link_status(&handles.map(|h| (link_status::PERIPHERAL, h))))),
         anchor: Some((0x00, anchor_period(0, 0))),
         security: vec![(0x0801, 1, 1), (0x0802, 1, 2), (0x0803, 1, 4), (0x0804, 2, 2)],
         ..Script::default()
@@ -265,7 +265,7 @@ fn a_chip_that_restarted_is_asked_nothing() {
 #[test]
 fn an_operation_on_a_link_the_snapshot_lacks_ends_as_not_connected() {
     let (_, mut d) = scripted(Script {
-        links: Some((0x00, link_status(&[(link_state::PERIPHERAL, 0x0802)]))),
+        links: Some((0x00, link_status(&[(link_status::PERIPHERAL, 0x0802)]))),
         anchor: Some((0x00, anchor_period(0, 0))),
         security: vec![(0x0802, 1, 2)],
         ..Script::default()
@@ -290,7 +290,7 @@ fn an_anchor_with_no_slot_free_is_still_an_anchor() {
 #[test]
 fn a_chip_that_restarts_after_the_last_answer_has_no_snapshot() {
     let (_, mut d) = scripted(Script {
-        links: Some((0x00, link_status(&[(link_state::PERIPHERAL, 0x0801)]))),
+        links: Some((0x00, link_status(&[(link_status::PERIPHERAL, 0x0801)]))),
         anchor: Some((0x00, anchor_period(0, 0))),
         security: vec![(0x0801, 1, 2)],
         restart_after: Some(ACI_GAP_GET_SECURITY_LEVEL),

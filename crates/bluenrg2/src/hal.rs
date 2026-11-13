@@ -73,7 +73,7 @@ pub const LINKS: usize = 8;
 
 /// A link's state in [`LinkStatus`], numbered as the radio's activities are in ST's
 /// `bluenrg1_events.h`.
-pub mod link_state {
+pub mod link_status {
     pub const IDLE: u8 = 0x00;
     pub const ADVERTISING: u8 = 0x01;
     pub const PERIPHERAL: u8 = 0x02;
@@ -84,14 +84,13 @@ pub mod link_state {
     pub const RX_TEST: u8 = 0x07;
 }
 
-/// `ACI_HAL_GET_LINK_STATUS`'s return parameters: each link's state, then each link's connection
-/// handle.
+/// `ACI_HAL_GET_LINK_STATUS`'s return parameters: each link's state, then a handle for each.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct LinkStatus {
     pub link_status: [u8; LINKS],
-    /// A connection handle only where the link's state is [`link_state::PERIPHERAL`] or
-    /// [`link_state::CENTRAL`].
+    /// A connection handle only where the link's state is [`link_status::PERIPHERAL`] or
+    /// [`link_status::CENTRAL`].
     pub link_connection_handle: [u16; LINKS],
 }
 
