@@ -149,7 +149,7 @@ pub const fn static_random(bits: u64) -> BdAddr {
     BdAddr(a)
 }
 
-/// `ACI_GATT_ADD_CHAR`'s security permissions (ST's `ble_defs.h`).
+/// `ACI_GATT_ADD_CHAR`'s security permissions (ST's `bluenrg1_gatt_server.h`).
 pub mod permission {
     pub const NONE: u8 = 0x00;
     /// Reads only over a link encrypted with authenticated (MITM-protected) keys.
