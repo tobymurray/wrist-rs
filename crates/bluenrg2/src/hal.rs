@@ -71,12 +71,27 @@ pub fn updater_version(p: &[u8]) -> Option<u8> {
 /// The links `ACI_HAL_GET_LINK_STATUS` reports.
 pub const LINKS: usize = 8;
 
+/// A link's state in [`LinkStatus`], numbered as the radio's activities are in ST's
+/// `bluenrg1_events.h`.
+pub mod link_state {
+    pub const IDLE: u8 = 0x00;
+    pub const ADVERTISING: u8 = 0x01;
+    pub const PERIPHERAL: u8 = 0x02;
+    pub const SCANNING: u8 = 0x03;
+    pub const INITIATING: u8 = 0x04;
+    pub const CENTRAL: u8 = 0x05;
+    pub const TX_TEST: u8 = 0x06;
+    pub const RX_TEST: u8 = 0x07;
+}
+
 /// `ACI_HAL_GET_LINK_STATUS`'s return parameters: each link's state, then each link's connection
 /// handle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct LinkStatus {
     pub link_status: [u8; LINKS],
+    /// A connection's only where the link's state is [`link_state::PERIPHERAL`] or
+    /// [`link_state::CENTRAL`].
     pub link_connection_handle: [u16; LINKS],
 }
 
