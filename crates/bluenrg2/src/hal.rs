@@ -90,7 +90,7 @@ pub mod link_state {
 #[non_exhaustive]
 pub struct LinkStatus {
     pub link_status: [u8; LINKS],
-    /// A connection's only where the link's state is [`link_state::PERIPHERAL`] or
+    /// A connection handle only where the link's state is [`link_state::PERIPHERAL`] or
     /// [`link_state::CENTRAL`].
     pub link_connection_handle: [u16; LINKS],
 }

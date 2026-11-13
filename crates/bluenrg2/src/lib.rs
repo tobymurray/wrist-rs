@@ -1027,8 +1027,7 @@ impl SecurityLevel {
         Some(Self { security_mode, security_level })
     }
 
-    /// Whether the link is encrypted: LE security mode 1 at level 2 or above (Core Vol 3 Part C
-    /// 10.2.1).
+    /// LE security mode 1 at level 2 or above (Core Vol 3 Part C 10.2.1).
     #[must_use]
     pub const fn is_encrypted(self) -> bool {
         self.security_mode == 1 && self.security_level >= 2
