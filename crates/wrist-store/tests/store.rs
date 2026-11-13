@@ -61,7 +61,7 @@ fn every_plan_stays_on_blank_store_pages_and_never_mirrors_the_boot_path() {
                 }
                 for page in pages {
                     assert_eq!(map[page.index()], Page::Blank);
-                    // Read as a bank 1 page, never the bootloader, a partition or the state.
+                    // Read as a bank 1 page, never UNA's code, a partition or the state.
                     assert!(u16::from(page.pnb()) >= bank1::UNUSED.start);
                 }
             }

@@ -8,8 +8,12 @@ pub const PAGES_PER_BANK: u16 = 256;
 pub mod bank1 {
     use core::ops::Range;
 
-    /// The vendor bootloader's partition; wrist-rs writes only [`RECORD_PAGE`] in it.
-    pub const BOOTLOADER: Range<u16> = 0..48;
+    /// The vendor bootloader; never written.
+    pub const BOOTLOADER: Range<u16> = 0..20;
+    /// UNA's shared C library (`HARDWARE.md`); wrist-rs writes only [`RECORD_PAGE`] in it.
+    pub const LIBRARY: Range<u16> = 20..48;
+    /// Blank in the library image UNA publishes (`HARDWARE.md`).
+    pub const LIBRARY_BLANK: Range<u16> = 38..47;
     /// The installer's outcome record.
     pub const RECORD_PAGE: u16 = 45;
     pub const LOADER: Range<u16> = 48..52;
@@ -28,13 +32,13 @@ pub mod bank2 {
 
     /// The stock kernel's pages in bank 2, as `plan::STOCK_KERNEL_BANK2_PAGES` bounds them.
     pub const STOCK_SPILL: Range<u16> = 0..24;
-    /// Never erased by wrist-rs, being opposite the bootloader, either side of the self-test.
-    pub const UNERASED_LOW: Range<u16> = 24..34;
-    pub const UNERASED_HIGH: Range<u16> = 35..48;
-    /// The installer's erase self-test, the one erased page opposite the bootloader, so `hw.rs`
-    /// reads the bank select back before it erases.
-    pub const SELF_TEST: u16 = 34;
-    /// Unused; a lost bank select here would break the image, never the bootloader.
+    /// Never erased by wrist-rs, being opposite the library, either side of the self-test.
+    pub const UNERASED_LOW: Range<u16> = 24..46;
+    pub const UNERASED_HIGH: Range<u16> = 47..48;
+    /// The installer's erase self-test, opposite a blank library page that is not the record,
+    /// so a lost bank select erases only blank flash.
+    pub const SELF_TEST: u16 = 46;
+    /// Unused; a lost bank select here would break the image, never UNA's code.
     pub const RESERVE: Range<u16> = 48..116;
     /// Settings, written only while the DFU slot opposite holds nothing needed: once the
     /// running image has kept itself, and never while an update is received or waits to swap.
@@ -63,15 +67,17 @@ const fn page(p: u16) -> Range<u16> {
     p..p + 1
 }
 
-// Bank 1: the partitions are contiguous from the loader to the state page.
-const _: () = assert!(bank1::BOOTLOADER.end == bank1::LOADER.start);
+// Bank 1: the partitions are contiguous from the bootloader to the state page.
+const _: () = assert!(bank1::BOOTLOADER.end == bank1::LIBRARY.start);
+const _: () = assert!(bank1::LIBRARY.end == bank1::LOADER.start);
 const _: () = assert!(bank1::LOADER.end == bank1::ACTIVE.start);
 const _: () = assert!(bank1::ACTIVE.end == bank1::DFU.start);
 const _: () = assert!(bank1::DFU.end == bank1::STATE);
 const _: () = assert!(bank1::STATE + 1 == bank1::UNUSED.start);
 const _: () = assert!(bank1::UNUSED.end == PAGES_PER_BANK);
 const _: () = assert!(len(&bank1::DFU) == len(&bank1::ACTIVE) + 1);
-const _: () = assert!(bank1::RECORD_PAGE < bank1::BOOTLOADER.end);
+const _: () = assert!(within(&bank1::LIBRARY_BLANK, &bank1::LIBRARY));
+const _: () = assert!(within(&page(bank1::RECORD_PAGE), &bank1::LIBRARY_BLANK));
 
 /// Every bank 2 region, in page order.
 const BANK2: [Range<u16>; 8] = [
@@ -116,20 +122,24 @@ const _: () = assert!(crate::plan::STOCK_KERNEL_BANK2_PAGES as u16 == bank2::STO
 const _: () = assert!(within(&bank2::GLYPH_STORE, &bank1::UNUSED));
 /// Opposite settings: only the DFU slot.
 const _: () = assert!(within(&bank2::SETTINGS, &bank1::DFU));
-/// Opposite staging: never the bootloader.
-const _: () = assert!(bank2::STAGING.start >= bank1::BOOTLOADER.end);
-/// Opposite the reserve: never the bootloader.
-const _: () = assert!(bank2::RESERVE.start >= bank1::BOOTLOADER.end);
-/// The self-test is the one exception, and it is a single page.
-const _: () = assert!(bank2::SELF_TEST < bank1::BOOTLOADER.end);
-const _: () = assert!(within(&bank2::UNERASED_LOW, &bank1::BOOTLOADER));
-const _: () = assert!(within(&bank2::UNERASED_HIGH, &bank1::BOOTLOADER));
+/// Opposite staging: never UNA's code.
+const _: () = assert!(bank2::STAGING.start >= bank1::LIBRARY.end);
+/// Opposite the reserve: never UNA's code.
+const _: () = assert!(bank2::RESERVE.start >= bank1::LIBRARY.end);
+/// Opposite the self-test: a page the library leaves blank and wrist-rs does not use.
+const _: () = assert!(within(&page(bank2::SELF_TEST), &bank1::LIBRARY_BLANK));
+const _: () = assert!(bank2::SELF_TEST != bank1::RECORD_PAGE);
+const _: () = assert!(within(&bank2::UNERASED_LOW, &bank1::LIBRARY));
+const _: () = assert!(within(&bank2::UNERASED_HIGH, &bank1::LIBRARY));
 
-/// Whether erasing bank 2 `pages` under wrist-rs could, with a lost bank select, erase the
-/// vendor bootloader, the loader, the active slot or the state page.
+/// Whether erasing bank 2 `pages` under wrist-rs could, with a lost bank select, erase a bank 1
+/// page that UNA or wrist-rs keeps.
 #[must_use]
 pub const fn mirror_endangers_boot(pages: &Range<u16>) -> bool {
     !(disjoint(pages, &bank1::BOOTLOADER)
+        && disjoint(pages, &(bank1::LIBRARY.start..bank1::LIBRARY_BLANK.start))
+        && disjoint(pages, &(bank1::LIBRARY_BLANK.end..bank1::LIBRARY.end))
+        && disjoint(pages, &page(bank1::RECORD_PAGE))
         && disjoint(pages, &bank1::LOADER)
         && disjoint(pages, &bank1::ACTIVE)
         && disjoint(pages, &page(bank1::STATE)))
@@ -140,10 +150,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_self_test_is_bank_2_page_46() {
+        assert_eq!(bank2::SELF_TEST, 46);
+        assert_eq!(crate::plan::bank2_page_address(crate::plan::SELF_TEST_PAGE), 0x0825_C000);
+    }
+
+    #[test]
     fn what_each_bank_2_erase_has_opposite_it() {
         assert!(!mirror_endangers_boot(&bank2::GLYPH_STORE));
         assert!(!mirror_endangers_boot(&bank2::SETTINGS));
-        assert!(mirror_endangers_boot(&page(bank2::SELF_TEST)));
+        assert!(!mirror_endangers_boot(&page(bank2::SELF_TEST)));
+        assert!(mirror_endangers_boot(&page(bank1::RECORD_PAGE)));
+        assert!(mirror_endangers_boot(&page(bank1::LIBRARY.end - 1)));
+        assert!(mirror_endangers_boot(&bank2::STOCK_SPILL));
+        assert!(mirror_endangers_boot(&bank2::UNERASED_LOW));
         assert!(mirror_endangers_boot(&bank2::RESERVE));
         // Written only under stock, but under wrist-rs it would reach the state page.
         assert!(mirror_endangers_boot(&bank2::STAGING));
