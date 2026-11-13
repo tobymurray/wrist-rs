@@ -505,7 +505,7 @@ pub fn write_gauge_config(uart: &mut Lines) {
         }
     }
     uart.write_line("");
-    uart.write_str("[gauge] reset: ");
+    uart.write_str("[gauge] reset or stale configuration: ");
     uart.write_line(match GAUGE_RESTORED.lock(Cell::get) {
         None => "not checked",
         Some(Ok(false)) => "none outstanding",
@@ -557,7 +557,10 @@ impl wrist_power::GaugeBus for Gauge<'_> {
 pub fn restore_gauge_blocking(bus: &mut AsyncBus) -> Result<bool, &'static str> {
     let outcome = match GAUGE_AT_BOOT.lock(Cell::get) {
         [None, ..] => Err("Status unread"),
-        [Some(status), ..] if wrist_power::gauge_reset(status) => {
+        [Some(status), design_cap, _, v_empty, _]
+            if wrist_power::gauge_reset(status)
+                || matches!((design_cap, v_empty), (Some(d), Some(v)) if wrist_power::gauge_model_differs(d, v)) =>
+        {
             embassy_futures::block_on(wrist_power::configure_gauge(&mut BlockingGauge(bus), &GAUGE_RESTORE)).map(|()| true)
         }
         [_, _, ichg_term, ..] => {
@@ -604,7 +607,7 @@ pub async fn keep_gauge_settled(uart: &mut Lines, bus: &mut AsyncBus, s: &Snapsh
     uart.write_line(if ok { " found; awake and 5.0 mA written" } else { " found; not written" });
 }
 
-pub const RESTORED: &str = "found; awake, 200 mAh, 5.0 mA end of charge and 3.40 V empty written again";
+pub const RESTORED: &str = "awake, 220 mAh, 5.0 mA end of charge and 3.30 V empty written";
 
 /// The PCA9420's four mode settings, `MODECFG_0_0` to `MODECFG_3_3`, in one read.
 pub type Modes = [u8; 16];
