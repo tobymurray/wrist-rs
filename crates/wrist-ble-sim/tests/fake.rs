@@ -106,6 +106,19 @@ fn a_cancelled_connection_ends_the_initiation() {
 }
 
 #[test]
+fn a_slow_central_link_reports_its_data_length_two_intervals_in() {
+    let mut f = ready(1);
+    f.sensor_on(Sensor::strap(1));
+    f.submit(Op::Connect(Sensor::strap(1).addr, conn(160))).unwrap();
+    let (up, link) = until(&mut f, |e| match e {
+        RadioEvent::LinkUp { link, .. } => Some(*link),
+        _ => None,
+    });
+    let (at, ()) = until(&mut f, |e| matches!(e, RadioEvent::DataLength { link: l, .. } if *l == link).then_some(()));
+    assert_eq!(at.0 - up.0, 400, "two 200 ms intervals");
+}
+
+#[test]
 fn a_refusal_carries_the_chips_code() {
     let mut f = ready(1);
     f.sensor_on(Sensor::strap(1));

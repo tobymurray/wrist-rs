@@ -277,13 +277,12 @@ class Packaging(unittest.TestCase):
             h = bytes(reversed(b)).hex()
             self.assertEqual(tool_constant('wrist_port.py', name), f'{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:]}', name)
         default, header = (int(rust('crates/bluenrg2/src/lib.rs', n)) for n in ('ATT_DEFAULT_MTU', 'ATT_HEADER_LEN'))
-        largest = int(rust(ble, 'MAX_MTU'))
+        largest = int(rust('crates/wrist-ble/src/lib.rs', 'ATT_MAX_MTU'))
         self.assertEqual((tool_constant('wrist-ble.py', 'DEFAULT_MTU'), tool_constant('wrist-ble.py', 'ATT_HEADER')), (default, header))
         self.assertEqual(tool_constant('wrist-ble.py', 'VALUE_LEN'), largest - header)
-        self.assertEqual(rust(ble, 'NUS_VALUE_LEN'), 'MAX_MTU - ATT_HEADER_LEN')
         self.assertEqual(rust('crates/wrist-wake/src/ble/server.rs', 'CONSOLE_VALUE_LEN'), f'ATT_MAX_MTU - {header}')
+        self.assertEqual(rust('crates/wrist-bluenrg2/src/gatt.rs', 'MAX_VALUE'), f'ATT_MAX_MTU - {header}')
         self.assertEqual(rust(ble, 'DEFAULT_MTU'), 'bluenrg2::ATT_DEFAULT_MTU')
-        self.assertEqual(rust('crates/wrist-ble/src/lib.rs', 'ATT_MAX_MTU'), str(largest))
         self.assertIn(f'pub type Payload = Bytes<{{ ATT_MAX_MTU - {header} }}>;', (r.ROOT/'crates/wrist-ble/src/lib.rs').read_text())
 
     def test_a_build_id_has_the_digits_wrist_crash_packs(self):

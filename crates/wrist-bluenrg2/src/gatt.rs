@@ -1,15 +1,12 @@
 //! A declared GATT server as the chip's commands, and the handles the chip gives it.
 
 use bluenrg2::{enc_key_size, evt_mask, opcode, permission, service_type, uuid_type, value_length};
-use wrist_ble::{BluetoothUuid, CharDecl, Permission, Props, ServerAttr, ServiceDecl, ATT_MAX_MTU};
+use wrist_ble::{BluetoothUuid, Cccd, CharDecl, ConnHandle, Payload, Permission, Props, RadioEvent, ServerAttr, ServiceDecl, ATT_MAX_MTU};
 
 use crate::commands::Command;
 
 /// The longest value set here: what a notification at the largest MTU carries.
 pub const MAX_VALUE: usize = ATT_MAX_MTU - 3;
-
-/// The longest parameters here: a whole value after its handles, offset and length.
-pub const MAX_PARAMS: usize = 6 + MAX_VALUE;
 
 /// [`permission::AUTHEN_WRITE`] and [`permission::ENCRY_WRITE`] together.
 const AUTHENTICATED_WRITE: u8 = 0x28;
@@ -46,7 +43,7 @@ pub fn records(s: &ServiceDecl) -> usize {
 
 /// `ACI_GATT_ADD_SERVICE` for `s`; `None` for one with more records than the command holds.
 #[must_use]
-pub fn add_service(s: &ServiceDecl) -> Option<Command<MAX_PARAMS>> {
+pub fn add_service(s: &ServiceDecl) -> Option<Command> {
     let (kind, bytes, n) = uuid(&s.uuid);
     let bytes = &bytes[..n];
     let records = u8::try_from(records(s)).ok()?;
@@ -57,7 +54,7 @@ pub fn add_service(s: &ServiceDecl) -> Option<Command<MAX_PARAMS>> {
 /// and every write reported; `None` for a readable characteristic that is not open, since no
 /// command here sets a read permission.
 #[must_use]
-pub fn add_char(service: u16, c: &CharDecl) -> Option<Command<MAX_PARAMS>> {
+pub fn add_char(service: u16, c: &CharDecl) -> Option<Command> {
     let (kind, bytes, n) = uuid(&c.uuid);
     let bytes = &bytes[..n];
     if c.props.has(Props::READ) && c.permission != Permission::Open {
@@ -86,14 +83,14 @@ pub fn add_char(service: u16, c: &CharDecl) -> Option<Command<MAX_PARAMS>> {
 /// `value` from its start, and a subscribed peer is notified; `None` for a value longer than
 /// [`MAX_VALUE`].
 #[must_use]
-pub fn set_value(service: u16, char: u16, value: &[u8]) -> Option<Command<MAX_PARAMS>> {
+pub fn set_value(service: u16, char: u16, value: &[u8]) -> Option<Command> {
     let len = u8::try_from(value.len()).ok().filter(|&l| usize::from(l) <= MAX_VALUE)?;
     Command::new(opcode::ACI_GATT_UPDATE_CHAR_VALUE, &[&service.to_le_bytes(), &char.to_le_bytes(), &[0, len], value])
 }
 
 /// [`set_value`] with what `c` holds from the start, cut to its length; `None` for none.
 #[must_use]
-pub fn initial(service: u16, char: u16, c: &CharDecl) -> Option<Command<MAX_PARAMS>> {
+pub fn initial(service: u16, char: u16, c: &CharDecl) -> Option<Command> {
     let value = &c.value[..c.value.len().min(usize::from(c.max_len))];
     if value.is_empty() {
         return None;
@@ -144,5 +141,26 @@ impl Handles {
             };
             Some((ServerAttr(u8::try_from(i).ok()?), part))
         })
+    }
+
+    /// What a peer's write of `data` from `offset` into the local handle `attr` means: a value
+    /// written, a subscription changed, or `None` for a handle outside the server; a piece too long
+    /// for a [`Payload`] is [`RadioEvent::EventsLost`].
+    #[must_use]
+    pub fn written(&self, link: ConnHandle, attr: u16, offset: u16, more: bool, data: &[u8]) -> Option<RadioEvent> {
+        let (attr, part) = self.find(attr)?;
+        Some(match part {
+            Part::Value => Payload::new(data).map_or(RadioEvent::EventsLost, |data| RadioEvent::ServerWrite { link, attr, offset, more, data }),
+            Part::Config => RadioEvent::ServerSubscribe { link, attr, cccd: cccd(data) },
+        })
+    }
+}
+
+/// A configuration descriptor's value (Core Vol 3 Part G §3.3.3.3), notifications first when both are on.
+fn cccd(value: &[u8]) -> Cccd {
+    match value.first() {
+        Some(b) if b & 0x01 != 0 => Cccd::Notify,
+        Some(b) if b & 0x02 != 0 => Cccd::Indicate,
+        _ => Cccd::Off,
     }
 }

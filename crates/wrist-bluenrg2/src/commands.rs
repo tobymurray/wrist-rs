@@ -3,30 +3,33 @@
 use bluenrg2::{ad, adv_filter_policy, adv_type, opcode, AddrKind};
 use wrist_ble::{ConnHandle, DisconnectReason, LeConnRole, Op};
 
+use crate::gatt::{self, Handles};
+
 /// The longest complete local name the chip's advertisement holds beside its flags and TX power (PM0257 Table 43).
 pub const MAX_NAME: usize = 31 - 3 - 3 - 2;
 
-/// The longest parameters a command here writes: `ACI_GAP_SET_DISCOVERABLE` with the longest name.
-pub const MAX_PARAMS: usize = 14 + MAX_NAME;
+/// The longest parameters a command here writes: `ACI_GATT_UPDATE_CHAR_VALUE` with the longest
+/// value after its handles, offset and length.
+pub const MAX_PARAMS: usize = 6 + gatt::MAX_VALUE;
 
-/// One command: its opcode and at most `N` bytes of parameters.
+/// One command: its opcode and its parameters.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Command<const N: usize = MAX_PARAMS> {
+pub struct Command {
     pub opcode: u16,
-    params: [u8; N],
+    params: [u8; MAX_PARAMS],
     len: usize,
 }
 
-impl<const N: usize> Command<N> {
+impl Command {
     #[must_use]
     pub fn params(&self) -> &[u8] {
         &self.params[..self.len]
     }
 
     pub(crate) fn new(opcode: u16, parts: &[&[u8]]) -> Option<Self> {
-        let mut c = Self { opcode, params: [0; N], len: 0 };
+        let mut c = Self { opcode, params: [0; MAX_PARAMS], len: 0 };
         for part in parts {
-            let end = c.len.checked_add(part.len()).filter(|&e| e <= N)?;
+            let end = c.len.checked_add(part.len()).filter(|&e| e <= MAX_PARAMS)?;
             c.params[c.len..end].copy_from_slice(part);
             c.len = end;
         }
@@ -34,11 +37,12 @@ impl<const N: usize> Command<N> {
     }
 }
 
-/// The command that carries `op` out, the watch advertising as `name` (the complete local name)
-/// and holding each link in the role `role` gives it. `None` for an operation no command here
-/// carries out yet: as the central, scanning, GATT, and advertising that takes no connection;
-/// for a name longer than [`MAX_NAME`]; and for a disconnect reason ST does not list.
-pub fn command(op: &Op, name: &[u8], role: impl Fn(ConnHandle) -> Option<LeConnRole>) -> Option<Command> {
+/// The command that carries `op` out, the watch advertising as `name` (the complete local name),
+/// holding each link in the role `role` gives it and serving `server`. `None` for an operation no
+/// command here carries out: as the central, scanning, GATT as a client, and advertising that
+/// takes no connection; for a name longer than [`MAX_NAME`]; for a notification of a
+/// characteristic `server` lacks; and for a disconnect reason ST does not list.
+pub fn command(op: &Op, name: &[u8], role: impl Fn(ConnHandle) -> Option<LeConnRole>, server: Option<&Handles>) -> Option<Command> {
     let h = |l: &ConnHandle| l.raw().to_le_bytes();
     match op {
         Op::Advertise(Some(p)) if p.connectable && name.len() <= MAX_NAME => {
@@ -75,6 +79,10 @@ pub fn command(op: &Op, name: &[u8], role: impl Fn(ConnHandle) -> Option<LeConnR
         // ST doesn't list 0x29 for `ACI_GAP_TERMINATE`, a BR/EDR reason no link here ends with.
         Op::Disconnect(_, DisconnectReason::PairingWithUnitKeyNotSupported) => None,
         Op::Disconnect(l, reason) => Command::new(opcode::ACI_GAP_TERMINATE, &[&h(l), &[*reason as u8]]),
+        Op::Notify(_, attr, value) => {
+            let (service, declaration) = server?.get(*attr)?;
+            gatt::set_value(service, declaration, value.as_slice())
+        }
         _ => None,
     }
 }

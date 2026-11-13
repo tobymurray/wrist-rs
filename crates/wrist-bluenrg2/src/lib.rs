@@ -7,6 +7,7 @@
 pub mod bonds;
 pub mod commands;
 pub mod console;
+pub mod driver;
 pub mod events;
 pub mod gatt;
 pub mod probe;
