@@ -3,7 +3,9 @@ use std::future::Future;
 use std::pin::pin;
 use std::task::{Context, Poll, Waker};
 
-use wrist_power::{configure_gauge, gauge_reset, gauge_unsettled, GaugeBus, GaugeStep, GAUGE_RESTORE, GAUGE_SETTLE};
+use wrist_power::{
+    configure_gauge, gauge_model_differs, gauge_reset, gauge_unsettled, GaugeBus, GaugeStep, GAUGE_RESTORE, GAUGE_SETTLE,
+};
 
 /// A MAX17262 after a reset: the register defaults, `POR` set, `Refresh` clearing on the
 /// first read after it is written. `fail_after` writes succeed, then every transfer fails;
@@ -61,7 +63,7 @@ fn run_steps(gauge: &mut Gauge, steps: &[GaugeStep]) -> Result<(), &'static str>
 }
 
 fn assert_configured(gauge: &Gauge) {
-    for (reg, v) in [(0x18, 0x0190), (0x1E, 0x0020), (0x3A, 0xAA63), (0xDB, 0x0400), (0xBA, 0)] {
+    for (reg, v) in [(0x18, 0x01B8), (0x1E, 0x0020), (0x3A, 0xA561), (0xDB, 0x0400), (0xBA, 0)] {
         assert_eq!(gauge.regs[&reg], v, "register {reg:#04x}");
     }
     assert!(!gauge_reset(gauge.regs[&0x00]));
@@ -136,4 +138,27 @@ fn settling_wakes_a_stock_gauge_and_leaves_the_rest() {
     assert_eq!(run_steps(&mut gauge, &GAUGE_SETTLE), Ok(()));
     assert_eq!(gauge.writes, [(0x60, 0x0090), (0xBA, 0), (0x60, 0), (0x1E, 0x0020)]);
     assert!(!gauge_unsettled(gauge.regs[&0xBA], gauge.regs[&0x1E]));
+}
+
+#[test]
+fn only_the_watch_model_settles() {
+    assert!(!gauge_model_differs(0x01B8, 0xA561));
+    for (design_cap, v_empty) in
+        [(0x0190, 0xAA63), (0x0190, 0xA561), (0x01B8, 0xAA63), (0x0BB8, 0xA561)]
+    {
+        assert!(gauge_model_differs(design_cap, v_empty), "{design_cap:#06x} {v_empty:#06x}");
+    }
+}
+
+#[test]
+fn reconfiguring_a_stock_gauge_writes_nothing_it_learned() {
+    let mut gauge = Gauge::reset();
+    gauge.regs.extend([(0x00, 0x8080), (0x18, 0x0190), (0x1E, 0x0059), (0x3A, 0xAA63)]);
+    assert_eq!(run(&mut gauge), Ok(()));
+    assert_configured(&gauge);
+    // FullCapRep, Cycles, FullCapNom, dQAcc, dPAcc.
+    for reg in [0x10, 0x17, 0x23, 0x45, 0x46] {
+        assert!(gauge.writes.iter().all(|w| w.0 != reg), "register {reg:#04x} written");
+    }
+    assert!(!gauge_model_differs(gauge.regs[&0x18], gauge.regs[&0x3A]));
 }

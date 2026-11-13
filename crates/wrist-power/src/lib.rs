@@ -244,6 +244,19 @@ pub const HIB_CFG_AWAKE: u16 = 0;
 /// the cell full early.
 pub const ICHG_TERM_WATCH: u16 = 0x0020;
 
+/// `DesignCap` 220 mAh, a UNA cell's capacity down to [`V_EMPTY_WATCH`] (`HARDWARE.md`).
+pub const DESIGN_CAP_WATCH: u16 = 0x01B8;
+
+/// `VEmpty` empty at 3.30 V and recovered at 3.88 V, above where the watch's draw rises
+/// (`HARDWARE.md`).
+pub const V_EMPTY_WATCH: u16 = 0xA561;
+
+/// Whether `DesignCap` and `VEmpty` need [`GAUGE_RESTORE`].
+#[must_use]
+pub const fn gauge_model_differs(design_cap: u16, v_empty: u16) -> bool {
+    design_cap != DESIGN_CAP_WATCH || v_empty != V_EMPTY_WATCH
+}
+
 /// Whether `HibCfg` and `IChgTerm` need [`GAUGE_SETTLE`].
 #[must_use]
 pub const fn gauge_unsettled(hib_cfg: u16, ichg_term: u16) -> bool {
@@ -273,17 +286,16 @@ const WAKE: [GaugeStep; 3] = [
     GaugeStep::Write(COMMAND, 0),
 ];
 
-/// After a reset: awake, then the stock firmware's configuration as read from the watch
-/// (`HARDWARE.md`), 200 mAh, empty at 3.40 V, charged above 4.275 V, but with
-/// [`ICHG_TERM_WATCH`]. `ModelCfg` carries `Refresh`.
+/// After a reset or when [`gauge_model_differs`]: awake, then the watch's model, `ModelCfg`
+/// charging above 4.275 V and carrying `Refresh`.
 pub const GAUGE_RESTORE: [GaugeStep; 10] = [
     GaugeStep::WaitClear(FSTAT, FSTAT_DNR),
     WAKE[0],
     WAKE[1],
     WAKE[2],
-    GaugeStep::Write(DESIGN_CAP, 0x0190),
+    GaugeStep::Write(DESIGN_CAP, DESIGN_CAP_WATCH),
     GaugeStep::Write(ICHG_TERM, ICHG_TERM_WATCH),
-    GaugeStep::Write(V_EMPTY, 0xAA63),
+    GaugeStep::Write(V_EMPTY, V_EMPTY_WATCH),
     GaugeStep::Write(MODEL_CFG, 0x8400),
     GaugeStep::WaitClear(MODEL_CFG, MODEL_CFG_REFRESH),
     GaugeStep::ClearPor,

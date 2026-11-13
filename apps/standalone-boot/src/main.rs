@@ -353,7 +353,7 @@ fn main() -> ! {
     pmic::write_report(&mut uart.lines(), &power);
     pmic::read_modes_blocking(&mut bus);
     pmic::read_gauge_config_blocking(&mut bus);
-    uart.write_str("[10] gauge reset: ");
+    uart.write_str("[10] gauge reset or stale configuration: ");
     uart.write_line(match pmic::restore_gauge_blocking(&mut bus) {
         Ok(false) => "none",
         Ok(true) => pmic::RESTORED,
