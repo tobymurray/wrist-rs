@@ -3,9 +3,9 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
-use wrist_ble::{AdvParams, ConnHandle, ConnParams, Interval, Op, Slots, Timeout};
 use wrist_ble::OpKind;
-use wrist_ble_sim::replay::{replay, DriverOp, Report, Who};
+use wrist_ble_shadow::DriverOp;
+use wrist_ble_sim::replay::{replay, Report, Who};
 
 fn traces() -> Vec<(String, String)> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/traces");
@@ -23,7 +23,7 @@ fn traces() -> Vec<(String, String)> {
 const KNOWN: &[(&str, &[&str])] = &[(
     // Nobody answered: the core refuses at its own deadline; the driver leaves it to the chip's.
     "android14-comparison-unanswered.log",
-    &["1062525: the core did ConfirmNumeric(ConnHandle(2053), false) and the driver did not"],
+    &["1062525: the core refused the comparison and the driver did not"],
 )];
 
 #[test]
@@ -45,7 +45,7 @@ fn a_capture_that_begins_with_the_chip_up_is_taken_as_up() {
     assert_eq!(Some(at), first);
     assert!(ops.iter().all(|op| op.kind() == OpKind::Advertise), "{ops:?}");
     assert_eq!(r.resets, 1, "the update's reset");
-    let kinds = |k: OpKind| (r.driver_ops.iter().filter(|(_, d)| d_kind(*d) == k).count(), r.core_ops.iter().filter(|(_, op)| op.kind() == k).count());
+    let kinds = |k: OpKind| (r.driver_ops.iter().filter(|(_, d)| d.kind() == k).count(), r.core_ops.iter().filter(|(_, op)| op.kind() == k).count());
     let (driver, core) = kinds(OpKind::Advertise);
     assert_eq!(driver, core);
     assert!(driver > 40, "{driver}");
@@ -62,53 +62,24 @@ fn a_capture_that_begins_as_the_chip_comes_up_is_a_start() {
     }
 }
 
-fn d_kind(d: DriverOp) -> OpKind {
-    match d {
-        DriverOp::Advertise(..) | DriverOp::StopAdvertising => OpKind::Advertise,
-        DriverOp::AskParams(..) => OpKind::UpdateParams,
-        DriverOp::Confirm(_) => OpKind::ConfirmNumeric,
-        DriverOp::Other(k) => k,
-    }
-}
-
-#[test]
-fn an_answer_on_one_side_alone_or_unlike_the_others_is_a_disagreement() {
-    let link = ConnHandle::new(1);
-    let yes = Op::ConfirmNumeric(link, true);
-    assert_eq!(report(&[(1_000, yes)], &[(1_200, DriverOp::Confirm(true))]).disagreements().len(), 0);
-    assert_eq!(report(&[(1_000, yes)], &[(1_000, DriverOp::Confirm(false))]).disagreements().len(), 2, "the other answer");
-    assert_eq!(report(&[(1_000, yes)], &[]).disagreements().len(), 1, "the core answered unprompted");
-    assert_eq!(report(&[], &[(1_000, DriverOp::Confirm(false))]).disagreements().len(), 1, "the core never answered");
-    assert_eq!(report(&[(1_000, yes)], &[(1_301, DriverOp::Confirm(true))]).disagreements().len(), 2, "too far apart");
-}
-
-#[test]
-fn security_rebonds_and_disconnects_on_one_side_alone_are_disagreements() {
-    let link = ConnHandle::new(1);
-    let drop = Op::Disconnect(link, wrist_ble::DisconnectReason::RemoteUserTerminatedConn);
-    for (op, kind) in [(Op::RequestSecurity(link), OpKind::RequestSecurity), (Op::AllowRebond(link), OpKind::AllowRebond), (drop, OpKind::Disconnect)] {
-        assert_eq!(report(&[(1_000, op)], &[(1_100, DriverOp::Other(kind))]).disagreements().len(), 0, "{kind:?}");
-        assert_eq!(report(&[(1_000, op)], &[]).disagreements().len(), 1, "{kind:?}");
-        assert_eq!(report(&[], &[(1_000, DriverOp::Other(kind))]).disagreements().len(), 1, "{kind:?}");
-    }
-}
-
 #[test]
 fn only_a_disconnect_the_operator_asked_for_is_the_drivers_alone() {
-    let asked = |at: u64, disconnect: u64| Report {
-        driver_ops: vec![(disconnect, DriverOp::Other(OpKind::Disconnect))],
-        operator_disconnects: vec![at],
-        ..Report::default()
-    };
-    assert_eq!(asked(1_000, 1_000).disagreements().len(), 0);
-    assert_eq!(asked(1_000, 2_000).disagreements().len(), 0);
-    assert_eq!(asked(1_000, 2_001).disagreements().len(), 1, "too long after");
-    assert_eq!(asked(1_000, 999).disagreements().len(), 1, "before it");
     let with = fixture("bluez-cable.log");
     let without = with.lines().filter(|l| !l.ends_with(">> usb ble disconnect")).collect::<Vec<_>>().join("\n");
     assert_ne!(with, without);
     assert_eq!(replay(&with).disagreements(), Vec::<String>::new());
     assert_eq!(replay(&without).disagreements().len(), 1);
+}
+
+#[test]
+fn the_cores_disagreements_are_listed_before_the_drivers() {
+    let capture = fixture("android14-comparison-unanswered.log");
+    let mut lines: Vec<&str> = capture.lines().collect();
+    let at = lines.iter().position(|l| host_ms(l).is_some_and(|ms| ms > 355_211)).unwrap();
+    lines.insert(at, "355.211 [trace] 945700 c 0195FC020408");
+    let d = replay(&lines.join("\n")).disagreements();
+    assert_eq!(d.len(), 2, "{d:?}");
+    assert!(d[0].starts_with("1062525: the core") && d[1].starts_with("945700: the driver"), "{d:?}");
 }
 
 #[test]
@@ -156,52 +127,6 @@ fn traces_hold_only_what_the_scrub_keeps() {
             }
         }
     }
-}
-
-fn ask(min: u16, max: u16, latency: u16) -> Op {
-    let params = ConnParams {
-        interval_min: Interval::from_u16(min),
-        interval_max: Interval::from_u16(max),
-        latency,
-        timeout: Timeout::from_u16(600),
-        ce_len: Slots::from_u16(0),
-    };
-    Op::UpdateParams(ConnHandle::new(1), params)
-}
-
-fn advertise() -> Op {
-    Op::Advertise(Some(AdvParams { interval_min: Slots::from_u16(160), interval_max: Slots::from_u16(160), connectable: true }))
-}
-
-fn report(core: &[(u64, Op)], driver: &[(u64, DriverOp)]) -> Report {
-    Report { core_ops: core.to_vec(), driver_ops: driver.to_vec(), ..Report::default() }
-}
-
-#[test]
-fn the_same_ask_within_the_window_agrees_and_any_other_does_not() {
-    let core = [(1_000, ask(80, 160, 4))];
-    assert_eq!(report(&core, &[(1_300, DriverOp::AskParams(80, 160, 4))]).disagreements().len(), 0);
-    assert_eq!(report(&core, &[(700, DriverOp::AskParams(80, 160, 4))]).disagreements().len(), 0);
-    for driver in [
-        DriverOp::AskParams(80, 160, 0),
-        DriverOp::AskParams(12, 160, 4),
-        DriverOp::AskParams(80, 24, 4),
-    ] {
-        assert_eq!(report(&core, &[(1_000, driver)]).disagreements().len(), 1, "{driver:?}");
-    }
-    assert_eq!(report(&core, &[(1_301, DriverOp::AskParams(80, 160, 4))]).disagreements().len(), 1);
-    assert_eq!(report(&core, &[(699, DriverOp::AskParams(80, 160, 4))]).disagreements().len(), 1);
-    assert_eq!(report(&[], &[(1_000, DriverOp::AskParams(80, 160, 4))]).disagreements().len(), 0, "the driver asks at every connection");
-}
-
-#[test]
-fn advertising_on_one_side_alone_is_a_disagreement() {
-    assert_eq!(report(&[(1_000, advertise())], &[(1_000, DriverOp::Advertise(160, 160))]).disagreements().len(), 0);
-    assert_eq!(report(&[(1_000, advertise())], &[(1_301, DriverOp::Advertise(160, 160))]).disagreements().len(), 2);
-    assert_eq!(report(&[(1_000, advertise())], &[(1_000, DriverOp::StopAdvertising)]).disagreements().len(), 1);
-    assert_eq!(report(&[(1_000, advertise())], &[(1_000, DriverOp::AskParams(80, 160, 4))]).disagreements().len(), 1);
-    assert_eq!(report(&[(1_000, Op::Advertise(None))], &[(1_000, DriverOp::Advertise(160, 160))]).disagreements().len(), 1);
-    assert_eq!(report(&[], &[(1_000, DriverOp::Advertise(160, 160))]).disagreements().len(), 1);
 }
 
 #[test]
@@ -296,12 +221,15 @@ fn fixture(name: &str) -> String {
     std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/traces").join(name)).unwrap()
 }
 
-/// The chip and every central measured end an unanswered comparison 30 s after it shows.
+/// The chip and every central measured end an unanswered comparison 30 s after it shows, and the
+/// countdown shows each second.
 #[test]
 fn the_comparison_counts_down_from_the_security_managers_timeout() {
     let r = replay(&fixture("bluez-comparison-unanswered.log"));
     let shown = r.timeline.iter().find(|e| e.who == Who::Status && e.what.starts_with("pairing(")).expect("no comparison shown");
     assert!(shown.what.ends_with(",30s)"), "{}", shown.what);
+    let countdown: Vec<u64> = r.timeline.iter().filter(|e| e.who == Who::Status && e.what.starts_with("pairing(")).map(|e| e.at).collect();
+    assert!(countdown.len() == 30 && countdown.windows(2).all(|w| w[1] - w[0] == 1_000), "{countdown:?}");
 }
 
 /// A security request waits on the rebond a lost bond needs, so the rebond cannot wait on it.

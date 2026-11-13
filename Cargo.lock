@@ -1498,8 +1498,11 @@ dependencies = [
 name = "wrist-ble-shadow"
 version = "0.0.0"
 dependencies = [
+ "bluenrg2 0.1.1",
+ "proptest",
  "wrist-ble",
  "wrist-ble-core",
+ "wrist-bluenrg2",
  "wrist-wake",
 ]
 
