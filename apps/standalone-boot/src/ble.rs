@@ -2,8 +2,8 @@
 //! application updates over the air, for a bonded central only (`ble` feature).
 //!
 //! The radio is off until `ble on`, and `ble off` holds it in reset again; the choice is kept
-//! in `BKP16R` across resets (`rtc::radio_wanted`), so an image that arrived over the air
-//! comes back with its radio on. When on, the task resets the chip, gives it an address,
+//! in a backup register (`rtc::radio_wanted`), so an image that arrived over the air comes
+//! back with its radio on. When on, the task resets the chip, gives it an address,
 //! brings up ST's GATT and GAP, and advertises as `UNA`.
 //!
 //! Security. Pairing is LE Secure Connections with numeric comparison, MITM required: the
@@ -526,7 +526,7 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
     let mut changes = crate::power::changes();
     let mut on = crate::rtc::radio_wanted();
     if on {
-        uart.write_line("[ble] on at boot: `ble on` was the last word (BKP16R)");
+        uart.write_line("[ble] on at boot: `ble on` was the last word (BKP29R)");
     }
     loop {
         while !on {

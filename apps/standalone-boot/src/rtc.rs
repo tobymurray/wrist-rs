@@ -22,15 +22,6 @@ const WPR_KEY1: u32 = 0xCA;
 const WPR_KEY2: u32 = 0x53;
 const WPR_LOCK: u32 = 0xFF;
 const TAMP_BKP0R: u32 = tamp_bkpr(0);
-const TAMP_BKP1R: u32 = tamp_bkpr(1);
-const TAMP_BKP2R: u32 = tamp_bkpr(2);
-/// The alarm (`wrist_time::alarm`).
-const TAMP_BKP4R: u32 = tamp_bkpr(4);
-/// Not `BKP3R` or `BKP5R` (`HARDWARE.md`, "Debug and boot").
-const TAMP_BKP31R: u32 = tamp_bkpr(31);
-const SOURCE_TAG: u32 = 0x5352_0000;
-/// The zone's next changes (`wrist_time::zone`).
-const TAMP_BKP11R: u32 = tamp_bkpr(11);
 
 const ICSR_INITS: u32 = 1 << 4;
 const ICSR_RSF: u32 = 1 << 5;
@@ -60,6 +51,7 @@ const SRC_LSE: u8 = 1;
 const SRC_LSI: u8 = 2;
 
 pub use wrist_time::alarm::Alarm;
+use wrist_time::backup::{self, Flags};
 pub use wrist_time::zone::Zone;
 pub use wrist_time::{civil_of_seconds, parse_civil, seconds_of, Civil};
 
@@ -401,32 +393,37 @@ impl Source {
     }
 }
 
-pub fn note_set(source: Source, local: Civil) {
+fn bkp(n: u32) -> u32 {
+    clock_bus();
+    unsafe { read32(tamp_bkpr(n)) }
+}
+
+fn set_bkp(n: u32, v: u32) {
     clock_bus();
     unsafe {
         write32(PWR_DBPR, PWR_DBPR_DBP);
-        write32(TAMP_BKP2R, SOURCE_TAG | source as u32);
-        write32(TAMP_BKP31R, u32::try_from(seconds_of(local)).unwrap_or(0));
+        write32(tamp_bkpr(n), v);
     }
+}
+
+fn flags() -> Flags {
+    Flags::decode(bkp(backup::FLAGS)).unwrap_or_default()
+}
+
+pub fn note_set(source: Source, local: Civil) {
+    set_bkp(backup::LAST_SET_AT, u32::try_from(seconds_of(local)).unwrap_or(0));
+    set_bkp(backup::FLAGS, Flags { source: source as u8, ..flags() }.encode());
 }
 
 /// Who last set the calendar, and to what.
 #[must_use]
 pub fn last_set() -> Option<(Source, Civil)> {
-    clock_bus();
-    let w = unsafe { read32(TAMP_BKP2R) };
-    if w & 0xFFFF_0000 != SOURCE_TAG {
-        return None;
-    }
-    let source = Source::from_u8(u8::try_from(w & 0xFF).unwrap_or(0))?;
-    let at = i64::from(unsafe { read32(TAMP_BKP31R) });
-    Some((source, civil_of_seconds(at)))
+    let source = Source::from_u8(flags().source)?;
+    Some((source, civil_of_seconds(i64::from(bkp(backup::LAST_SET_AT)))))
 }
 
 fn zone_words() -> [u32; 5] {
-    clock_bus();
-    let at = |i: u32| unsafe { read32(TAMP_BKP11R + 4 * i) };
-    [unsafe { read32(TAMP_BKP1R) }, at(0), at(1), at(2), at(3)]
+    backup::ZONE.map(bkp)
 }
 
 /// The zone record, if `time zone` left one since the backup domain was last reset.
@@ -436,22 +433,15 @@ pub fn zone() -> Option<Zone> {
 }
 
 pub fn set_zone(z: &Zone) {
-    let w = z.encode();
-    clock_bus();
-    unsafe {
-        write32(PWR_DBPR, PWR_DBPR_DBP);
-        write32(TAMP_BKP1R, w[0]);
-        for (i, &v) in (0u32..).zip(&w[1..]) {
-            write32(TAMP_BKP11R + 4 * i, v);
-        }
+    for (n, v) in backup::ZONE.into_iter().zip(z.encode()) {
+        set_bkp(n, v);
     }
 }
 
-/// `BKP4R` as it stands.
+/// The alarm's register as it stands.
 #[must_use]
 pub fn alarm_word() -> u32 {
-    clock_bus();
-    unsafe { read32(TAMP_BKP4R) }
+    bkp(backup::ALARM)
 }
 
 /// The alarm, if `alarm` set one since the backup domain was last reset.
@@ -461,44 +451,24 @@ pub fn alarm() -> Option<Alarm> {
 }
 
 pub fn set_alarm(a: Alarm) {
-    clock_bus();
-    unsafe {
-        write32(PWR_DBPR, PWR_DBPR_DBP);
-        write32(TAMP_BKP4R, a.encode());
-    }
+    set_bkp(backup::ALARM, a.encode());
 }
-
-/// `BKP16R`: tag `BL` and 1 while the radio should be on, so it comes back after a reset.
-#[cfg(feature = "ble")]
-const TAMP_BKP16R: u32 = tamp_bkpr(16);
-#[cfg(feature = "ble")]
-const RADIO_ON: u32 = 0x424C_0001;
 
 /// `ble on` was the last word, since the backup domain was last reset.
 #[cfg(feature = "ble")]
 #[must_use]
 pub fn radio_wanted() -> bool {
-    clock_bus();
-    unsafe { read32(TAMP_BKP16R) == RADIO_ON }
+    flags().radio
 }
 
 #[cfg(feature = "ble")]
 pub fn set_radio_wanted(on: bool) {
-    clock_bus();
-    unsafe {
-        write32(PWR_DBPR, PWR_DBPR_DBP);
-        write32(TAMP_BKP16R, if on { RADIO_ON } else { 0 });
-    }
+    set_bkp(backup::FLAGS, Flags { radio: on, ..flags() }.encode());
 }
 
 pub fn clear_zone() {
-    clock_bus();
-    unsafe {
-        write32(PWR_DBPR, PWR_DBPR_DBP);
-        write32(TAMP_BKP1R, 0);
-        for i in 0..4 {
-            write32(TAMP_BKP11R + 4 * i, 0);
-        }
+    for n in backup::ZONE {
+        set_bkp(n, 0);
     }
 }
 

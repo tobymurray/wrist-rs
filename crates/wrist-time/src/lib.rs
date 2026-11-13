@@ -3,6 +3,7 @@
 #![no_std]
 
 pub mod alarm;
+pub mod backup;
 pub mod zone;
 
 /// A date and 24-hour time.
