@@ -77,7 +77,6 @@ pub mod opcode {
     pub const ACI_GAP_PASS_KEY_RESP: u16 = 0xFC88;
     pub const ACI_GAP_INIT: u16 = 0xFC8A;
     pub const ACI_GAP_SLAVE_SECURITY_REQ: u16 = 0xFC8D;
-    /// A connection handle.
     pub const ACI_GAP_GET_SECURITY_LEVEL: u16 = 0xFC90;
     pub const ACI_GAP_TERMINATE: u16 = 0xFC93;
     pub const ACI_GAP_CLEAR_SECURITY_DB: u16 = 0xFC94;

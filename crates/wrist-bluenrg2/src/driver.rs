@@ -395,7 +395,6 @@ where
         &self.peers
     }
 
-    /// Milliseconds on the clock.
     pub(crate) fn now_ms(&self) -> u64 {
         micros::<K>(self.clock.now()) / 1_000
     }
