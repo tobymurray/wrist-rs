@@ -158,7 +158,7 @@ pub mod permission {
     pub const AUTHOR_READ: u8 = 0x02;
     /// Reads only over an encrypted link.
     pub const ENCRY_READ: u8 = 0x04;
-    /// Writes only over a link encrypted with authenticated (MITM-protected) keys.
+    /// Writes only with authenticated (MITM-protected) keys.
     pub const AUTHEN_WRITE: u8 = 0x08;
     /// Writes only once the application authorizes each.
     pub const AUTHOR_WRITE: u8 = 0x10;
