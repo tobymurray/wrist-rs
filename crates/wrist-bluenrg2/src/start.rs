@@ -69,7 +69,6 @@ pub enum Starting {
     Up(Handles),
 }
 
-/// [`gap_role::PERIPHERAL`] and [`gap_role::CENTRAL`] together.
 const PERIPHERAL_AND_CENTRAL: u8 = 0x05;
 
 /// The roles `ACI_GAP_INIT` is asked for, in turn: the peripheral alone if the chip refuses both,
