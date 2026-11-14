@@ -255,6 +255,60 @@ fn a_new_advertising_interval_is_a_stop_then_a_start() {
     assert!(matches!(core.pending().map(|p| p.op), Some(Op::Advertise(Some(_)))));
 }
 
+/// A core whose first start the chip never answered.
+fn unanswered_start() -> Core<'static> {
+    let mut core = Core::new(&CAPABILITIES, &Scheduler, &MENU);
+    core.step(Instant(0), Input::Goals(Goals { radio_on: true, ..Goals::OFF }));
+    let out = core.step(Instant(0), started(&core));
+    assert!(matches!(out.op, Some(Op::Advertise(Some(_)))), "{out:?}");
+    core.step(Instant(0), Input::Submitted(Err(wrist_ble::Failure { kind: wrist_ble::FailureKind::Timeout, native: 0 })));
+    core
+}
+
+/// The first operation `core` asks for within a minute of `from`, and when.
+fn next_op(core: &mut Core<'_>, from: u64) -> Option<(u64, Op)> {
+    (1..=60).find_map(|s| core.step(Instant(from + s * 1_000), Input::Tick).op.map(|op| (from + s * 1_000, op)))
+}
+
+/// A start the chip never answered may have been taken, so the next is a stop; the chip refusing
+/// it for nothing advertising (HARDWARE.md) settles that it wasn't.
+#[test]
+fn a_start_with_no_answer_is_stopped_before_the_next() {
+    let mut core = unanswered_start();
+    let (at, next) = next_op(&mut core, 0).expect("nothing more");
+    assert_eq!(next, Op::Advertise(None));
+    let refused = wrist_ble::Failure { kind: wrist_ble::FailureKind::ModeExclusion, native: 0x46 };
+    let out = core.step(Instant(at), Input::Submitted(Err(refused)));
+    assert!(matches!(out.op, Some(Op::Advertise(Some(_)))), "{out:?}");
+    assert_eq!(core.counters.divergences, 0);
+}
+
+/// A phone's link or the chip's reset ends whatever advertising there was.
+#[test]
+fn a_link_or_a_reset_settles_a_start_with_no_answer() {
+    let mut core = unanswered_start();
+    let link = ConnHandle::new(0x801);
+    core.step(Instant(10), Input::Radio(RadioEvent::LinkUp { link, role: LeConnRole::Peripheral, peer: phone_addr(), params: Some(PHONE) }));
+    assert!(!matches!(next_op(&mut core, 10), Some((_, Op::Advertise(None)))));
+    let mut core = unanswered_start();
+    core.step(Instant(10), Input::Radio(RadioEvent::ChipReset(wrist_ble::ResetCause::Watchdog)));
+    let out = core.step(Instant(20), started(&core));
+    assert!(matches!(out.op, Some(Op::Advertise(Some(_)))), "{out:?}");
+}
+
+/// Advertising a snapshot finds where the core has none, at an interval it can't know, is stopped.
+#[test]
+fn advertising_a_snapshot_finds_unrecorded_is_stopped() {
+    let goals = Goals { radio_on: true, phone: wrist_ble_core::goals::PhoneGoal { discoverable: false, pairing_open: false }, ..Goals::OFF };
+    let mut core = Core::new(&CAPABILITIES, &Scheduler, &MENU);
+    core.step(Instant(0), Input::Goals(goals));
+    assert_eq!(core.step(Instant(0), started(&core)).op, None);
+    assert!(core.step(Instant(100), Input::Radio(RadioEvent::EventsLost)).snapshot);
+    let s = wrist_ble::Snapshot { at: Instant(100), links: [None; wrist_ble::MAX_LINKS], advertising: true, scanning: false, initiating: false, anchor: None };
+    let out = core.step(Instant(100), Input::Snapshot(Ok(s)));
+    assert_eq!(out.op, Some(Op::Advertise(None)), "{out:?}");
+}
+
 fn snapshot_with(link: ConnHandle, encrypted: Option<bool>) -> wrist_ble::Snapshot {
     let mut links = [None; wrist_ble::MAX_LINKS];
     links[0] = Some(wrist_ble::LinkStatus { link, role: LeConnRole::Peripheral, peer: phone_addr(), encrypted });

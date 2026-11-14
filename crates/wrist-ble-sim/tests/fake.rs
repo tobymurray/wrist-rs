@@ -533,6 +533,13 @@ fn nothing_is_reported_on_a_link_after_it_is_down() {
 }
 
 #[test]
+fn a_stop_with_nothing_advertising_is_refused() {
+    let mut f = ready(1);
+    let r = f.submit(Op::Advertise(None));
+    assert_eq!(r.map_err(|e| (e.kind, e.native)), Err((FailureKind::ModeExclusion, 0x46)));
+}
+
+#[test]
 fn advertising_over_advertising_is_refused_and_the_old_goes_on() {
     let mut f = ready(1);
     f.submit(Op::Advertise(Some(ADV_100))).unwrap();

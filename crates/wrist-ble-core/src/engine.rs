@@ -105,6 +105,7 @@ fn kind_index(k: OpKind) -> usize {
 /// Ops the machines asked for, issued in order as the radio frees up.
 const QUEUE: usize = 4;
 
+#[allow(clippy::struct_excessive_bools, reason = "each is one thing the core keeps between steps")]
 pub struct Core<'a> {
     pub state: State,
     pub counters: Counters,
@@ -134,6 +135,9 @@ pub struct Core<'a> {
     busy: Bucket,
     retry: [bool; MAX_PERIPHERALS],
     snapshot: bool,
+    /// Advertising may be on air that the core has no record of: an advertising operation's
+    /// outcome was lost, or a snapshot found it.
+    advertising_unknown: bool,
     /// When goals or power last changed, or the chip came up.
     pub settled_since: Instant,
 }
@@ -164,6 +168,7 @@ impl<'a> Core<'a> {
             busy: Bucket::FULL,
             retry: [false; MAX_PERIPHERALS],
             snapshot: false,
+            advertising_unknown: false,
             settled_since: Instant(0),
         }
     }
@@ -289,6 +294,7 @@ impl<'a> Core<'a> {
             }
         }
         self.state.radio = Activities::IDLE;
+        self.advertising_unknown = false;
         self.state.silent_since = now;
         self.refused.clear();
         self.last_refused = None;
@@ -339,6 +345,7 @@ impl<'a> Core<'a> {
                 }
                 self.state.radio.peripheral = self.state.radio.peripheral.saturating_add(1);
                 self.state.radio.advertising = None;
+                self.advertising_unknown = false;
             }
             RadioEvent::LinkUp { link, peer, .. } => {
                 self.end_pending(|op| op.kind() == OpKind::Connect);
@@ -427,6 +434,7 @@ impl<'a> Core<'a> {
             Ok(_) => {
                 self.backoff[kind_index(p.op.kind())] = Backoff::default();
                 if let Op::Advertise(a) = p.op {
+                    self.advertising_unknown = false;
                     self.set_advertising(now, a);
                 }
             }
@@ -460,6 +468,13 @@ impl<'a> Core<'a> {
             }
             Err(f) => {
                 self.counters.refused += 1;
+                // The chip refuses a stop with nothing advertising (HARDWARE.md): there was none.
+                if self.advertising_unknown && op == Op::Advertise(None) && f.kind == FailureKind::ModeExclusion {
+                    self.advertising_unknown = false;
+                    self.set_advertising(now, None);
+                    return;
+                }
+                self.advertising_unknown |= f.kind == FailureKind::Timeout && op.kind() == OpKind::Advertise;
                 let change = change_of(&op);
                 if let (FailureKind::Schedule(_) | FailureKind::ModeExclusion, Some(change)) = (f.kind, change) {
                     self.counters.divergences += 1;
@@ -546,6 +561,7 @@ impl<'a> Core<'a> {
             mismatch = true;
             self.set_advertising(now, None);
         }
+        self.advertising_unknown = s.advertising && self.state.radio.advertising.is_none();
         if !s.scanning {
             self.state.radio.scanning = None;
         }
@@ -557,6 +573,7 @@ impl<'a> Core<'a> {
         if let Some(p) = self.pending.filter(|p| now >= p.deadline + GRACE) {
             self.pending = None;
             self.counters.timed_out += 1;
+            self.advertising_unknown |= p.op.kind() == OpKind::Advertise;
             self.back_off(now, p.op.kind());
         }
     }
@@ -665,6 +682,11 @@ impl<'a> Core<'a> {
                     return Some(Op::Disconnect(link, DisconnectReason::RemoteUserTerminatedConn));
                 }
             }
+        }
+        // Advertising the core has no record of is stopped first: the chip refuses a start over it
+        // (HARDWARE.md).
+        if self.advertising_unknown && self.ready_for(now, OpKind::Advertise) {
+            return Some(Op::Advertise(None));
         }
         let want = self.target.activities.advertising;
         if want != self.state.radio.advertising && self.ready_for(now, OpKind::Advertise) {
