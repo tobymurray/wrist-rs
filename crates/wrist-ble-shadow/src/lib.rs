@@ -200,8 +200,8 @@ impl<O: Observer> Shadow<O> {
         self.set_goals(at, Goals { radio_on: on, phone_params, ..self.goals });
     }
 
-    /// The timing the power source and a transfer ask for; where the driver's timing changes it
-    /// asks again, which ends the console's ask.
+    /// The timing the power source and a transfer ask for; where that timing changes, the
+    /// console's ask ends.
     pub fn timing(&mut self, at: Instant, power: Power, transfer: bool) {
         if (power, transfer) == (self.goals.power, self.goals.transfer) {
             return;
@@ -231,8 +231,8 @@ impl<O: Observer> Shadow<O> {
         verdict.operator(self.now.0, &mut |d| observer.disagreed(d));
     }
 
-    /// For a record that began with the chip already up: the chip's ready answers the core's
-    /// start at once. Whether the core was starting it.
+    /// The core's start answered at once by the chip's ready, for a record that began with the
+    /// chip already up; whether the core was starting it.
     pub fn seed(&mut self) -> bool {
         let Some(id) = self.core.state.chip.starting() else { return false };
         self.seeding = true;
@@ -275,8 +275,8 @@ impl<O: Observer> Shadow<O> {
             (OpKind::ConfirmNumeric, _) => DriverOp::Confirm(params.get(2) == Some(&1)),
             _ => DriverOp::Other(kind),
         };
-        // An ask the menu never makes is the console's `ble interval now`, over USB or over the
-        // air, which the core is given as a goal.
+        // An ask the menu never makes is taken as the console's `ble interval now`, over USB or
+        // over the air, and given the core as a goal.
         if let DriverOp::AskParams(min, max, latency) = op {
             let menu = MENU.phone.iter().any(|c| (c.params.interval_min.as_u16(), c.params.interval_max.as_u16(), c.params.latency) == (min, max, latency));
             let now = interval_now_ask(min, max);
@@ -324,8 +324,8 @@ impl<O: Observer> Shadow<O> {
             (RadioEvent::Ready(info), Some(id)) => self.feed(Input::Started(id, Ok(info))),
             _ => self.feed(Input::Radio(e)),
         }
-        // The driver's `ble interval now` is for its link only, once the core has seen it end or the
-        // chip come up again.
+        // The console's ask ends with the phone's link, once the core has seen it end or the chip
+        // come up again.
         if matches!(e, RadioEvent::LinkDown { .. } | RadioEvent::Ready(_)) && self.phone.is_none() && self.goals.phone_params.is_some() {
             self.set_goals(self.now, Goals { phone_params: None, ..self.goals });
         }

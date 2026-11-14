@@ -82,7 +82,6 @@ fn the_cores_disagreements_are_listed_before_the_drivers() {
     assert!(d[0].starts_with("1062525: the core") && d[1].starts_with("945700: the driver"), "{d:?}");
 }
 
-/// The console's parser refuses these, so the driver asks for nothing.
 #[test]
 fn an_ask_the_console_refuses_is_no_goal() {
     let capture = fixture("bluez-cable.log");
@@ -234,8 +233,7 @@ fn fixture(name: &str) -> String {
     std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/traces").join(name)).unwrap()
 }
 
-/// The chip and every central measured end an unanswered comparison 30 s after it shows, and the
-/// countdown shows each second.
+/// The chip and every central end an unanswered comparison at that timeout (HARDWARE.md).
 #[test]
 fn the_comparison_counts_down_from_the_security_managers_timeout() {
     let r = replay(&fixture("bluez-comparison-unanswered.log"));

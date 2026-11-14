@@ -188,8 +188,8 @@ impl Verdict {
         self.core.push(Seen { at, act, owed }, found);
     }
 
-    /// The driver asks a central for parameters at every connection, so its ask is owed
-    /// nothing; nor is a disconnect within [`OPERATOR`] after the operator's.
+    /// The driver's ask for parameters is owed nothing, nor is a disconnect within [`OPERATOR`]
+    /// after the operator's.
     pub fn driver(&mut self, at: u64, act: Act, found: &mut impl FnMut(Disagreement)) {
         self.advance(at, found);
         let answered = self.core.answer(act);

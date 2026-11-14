@@ -55,7 +55,7 @@ const ENCRYPTED: &[u8] = &[0x04, 0x08, 0x04, 0x00, 0x01, 0x08, 0x01];
 const ACCEPTED: &[u8] = &[0x04, 0xFF, 0x06, 0x00, 0x08, 0x01, 0x08, 0x00, 0x00];
 /// A command's reply, which no operation ends with.
 const REPLY: &[u8] = &[0x04, 0x0E, 0x04, 0x01, 0x83, 0xFC, 0x00];
-/// Too short for its own length: the driver's lost events, after which the core asks for a snapshot.
+/// A packet shorter than its own length, after which the core asks for a snapshot.
 const CUT: &[u8] = &[0x04, 0x3E, 0x13, 0x01];
 
 fn disconnected(handle: u16) -> Vec<u8> {
