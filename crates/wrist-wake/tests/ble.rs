@@ -452,3 +452,15 @@ fn a_held_ask_goes_with_a_later_ask_taken_or_the_link() {
     held.clear();
     assert_eq!((held.due(), held.take()), (false, None));
 }
+
+/// The central's answer read in the same exchange as the chip's busy refusal of the next ask.
+#[test]
+fn an_answer_read_while_the_chip_refuses_the_next_ask_lets_that_ask_go() {
+    use wrist_wake::ble::HeldAsk;
+    let mut held = HeldAsk::default();
+    held.answered(1, false);
+    held.central_answered();
+    held.answered(2, true);
+    assert!(held.due());
+    assert_eq!(held.take(), Some(2));
+}

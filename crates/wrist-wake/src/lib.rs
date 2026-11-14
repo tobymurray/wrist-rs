@@ -159,14 +159,15 @@ pub mod ble {
     }
 
     impl<T: Copy> HeldAsk<T> {
-        /// The chip's answer to `ask`: held if `busy`, and nothing held if not.
+        /// The chip's answer to `ask`: held if `busy`, and nothing held if not. A held ask may go at
+        /// once if the central answered the one on air while the chip was refusing it.
         pub fn answered(&mut self, ask: T, busy: bool) {
-            *self = Self { held: busy.then_some(ask), due: false };
+            *self = Self { held: busy.then_some(ask), due: busy && self.due };
         }
 
         /// The central answered the ask on air: the held one may go.
         pub fn central_answered(&mut self) {
-            self.due = self.held.is_some();
+            self.due = true;
         }
 
         /// The held ask, once it may go.
