@@ -8,8 +8,9 @@ use wrist_ble_core::invariants::{COMMANDS_PER_MINUTE, CONVERGE_AFTER, REACHABLE_
 use wrist_ble_core::phone::{self, Security, SETTLE};
 use wrist_ble_core::State;
 use wrist_ble_sim::checks::Checks;
-use wrist_ble_sim::fake::{Fake, Note, INFO};
-use wrist_ble_sim::menu::MENU;
+use wrist_ble_sim::fake::{Fake, Note};
+use wrist_bluenrg2::INFO;
+use wrist_ble_shadow::menu::MENU;
 use wrist_ble_sim::peers::{Os, Phone};
 use wrist_ble_sim::sim::{on, Sim};
 use wrist_bluenrg2::{Scheduler, CAPABILITIES};

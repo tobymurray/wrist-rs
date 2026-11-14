@@ -14,7 +14,7 @@ import argparse
 import re
 import sys
 
-# The driver's commands the replay reads as operations (wrist-ble-sim's replay.rs, driver_op).
+# The driver's commands the replay reads as operations (wrist-ble-shadow's lib.rs, driver_op).
 OPS = {0xFC83, 0xFC81, 0xFD81, 0xFC8D, 0xFC95, 0xFCA5, 0xFC88, 0xFC93, 0xFC97, 0xFC9D}
 GOALS = re.compile(r'^ble (on|off|yes|no|disconnect|profile (auto|cable|battery))$')
 LINE = re.compile(r'^\s*((?:\d{2}:\d{2}:\d{2}|\d+)\.\d{3}) (.*)$')

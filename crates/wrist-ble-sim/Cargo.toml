@@ -11,6 +11,7 @@ bluenrg2 = "0.1.1"
 wrist-bluenrg2 = { path = "../wrist-bluenrg2" }
 wrist-ble = { path = "../wrist-ble" }
 wrist-ble-core = { path = "../wrist-ble-core" }
+wrist-ble-shadow = { path = "../wrist-ble-shadow" }
 wrist-wake = { path = "../wrist-wake" }
 
 [dev-dependencies]

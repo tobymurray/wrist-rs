@@ -35,6 +35,10 @@
 //!
 //! Address. A static random address from the MCU's unique id
 //! (`wrist_bluenrg2::bonds::static_random_address`), so bonds survive updates.
+//!
+//! Shadow. The Bluetooth core runs beside this driver, told what it is told and issuing nothing
+//! (`wrist_ble_shadow`); where the two act differently is a `[ble] shadow:` line, counted on the
+//! `ble` line.
 
 #[cfg(feature = "ble-probe")]
 mod probe;
@@ -58,6 +62,7 @@ use embassy_sync::channel::Channel;
 use embassy_sync::pipe::Pipe;
 use embassy_sync::signal::Signal;
 use embassy_time::{Delay, Duration, Instant, Timer};
+use static_cell::StaticCell;
 use bluenrg2::opcode::{
     ACI_GAP_CLEAR_SECURITY_DB, ACI_GAP_GET_BONDED_DEVICES, ACI_GAP_REMOVE_BONDED_DEVICE, ACI_HAL_GET_FW_BUILD_NUMBER, HCI_LE_RAND,
     HCI_READ_LOCAL_VERSION,
@@ -70,6 +75,9 @@ use wrist_ble::{
     AdvParams, Cccd, CharDecl, ConnHandle, ConnParams, DisconnectReason, Interval, LeConnRole, Micros, Op, Payload, RadioEvent, ServerTable,
     ServiceDecl, Slots, Timeout, ATT_MAX_MTU,
 };
+use wrist_ble_core::goals::{self, Goals, PhoneGoal};
+use wrist_ble_shadow::verdict::Disagreement;
+use wrist_ble_shadow::{Observer, Shadow};
 use wrist_bluenrg2::commands;
 use wrist_bluenrg2::driver::{self, Driver, Got, Reply, Unanswered};
 use wrist_bluenrg2::start::{Setup, Start, Starting, Step};
@@ -215,6 +223,8 @@ static OLD_KEY: Mutex<CriticalSectionRawMutex, Cell<OldKey<bluenrg2::Address>>> 
 static ADDRESS: [AtomicU8; 6] = [const { AtomicU8::new(0) }; 6];
 /// `ble profile`: 0 follows the power source, 1 always the cable's, 2 always the battery's.
 static PROFILE: AtomicU8 = AtomicU8::new(0);
+/// Where the shadow and this driver acted differently, this boot ([`Said`]).
+static SHADOW: AtomicU32 = AtomicU32::new(0);
 
 /// Signalled when [`PROVEN`] first becomes true.
 static PROVEN_NOW: Signal<CriticalSectionRawMutex, ()> = Signal::new();
@@ -413,6 +423,7 @@ pub fn write_status(uart: Uart) {
         uart.write_hex8(LAST_RESTART.load(Ordering::Relaxed));
         uart.write_str(")");
     }
+    n(", shadow disagreements ", &SHADOW);
     match LAST_PAIRING.load(Ordering::Relaxed) {
         0 => {}
         1 => uart.write_str(", last pairing succeeded"),
@@ -528,6 +539,7 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
     if on {
         uart.write_line("[ble] on at boot: `ble on` was the last word (BKP29R)");
     }
+    let shadow = shadow(uart);
     loop {
         while !on {
             match REQUESTS.receive().await {
@@ -564,8 +576,8 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
             continue;
         }
         crate::rtc::set_radio_wanted(true);
-        let mut link = Link {
-            chip: chip(
+        let mut link = Link::new(
+            chip(
                 (pins.spi.reborrow(), pins.sck.reborrow(), pins.miso.reborrow(), pins.mosi.reborrow()),
                 (pins.cs.reborrow(), pins.irq.reborrow(), pins.irq_exti.reborrow()),
                 (pins.tx_dma.reborrow(), pins.rx_dma.reborrow()),
@@ -573,34 +585,11 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
             ),
             uart,
             flash,
-            last_rx: 0,
-            readvertise: false,
-            passkey_for: None,
-            rebond_for: None,
-            recount_bonds: false,
-            line: [0; 192],
-            line_len: 0,
-            mtu: DEFAULT_MTU,
-            asked: None,
-            advertised: None,
-            request_interval: None,
-            subscribed: false,
-            peer: None,
-            transfer: None,
-            last_data: Instant::from_ticks(0),
-            finish_transfer: false,
-            console_at: Instant::from_ticks(0),
-            outbox: Outbox::default(),
-            pair_ask: PairAsk::default(),
-            interval_ask: IntervalAsk::default(),
-            scanner: scan::Scanner::default(),
-            seen: Seen::default(),
-            boot: None,
-            restart: None,
-            restarts: Restarts::default(),
-        };
+            &mut *shadow,
+        );
         // A start, or a restart's recovery, that failed.
         if !(link.start().await && link.serve(&mut changes).await) {
+            link.shadow_off();
             set_state(STATE_FAILED);
             old_key(OldKey::clear);
             link.chip.hold();
@@ -609,6 +598,7 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
             continue;
         }
         // `ble off`: the chip in reset first, then SPI1, CS and IRQ dropped back to analog.
+        link.shadow_off();
         link.chip.hold();
         drop(link);
         MIRROR.store(false, Ordering::Relaxed);
@@ -699,6 +689,43 @@ struct Link<'d> {
     /// The chip restarted by itself and has not been brought up again.
     restart: Option<Boot>,
     restarts: Restarts,
+    shadow: &'d mut Shadow<Said>,
+}
+
+impl<'d> Link<'d> {
+    fn new(chip: Chip<'d>, uart: Uart, flash: &'static FlashMutex, shadow: &'d mut Shadow<Said>) -> Self {
+        Self {
+            chip,
+            uart,
+            flash,
+            last_rx: 0,
+            readvertise: false,
+            passkey_for: None,
+            rebond_for: None,
+            recount_bonds: false,
+            line: [0; 192],
+            line_len: 0,
+            mtu: DEFAULT_MTU,
+            asked: None,
+            advertised: None,
+            request_interval: None,
+            subscribed: false,
+            peer: None,
+            transfer: None,
+            last_data: Instant::from_ticks(0),
+            finish_transfer: false,
+            console_at: Instant::from_ticks(0),
+            outbox: Outbox::default(),
+            pair_ask: PairAsk::default(),
+            interval_ask: IntervalAsk::default(),
+            scanner: scan::Scanner::default(),
+            seen: Seen::default(),
+            boot: None,
+            restart: None,
+            restarts: Restarts::default(),
+            shadow,
+        }
+    }
 }
 
 /// Codes of unknown events already named on the console: each is named once.
@@ -730,8 +757,10 @@ impl Link<'_> {
                 return false;
             }
             WAKE.reset();
+            self.shadow.advance(now_ms());
             self.deferred().await;
             self.scan_tick().await;
+            self.shadow.timing(now_ms(), shadow_power(), self.transfer.is_some());
             self.retime().await;
             self.console_tick().await;
             let due = self.due();
@@ -796,7 +825,9 @@ impl Link<'_> {
             ask_at: self.pair_ask.due(),
             scan_end: self.scanner.until().map(tick),
         };
-        wrist_wake::ble::due(&state).map(Instant::from_ticks)
+        // The first tick at which `now_ms` reaches it.
+        let shadow = self.shadow.next().map(|at| (at.0 * embassy_time::TICK_HZ).div_ceil(1000));
+        wrist_wake::earliest([wrist_wake::ble::due(&state), shadow]).map(Instant::from_ticks)
     }
 
     async fn request(&mut self, req: Request) {
@@ -822,6 +853,7 @@ impl Link<'_> {
             Request::Disconnect => self.terminate().await,
             Request::IntervalNow(min, max) => {
                 if STATE.load(Ordering::Relaxed) == STATE_CONNECTED {
+                    self.shadow.interval_now(now_ms(), min, max);
                     self.request_interval = Some((min, max));
                 } else {
                     self.uart.write_line("[ble] interval now: not connected");
@@ -952,6 +984,9 @@ impl Link<'_> {
             (prompt, owed)
         });
         if let Some(yes) = owed {
+            if prompt == Prompt::Answered(yes) {
+                self.shadow.answer(now_ms(), yes);
+            }
             let _ = self.submit(Op::ConfirmNumeric(link(), yes)).await;
             self.uart.write_line(if yes {
                 "[ble] comparison confirmed"
@@ -987,8 +1022,15 @@ impl Link<'_> {
 
     /// Bring the chip up, and again if it restarts meanwhile; whether it is up.
     async fn start(&mut self) -> bool {
+        self.shadow.set_goals(now_ms(), shadow_goals());
         self.bring_up().await;
         self.recover().await
+    }
+
+    /// The radio off as the shadow's core takes it, and everything it still holds judged.
+    fn shadow_off(&mut self) {
+        self.shadow.radio(now_ms(), false);
+        self.shadow.finish();
     }
 
     /// Bring up again a chip that restarted by itself, within the budget; whether it is up.
@@ -1030,7 +1072,10 @@ impl Link<'_> {
             let Some(note) = self.chip.starting(&mut start, &mut packet).await else { return };
             match note {
                 Starting::Got(got) => self.got(&packet, got),
-                Starting::Sending(c) => trace_command(c.opcode, c.params()),
+                Starting::Sending(c) => {
+                    trace_command(c.opcode, c.params());
+                    self.shadow.command(now_ms(), c.opcode, c.params());
+                }
                 Starting::Silent => self.uart.write_line("[ble] no sign of life after reset (no module, or not ST's firmware)"),
                 Starting::Booted => {
                     if self.boot == Some(Boot::InUpdater) {
@@ -1304,6 +1349,7 @@ impl Link<'_> {
     }
 
     async fn terminate(&mut self) {
+        self.shadow.operator_disconnect(now_ms());
         let _ = self.submit(Op::Disconnect(link(), DisconnectReason::RemoteUserTerminatedConn)).await;
     }
 
@@ -1344,6 +1390,7 @@ impl Link<'_> {
             return Err(Unanswered::Restarted);
         }
         trace_command(opcode, params);
+        self.shadow.command(now_ms(), opcode, params);
         self.chip.send(opcode, params).await?;
         while self.chip.awaiting().await {
             self.packets().await;
@@ -1377,9 +1424,10 @@ impl Link<'_> {
 
     /// One thing a drain handed out, its bytes in `packet`.
     fn got(&mut self, packet: &[u8; transport::MAX_READ], got: Got) {
-        #[cfg(feature = "ble-trace")]
         if let Got::Packet { len, .. } | Got::Boot { len, .. } = got {
+            #[cfg(feature = "ble-trace")]
             trace::packet(trace::Dir::FromChip, &packet[..len]);
+            self.shadow.event(now_ms(), &packet[..len]);
         }
         match got {
             Got::Packet { len, event } => self.handle(&packet[..len], event),
@@ -1738,6 +1786,65 @@ fn trace_command(opcode: u16, params: &[u8]) {
         if let Some(n) = bluenrg2::command(opcode, &[params], &mut packet) {
             trace::packet(trace::Dir::ToChip, &packet[..n]);
         }
+    }
+}
+
+/// The clock the shadow keeps, as the trace stamps packets.
+fn now_ms() -> wrist_ble::Instant {
+    wrist_ble::Instant(Instant::now().as_millis())
+}
+
+fn shadow_power() -> goals::Power {
+    match power() {
+        Power::Cable => goals::Power::Cable,
+        Power::Battery => goals::Power::Battery,
+    }
+}
+
+/// What this driver works toward, as the shadow's core takes it: the radio on, the phone always
+/// welcome, the timing the power source asks for.
+fn shadow_goals() -> Goals {
+    Goals { radio_on: true, phone: PhoneGoal { discoverable: true, pairing_open: true }, power: shadow_power(), ..Goals::OFF }
+}
+
+/// Out of line, as built in the task it would widen the task's stack frame, at every poll, by
+/// its size.
+#[inline(never)]
+fn shadow(uart: Uart) -> &'static mut Shadow<Said> {
+    static SHADOW_CORE: StaticCell<Shadow<Said>> = StaticCell::new();
+    SHADOW_CORE.init_with(|| Shadow::new(wrist_bluenrg2::INFO, Goals::OFF, Said(uart)))
+}
+
+/// The shadow's disagreements, each a console line and one more on the `ble` line.
+struct Said(Uart);
+
+impl Observer for Said {
+    fn event(&mut self, _: wrist_ble::Instant, e: &RadioEvent) {
+        if let RadioEvent::Unknown { raw_code } = *e {
+            SHADOW.fetch_add(1, Ordering::Relaxed);
+            self.0.write_str("[ble] shadow: an event the core could not read, code 0x");
+            raw_code.to_be_bytes().into_iter().for_each(|b| self.0.write_hex8(b));
+            self.0.write_line("");
+        }
+    }
+
+    fn disagreed(&mut self, d: Disagreement) {
+        use core::fmt::Write;
+        struct Out(Uart);
+        impl Write for Out {
+            fn write_str(&mut self, s: &str) -> core::fmt::Result {
+                self.0.write_str(s);
+                Ok(())
+            }
+        }
+        SHADOW.fetch_add(1, Ordering::Relaxed);
+        let _ = write!(Out(self.0), "[ble] shadow: {d}");
+        self.0.write_line("");
+    }
+
+    fn lost(&mut self, _: wrist_ble::Instant) {
+        SHADOW.fetch_add(1, Ordering::Relaxed);
+        self.0.write_line("[ble] shadow: an answer owed to the core found no room");
     }
 }
 

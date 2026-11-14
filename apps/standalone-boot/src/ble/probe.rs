@@ -344,6 +344,7 @@ impl Link<'_> {
             return self.uart.write_line("[ble] probe drop: not connected");
         }
         let h = CONN_HANDLE.load(Ordering::Relaxed).to_le_bytes();
+        self.shadow.operator_disconnect(super::now_ms());
         let status = self.command(ACI_GAP_TERMINATE, &[h[0], h[1], reason]).await.map(|r| r.status);
         let mut t = Text(self.uart);
         let _ = match status {

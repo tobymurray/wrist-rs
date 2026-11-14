@@ -939,6 +939,8 @@ dependencies = [
  "log",
  "static_cell",
  "wrist-ble",
+ "wrist-ble-core",
+ "wrist-ble-shadow",
  "wrist-bluenrg2",
  "wrist-board",
  "wrist-crash",
@@ -1165,6 +1167,24 @@ name = "wrist-ble"
 version = "0.0.0"
 dependencies = [
  "bt-hci",
+]
+
+[[package]]
+name = "wrist-ble-core"
+version = "0.0.0"
+dependencies = [
+ "wrist-ble",
+]
+
+[[package]]
+name = "wrist-ble-shadow"
+version = "0.0.0"
+dependencies = [
+ "bluenrg2",
+ "wrist-ble",
+ "wrist-ble-core",
+ "wrist-bluenrg2",
+ "wrist-wake",
 ]
 
 [[package]]

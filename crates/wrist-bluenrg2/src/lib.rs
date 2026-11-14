@@ -17,8 +17,16 @@ pub mod start;
 pub mod transport;
 
 use wrist_ble::{
-    Activities, AdvParams, Admitted, Anchor, Capabilities, CentralSlot, Change, ConnParams, Duration, Exclusion, GattLimits, Interval, Micros,
-    Millis, OpKind, ParamAnswer, RoleSet, SchedKind, Schedule, ScanParams, Slots, MAX_LINKS,
+    Activities, AdvParams, Admitted, Anchor, Capabilities, CentralSlot, Change, ChipInfo, ConnParams, CoreSpecificationVersion, Duration, Exclusion,
+    GattLimits, Interval, Micros, Millis, OpKind, ParamAnswer, RoleSet, SchedKind, Schedule, ScanParams, Slots, MAX_LINKS,
+};
+
+/// The chip as `ble version` reads it on the watch (HARDWARE.md).
+pub const INFO: ChipInfo = ChipInfo {
+    hci_version: CoreSpecificationVersion::VERSION_5_2,
+    lmp_version: CoreSpecificationVersion::VERSION_5_2,
+    manufacturer: 0x30,
+    firmware: 2353,
 };
 
 pub const CAPABILITIES: Capabilities = Capabilities {

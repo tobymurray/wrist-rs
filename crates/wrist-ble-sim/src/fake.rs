@@ -5,22 +5,15 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, VecDeque};
 
 use wrist_ble::{
-    Activities, AdvParams, AdvReport, AttRef, Bytes, Cccd, Change, ChipInfo, ConnHandle, ConnParams, CoreSpecificationVersion, DiscoverWhat,
+    Activities, AdvParams, AdvReport, AttRef, Bytes, Cccd, Change, ChipInfo, ConnHandle, ConnParams, DiscoverWhat,
     Duration, Failure, FailureKind, Instant, LeConnRole, LinkParams, LinkStatus, Micros, Millis, Op, OpId, OpKind, Outcome, PairingEvent,
     PairingStep, PeerAddr, RadioEvent, ResetCause, ScanParams, SchedKind, Schedule, ServerAttr, ServiceRef, CharRef, Snapshot, Status,
     MAX_LINKS,
 };
-use wrist_bluenrg2::{adv_period, anchor_reading, interval_ns, native, Scheduler, CAPABILITIES};
+use wrist_bluenrg2::{adv_period, anchor_reading, interval_ns, native, Scheduler, CAPABILITIES, INFO};
 
 use crate::peers::{Keys, Os, Phone, Sensor};
 use crate::rng::Rng;
-
-pub const INFO: ChipInfo = ChipInfo {
-    hci_version: CoreSpecificationVersion::VERSION_5_2,
-    lmp_version: CoreSpecificationVersion::VERSION_5_2,
-    manufacturer: 0x30,
-    firmware: 2353,
-};
 
 /// The console's TX in the watch's table, which a phone subscribes to.
 pub const CONSOLE: ServerAttr = wrist_wake::ble::server::TX;
