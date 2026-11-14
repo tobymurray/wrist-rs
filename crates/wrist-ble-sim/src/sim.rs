@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 
-use wrist_ble::{Instant, Millis, RadioEvent};
+use wrist_ble::{Fault, Instant, Millis, RadioEvent};
 use wrist_ble_core::chip::{Action, StartId};
 use wrist_ble_core::engine::{Core, Input, Outputs, Tell};
 use wrist_ble_core::goals::{Goals, Power};
@@ -27,6 +27,8 @@ pub struct Sim {
     pub checks: Checks,
     /// Everything the core said beyond the status.
     pub tells: Vec<(Instant, Tell)>,
+    /// Every snapshot answered with a fault, as a driver whose snapshot fails.
+    pub snapshots_fail: bool,
     /// The start the fake is booting for: its ready answers the start, as a driver's
     /// `Radio::start` returns it, and any other is a boot nobody asked for.
     starting: Option<StartId>,
@@ -51,6 +53,7 @@ impl Sim {
             fake: Fake::new(seed),
             checks: Checks::default(),
             tells: Vec::new(),
+            snapshots_fail: false,
             starting: None,
             next: None,
             spins: (Instant(0), 0),
@@ -171,8 +174,8 @@ impl Sim {
             self.feed(Input::Submitted(r));
         }
         if out.snapshot {
-            let s = self.fake.snapshot();
-            self.feed(Input::Snapshot(Ok(s)));
+            let s = if self.snapshots_fail { Err(Fault::Silent) } else { Ok(self.fake.snapshot()) };
+            self.feed(Input::Snapshot(s));
         }
         self.check();
     }

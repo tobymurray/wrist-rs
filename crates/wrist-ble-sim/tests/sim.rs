@@ -124,3 +124,24 @@ fn a_new_interval_whose_events_are_lost_leaves_the_core_at_the_chips() {
         }
     }
 }
+
+/// With no snapshot to settle a start's lost outcome, the chip may be advertising where the core
+/// has no record of it: the core stops before it starts again.
+#[test]
+fn a_start_whose_outcome_is_lost_with_no_snapshot_leaves_the_core_at_the_chips() {
+    for (from, to) in [(Power::Battery, Power::Cable), (Power::Cable, Power::Battery)] {
+        let mut s = Sim::started(1, on(from));
+        s.snapshots_fail = true;
+        s.power(to);
+        // The stop done, the start taken; its outcome is the next event.
+        s.run_for(Millis(1));
+        assert!(matches!(s.core.pending().map(|p| p.op), Some(Op::Advertise(Some(_)))), "{}", s.report());
+        s.fake.lose_events(1);
+        s.run_for(Millis::mins(1));
+        let case = format!("{from:?} to {to:?}");
+        assert_ne!(s.core.counters.timed_out, 0, "{case}: nothing was lost\n{}", s.report());
+        assert_eq!(s.core.state.radio.advertising, s.fake.advertising(), "{case}\n{}", s.report());
+        assert_eq!(s.core.counters.refused, 0, "{case}\n{}", s.report());
+        assert_eq!(s.core.counters.resets, 0, "{case}\n{}", s.report());
+    }
+}
