@@ -166,9 +166,10 @@ enum Request {
 }
 
 static REQUESTS: Channel<CriticalSectionRawMutex, Request, 4> = Channel::new();
-/// A line from the central's RX and its length, for [`commands`].
+/// A line from the central's RX and its length.
 type Line = ([u8; 192], usize);
-static LINES_IN: Channel<CriticalSectionRawMutex, Line, 4> = Channel::new();
+/// The central's command lines for [`commands`], each ended by `\n`: room for the longest write.
+static LINES_IN: Pipe<CriticalSectionRawMutex, 512> = Pipe::new();
 /// Raised by other tasks that leave the loop work it cannot see coming: console output for a
 /// subscribed central. The loop clears it before it reads that state.
 static WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
@@ -619,9 +620,22 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
 /// radio's task is never held while one writes its output.
 #[embassy_executor::task]
 pub async fn commands(flash: &'static FlashMutex) -> ! {
+    let (mut line, mut n) = ([0u8; 192], 0);
     loop {
-        let (line, n) = LINES_IN.receive().await;
-        crate::console::command(&line[..n], flash);
+        let mut b = [0u8];
+        LINES_IN.read(&mut b).await;
+        match b[0] {
+            b'\n' => {
+                crate::console::command(&line[..n], flash);
+                n = 0;
+                embassy_futures::yield_now().await;
+            }
+            b if n < line.len() => {
+                line[n] = b;
+                n += 1;
+            }
+            _ => {}
+        }
     }
 }
 
@@ -1221,8 +1235,15 @@ impl Link<'_> {
             Some((Target::Application, len, crc)) => self.start_transfer(len, crc),
             Some((Target::Loader, ..)) => self.uart.write_line("[loader] error: not over the air; USB only"),
             None => {
-                if LINES_IN.try_send((line, n)).is_err() {
-                    self.uart.write_line("[ble] command dropped: four already waiting");
+                // The only writer: what the check finds free stays free.
+                if LINES_IN.free_capacity() > n {
+                    for mut part in [&line[..n], b"\n"] {
+                        while let Ok(k @ 1..) = LINES_IN.try_write(part) {
+                            part = &part[k..];
+                        }
+                    }
+                } else {
+                    self.uart.write_line("[ble] command dropped: the queue is full");
                 }
             }
         }
