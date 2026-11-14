@@ -370,7 +370,7 @@ where
                 self.reply = Some(Reply { status: status.into_inner(), params: [0; RETURN_PARAMS_MAX], len: 0 });
             }
             Event::Vendor(VendorEvent::BlueInitialized { .. }) => self.restarted = true,
-            Event::Vendor(VendorEvent::L2capUpdateResponse { handle, accepted: true, .. }) => self.ops.accepted(handle),
+            Event::Vendor(VendorEvent::L2capUpdateResponse { handle, accepted, .. }) => self.ops.responded(handle, accepted),
             _ => {}
         }
         let event = self.translator.event(packet);

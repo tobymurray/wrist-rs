@@ -420,3 +420,47 @@ fn a_failed_pairing_with_no_link_or_on_an_encrypted_one_arms_nothing() {
     ask.pairing_failed();
     assert_eq!(ask, IntervalAsk::Open);
 }
+
+/// `ble interval now` three times running: the chip takes the first and refuses the other two
+/// busy until the central answers it (HARDWARE.md); the last goes then.
+#[test]
+fn an_ask_refused_busy_goes_once_the_central_answers_and_the_latest_wins() {
+    use wrist_wake::ble::HeldAsk;
+    let mut held = HeldAsk::default();
+    held.answered(1, false);
+    held.answered(2, true);
+    held.answered(3, true);
+    assert_eq!((held.due(), held.take()), (false, None), "not before the central's answer");
+    held.central_answered();
+    assert!(held.due());
+    assert_eq!(held.take(), Some(3));
+    assert_eq!((held.due(), held.take()), (false, None), "once");
+    held.central_answered();
+    assert_eq!(held.take(), None, "an answer with nothing held asks nothing");
+}
+
+#[test]
+fn a_held_ask_goes_with_a_later_ask_taken_or_the_link() {
+    use wrist_wake::ble::HeldAsk;
+    let mut held = HeldAsk::default();
+    held.answered(2, true);
+    held.answered(3, false);
+    held.central_answered();
+    assert_eq!(held.take(), None, "the later one was taken");
+    held.answered(4, true);
+    held.central_answered();
+    held.clear();
+    assert_eq!((held.due(), held.take()), (false, None));
+}
+
+/// The central's answer read in the same exchange as the chip's busy refusal of the next ask.
+#[test]
+fn an_answer_read_while_the_chip_refuses_the_next_ask_lets_that_ask_go() {
+    use wrist_wake::ble::HeldAsk;
+    let mut held = HeldAsk::default();
+    held.answered(1, false);
+    held.central_answered();
+    held.answered(2, true);
+    assert!(held.due());
+    assert_eq!(held.take(), Some(2));
+}

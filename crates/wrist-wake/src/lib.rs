@@ -144,6 +144,51 @@ pub mod ble {
         }
     }
 
+    /// An interval ask the chip refused busy, since the one before it still waits for the
+    /// central's answer: asked again once that answer comes. A later ask replaces it.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct HeldAsk<T> {
+        held: Option<T>,
+        due: bool,
+    }
+
+    impl<T> Default for HeldAsk<T> {
+        fn default() -> Self {
+            Self { held: None, due: false }
+        }
+    }
+
+    impl<T: Copy> HeldAsk<T> {
+        /// The chip's answer to `ask`: held if `busy`, and nothing held if not. A held ask may go at
+        /// once if the central answered the one on air while the chip was refusing it.
+        pub fn answered(&mut self, ask: T, busy: bool) {
+            *self = Self { held: busy.then_some(ask), due: busy && self.due };
+        }
+
+        /// The central answered the ask on air: the held one may go.
+        pub fn central_answered(&mut self) {
+            self.due = true;
+        }
+
+        /// The held ask, once it may go.
+        pub fn take(&mut self) -> Option<T> {
+            if !core::mem::take(&mut self.due) {
+                return None;
+            }
+            self.held.take()
+        }
+
+        #[must_use]
+        pub fn due(&self) -> bool {
+            self.due
+        }
+
+        /// The link is gone, and the ask with it.
+        pub fn clear(&mut self) {
+            *self = Self::default();
+        }
+    }
+
     /// Where the watch's power comes from, as the radio sees it.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum Power {

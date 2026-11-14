@@ -72,7 +72,7 @@ use bluenrg2::{
     PairingReason, PairingStatus, VendorEvent, ATT_HEADER_LEN,
 };
 use wrist_ble::{
-    AdvParams, Cccd, CharDecl, ConnHandle, ConnParams, DisconnectReason, Interval, LeConnRole, Micros, Op, Payload, RadioEvent, ServerTable,
+    AdvParams, Cccd, CharDecl, ConnHandle, ConnParams, DisconnectReason, Failure, FailureKind, Interval, LeConnRole, Micros, Op, Payload, RadioEvent, ServerTable,
     ServiceDecl, Slots, Timeout, ATT_MAX_MTU,
 };
 use wrist_ble_core::goals::{self, Goals, PhoneGoal};
@@ -84,7 +84,7 @@ use wrist_bluenrg2::start::{Setup, Start, Starting, Step};
 use wrist_bluenrg2::transport::{self, Counts};
 use wrist_pages::{OldKey, Pairing, Prompt};
 use wrist_wake::ble::restart::{Boot, Restarts};
-use wrist_wake::ble::{server, timing, IntervalAsk, Lines, Outbox, PairAsk, Power, Radio, Scan, Sink, Timing};
+use wrist_wake::ble::{server, timing, HeldAsk, IntervalAsk, Lines, Outbox, PairAsk, Power, Radio, Scan, Sink, Timing};
 
 use crate::console::Target;
 use crate::uart::Uart;
@@ -166,6 +166,10 @@ enum Request {
 }
 
 static REQUESTS: Channel<CriticalSectionRawMutex, Request, 4> = Channel::new();
+/// A line from the central's RX and its length.
+type Line = ([u8; 192], usize);
+/// The central's command lines for [`commands`], each ended by `\n`: room for the longest write.
+static LINES_IN: Pipe<CriticalSectionRawMutex, 512> = Pipe::new();
 /// Raised by other tasks that leave the loop work it cannot see coming: console output for a
 /// subscribed central. The loop clears it before it reads that state.
 static WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
@@ -612,6 +616,29 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
     }
 }
 
+/// The central's commands, run by the USB console's parser in a task of their own, so the
+/// radio's task is never held while one writes its output.
+#[embassy_executor::task]
+pub async fn commands(flash: &'static FlashMutex) -> ! {
+    let (mut line, mut n) = ([0u8; 192], 0);
+    loop {
+        let mut b = [0u8];
+        LINES_IN.read(&mut b).await;
+        match b[0] {
+            b'\n' => {
+                crate::console::command(&line[..n], flash);
+                n = 0;
+                embassy_futures::yield_now().await;
+            }
+            b if n < line.len() => {
+                line[n] = b;
+                n += 1;
+            }
+            _ => {}
+        }
+    }
+}
+
 type Chip<'d> = Driver<'static, Spi<'d, Async, spi::mode::Master>, Output<'d>, ExtiInput<'d, Async>, Delay, &'d mut Output<'static>, Now>;
 
 /// The driver's clock: embassy's.
@@ -660,8 +687,7 @@ struct Link<'d> {
     passkey_for: Option<u16>,
     rebond_for: Option<u16>,
     recount_bonds: bool,
-    line: [u8; 192],
-    line_len: usize,
+    line: Line,
     /// The negotiated ATT MTU; notifications carry `mtu - 3`.
     mtu: usize,
     /// The timing last asked of this connection, and the one advertising runs at.
@@ -682,6 +708,7 @@ struct Link<'d> {
     outbox: Outbox<{ server::CONSOLE_VALUE_LEN }>,
     pair_ask: PairAsk,
     interval_ask: IntervalAsk,
+    held_ask: HeldAsk<ConnParams>,
     scanner: scan::Scanner,
     seen: Seen,
     /// How the boot a reset asked for came up.
@@ -703,8 +730,7 @@ impl<'d> Link<'d> {
             passkey_for: None,
             rebond_for: None,
             recount_bonds: false,
-            line: [0; 192],
-            line_len: 0,
+            line: ([0; 192], 0),
             mtu: DEFAULT_MTU,
             asked: None,
             advertised: None,
@@ -718,6 +744,7 @@ impl<'d> Link<'d> {
             outbox: Outbox::default(),
             pair_ask: PairAsk::default(),
             interval_ask: IntervalAsk::default(),
+            held_ask: HeldAsk::default(),
             scanner: scan::Scanner::default(),
             seen: Seen::default(),
             boot: None,
@@ -808,6 +835,7 @@ impl Link<'_> {
         let state = State {
             now: tick(Instant::now()),
             work: self.request_interval.is_some()
+                || self.held_ask.due()
                 || self.finish_transfer
                 || self.rebond_for.is_some()
                 || self.recount_bonds
@@ -923,8 +951,17 @@ impl Link<'_> {
             timeout: Timeout::from_u16(timeout),
             ce_len: Slots::from_u16(0),
         };
-        match self.submit(Op::UpdateParams(link(), params)).await {
+        self.ask(params).await;
+    }
+
+    /// One ask; refused busy, it is held for the central's answer to the one before.
+    async fn ask(&mut self, params: ConnParams) {
+        let (reply, taken) = self.settled(Op::UpdateParams(link(), params)).await;
+        let busy = reply.is_ok() && matches!(taken, Err(Failure { kind: FailureKind::Busy, .. }));
+        self.held_ask.answered(params, busy);
+        match reply {
             Ok(r) if r.status == 0 => {}
+            Ok(_) if busy => self.uart.write_line("[ble] interval request held: the central has yet to answer the one before"),
             Ok(r) => {
                 self.uart.write_str("[ble] interval request refused, status ");
                 self.uart.write_hex8(r.status);
@@ -946,6 +983,9 @@ impl Link<'_> {
         }
         if let Some((min, max)) = self.request_interval.take() {
             self.ask_connection(min, max, wrist_wake::ble::NOW_LATENCY, wrist_wake::ble::NOW_TIMEOUT).await;
+        }
+        if let Some(params) = self.held_ask.take() {
+            self.ask(params).await;
         }
         if self.finish_transfer {
             self.finish_transfer = false;
@@ -1172,9 +1212,9 @@ impl Link<'_> {
         for &b in data {
             match b {
                 b'\r' | b'\n' => self.run_line(),
-                _ if self.line_len < self.line.len() => {
-                    self.line[self.line_len] = b;
-                    self.line_len += 1;
+                _ if self.line.1 < self.line.0.len() => {
+                    self.line.0[self.line.1] = b;
+                    self.line.1 += 1;
                 }
                 _ => {}
             }
@@ -1184,18 +1224,28 @@ impl Link<'_> {
         self.run_line();
     }
 
+    /// A transfer starts here; any other command goes to [`commands`], since one can take
+    /// milliseconds to write its output.
     fn run_line(&mut self) {
-        if self.line_len == 0 {
+        let (line, n) = core::mem::replace(&mut self.line, ([0; 192], 0));
+        if n == 0 {
             return;
         }
-        let mut line = [0u8; 192];
-        let n = self.line_len;
-        line[..n].copy_from_slice(&self.line[..n]);
-        self.line_len = 0;
         match crate::console::parse_transfer(&line[..n]) {
             Some((Target::Application, len, crc)) => self.start_transfer(len, crc),
             Some((Target::Loader, ..)) => self.uart.write_line("[loader] error: not over the air; USB only"),
-            None => crate::console::command(&line[..n], self.flash),
+            None => {
+                // The only writer: what the check finds free stays free.
+                if LINES_IN.free_capacity() > n {
+                    for mut part in [&line[..n], b"\n"] {
+                        while let Ok(k @ 1..) = LINES_IN.try_write(part) {
+                            part = &part[k..];
+                        }
+                    }
+                } else {
+                    self.uart.write_line("[ble] command dropped: the queue is full");
+                }
+            }
         }
     }
 
@@ -1400,12 +1450,17 @@ impl Link<'_> {
 
     /// `op` sent as its command, the driver told how it was answered.
     async fn submit(&mut self, op: Op) -> Result<Reply, &'static str> {
+        self.settled(op).await.0
+    }
+
+    /// [`Link::submit`], with what the driver made of the answer.
+    async fn settled(&mut self, op: Op) -> (Result<Reply, &'static str>, Result<wrist_ble::OpId, Failure>) {
         let Some(c) = commands::command(&op, DEVICE_NAME, |_| Some(LeConnRole::Peripheral), self.chip.server()) else {
-            return Err("not sent: no command carries it out");
+            return (Err("not sent: no command carries it out"), Err(Failure { kind: FailureKind::Unknown, native: 0 }));
         };
         let reply = self.exchange(c.opcode, c.params()).await;
-        let _ = self.chip.settle(&op, &reply);
-        reply.map_err(unanswered)
+        let taken = self.chip.settle(&op, &reply);
+        (reply.map_err(unanswered), taken)
     }
 
     /// Every event waiting.
@@ -1476,6 +1531,7 @@ impl Link<'_> {
                 // bonded macOS central's link (HARDWARE.md).
                 self.mtu = DEFAULT_MTU;
                 self.asked = None;
+                self.held_ask.clear();
                 self.advertised = None;
                 self.uart.write_line("[ble] connected");
             }
@@ -1554,6 +1610,7 @@ impl Link<'_> {
         self.peer = None;
         self.set_mirror();
         self.request_interval = None;
+        self.held_ask.clear();
         self.pair_ask.settled();
         self.interval_ask.disconnected();
         clear_prompt();
@@ -1683,6 +1740,7 @@ impl Link<'_> {
             }
             VendorEvent::TxPoolAvailable { .. } | VendorEvent::AttributeModified { .. } => {}
             VendorEvent::L2capUpdateResponse { accepted, .. } => {
+                self.held_ask.central_answered();
                 if !accepted {
                     UPDATES_REFUSED.fetch_add(1, Ordering::Relaxed);
                     self.uart.write_line("[ble] the central refused the interval request");

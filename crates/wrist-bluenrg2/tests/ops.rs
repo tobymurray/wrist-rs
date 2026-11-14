@@ -6,7 +6,7 @@ use wrist_ble::{
     Timeout, MAX_LINKS,
 };
 use wrist_bluenrg2::driver::Unanswered;
-use wrist_bluenrg2::ops::{refusal, unanswered, Ops, MAX_PENDING};
+use wrist_bluenrg2::ops::{refusal, refused, unanswered, Ops, MAX_PENDING};
 
 fn link(n: u16) -> ConnHandle {
     ConnHandle::new(0x0800 + n)
@@ -118,9 +118,9 @@ fn a_link_going_down_fails_what_waited_on_it() {
 fn the_central_taking_the_ask_ends_it() {
     let mut ops = Ops::default();
     ops.answered(&ask(link(1)), 0, 0).unwrap();
-    ops.accepted(link(2));
+    ops.responded(link(2), true);
     assert_eq!(ops.ended(), None);
-    ops.accepted(link(1));
+    ops.responded(link(1), true);
     assert_eq!(ops.ended(), Some(done(0)));
 }
 
@@ -213,10 +213,10 @@ fn the_central_taking_an_ask_ends_the_oldest_on_its_link() {
     let mut ops = Ops::default();
     ops.answered(&ask(link(1)), 0, 9).unwrap();
     ops.answered(&ask(link(1)), 0, 9).unwrap();
-    ops.accepted(link(1));
+    ops.responded(link(1), true);
     assert_eq!(ops.ended(), Some(RadioEvent::Done(OpId(0), Ok(Outcome::Done))));
     ops.answered(&ask(link(1)), 0, 9).unwrap();
-    ops.accepted(link(1));
+    ops.responded(link(1), true);
     assert_eq!(ops.ended(), Some(RadioEvent::Done(OpId(1), Ok(Outcome::Done))), "not the newer one in the freed slot");
 }
 
@@ -256,4 +256,67 @@ fn a_snapshot_without_a_link_ends_what_waited_on_it_as_its_going_down_would() {
     assert_eq!(ops.ended(), Some(failed(1, FailureKind::NotConnected)), "the hang-up is over, as a link going down ends it");
     assert_eq!(ops.ended(), None);
     assert_eq!(ops.due(), Some(9), "the ask on the link still there waits");
+}
+
+fn up(ops: &mut Ops, l: ConnHandle, role: LeConnRole) {
+    let peer = PeerAddr { kind: AddrKind::PUBLIC, addr: BdAddr::new([0; 6]) };
+    ops.saw(&RadioEvent::LinkUp { link: l, role, peer, params: None });
+}
+
+#[test]
+fn an_interval_ask_refused_not_allowed_is_busy_and_anything_else_so_refused_is_excluded() {
+    let mut ops = Ops::default();
+    assert_eq!(ops.answered(&ask(link(1)), 0x46, 9), Err(Failure { kind: FailureKind::Busy, native: 0x46 }));
+    assert_eq!(refused(&ask(link(1)), 0x46).kind, FailureKind::Busy);
+    assert_eq!(refused(&Op::Advertise(Some(ADV)), 0x46).kind, FailureKind::ModeExclusion);
+    assert_eq!(refused(&ask(link(1)), 0x0C).kind, FailureKind::ModeExclusion);
+    assert_eq!(refused(&ask(link(1)), 0x85), refusal(0x85));
+}
+
+/// The chip's own order on a peripheral link (`ble interval now` three times running, 2026-11-13):
+/// the second ask refused busy, the first answered, the held one taken, then the first's update.
+#[test]
+fn on_a_peripheral_link_the_centrals_answer_ends_an_ask_and_an_update_ends_none() {
+    let mut ops = Ops::default();
+    up(&mut ops, link(1), LeConnRole::Peripheral);
+    assert_eq!(ops.answered(&ask(link(1)), 0, 9), Ok(OpId(0)));
+    assert_eq!(ops.answered(&ask(link(1)), 0x46, 9).map_err(|f| f.kind), Err(FailureKind::Busy));
+    ops.responded(link(1), true);
+    assert_eq!(ops.ended(), Some(done(0)));
+    assert_eq!(ops.answered(&ask(link(1)), 0, 9), Ok(OpId(1)));
+    let params = LinkParams { interval: Interval::from_u16(24), latency: 0, timeout: Timeout::from_u16(500) };
+    ops.saw(&RadioEvent::Params { link: link(1), result: Ok(params) });
+    assert_eq!((ops.ended(), ops.due()), (None, Some(9)), "the first ask's update leaves the second waiting");
+    ops.responded(link(1), true);
+    assert_eq!((ops.ended(), ops.due()), (Some(done(1)), None));
+}
+
+#[test]
+fn a_centrals_refusal_ends_only_the_oldest_ask_by_its_own_event() {
+    let mut ops = Ops::default();
+    up(&mut ops, link(1), LeConnRole::Peripheral);
+    ops.answered(&ask(link(1)), 0, 9).unwrap();
+    ops.answered(&ask(link(1)), 0, 9).unwrap();
+    ops.responded(link(1), false);
+    ops.saw(&RadioEvent::Params { link: link(1), result: Err(Failure { kind: FailureKind::PeerRejected, native: 0 }) });
+    assert_eq!((ops.ended(), ops.due()), (None, Some(9)), "the refusal's event is the first's end; the second waits");
+    ops.responded(link(1), true);
+    assert_eq!(ops.ended(), Some(done(1)));
+}
+
+#[test]
+fn an_update_ends_the_ask_on_a_central_link_or_one_whose_role_went_with_it() {
+    let params = LinkParams { interval: Interval::from_u16(24), latency: 0, timeout: Timeout::from_u16(500) };
+    for (role, gone) in [(LeConnRole::Central, false), (LeConnRole::Peripheral, true)] {
+        let mut ops = Ops::default();
+        up(&mut ops, link(1), LeConnRole::Peripheral);
+        if gone {
+            ops.saw(&RadioEvent::ChipReset(ResetCause::Watchdog));
+        } else {
+            up(&mut ops, link(1), role);
+        }
+        ops.answered(&ask(link(1)), 0, 9).unwrap();
+        ops.saw(&RadioEvent::Params { link: link(1), result: Ok(params) });
+        assert_eq!((ops.ended(), ops.due()), (None, None), "{role:?} {gone}");
+    }
 }

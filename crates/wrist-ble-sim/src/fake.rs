@@ -659,7 +659,10 @@ impl Fake {
     fn update(&mut self, op: Op, l: ConnHandle, params: ConnParams) -> Result<OpId, Failure> {
         let link = self.link(l).ok_or(failure(FailureKind::NotConnected, 0x02))?;
         if link.updating.is_some() {
-            return Err(failure(FailureKind::Busy, 0x0C));
+            // As a peripheral the chip holds one L2CAP request at a time and refuses another with
+            // `BLE_STATUS_NOT_ALLOWED` (HARDWARE.md).
+            let native = if matches!(link.peer, Peer::Phone(_)) { NOT_ALLOWED } else { 0x0C };
+            return Err(failure(FailureKind::Busy, native));
         }
         let mut granted = None;
         if let Some(slot) = link.slot {

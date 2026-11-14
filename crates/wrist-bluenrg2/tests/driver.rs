@@ -339,3 +339,61 @@ fn a_loss_of_the_drivers_own_lets_go_of_the_links_seen_down() {
     assert_eq!(d.settle(&Op::UpdateParams(ConnHandle::new(0x0801), params), &Ok(reply(0x00))), Ok(OpId(0)));
     assert!(d.due().is_some(), "after a loss the link isn't known to be down: the ask waits");
 }
+
+/// The fixture's lines: the time in ms, whether it is a command, and its bytes.
+fn trace(fixture: &str) -> Vec<(u64, bool, Vec<u8>)> {
+    let line = |l: &str| {
+        let f: Vec<&str> = l.split(' ').collect();
+        let bytes = (0..f[2].len()).step_by(2).map(|i| u8::from_str_radix(&f[2][i..i + 2], 16).unwrap()).collect();
+        (f[0].parse().unwrap(), f[1] == "c", bytes)
+    };
+    fixture.lines().filter(|l| !l.starts_with('#')).map(line).collect()
+}
+
+/// `ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_REQ`'s packet as the operation it carries out.
+fn interval_ask(packet: &[u8]) -> Op {
+    let u = |i: usize| u16::from_le_bytes([packet[4 + i], packet[5 + i]]);
+    let params = ConnParams { interval_min: Interval::from_u16(u(2)), interval_max: Interval::from_u16(u(4)), latency: u(6), timeout: Timeout::from_u16(u(8)), ce_len: Slots::from_u16(0) };
+    Op::UpdateParams(ConnHandle::new(u(0)), params)
+}
+
+/// The chip's answers to ten interval asks, settled as ble.rs settles them: it holds one at a
+/// time, refusing the next busy until the central answers, and the update an earlier ask brought
+/// does not end the one on air.
+#[test]
+fn ten_interval_asks_end_one_by_one_with_the_centrals_answers() {
+    let (c, mut d) = driver(128);
+    let mut settled = Vec::new();
+    let mut ended = Vec::new();
+    let mut lines = trace(include_str!("fixtures/f134-ten-asks.txt")).into_iter();
+    while let Some((ms, command, bytes)) = lines.next() {
+        c.borrow_mut().now = ms * 1_000;
+        let got = if command {
+            let (_, _, status) = lines.next().unwrap();
+            block_on(d.send(u16::from_le_bytes([bytes[1], bytes[2]]), &bytes[4..])).unwrap();
+            c.borrow_mut().queued.push(status);
+            let mut got = Handed::new();
+            while block_on(d.awaiting()) {
+                got.extend(drained(&mut d));
+            }
+            let reply = d.reply();
+            settled.push(d.settle(&interval_ask(&bytes), &reply).map_err(|f| (f.kind, f.native)));
+            got
+        } else {
+            c.borrow_mut().queued.push(bytes);
+            d.drain();
+            drained(&mut d)
+        };
+        ended.extend(got.into_iter().filter_map(|(_, g)| match g {
+            Got::Event(RadioEvent::Done(id, r)) => Some((ms, id, r)),
+            _ => None,
+        }));
+    }
+    let busy = Err((FailureKind::Busy, 0x46));
+    let taken = |n| Ok(OpId(n));
+    assert_eq!(settled, [taken(0), busy, taken(1), busy, taken(2), busy, taken(3), busy, taken(4), busy]);
+    let answered = [77_136, 77_271, 77_406, 77_541, 77_676];
+    let want: Vec<_> = answered.into_iter().zip(0..).map(|(ms, n)| (ms, OpId(n), Ok(Outcome::Done))).collect();
+    assert_eq!(ended, want, "each at the central's answer, the last not at the update before it");
+    assert_eq!(d.due(), None);
+}

@@ -128,6 +128,19 @@ fn a_refusal_carries_the_chips_code() {
     assert_eq!(r.map_err(|e| (e.kind, e.native)), Err((FailureKind::Schedule(SchedKind::IntervalTooLarge), 0x85)));
 }
 
+#[test]
+fn a_phones_second_interval_ask_is_refused_busy_as_the_driver_reads_the_chips_code() {
+    let mut f = ready(1);
+    f.submit(Op::Advertise(Some(ADV_100))).unwrap();
+    f.phone_arrives(Phone::new(Os::Mac, 1));
+    let (_, link) = link_up(&run(&mut f, 5_000));
+    let ask = Op::UpdateParams(link, ConnParams { interval_min: Duration::from_u16(12), interval_max: Duration::from_u16(24), ..conn(12) });
+    f.submit(ask).unwrap();
+    let refused = f.submit(ask).unwrap_err();
+    assert_eq!((refused.kind, refused.native), (FailureKind::Busy, 0x46));
+    assert_eq!(wrist_bluenrg2::ops::refused(&ask, 0x46), refused);
+}
+
 const SCAN_30: ScanParams = ScanParams { interval: Duration::from_u16(160), window: Duration::from_u16(32), active: false, duration: Millis::secs(30) };
 
 /// The events after the first `ScanDone`.
