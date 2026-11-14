@@ -224,7 +224,8 @@ impl<O: Observer> Shadow<O> {
         self.feed(Input::Answer(yes));
     }
 
-    /// `ble disconnect`, which the core has no goal for.
+    /// A hang-up the operator asked for (`ble disconnect`, `ble forget`), which the core has no
+    /// goal for.
     pub fn operator_disconnect(&mut self, at: Instant) {
         self.advance(at);
         let Self { verdict, observer, .. } = self;

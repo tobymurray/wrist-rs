@@ -10,7 +10,7 @@ use crate::DriverOp;
 /// How far apart, in milliseconds, the two sides may act and still have done the same thing.
 pub const NEAR: u64 = 300;
 
-/// How long after the operator's `ble disconnect` the driver's own disconnect may come.
+/// How long after the operator's hang-up the driver's own disconnect may come.
 pub const OPERATOR: u64 = 1_000;
 
 /// Actions within [`NEAR`] of each other that each side can hold; past that, the oldest is
@@ -149,7 +149,7 @@ impl Window {
 pub struct Verdict {
     core: Window,
     driver: Window,
-    /// The operator's last `ble disconnect`.
+    /// The operator's last hang-up.
     operator: Option<u64>,
 }
 
@@ -198,8 +198,8 @@ impl Verdict {
         self.driver.push(Seen { at, act, owed }, found);
     }
 
-    /// The operator's `ble disconnect`, which the core has no goal for; the driver's own can
-    /// come in the same millisecond, ahead of it.
+    /// A hang-up the operator asked for, which the core has no goal for; the driver's own can come
+    /// in the same millisecond, ahead of it.
     pub fn operator(&mut self, at: u64, found: &mut impl FnMut(Disagreement)) {
         self.advance(at, found);
         self.operator = Some(at);
