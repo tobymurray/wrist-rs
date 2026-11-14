@@ -245,13 +245,15 @@ impl Replay {
             match cmd.trim() {
                 "ble off" => self.shadow.radio(now, false),
                 "ble on" => self.shadow.radio(now, true),
-                "ble profile battery" => self.shadow.power(now, Power::Battery),
-                "ble profile cable" | "ble profile auto" => self.shadow.power(now, Power::Cable),
+                "ble profile battery" => self.shadow.timing(now, Power::Battery, false),
+                "ble profile cable" | "ble profile auto" => self.shadow.timing(now, Power::Cable, false),
                 "ble disconnect" => self.shadow.operator_disconnect(now),
                 c if c.starts_with("ble interval now ") => {
-                    let mut units = c[17..].split_whitespace().filter_map(|w| w.parse::<u16>().ok());
-                    if let (Some(min), Some(max)) = (units.next(), units.next()) {
-                        self.shadow.interval_now(now, min, max);
+                    let mut units = c[17..].split_whitespace().map(|w| w.parse::<u16>().ok());
+                    if let (Some(Some(min)), Some(Some(max))) = (units.next(), units.next()) {
+                        if wrist_wake::ble::interval_now(min, max) {
+                            self.shadow.interval_now(now, min, max);
+                        }
                     }
                 }
                 "ble yes" => self.shadow.answer(now, true),

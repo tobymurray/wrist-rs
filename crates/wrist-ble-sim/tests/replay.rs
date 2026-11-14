@@ -82,6 +82,19 @@ fn the_cores_disagreements_are_listed_before_the_drivers() {
     assert!(d[0].starts_with("1062525: the core") && d[1].starts_with("945700: the driver"), "{d:?}");
 }
 
+/// The console's parser refuses these, so the driver asks for nothing.
+#[test]
+fn an_ask_the_console_refuses_is_no_goal() {
+    let capture = fixture("bluez-cable.log");
+    let lines: Vec<&str> = capture.lines().take(64).collect();
+    let last = lines.iter().filter_map(|l| host_ms(l)).max().unwrap();
+    for ask in ["5 5", "24 12", "2000 2000", "6 x 6"] {
+        let more = [format!("{}.{:03} >> usb ble interval now {ask}", (last + 1_000) / 1_000, (last + 1_000) % 1_000), format!("{}.000 == done", last / 1_000 + 10)];
+        let all: Vec<&str> = lines.iter().copied().chain(more.iter().map(String::as_str)).collect();
+        assert_eq!(replay(&all.join("\n")).disagreements(), Vec::<String>::new(), "{ask}");
+    }
+}
+
 #[test]
 fn a_core_that_acts_alone_is_a_disagreement() {
     let (name, capture) = &traces()[0];

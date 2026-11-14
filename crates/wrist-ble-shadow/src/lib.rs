@@ -17,6 +17,7 @@ use wrist_ble_core::goals::{Goals, Power};
 use wrist_ble_core::State;
 use wrist_bluenrg2::events::Translator;
 use wrist_bluenrg2::{Scheduler, CAPABILITIES};
+use wrist_wake::ble as wake;
 
 use crate::menu::{interval_now_ask, MENU};
 use crate::verdict::{Act, Disagreement, Verdict};
@@ -151,10 +152,10 @@ impl<O: Observer> Shadow<O> {
         self.now
     }
 
-    /// When the core is next owed a tick, which [`Self::advance`] gives it.
+    /// When [`Self::advance`] next has work: a tick the core is owed, or an action to judge.
     #[must_use]
     pub fn next(&self) -> Option<Instant> {
-        self.next
+        [self.next, self.verdict.next().map(Instant)].into_iter().flatten().min()
     }
 
     #[must_use]
@@ -193,20 +194,28 @@ impl<O: Observer> Shadow<O> {
         self.feed(Input::Goals(goals));
     }
 
-    /// `ble on` or `ble off`.
+    /// `ble on` or `ble off`, which ends the console's ask with its link.
     pub fn radio(&mut self, at: Instant, on: bool) {
-        self.set_goals(at, Goals { radio_on: on, ..self.goals });
+        let phone_params = if on { self.goals.phone_params } else { None };
+        self.set_goals(at, Goals { radio_on: on, phone_params, ..self.goals });
     }
 
-    /// The timing a power source asks for, from `ble profile` or the source itself, which ends
-    /// the console's own ask.
-    pub fn power(&mut self, at: Instant, power: Power) {
-        self.set_goals(at, Goals { power, phone_params: None, ..self.goals });
+    /// The timing the power source and a transfer ask for; where the driver's timing changes it
+    /// asks again, which ends the console's ask.
+    pub fn timing(&mut self, at: Instant, power: Power, transfer: bool) {
+        if (power, transfer) == (self.goals.power, self.goals.transfer) {
+            return;
+        }
+        let asks = |p: Power, t: bool| wake::timing(if p == Power::Cable { wake::Power::Cable } else { wake::Power::Battery }, t);
+        let phone_params = if asks(power, transfer) == asks(self.goals.power, self.goals.transfer) { self.goals.phone_params } else { None };
+        self.set_goals(at, Goals { power, transfer, phone_params, ..self.goals });
     }
 
-    /// `ble interval now <min> <max>`, in 1.25 ms.
+    /// `ble interval now <min> <max>`, in 1.25 ms, for the phone's link while it is up.
     pub fn interval_now(&mut self, at: Instant, min: u16, max: u16) {
-        self.set_goals(at, Goals { phone_params: Some(interval_now_ask(min, max)), ..self.goals });
+        if self.phone.is_some() {
+            self.set_goals(at, Goals { phone_params: Some(interval_now_ask(min, max)), ..self.goals });
+        }
     }
 
     /// `ble yes` or `ble no`.
@@ -302,6 +311,10 @@ impl<O: Observer> Shadow<O> {
                 self.advertising = false;
             }
             RadioEvent::LinkDown { link, .. } if self.phone == Some(link) => self.phone = None,
+            RadioEvent::Ready(_) => {
+                self.phone = None;
+                self.advertising = false;
+            }
             _ => {}
         }
         self.observer.event(self.now, &e);
@@ -311,8 +324,9 @@ impl<O: Observer> Shadow<O> {
             (RadioEvent::Ready(info), Some(id)) => self.feed(Input::Started(id, Ok(info))),
             _ => self.feed(Input::Radio(e)),
         }
-        // The driver's `ble interval now` is for its link only, once the core has seen it end.
-        if matches!(e, RadioEvent::LinkDown { .. }) && self.phone.is_none() && self.goals.phone_params.is_some() {
+        // The driver's `ble interval now` is for its link only, once the core has seen it end or the
+        // chip come up again.
+        if matches!(e, RadioEvent::LinkDown { .. } | RadioEvent::Ready(_)) && self.phone.is_none() && self.goals.phone_params.is_some() {
             self.set_goals(self.now, Goals { phone_params: None, ..self.goals });
         }
     }

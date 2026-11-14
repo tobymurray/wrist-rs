@@ -14,7 +14,7 @@ pub struct Goals {
     pub scan: Option<ScanGoal>,
     pub transfer: bool,
     /// The console's own ask of the phone's link (`ble interval now`), in place of the menu's
-    /// while it is set; the firmware clears it when the link ends or the power source changes.
+    /// while it is set; the firmware clears it when the link ends or the timing the driver asks for changes.
     pub phone_params: Option<ConnParams>,
     pub power: Power,
     pub workout: bool,

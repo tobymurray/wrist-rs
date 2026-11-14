@@ -165,6 +165,11 @@ impl Verdict {
         Self { core: Window::new(true), driver: Window::new(false), operator: None }
     }
 
+    /// When the first action still owed the other side's can be judged.
+    pub(crate) fn next(&self) -> Option<u64> {
+        [&self.core, &self.driver].into_iter().filter_map(|w| w.seen[..w.len].iter().find(|s| s.owed)).map(|s| s.at.saturating_add(NEAR + 1)).min()
+    }
+
     /// Judges every action older than [`NEAR`] before `now`.
     pub fn advance(&mut self, now: u64, found: &mut impl FnMut(Disagreement)) {
         self.core.expire(now, found);
