@@ -1,4 +1,4 @@
-//! The reconciler's rules for what goes out past an operation on air, asking the phone again,
+//! The reconciler's rules for what goes out past an operation on air, asking the phone,
 //! and a chip that keeps saying busy.
 
 use wrist_ble::{
@@ -22,6 +22,11 @@ const OPENED: LinkParams = LinkParams { interval: Duration::from_u16(24), latenc
 const BATTERY: LinkParams = LinkParams { interval: Duration::from_u16(156), latency: 4, timeout: Duration::from_u16(600) };
 /// A phone's own parameters after it moves off the watch's ask, or answers with its own.
 const OWN: LinkParams = LinkParams { interval: Duration::from_u16(36), latency: 0, timeout: Duration::from_u16(500) };
+/// What macOS opens a link with: 30 ms, no latency, a 720 ms supervision timeout.
+const MAC: LinkParams = LinkParams { interval: Duration::from_u16(24), latency: 0, timeout: Duration::from_u16(72) };
+/// What Android 17 opens a link with, and moves it to by itself just after.
+const ANDROID_17: LinkParams = LinkParams { interval: Duration::from_u16(15), latency: 0, timeout: Duration::from_u16(500) };
+const ANDROID_17_OWN: LinkParams = LinkParams { interval: Duration::from_u16(39), latency: 0, timeout: Duration::from_u16(500) };
 
 fn phone() -> PeerAddr {
     PeerAddr { kind: AddrKind::RANDOM, addr: BdAddr::new([9, 9, 9, 9, 9, 0xC0]) }
@@ -101,7 +106,15 @@ impl Bench {
     }
 
     fn phone_up(&mut self, ms: u64) {
-        self.at(ms, Input::Radio(RadioEvent::LinkUp { link: link(), role: LeConnRole::Peripheral, peer: phone(), params: Some(OPENED) }));
+        self.phone_up_at(ms, OPENED);
+    }
+
+    fn phone_up_at(&mut self, ms: u64, params: LinkParams) {
+        self.at(ms, Input::Radio(RadioEvent::LinkUp { link: link(), role: LeConnRole::Peripheral, peer: phone(), params: Some(params) }));
+    }
+
+    fn encrypted(&mut self, ms: u64) -> Outputs {
+        self.at(ms, Input::Radio(RadioEvent::Encryption { link: link(), on: true }))
     }
 
     fn params(&mut self, ms: u64, p: LinkParams) -> Outputs {
@@ -111,6 +124,10 @@ impl Bench {
 
 fn battery() -> Goals {
     Goals { radio_on: true, power: Power::Battery, ..Goals::OFF }
+}
+
+fn cable() -> Goals {
+    Goals { radio_on: true, power: Power::Cable, ..Goals::OFF }
 }
 
 fn asks(ops: &[Op]) -> usize {
@@ -182,6 +199,37 @@ fn the_ask_again_waits_for_the_phone_to_settle() {
     b.params(3_000, OWN);
     assert_eq!(asks(&b.run_to(3_000 + u64::from(SETTLE.0) - 1)), 0);
     assert_eq!(asks(&b.run_to(3_000 + u64::from(SETTLE.0) + 1)), 1);
+}
+
+/// A link that already has what the ask would set isn't asked: `BlueZ` on the cable.
+#[test]
+fn a_link_that_has_the_ask_already_is_not_asked() {
+    let mut b = Bench::new(cable());
+    b.phone_up(1_000);
+    b.encrypted(1_300);
+    assert_eq!(asks(&b.run_to(120_000)), 0);
+}
+
+/// The supervision timeout is part of the ask: macOS opens at the cable's interval with 720 ms.
+#[test]
+fn a_link_with_another_supervision_timeout_is_asked() {
+    let mut b = Bench::new(cable());
+    b.phone_up_at(1_000, MAC);
+    let out = b.encrypted(1_300);
+    assert!(matches!(out.op, Some(Op::UpdateParams(l, _)) if l == link()), "{out:?}");
+}
+
+/// A link that fitted before any ask and then moved off by the phone's own update is asked once
+/// that has settled: Android 17 does so just after it encrypts.
+#[test]
+fn a_link_the_phone_moves_off_the_want_by_itself_is_asked() {
+    let mut b = Bench::new(cable());
+    b.phone_up_at(1_000, ANDROID_17);
+    assert_eq!(b.encrypted(1_170).op, None);
+    b.params(1_320, ANDROID_17_OWN);
+    assert_eq!(asks(&b.run_to(1_320 + u64::from(SETTLE.0) - 1)), 0);
+    assert_eq!(asks(&b.run_to(1_320 + u64::from(SETTLE.0) + 1)), 1);
+    assert_eq!(b.core.counters.reasks, 0);
 }
 
 /// macOS answers an ask with its own parameters: that is its answer, and it is not asked again.

@@ -126,7 +126,7 @@ pub struct Core<'a> {
     /// When this device last asked the phone for parameters, and how often for this want.
     phone_asked_at: Option<Instant>,
     phone_asks: u8,
-    /// The phone's link has fitted what it was last asked for: a later change is the phone's own.
+    /// The phone's link has fitted the want, asked for or not: a later change is the phone's own.
     phone_held: bool,
     /// The last ask was refused before it reached the air.
     phone_refused: bool,
@@ -692,6 +692,7 @@ impl<'a> Core<'a> {
             self.phone_asked_at = Some(now);
             self.phone_asks = 0;
             if self.phone_fits(&want) {
+                self.phone_held = true;
                 return None;
             }
         } else if self.phone_fits(&want) || !(self.phone_refused || self.reask_at().is_some_and(|t| now >= t)) {
@@ -719,14 +720,16 @@ impl<'a> Core<'a> {
         Some(self.menu.phone.iter().find(|c| c.when.power.is_none_or(|p| p == power))?.params)
     }
 
+    /// Whether the link has all the ask sets: its interval in the range, the latency and the
+    /// supervision timeout.
     fn phone_fits(&self, want: &ConnParams) -> bool {
-        self.phone_params.is_some_and(|p| (want.interval_min.as_u16()..=want.interval_max.as_u16()).contains(&p.interval.as_u16()) && p.latency == want.latency)
+        self.phone_params.is_some_and(|p| (want.interval_min.as_u16()..=want.interval_max.as_u16()).contains(&p.interval.as_u16()) && p.latency == want.latency && p.timeout == want.timeout)
     }
 
-    /// When the phone may be asked again for what it was asked: once the link has fitted the ask,
-    /// then moved off it and held [`phone::SETTLE`] (an Android's own update undoing the watch's),
-    /// within [`ASKS_PER_WANT`]. A phone that answered the ask with other parameters (macOS
-    /// keeping 45 ms) has given its answer, and is not asked again.
+    /// When the phone may be asked for the want again: once the link has fitted it, then moved off
+    /// it by the phone's own update (Android 17's just after it encrypts) and held
+    /// [`phone::SETTLE`], within [`ASKS_PER_WANT`]. A phone that answered the ask with other
+    /// parameters (macOS keeping 45 ms) has given its answer, and is not asked again.
     fn reask_at(&self) -> Option<Instant> {
         let Phone::Up(l) = self.state.phone else { return None };
         let asked = self.phone_asked_at?;
