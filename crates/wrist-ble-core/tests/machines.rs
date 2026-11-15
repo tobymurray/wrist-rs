@@ -732,12 +732,17 @@ fn phone_link_remade_from_unknown_keeps_its_lost_bond() {
     assert_eq!(a, [Action::TellBondLost(phone())]);
 }
 
-/// A remade link keeps its failed pairing too, so a lost bond the chip reports after it is told.
+/// A lost bond the chip reports after a remade link's earlier failure waits on the new attempt.
 #[test]
-fn phone_link_remade_after_a_failed_pairing_tells_a_later_lost_bond() {
+fn phone_link_remade_after_a_failed_pairing_tells_a_later_lost_bond_only_if_it_fails_again() {
     let (p, _) = actions(up(0), 5_000, phone::Event::Tick);
     let (p, _) = actions(p, 6_000, phone::Event::Pairing(phone(), PairingStep::Failed));
     let (p, _) = actions(p, 8_000, phone::Event::Resynced(phone(), Some(false)));
-    let (_, a) = actions(p, 9_000, phone::Event::BondLost(phone()));
-    assert_eq!(a, [Action::AllowRebond(phone()), Action::TellBondLost(phone())]);
+    let (p, a) = actions(p, 9_000, phone::Event::BondLost(phone()));
+    assert_eq!(a, [Action::AllowRebond(phone())]);
+    let (failed, _) = actions(p, 13_000, phone::Event::Tick);
+    let (_, a) = actions(failed, 20_000, phone::Event::Pairing(phone(), PairingStep::Failed));
+    assert_eq!(a, [Action::TellBondLost(phone())]);
+    let (_, a) = actions(failed, 20_000, phone::Event::Encryption(phone(), true));
+    assert!(!a.contains(&Action::TellBondLost(phone())), "re-bonded: {a:?}");
 }

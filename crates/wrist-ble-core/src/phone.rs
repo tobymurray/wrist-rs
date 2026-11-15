@@ -195,12 +195,11 @@ impl PhoneLink {
         }
     }
 
-    /// Held again as new after lost events that may have hidden a new link, keeping what
-    /// [`Self::tell_bond_lost`] has learned in case it is the same one.
+    /// Held again as new after lost events, still the same link since the chip never reuses a
+    /// handle within a boot (HARDWARE.md), so its lost bond waits on the new attempt's outcome.
     fn remade(&self, now: Instant) -> Self {
         PhoneLink {
             bond_lost: self.bond_lost,
-            pairing_failed: self.pairing_failed,
             told_bond_lost: self.told_bond_lost,
             ..PhoneLink::new(self.link, now)
         }
