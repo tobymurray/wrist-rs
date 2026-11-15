@@ -89,7 +89,7 @@ fn state() -> UsbState {
     UsbState::Waiting
 }
 
-/// The link's state, then the supply and PHY registers; [`write_core_regs`] follows.
+/// The link's state, then the supply and PHY registers.
 pub fn write_phy_regs(uart: Uart) {
     uart.write_str("[usb] state ");
     uart.write_str(state().word());

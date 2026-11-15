@@ -265,8 +265,7 @@ pub struct Calendar {
     dr: u32,
 }
 
-/// `time`: the whole report at once. `report` writes the same pieces with a yield between
-/// each, so that none holds the executor long.
+/// The whole report without yielding.
 pub fn write_report(uart: Uart) {
     let calendar = write_clocks(uart);
     let zone = write_zone_record(uart);
@@ -278,7 +277,7 @@ pub fn write_report(uart: Uart) {
     write_calendar(uart, calendar);
 }
 
-/// The report's first piece: the backup domain's clocks and the calendar's control registers.
+/// The backup domain's clocks and the calendar's control registers; returns the calendar.
 pub fn write_clocks(uart: Uart) -> Calendar {
     use wrist_flash::vectors::{MAILBOX_BDCR, MAILBOX_MAGIC, MAILBOX_TAG};
     if unsafe { read32(MAILBOX_MAGIC) } == MAILBOX_TAG {
@@ -330,7 +329,7 @@ pub fn write_clocks(uart: Uart) -> Calendar {
     Calendar { icsr, ssr, tr, dr }
 }
 
-/// The zone line; the zone, whose changes [`write_change`] writes.
+/// The zone line; returns the zone it read, `None` when there is no record.
 pub fn write_zone_record(uart: Uart) -> Option<Zone> {
     uart.write_str("  zone      : ");
     let zone = zone();
@@ -372,7 +371,7 @@ pub fn write_alarm(uart: Uart) {
     uart.write_line("");
 }
 
-/// The report's last piece: the calendar as [`write_clocks`] read it.
+/// The calendar as [`write_clocks`] read it.
 pub fn write_calendar(uart: Uart, calendar: Calendar) {
     let Calendar { icsr, ssr, tr, dr } = calendar;
     uart.write_reg("  RTC_TR    = ", tr);

@@ -1465,7 +1465,7 @@ fn report_handoff(uart: Uart, h: &RccSnapshot) {
     uart.write_line("");
 }
 
-/// The registers [`report_clocks`] read, which [`report_clock_source`] decodes.
+/// Read once, so that the decoded source agrees with the registers printed.
 #[derive(Clone, Copy)]
 struct RccNow {
     cr: u32,
