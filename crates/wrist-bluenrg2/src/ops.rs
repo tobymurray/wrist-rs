@@ -62,11 +62,14 @@ pub fn refusal(status: u8) -> Failure {
 }
 
 /// `op`'s refusal: as [`refusal`] reads it, but an interval ask refused `BLE_STATUS_NOT_ALLOWED`
-/// is busy, since the chip holds one L2CAP request at a time until the central answers it.
+/// is busy, since the chip holds one L2CAP request at a time until the central answers it, and a
+/// security request refused for an unknown connection comes after the Security Manager's timeout
+/// on the link, so can never succeed there (HARDWARE.md).
 #[must_use]
 pub fn refused(op: &Op, status: u8) -> Failure {
     match (op.kind(), status) {
         (OpKind::UpdateParams, 0x46) => Failure { kind: FailureKind::Busy, native: 0x46 },
+        (OpKind::RequestSecurity, 0x40) => Failure { kind: FailureKind::Security, native: 0x40 },
         _ => refusal(status),
     }
 }

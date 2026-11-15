@@ -169,6 +169,8 @@ pub enum FailureKind {
     NoResources,
     /// No outcome by the driver's deadline.
     Timeout,
+    /// The Security Manager cannot act on the link, as on a security request after its timeout
+    /// there (HARDWARE.md): no outcome follows.
     Security,
     /// The link failed as it was being set up (HCI 0x3E).
     NotEstablished,

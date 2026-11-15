@@ -218,6 +218,23 @@ fn phone_link_remade_after_a_failed_pairing_is_not_held_for_life() {
     assert_eq!(p.deadline(), None);
 }
 
+/// A request the chip refuses for good fails the pairing at once; one not outstanding is left be.
+#[test]
+fn phone_security_request_refused_for_good_fails_the_pairing_at_once() {
+    let (p, _) = actions(up(0), 500, phone::Event::BondLost(phone()));
+    let (p, a) = actions(p, 5_000, phone::Event::Tick);
+    assert_eq!(a, [Action::RequestSecurity(phone())]);
+    let (p, a) = actions(p, 5_010, phone::Event::SecurityRefused(phone()));
+    assert_eq!(a, [Action::TellBondLost(phone())]);
+    assert!(p.may_ask_params(t(5_010)));
+    assert_eq!(p.deadline(), None);
+    let p = up(0);
+    assert_eq!(actions(p, 1_000, phone::Event::SecurityRefused(phone())), (p, NONE), "nothing asked yet");
+    let (p, _) = actions(p, 5_000, phone::Event::Tick);
+    let (p, _) = actions(p, 5_500, phone::Event::Encryption(phone(), true));
+    assert_eq!(actions(p, 5_600, phone::Event::SecurityRefused(phone())), (p, NONE), "already secure");
+}
+
 /// The chip reports an unanswered security request 30 s on, before the core's deadline.
 #[test]
 fn phone_security_request_outcome_is_the_chips_when_it_comes() {

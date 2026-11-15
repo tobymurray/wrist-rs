@@ -357,7 +357,7 @@ impl<'a> Core<'a> {
                 self.chip(now, chip::Event::Reset(cause), out);
                 self.forget_radio(now);
             }
-            RadioEvent::Done(id, r) => self.done(now, id, r),
+            RadioEvent::Done(id, r) => self.done(now, id, r, out),
             RadioEvent::LinkUp { link, role: LeConnRole::Peripheral, params, .. } => {
                 if self.state.phone.link().is_none() {
                     // A link ends advertising, whatever an advertising op still in flight reports.
@@ -450,7 +450,7 @@ impl<'a> Core<'a> {
         }
     }
 
-    fn done(&mut self, now: Instant, id: OpId, r: Result<wrist_ble::Outcome, Failure>) {
+    fn done(&mut self, now: Instant, id: OpId, r: Result<wrist_ble::Outcome, Failure>, out: &mut Outputs) {
         let Some(p) = self.pending.filter(|p| p.id == id) else { return };
         self.pending = None;
         match r {
@@ -466,6 +466,7 @@ impl<'a> Core<'a> {
                 if f.kind == FailureKind::Timeout {
                     self.counters.timed_out += 1;
                 }
+                self.security_refused(now, &p.op, f, out);
                 self.back_off(now, p.op.kind());
             }
         }
@@ -516,9 +517,18 @@ impl<'a> Core<'a> {
                     if op.kind() == OpKind::UpdateParams {
                         self.phone_refused = true;
                     }
+                    self.security_refused(now, &op, f, out);
                     self.back_off(now, op.kind());
                 }
             }
+        }
+    }
+
+    /// A security request the chip can never act on fails the pairing it asked for at once, since
+    /// no outcome follows (HARDWARE.md).
+    fn security_refused(&mut self, now: Instant, op: &Op, f: Failure, out: &mut Outputs) {
+        if let (Op::RequestSecurity(link), FailureKind::Security) = (*op, f.kind) {
+            self.phone(now, phone::Event::SecurityRefused(link), out);
         }
     }
 

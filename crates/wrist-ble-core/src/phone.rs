@@ -92,6 +92,8 @@ pub enum Event {
     ParamsChanged(ConnHandle),
     /// A resync found the link, encrypted or not, or `None` when the chip could not say.
     Resynced(ConnHandle, Option<bool>),
+    /// The chip refused the link's security request for good: no outcome will follow.
+    SecurityRefused(ConnHandle),
     /// The user's answer to a numeric comparison.
     Answer(bool),
     Tick,
@@ -255,6 +257,7 @@ impl PhoneLink {
                 self.tell_bond_lost(out);
             }
             Event::ParamsChanged(id) if id == link => self.params_at = now,
+            Event::SecurityRefused(id) if id == link && self.asked_pair.is_some() && self.security == Security::Unsecured => self.fail_pairing(out),
             Event::Answer(yes) => {
                 if let Security::Pairing { ref mut deadline, answered: ref mut a @ false, .. } = self.security {
                     *a = true;

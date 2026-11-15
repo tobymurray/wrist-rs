@@ -459,6 +459,38 @@ fn a_secure_link_a_resync_finds_unencrypted_is_held_and_asked_to_pair() {
     assert_eq!(&h.ops[before..], [Op::RequestSecurity(link)]);
 }
 
+/// The chip refuses the security request for good, at submission or as its outcome: the pairing
+/// fails at once and the link may be asked for parameters, without the outcome's deadline.
+#[test]
+fn a_security_request_refused_for_good_fails_the_pairing_at_once() {
+    let link = ConnHandle::new(0x801);
+    let never = wrist_ble::Failure { kind: wrist_ble::FailureKind::Security, native: 0x40 };
+    let busy = wrist_ble::Failure { kind: wrist_ble::FailureKind::Busy, native: 0x0C };
+    for (refusal, fails) in [(Input::Submitted(Err(never)), true), (Input::Submitted(Err(busy)), false), (Input::Radio(RadioEvent::Done(OpId(900), Err(never))), true)] {
+        let mut h = Harness::new(Goals { radio_on: true, ..Goals::OFF });
+        phone_up(&mut h, 1_000, link);
+        let mut now = Instant(1_000);
+        let out = loop {
+            now = h.core.step(now, Input::Tick).next.unwrap();
+            let out = h.core.step(now, Input::Tick);
+            if out.op.is_some() {
+                break out;
+            }
+        };
+        assert_eq!(out.op, Some(Op::RequestSecurity(link)));
+        let refusal = match refusal {
+            Input::Radio(RadioEvent::Done(_, r)) => {
+                h.core.step(now, Input::Submitted(Ok(OpId(900))));
+                Input::Radio(RadioEvent::Done(OpId(900), r))
+            }
+            r => r,
+        };
+        h.core.step(now + Millis(10), refusal);
+        let open = h.core.state.phone.may_ask_params(now + Millis(10));
+        assert_eq!(open, fails, "{refusal:?}");
+    }
+}
+
 #[test]
 fn a_refusal_the_plan_cannot_avoid_sends_the_chip_to_its_baseline() {
     let mut core = Core::new(&CAPABILITIES, &Scheduler, &MENU);

@@ -273,6 +273,17 @@ fn an_interval_ask_refused_not_allowed_is_busy_and_anything_else_so_refused_is_e
     assert_eq!(refused(&ask(link(1)), 0x85), refusal(0x85));
 }
 
+/// After the Security Manager's timeout on a link the chip refuses its security request as an
+/// unknown connection, and no outcome follows (HARDWARE.md).
+#[test]
+fn a_security_request_refused_for_an_unknown_connection_can_never_succeed() {
+    let mut ops = Ops::default();
+    let request = Op::RequestSecurity(link(1));
+    assert_eq!(ops.answered(&request, 0x40, 9), Err(Failure { kind: FailureKind::Security, native: 0x40 }));
+    assert_eq!(refused(&ask(link(1)), 0x40), refusal(0x40));
+    assert_eq!(refused(&request, 0x0C).kind, FailureKind::ModeExclusion);
+}
+
 /// The chip's own order on a peripheral link (`ble interval now` three times running, 2026-11-13):
 /// the second ask refused busy, the first answered, the held one taken, then the first's update.
 #[test]
