@@ -1,4 +1,4 @@
-use wrist_ble::{ConnParams, Millis, PeerAddr};
+use wrist_ble::{Millis, PeerAddr};
 
 use crate::profile::Profile;
 
@@ -13,9 +13,6 @@ pub struct Goals {
     pub peripherals: [Option<Want>; MAX_PERIPHERALS],
     pub scan: Option<ScanGoal>,
     pub transfer: bool,
-    /// The console's own ask of the phone's link (`ble interval now`), in place of the menu's
-    /// while it is set.
-    pub phone_params: Option<ConnParams>,
     pub power: Power,
     pub workout: bool,
 }
@@ -53,7 +50,6 @@ impl Goals {
         peripherals: [None; MAX_PERIPHERALS],
         scan: None,
         transfer: false,
-        phone_params: None,
         power: Power::Battery,
         workout: false,
     };

@@ -5,7 +5,7 @@ use wrist_ble::{Activities, Admitted, Change, ConnParams, Duration, Exclusion, F
 use wrist_ble_core::chip::{self, Chip, ChipMachine, FaultCause, StartId};
 use wrist_ble_core::goals::Power;
 use wrist_ble_core::peripheral::{self as per, Event, Peripheral, Stage, StopReason, Then, GIVE_UP};
-use wrist_ble_core::phone::{self, Action, Phone, Security};
+use wrist_ble_core::phone::{self, askable, Action, Phone, Security};
 use wrist_ble_core::plan::{fingerprint, Conflict, Refused, REFUSED_CAPACITY};
 use wrist_ble_core::status::PeerState;
 
@@ -568,4 +568,29 @@ fn a_peripheral_link_ends_advertising() {
     let a = Activities { advertising: Some(ADV_995), ..Activities::IDLE };
     let a = a.walk(&Careless, &[Change::PeripheralUp]).unwrap();
     assert_eq!((a.advertising, a.peripheral), (None, 1));
+}
+
+fn ask(min: u16, max: u16, latency: u16, timeout: u16) -> ConnParams {
+    ConnParams { interval_min: Duration::from_u16(min), interval_max: Duration::from_u16(max), latency, timeout: Duration::from_u16(timeout), ce_len: Duration::from_u16(0) }
+}
+
+/// What an L2CAP connection parameter update request may carry (Core 6.0 Vol 3 Part A §4.20), and
+/// the supervision timeout's floor (Vol 6 Part B §4.5.2), at each bound.
+#[test]
+fn phone_asks_only_what_a_request_may_carry() {
+    assert!(askable(&ask(6, 6, 0, 10)));
+    assert!(!askable(&ask(5, 6, 0, 10)), "under 7.5 ms");
+    assert!(!askable(&ask(7, 6, 0, 500)), "the least above the most");
+    assert!(askable(&ask(3_200, 3_200, 0, 3_200)));
+    assert!(!askable(&ask(3_200, 3_201, 0, 3_200)), "over 4 s");
+    assert!(askable(&ask(6, 6, 499, 3_200)));
+    assert!(!askable(&ask(6, 6, 500, 3_200)), "latency 500");
+    assert!(!askable(&ask(6, 6, 0, 9)), "under 100 ms");
+    assert!(!askable(&ask(6, 6, 0, 3_201)), "over 32 s");
+    // 8 s against (1 + 0) × 4 s × 2: the timeout must be longer.
+    assert!(!askable(&ask(3_200, 3_200, 0, 800)));
+    assert!(askable(&ask(3_200, 3_200, 0, 801)));
+    // 6 s against (1 + 4) × 600 ms × 2.
+    assert!(!askable(&ask(80, 480, 4, 600)));
+    assert!(askable(&ask(80, 479, 4, 600)));
 }

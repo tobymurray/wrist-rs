@@ -1,6 +1,6 @@
 //! The phone's link, with this device as the peripheral.
 
-use wrist_ble::{Instant, ConnHandle, Millis, PairingStep};
+use wrist_ble::{ConnHandle, ConnParams, Instant, Millis, PairingStep};
 
 /// A link left unencrypted this long is asked to pair: well past a bonded central's own
 /// encryption start (HARDWARE.md).
@@ -18,6 +18,17 @@ pub const PAIRING_OUTCOME: Millis = Millis::secs(30);
 
 /// No central start this soon after the phone connects or its parameters change.
 pub const SETTLE: Millis = Millis::secs(3);
+
+/// Whether the phone may be asked for `p`: what an L2CAP connection parameter update request may
+/// carry (Core 6.0 Vol 3 Part A §4.20: an interval of 6 to 3200 in 1.25 ms, the least no more than
+/// the most, a latency below 500, a supervision timeout of 10 to 3200 in 10 ms), with the timeout
+/// longer than the link may go unheard (Vol 6 Part B §4.5.2: more than (1 + latency) × the most
+/// interval × 2).
+#[must_use]
+pub fn askable(p: &ConnParams) -> bool {
+    let (min, max, timeout) = (p.interval_min.as_u16(), p.interval_max.as_u16(), p.timeout.as_u16());
+    (6..=3_200).contains(&min) && min <= max && max <= 3_200 && p.latency < 500 && (10..=3_200).contains(&timeout) && u32::from(timeout) * 4 > (1 + u32::from(p.latency)) * u32::from(max)
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Phone {

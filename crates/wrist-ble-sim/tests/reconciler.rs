@@ -3,13 +3,13 @@
 
 use wrist_ble::{
     AddrKind, BdAddr, ConnHandle, Duration, Failure, FailureKind, Instant, LeConnRole, LinkParams, Op, OpId, Outcome, PeerAddr,
-    RadioEvent, Snapshot, MAX_LINKS,
+    RadioEvent, Snapshot, Status, MAX_LINKS,
 };
 use wrist_ble_core::engine::{Core, Input, Outputs, ASKS_PER_WANT, BUSY_BUDGET};
 use wrist_ble_core::goals::{Goals, PhoneGoal, Power};
 use wrist_ble_core::phone::SETTLE;
 use wrist_bluenrg2::INFO;
-use wrist_ble_shadow::menu::MENU;
+use wrist_ble_shadow::menu::{interval_now_ask, MENU};
 use wrist_bluenrg2::{Scheduler, CAPABILITIES};
 
 fn link() -> ConnHandle {
@@ -331,7 +331,7 @@ fn a_chip_that_stays_busy_is_restarted_under_the_phones_link() {
         // A new want each time (the console's ask), so each is asked at once and refused busy.
         let now = wrist_ble_shadow::menu::interval_now_ask(8 + i, 8 + i);
         let t = 2_000 + u64::from(i) * 40_000;
-        let out = b.at(t, Input::Goals(Goals { phone_params: Some(now), ..battery() }));
+        let out = b.at(t, Input::IntervalNow(now));
         let out = if out.op.is_some() { out } else { b.at(t + 33_000, Input::Tick) };
         assert!(matches!(out.op, Some(Op::UpdateParams(..))), "{i}: {out:?}");
         let out = b.refuse(FailureKind::Busy);
@@ -415,4 +415,93 @@ fn a_full_bucket_earns_no_credit() {
     b.at(1_260_000, Input::Goals(stop_advertising()));
     b.refuse(FailureKind::Busy);
     assert_eq!(b.core.counters.busy_spent, 1);
+}
+
+/// `ble interval now` with no phone connected is refused by the driver's console; the core holds
+/// the console's ask to the link up when it came, so a link that connects later is not asked it.
+#[test]
+fn the_consoles_ask_with_no_link_is_ignored() {
+    let mut b = Bench::new(cable());
+    let now = interval_now_ask(6, 6);
+    assert_eq!(b.at(500, Input::IntervalNow(now)).op, None);
+    b.phone_up(1_000);
+    b.encrypted(1_300);
+    assert_eq!(asks(&b.run_to(60_000)), 0, "30 ms fits the cable's ask");
+    assert_eq!(b.core.phone_want(), Some(MENU.phone[0].params));
+}
+
+/// An ask no request may carry is ignored, as the driver's console refuses it: an interval below
+/// 7.5 ms or above 4 s, the least above the most (Core 6.0 Vol 3 Part A §4.20), or one the
+/// supervision timeout can't cover (Vol 6 Part B §4.5.2: 5 s against 2000 × 1.25 ms × 2).
+#[test]
+fn the_consoles_ask_no_request_may_carry_is_ignored() {
+    let mut b = Bench::new(cable());
+    b.phone_up(1_000);
+    b.encrypted(1_300);
+    for (i, (min, max)) in [(5, 5), (7, 6), (2_000, 2_000), (3_201, 3_201)].into_iter().enumerate() {
+        let out = b.at(2_000 + 1_000 * i as u64, Input::IntervalNow(interval_now_ask(min, max)));
+        assert_eq!(out.op, None, "{min}-{max}");
+        assert_eq!(b.core.phone_want(), Some(MENU.phone[0].params), "{min}-{max}");
+    }
+}
+
+/// The console's ask waits for encryption as the menu's does (F62): asked 1.5 s after connecting,
+/// before encryption, a re-pairing link was lost 16 times in 90; held, none in 76 (HARDWARE.md).
+#[test]
+fn the_consoles_ask_waits_for_encryption() {
+    let mut b = Bench::new(cable());
+    b.phone_up(1_000);
+    let now = interval_now_ask(6, 6);
+    assert_eq!(b.at(1_100, Input::IntervalNow(now)).op, None);
+    assert_eq!(asks(&b.run_to(4_000)), 0);
+    assert_eq!(b.encrypted(4_100).op, Some(Op::UpdateParams(link(), now)));
+}
+
+/// The console's ask is made only where the link doesn't fit it, and, repeated or not, no more
+/// than [`ASKS_PER_WANT`] times on one link.
+#[test]
+fn the_consoles_ask_is_made_only_where_the_link_does_not_fit_it() {
+    let mut b = Bench::new(cable());
+    b.phone_up(1_000);
+    b.encrypted(1_300);
+    assert_eq!(b.at(2_000, Input::IntervalNow(interval_now_ask(20, 30))).op, None, "30 ms fits 20 to 30");
+    let now = interval_now_ask(12, 12);
+    assert_eq!(b.at(3_000, Input::IntervalNow(now)).op, Some(Op::UpdateParams(link(), now)));
+    b.accept();
+    let granted = LinkParams { interval: Duration::from_u16(12), latency: 0, timeout: Duration::from_u16(500) };
+    let mut at = 3_200;
+    let mut total = 1;
+    for _ in 0..5 {
+        b.params(at, granted);
+        assert_eq!(b.at(at + 100, Input::IntervalNow(now)).op, None, "fits");
+        b.params(at + 2_000, OWN);
+        assert_eq!(b.at(at + 2_100, Input::IntervalNow(now)).op, None, "the same ask, not yet settled");
+        total += asks(&b.run_to(at + 2_000 + u64::from(SETTLE.0) + 10));
+        at += 20_000;
+        b.run_to(at - 1);
+    }
+    assert_eq!(total, usize::from(ASKS_PER_WANT));
+}
+
+/// The console's ask lasts until its link ends, or until the menu's own ask changes, as the
+/// driver's next timing replaces it: a transfer on the cable keeps the cable's timing, the battery
+/// doesn't.
+#[test]
+fn the_consoles_ask_ends_with_its_link_or_the_menus_ask() {
+    let mut b = Bench::new(cable());
+    b.phone_up(1_000);
+    b.encrypted(1_300);
+    let now = interval_now_ask(12, 12);
+    b.at(2_000, Input::IntervalNow(now));
+    b.accept();
+    b.at(3_000, Input::Goals(Goals { transfer: true, ..cable() }));
+    assert_eq!(b.core.phone_want(), Some(now), "a transfer on the cable");
+    b.at(4_000, Input::Goals(battery()));
+    assert_eq!(b.core.phone_want(), Some(MENU.phone[1].params), "the battery");
+    b.at(5_000, Input::IntervalNow(now));
+    assert_eq!(b.core.phone_want(), Some(now));
+    b.at(6_000, Input::Radio(RadioEvent::LinkDown { link: link(), reason: Status::REMOTE_USER_TERMINATED_CONN }));
+    assert_eq!(b.core.phone_want(), Some(MENU.phone[1].params), "the link ended");
+    b.phone_up(7_000);
+    assert_eq!(b.core.phone_want(), Some(MENU.phone[1].params), "nor the next link");
 }

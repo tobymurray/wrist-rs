@@ -134,21 +134,26 @@ fn the_end_of_a_record_judges_what_still_waits() {
     assert_eq!(s.observer.found.len(), 1, "{:?}", s.observer.found);
 }
 
+/// `ble interval now` is for the phone's link while it is up, as the driver takes it, and the
+/// core holds it there.
 #[test]
 fn the_consoles_ask_is_for_the_phones_link() {
     let mut s = up();
+    let ask = Some(interval_now_ask(6, 6));
     s.interval_now(Instant(150), 6, 6);
-    assert_eq!(s.goals().phone_params, None, "no link to ask");
+    assert_ne!(s.phone_want(), ask, "no link to ask");
     s.event(Instant(200), PHONE);
+    assert_ne!(s.phone_want(), ask, "nor a link that came up after");
     s.interval_now(Instant(250), 6, 6);
-    assert_eq!(s.goals().phone_params, Some(interval_now_ask(6, 6)));
+    assert_eq!(s.phone_want(), ask);
     s.event(Instant(300), ENCRYPTED);
     s.event(Instant(400), &disconnected(0x0802));
-    assert_eq!(s.goals().phone_params, Some(interval_now_ask(6, 6)), "another link's end");
+    assert_eq!(s.phone_want(), ask, "another link's end");
     s.event(Instant(500), &disconnected(0x0801));
-    assert_eq!(s.goals().phone_params, None, "the phone's link ended");
+    assert_ne!(s.phone_want(), ask, "the phone's link ended");
 }
 
+/// The driver's ask after `ble interval now` lasts until its timing asks for something else.
 #[test]
 fn the_consoles_ask_ends_where_the_drivers_timing_changes_or_the_radio_goes_off() {
     let mut s = up();
@@ -156,23 +161,23 @@ fn the_consoles_ask_ends_where_the_drivers_timing_changes_or_the_radio_goes_off(
     let ask = Some(interval_now_ask(6, 6));
     s.interval_now(Instant(250), 6, 6);
     s.timing(Instant(300), Power::Cable, true);
-    assert_eq!((s.goals().phone_params, s.goals().transfer), (ask, true), "a transfer on the cable");
+    assert_eq!((s.phone_want(), s.goals().transfer), (ask, true), "a transfer on the cable");
     s.timing(Instant(350), Power::Battery, true);
-    assert_eq!((s.goals().phone_params, s.goals().power), (ask, Power::Battery), "the battery during a transfer");
+    assert_eq!((s.phone_want(), s.goals().power), (ask, Power::Battery), "the battery during a transfer");
     s.timing(Instant(400), Power::Battery, false);
-    assert_eq!(s.goals().phone_params, None, "the battery's own");
+    assert_ne!(s.phone_want(), ask, "the battery's own");
     s.interval_now(Instant(420), 6, 6);
     s.timing(Instant(430), Power::Cable, false);
-    assert_eq!(s.goals().phone_params, None, "the cable's own");
+    assert_ne!(s.phone_want(), ask, "the cable's own");
     s.timing(Instant(440), Power::Battery, false);
     s.interval_now(Instant(450), 6, 6);
     s.timing(Instant(500), Power::Battery, true);
-    assert_eq!(s.goals().phone_params, None, "a transfer on the battery");
+    assert_ne!(s.phone_want(), ask, "a transfer on the battery");
     s.interval_now(Instant(550), 6, 6);
     s.radio(Instant(600), true);
-    assert_eq!(s.goals().phone_params, ask, "`ble on` while on");
+    assert_eq!(s.phone_want(), ask, "`ble on` while on");
     s.radio(Instant(650), false);
-    assert_eq!(s.goals().phone_params, None, "`ble off`");
+    assert_ne!(s.phone_want(), ask, "`ble off`");
 }
 
 #[test]
@@ -192,7 +197,7 @@ fn a_chip_that_restarts_ends_the_consoles_ask() {
     s.interval_now(Instant(220), 6, 6);
     s.event(Instant(400), WATCHDOG);
     s.event(Instant(2_500), BOOTED);
-    assert_eq!(s.goals().phone_params, None);
+    assert_ne!(s.phone_want(), Some(interval_now_ask(6, 6)));
 }
 
 #[test]
@@ -290,4 +295,16 @@ fn the_centrals_acceptance_ends_the_ask_and_nothing_else_does() {
     assert_eq!(asks(&s.observer), first, "a second ask while the first is on air");
     s.event(Instant(600), ACCEPTED);
     assert_eq!(asks(&s.observer).last(), Some(&600));
+}
+
+/// The core takes `ble interval now` where the driver's console does, so the two read it alike
+/// until the driver's goes.
+#[test]
+fn the_core_takes_the_consoles_ask_where_the_drivers_console_does() {
+    for min in 0..=3_300 {
+        for max in 0..=3_300 {
+            let ask = interval_now_ask(min, max);
+            assert_eq!(wrist_ble_core::phone::askable(&ask), wrist_wake::ble::interval_now(min, max), "{min}-{max}");
+        }
+    }
 }
