@@ -478,9 +478,9 @@ impl Fake {
         }
         match op {
             Op::Advertise(p) => {
-                // `ACI_GAP_SET_DISCOVERABLE` while advertising is refused `BLE_STATUS_NOT_ALLOWED`,
-                // at a new interval or the same, and the advertising goes on unchanged (HARDWARE.md).
-                if p.is_some() && self.acts.get().advertising.is_some() {
+                // `ACI_GAP_SET_DISCOVERABLE` while advertising is refused at any interval, as is
+                // `ACI_GAP_SET_NON_DISCOVERABLE` with nothing advertising (HARDWARE.md).
+                if p.is_some() == self.acts.get().advertising.is_some() {
                     return Err(failure(FailureKind::ModeExclusion, NOT_ALLOWED));
                 }
                 self.admit(Change::Advertise(p))?;
