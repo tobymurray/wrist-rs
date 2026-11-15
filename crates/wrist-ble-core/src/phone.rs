@@ -205,7 +205,7 @@ impl PhoneLink {
                     } else if self.pairing_failed && self.security == Security::Unsecured {
                         // The lost events may hide a new link on this handle that may yet pair,
                         // so it is held as a new one, its lost bond already told.
-                        *self = PhoneLink { bond_lost: self.bond_lost, told_bond_lost: self.told_bond_lost, ..PhoneLink::new(link, now) };
+                        *self = PhoneLink { told_bond_lost: self.told_bond_lost, ..PhoneLink::new(link, now) };
                     }
                 }
                 None if matches!(self.security, Security::Pairing { .. }) => {}

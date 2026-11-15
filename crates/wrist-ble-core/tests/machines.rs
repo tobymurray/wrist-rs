@@ -156,6 +156,9 @@ fn phone_link_whose_pairing_failed_found_unencrypted_is_held_again() {
     assert_eq!(p.deadline(), Some(t(45_000)));
     let (p, a) = actions(p, 45_000, phone::Event::Tick);
     assert_eq!(a, [Action::RequestSecurity(phone())]);
+    // A central the chip has keys for answers the request by pairing, and the chip says so again.
+    let (p, a) = actions(p, 46_000, phone::Event::BondLost(phone()));
+    assert_eq!(a, [Action::AllowRebond(phone())]);
     let (p, a) = actions(p, 75_000, phone::Event::Pairing(phone(), PairingStep::Failed));
     assert_eq!(a, NONE, "told once");
     assert!(p.may_ask_params(t(75_000)));
