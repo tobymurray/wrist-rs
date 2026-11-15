@@ -235,7 +235,7 @@ fn phone_security_request_refused_for_good_fails_the_pairing_at_once() {
     assert_eq!(actions(p, 5_600, phone::Event::SecurityRefused(phone())), (p, NONE), "already secure");
 }
 
-/// The chip reports an unanswered security request 30 s on, before the core's deadline.
+/// An outcome the chip reports before the core's deadline is the one that counts.
 #[test]
 fn phone_security_request_outcome_is_the_chips_when_it_comes() {
     let (p, a) = actions(up(0), 5_000, phone::Event::Tick);

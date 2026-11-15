@@ -275,8 +275,7 @@ impl Replay {
         }
     }
 
-    /// An over-the-air image is a transfer from the line that begins it to the one that ends it,
-    /// as the watch's `self.transfer` is: its progress lines are the only others it prints.
+    /// An over-the-air image is a transfer from its `send` line until any line but its progress.
     fn update_line(&mut self, rest: &str) {
         let transfer = if rest.starts_with("send ") {
             !core::mem::take(&mut self.usb_update)

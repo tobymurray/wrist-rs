@@ -7,21 +7,20 @@ use wrist_ble::{ConnHandle, ConnParams, Instant, Millis, PairingStep};
 pub const ASK_TO_PAIR_AFTER: Millis = Millis::secs(5);
 
 
-/// A numeric comparison waits this long for the user: the Security Manager's own timeout (Core
-/// Vol 3 Part H §3.4), which ends it on the chip and on every central measured (HARDWARE.md).
+/// A numeric comparison waits this long for the user: the Security Manager's own timeout (Core 6.0
+/// Vol 3 Part H §3.4).
 pub const NUMERIC_DEADLINE: Millis = Millis::secs(30);
 
-/// A comparison still open this long past [`NUMERIC_DEADLINE`] is refused and counted failed: the
-/// chip's timeout ends it first, so this ends one whose outcome was lost.
+/// A comparison still open this long past [`NUMERIC_DEADLINE`] lost the chip's outcome, so it is
+/// refused and counted failed.
 pub const NUMERIC_BACKSTOP: Millis = Millis::secs(30);
 
 /// A pairing with no outcome this long after its comparison was answered or timed out has failed:
 /// the Security Manager's own timeout (Core Vol 3 Part H §3.4).
 pub const PAIRING_OUTCOME: Millis = Millis::secs(30);
 
-/// A security request with no outcome this long after it has failed: past the chip's own report
-/// of an unanswered one, 30 s on, which never comes on a link whose earlier pairing timed out,
-/// since the chip refuses the request there (HARDWARE.md; Core 6.0 Vol 3 Part H §3.4).
+/// A security request with no outcome this long after it has failed: past the chip's own report of
+/// an unanswered one, which a link whose earlier pairing timed out never gets (HARDWARE.md).
 pub const SECURITY_REQUEST_OUTCOME: Millis = Millis::secs(35);
 
 /// No central start this soon after the phone connects or its parameters change.
@@ -223,9 +222,7 @@ impl PhoneLink {
                     if matches!(self.security, Security::Secure | Security::Unknown) {
                         *self = PhoneLink::new(link, now);
                     } else if self.security == Security::Unsecured && self.ask_pair.is_none() {
-                        // Its ask spent, the lost events may hide its pairing's outcome or a new
-                        // link on this handle that may yet pair, so it is held as a new one, its
-                        // lost bond already told.
+                        // Lost events may hide the outcome or a new link, so it starts again as new.
                         *self = PhoneLink { told_bond_lost: self.told_bond_lost, ..PhoneLink::new(link, now) };
                     }
                 }
