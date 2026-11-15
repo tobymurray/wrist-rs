@@ -30,6 +30,10 @@ pub enum Input {
     Retry(usize),
     /// The user asked for the radio again after a fault.
     RetryRadio,
+    /// The console's ask of the phone's link (`ble interval now`), in place of the menu's until that
+    /// link ends, a resync finds it, or the menu's ask changes; ignored with no phone link or unless
+    /// [`phone::askable`].
+    IntervalNow(ConnParams),
     Tick,
 }
 
@@ -131,6 +135,8 @@ pub struct Core<'a> {
     phone_held: bool,
     /// The last ask was refused before it reached the air.
     phone_refused: bool,
+    /// The console's ask ([`Input::IntervalNow`]) and the phone link it is for.
+    console: Option<(ConnHandle, ConnParams)>,
     /// Busy refusals the chip may still give before it is restarted, and when one came back.
     busy: Bucket,
     retry: [bool; MAX_PERIPHERALS],
@@ -167,6 +173,7 @@ impl<'a> Core<'a> {
             phone_asks: 0,
             phone_held: false,
             phone_refused: false,
+            console: None,
             busy: Bucket::FULL,
             retry: [false; MAX_PERIPHERALS],
             snapshot: false,
@@ -217,12 +224,21 @@ impl<'a> Core<'a> {
                 }
             }
             Input::RetryRadio => self.chip(now, chip::Event::Retry, &mut out),
+            Input::IntervalNow(p) => {
+                if let Some(link) = self.state.phone.link().filter(|_| phone::askable(&p)) {
+                    self.console = Some((link, p));
+                }
+            }
             Input::Tick => {
                 self.chip(now, chip::Event::Tick, &mut out);
                 self.phone(now, phone::Event::Tick, &mut out);
                 self.peers(now, peripheral::Event::Tick);
                 self.expire(now);
             }
+        }
+        // The console's ask ends with its link.
+        if self.console.is_some_and(|(l, _)| self.state.phone.link() != Some(l)) {
+            self.console = None;
         }
         self.spend(now, &mut out);
         self.reconcile(now, &mut out);
@@ -233,6 +249,10 @@ impl<'a> Core<'a> {
     fn set_goals(&mut self, now: Instant, g: Goals, out: &mut Outputs) {
         let was = self.goals;
         self.goals = g;
+        // The console's ask ends where the menu's own ask changes.
+        if self.menu_want(&was) != self.menu_want(&g) {
+            self.console = None;
+        }
         if was.power != g.power || was.transfer != g.transfer || was.phone != g.phone || was.radio_on != g.radio_on {
             self.settled_since = now;
         }
@@ -546,9 +566,10 @@ impl<'a> Core<'a> {
         }
         if !mismatch && phone.is_some() {
             // The same handle may have been ended and made again behind the lost events, which a
-            // snapshot cannot show: what was known of its parameters is let go, so the link is
-            // judged afresh by its next update or the ask.
+            // snapshot cannot show: what was known of its parameters, and the console's ask of it,
+            // are let go, so the link is judged afresh by its next update or the menu's ask.
             self.forget_phone_params();
+            self.console = None;
         }
         if let Some(l) = found {
             self.state.phone = self.state.phone.step(now, phone::Event::Resynced(l.link, l.encrypted)).0;
@@ -737,12 +758,18 @@ impl<'a> Core<'a> {
         Some(Op::UpdateParams(link, want))
     }
 
-    /// The parameters wanted of the phone: the console's, else the menu's, a transfer's the cable's.
-    fn phone_want(&self) -> Option<ConnParams> {
-        if let Some(p) = self.goals.phone_params {
-            return Some(p);
+    /// The parameters wanted of the phone link: the console's ask, else the menu's.
+    #[must_use]
+    pub fn phone_want(&self) -> Option<ConnParams> {
+        match self.console {
+            Some((_, p)) => Some(p),
+            None => self.menu_want(&self.goals),
         }
-        let power = if self.goals.transfer { Power::Cable } else { self.goals.power };
+    }
+
+    /// The menu's ask of the phone for `goals`, a transfer's the cable's.
+    fn menu_want(&self, goals: &Goals) -> Option<ConnParams> {
+        let power = if goals.transfer { Power::Cable } else { goals.power };
         Some(self.menu.phone.iter().find(|c| c.when.power.is_none_or(|p| p == power))?.params)
     }
 

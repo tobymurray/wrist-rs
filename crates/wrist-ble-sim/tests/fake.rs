@@ -550,6 +550,7 @@ fn a_stop_with_nothing_advertising_is_refused() {
     let mut f = ready(1);
     let r = f.submit(Op::Advertise(None));
     assert_eq!(r.map_err(|e| (e.kind, e.native)), Err((FailureKind::ModeExclusion, 0x46)));
+    assert_eq!(r, Err(wrist_bluenrg2::ops::refused(&Op::Advertise(None), 0x46)), "as the driver reads the chip's code");
 }
 
 #[test]
@@ -559,6 +560,7 @@ fn advertising_over_advertising_is_refused_and_the_old_goes_on() {
     for p in [ADV_995, ADV_100] {
         let r = f.submit(Op::Advertise(Some(p)));
         assert_eq!(r.map_err(|e| (e.kind, e.native)), Err((FailureKind::ModeExclusion, 0x46)));
+        assert_eq!(r, Err(wrist_bluenrg2::ops::refused(&Op::Advertise(Some(p)), 0x46)), "as the driver reads the chip's code");
         assert_eq!(f.advertising(), Some(ADV_100));
     }
 }

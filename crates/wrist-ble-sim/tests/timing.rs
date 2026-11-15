@@ -69,3 +69,20 @@ fn the_core_advertises_on_a_cable_at_the_drivers_interval() {
         assert_eq!((a.interval_min.as_u16(), a.interval_max.as_u16()), (want, want));
     }
 }
+
+/// A transfer is the cable's timing for the phone's link only, not for advertising.
+#[test]
+fn a_transfer_leaves_advertising_at_the_power_sources_interval() {
+    for power in [Power::Cable, Power::Battery] {
+        let advertised = |transfer: bool| {
+            let mut core = Core::new(&CAPABILITIES, &Scheduler, &MENU);
+            let mut ops = Vec::new();
+            run(&mut core, &mut ops, 0, Input::Goals(Goals { radio_on: true, power, transfer, ..Goals::OFF }));
+            let start = core.state.chip.starting().expect("a start in flight");
+            run(&mut core, &mut ops, 0, Input::Started(start, Ok(INFO)));
+            let Some(Op::Advertise(Some(a))) = ops.first() else { panic!("{ops:?}") };
+            (a.interval_min.as_u16(), a.interval_max.as_u16())
+        };
+        assert_eq!(advertised(true), advertised(false), "{power:?}");
+    }
+}

@@ -8,7 +8,7 @@ pub mod verdict;
 
 use bluenrg2::opcode;
 use wrist_ble::{
-    AddrKind, BdAddr, ChipInfo, ConnHandle, Instant, LeConnRole, LinkStatus, Op, OpId, OpKind, Outcome, PeerAddr, RadioEvent, Snapshot,
+    AddrKind, BdAddr, ChipInfo, ConnHandle, ConnParams, Instant, LeConnRole, LinkStatus, Op, OpId, OpKind, Outcome, PeerAddr, RadioEvent, Snapshot,
     MAX_LINKS,
 };
 use wrist_ble_core::chip::Action;
@@ -17,7 +17,6 @@ use wrist_ble_core::goals::{Goals, Power};
 use wrist_ble_core::State;
 use wrist_bluenrg2::events::Translator;
 use wrist_bluenrg2::{Scheduler, CAPABILITIES};
-use wrist_wake::ble as wake;
 
 use crate::menu::{interval_now_ask, MENU};
 use crate::verdict::{Act, Disagreement, Verdict};
@@ -117,6 +116,8 @@ pub struct Shadow<O> {
     next: Option<Instant>,
     ids: u16,
     phone: Option<ConnHandle>,
+    /// The phone's link has been seen encrypted, which it stays until it ends.
+    encrypted: bool,
     /// The core's parameter request on air, which the central's answer ends.
     asked_update: Option<OpId>,
     advertising: bool,
@@ -139,6 +140,7 @@ impl<O: Observer> Shadow<O> {
             next: None,
             ids: 0,
             phone: None,
+            encrypted: false,
             asked_update: None,
             advertising: false,
             seeding: false,
@@ -194,28 +196,29 @@ impl<O: Observer> Shadow<O> {
         self.feed(Input::Goals(goals));
     }
 
-    /// `ble on` or `ble off`, which ends the console's ask with its link.
+    /// `ble on` or `ble off`.
     pub fn radio(&mut self, at: Instant, on: bool) {
-        let phone_params = if on { self.goals.phone_params } else { None };
-        self.set_goals(at, Goals { radio_on: on, phone_params, ..self.goals });
+        self.set_goals(at, Goals { radio_on: on, ..self.goals });
     }
 
-    /// The timing the power source and a transfer ask for; where that timing changes, the
-    /// console's ask ends.
+    /// The timing the power source and a transfer ask for.
     pub fn timing(&mut self, at: Instant, power: Power, transfer: bool) {
         if (power, transfer) == (self.goals.power, self.goals.transfer) {
             return;
         }
-        let asks = |p: Power, t: bool| wake::timing(if p == Power::Cable { wake::Power::Cable } else { wake::Power::Battery }, t);
-        let phone_params = if asks(power, transfer) == asks(self.goals.power, self.goals.transfer) { self.goals.phone_params } else { None };
-        self.set_goals(at, Goals { power, transfer, phone_params, ..self.goals });
+        self.set_goals(at, Goals { power, transfer, ..self.goals });
     }
 
-    /// `ble interval now <min> <max>`, in 1.25 ms, for the phone's link while it is up.
+    /// `ble interval now <min> <max>`, in 1.25 ms, as the core's [`Input::IntervalNow`].
     pub fn interval_now(&mut self, at: Instant, min: u16, max: u16) {
-        if self.phone.is_some() {
-            self.set_goals(at, Goals { phone_params: Some(interval_now_ask(min, max)), ..self.goals });
-        }
+        self.advance(at);
+        self.feed(Input::IntervalNow(interval_now_ask(min, max)));
+    }
+
+    /// What the core wants of the phone's link.
+    #[must_use]
+    pub fn phone_want(&self) -> Option<ConnParams> {
+        self.core.phone_want()
     }
 
     /// `ble yes` or `ble no`.
@@ -257,6 +260,7 @@ impl<O: Observer> Shadow<O> {
         self.core = Core::new(&CAPABILITIES, &Scheduler, &MENU);
         self.translator = Translator::new(self.info);
         self.phone = None;
+        self.encrypted = false;
         self.asked_update = None;
         self.advertising = false;
     }
@@ -277,12 +281,11 @@ impl<O: Observer> Shadow<O> {
             _ => DriverOp::Other(kind),
         };
         // An ask the menu never makes is taken as the console's `ble interval now`, over USB or
-        // over the air, and given the core as a goal.
+        // over the air.
         if let DriverOp::AskParams(min, max, latency) = op {
             let menu = MENU.phone.iter().any(|c| (c.params.interval_min.as_u16(), c.params.interval_max.as_u16(), c.params.latency) == (min, max, latency));
-            let now = interval_now_ask(min, max);
-            if !menu && self.goals.phone_params != Some(now) {
-                self.set_goals(self.now, Goals { phone_params: Some(now), ..self.goals });
+            if !menu {
+                self.feed(Input::IntervalNow(interval_now_ask(min, max)));
             }
         }
         if let Some(act) = Act::of_driver(op) {
@@ -309,9 +312,11 @@ impl<O: Observer> Shadow<O> {
         match e {
             RadioEvent::LinkUp { link, role: LeConnRole::Peripheral, .. } => {
                 self.phone = Some(link);
+                self.encrypted = false;
                 self.advertising = false;
             }
             RadioEvent::LinkDown { link, .. } if self.phone == Some(link) => self.phone = None,
+            RadioEvent::Encryption { link, on: true } if self.phone == Some(link) => self.encrypted = true,
             RadioEvent::Ready(_) => {
                 self.phone = None;
                 self.advertising = false;
@@ -324,11 +329,6 @@ impl<O: Observer> Shadow<O> {
         match (e, self.core.state.chip.starting()) {
             (RadioEvent::Ready(info), Some(id)) => self.feed(Input::Started(id, Ok(info))),
             _ => self.feed(Input::Radio(e)),
-        }
-        // The console's ask ends with the phone's link, once the core has seen it end or the chip
-        // come up again.
-        if matches!(e, RadioEvent::LinkDown { .. } | RadioEvent::Ready(_)) && self.phone.is_none() && self.goals.phone_params.is_some() {
-            self.set_goals(self.now, Goals { phone_params: None, ..self.goals });
         }
     }
 
@@ -393,11 +393,13 @@ impl<O: Observer> Shadow<O> {
         len
     }
 
-    /// The chip as the driver's commands and the chip's events have left it.
+    /// The chip as the driver's commands and the chip's events have left it, the phone's link
+    /// encrypted once seen so and otherwise unknown, since the lost events may have held it.
     fn snapshot(&self) -> Snapshot {
         let mut links = [None; MAX_LINKS];
         if let Some(link) = self.phone {
-            links[0] = Some(LinkStatus { link, role: LeConnRole::Peripheral, peer: PeerAddr { kind: AddrKind::RANDOM, addr: BdAddr::new([0; 6]) }, encrypted: None });
+            let encrypted = self.encrypted.then_some(true);
+            links[0] = Some(LinkStatus { link, role: LeConnRole::Peripheral, peer: PeerAddr { kind: AddrKind::RANDOM, addr: BdAddr::new([0; 6]) }, encrypted });
         }
         Snapshot { at: self.now, links, advertising: self.advertising, scanning: false, initiating: false, anchor: None }
     }

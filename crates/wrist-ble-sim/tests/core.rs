@@ -591,7 +591,7 @@ fn a_centrals_acceptance_ends_the_request_though_nothing_changes() {
     // Nothing is left pending: the console's own ask goes out at once.
     assert!(h.core.pending().is_none());
     let now = wrist_ble_shadow::menu::interval_now_ask(6, 6);
-    h.at(2_000, Input::Goals(Goals { radio_on: true, phone_params: Some(now), ..Goals::OFF }));
+    h.at(2_000, Input::IntervalNow(now));
     let asks = h.ops.iter().filter(|op| matches!(op, Op::UpdateParams(l, _) if *l == link)).count();
     assert_eq!(asks, 2, "{:?}", h.ops);
 }

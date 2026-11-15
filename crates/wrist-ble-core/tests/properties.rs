@@ -158,7 +158,7 @@ proptest! {
     }
 
     #[test]
-    fn phone_connected_only_when_up_and_encrypted(trace in prop::collection::vec((0..8_000u32, 0..9u8, any::<u32>()), 300)) {
+    fn phone_connected_only_when_up_and_encrypted(trace in prop::collection::vec((0..8_000u32, 0..12u8, any::<u32>()), 300)) {
         let mut state = ready(t(0));
         let mut now = t(0);
         for (gap, kind, value) in trace {
@@ -171,6 +171,8 @@ proptest! {
                 4 => phone::Event::Pairing(phone(), PairingStep::Failed),
                 5 => phone::Event::BondLost(phone()),
                 6 => phone::Event::Answer(value % 2 == 0),
+                // What a resync found after lost events: encrypted, not, or the chip couldn't say.
+                7 => phone::Event::Resynced(phone(), [Some(true), Some(false), None][(value % 3) as usize]),
                 _ => phone::Event::Tick,
             };
             state.phone = state.phone.step(now, e).0;
@@ -187,6 +189,9 @@ proptest! {
             }
             if matches!(state.phone, Phone::Up(_)) {
                 prop_assert!(!matches!(s, PhoneStatus::Discoverable { .. } | PhoneStatus::Unreachable { .. }), "{s:?}");
+            }
+            if matches!(state.phone, Phone::Up(l) if l.security == Security::Unknown) {
+                prop_assert!(!state.phone.may_ask_params(now), "{:?}", state.phone);
             }
         }
     }

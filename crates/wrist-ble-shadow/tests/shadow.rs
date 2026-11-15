@@ -2,6 +2,7 @@
 
 use wrist_ble::{ChipInfo, CoreSpecificationVersion, Instant, LeConnRole, Op, OpKind, Snapshot};
 use wrist_ble_core::goals::{Goals, PhoneGoal, Power};
+use wrist_ble_core::phone::{Phone, Security};
 use wrist_ble_core::State;
 use wrist_ble_shadow::verdict::Disagreement;
 use wrist_ble_shadow::{DriverOp, Observer, Shadow};
@@ -136,16 +137,18 @@ fn the_end_of_a_record_judges_what_still_waits() {
 #[test]
 fn the_consoles_ask_is_for_the_phones_link() {
     let mut s = up();
+    let ask = Some(interval_now_ask(6, 6));
     s.interval_now(Instant(150), 6, 6);
-    assert_eq!(s.goals().phone_params, None, "no link to ask");
+    assert_ne!(s.phone_want(), ask, "no link to ask");
     s.event(Instant(200), PHONE);
+    assert_ne!(s.phone_want(), ask, "nor a link that came up after");
     s.interval_now(Instant(250), 6, 6);
-    assert_eq!(s.goals().phone_params, Some(interval_now_ask(6, 6)));
+    assert_eq!(s.phone_want(), ask);
     s.event(Instant(300), ENCRYPTED);
     s.event(Instant(400), &disconnected(0x0802));
-    assert_eq!(s.goals().phone_params, Some(interval_now_ask(6, 6)), "another link's end");
+    assert_eq!(s.phone_want(), ask, "another link's end");
     s.event(Instant(500), &disconnected(0x0801));
-    assert_eq!(s.goals().phone_params, None, "the phone's link ended");
+    assert_ne!(s.phone_want(), ask, "the phone's link ended");
 }
 
 #[test]
@@ -155,23 +158,23 @@ fn the_consoles_ask_ends_where_the_drivers_timing_changes_or_the_radio_goes_off(
     let ask = Some(interval_now_ask(6, 6));
     s.interval_now(Instant(250), 6, 6);
     s.timing(Instant(300), Power::Cable, true);
-    assert_eq!((s.goals().phone_params, s.goals().transfer), (ask, true), "a transfer on the cable");
+    assert_eq!((s.phone_want(), s.goals().transfer), (ask, true), "a transfer on the cable");
     s.timing(Instant(350), Power::Battery, true);
-    assert_eq!((s.goals().phone_params, s.goals().power), (ask, Power::Battery), "the battery during a transfer");
+    assert_eq!((s.phone_want(), s.goals().power), (ask, Power::Battery), "the battery during a transfer");
     s.timing(Instant(400), Power::Battery, false);
-    assert_eq!(s.goals().phone_params, None, "the battery's own");
+    assert_ne!(s.phone_want(), ask, "the battery's own");
     s.interval_now(Instant(420), 6, 6);
     s.timing(Instant(430), Power::Cable, false);
-    assert_eq!(s.goals().phone_params, None, "the cable's own");
+    assert_ne!(s.phone_want(), ask, "the cable's own");
     s.timing(Instant(440), Power::Battery, false);
     s.interval_now(Instant(450), 6, 6);
     s.timing(Instant(500), Power::Battery, true);
-    assert_eq!(s.goals().phone_params, None, "a transfer on the battery");
+    assert_ne!(s.phone_want(), ask, "a transfer on the battery");
     s.interval_now(Instant(550), 6, 6);
     s.radio(Instant(600), true);
-    assert_eq!(s.goals().phone_params, ask, "`ble on` while on");
+    assert_eq!(s.phone_want(), ask, "`ble on` while on");
     s.radio(Instant(650), false);
-    assert_eq!(s.goals().phone_params, None, "`ble off`");
+    assert_ne!(s.phone_want(), ask, "`ble off`");
 }
 
 #[test]
@@ -191,7 +194,7 @@ fn a_chip_that_restarts_ends_the_consoles_ask() {
     s.interval_now(Instant(220), 6, 6);
     s.event(Instant(400), WATCHDOG);
     s.event(Instant(2_500), BOOTED);
-    assert_eq!(s.goals().phone_params, None);
+    assert_ne!(s.phone_want(), Some(interval_now_ask(6, 6)));
 }
 
 #[test]
@@ -221,6 +224,38 @@ fn a_snapshot_is_the_chip_as_the_driver_and_the_chip_left_it() {
     s.event(Instant(700), CUT);
     let seen: Vec<_> = s.observer.snapshots.iter().map(|n| (n.at.0, n.advertising, n.links[0].map(|l| (l.link.raw(), l.role, l.encrypted)))).collect();
     assert_eq!(seen, [(200, true, None), (400, false, Some((0x0801, LeConnRole::Peripheral, None))), (700, false, None)]);
+}
+
+/// A link seen encrypted stays so until it ends, so the snapshot says so and the core keeps it
+/// secure; one not seen encrypted may have been behind the lost events, so it can't say.
+#[test]
+fn a_snapshot_says_the_phones_link_is_encrypted_once_seen_so() {
+    let mut s = up();
+    s.event(Instant(200), PHONE);
+    s.event(Instant(300), CUT);
+    s.event(Instant(400), ENCRYPTED);
+    s.event(Instant(500), CUT);
+    s.event(Instant(600), &disconnected(0x0801));
+    s.event(Instant(700), PHONE);
+    s.event(Instant(800), CUT);
+    let seen: Vec<_> = s.observer.snapshots.iter().map(|n| (n.at.0, n.links[0].and_then(|l| l.encrypted))).collect();
+    assert_eq!(seen, [(300, None), (500, Some(true)), (800, None)]);
+    s.event(Instant(900), ENCRYPTED);
+    s.event(Instant(1_000), CUT);
+    assert!(matches!(s.state().phone, Phone::Up(l) if l.security == Security::Secure), "{:?}", s.state().phone);
+}
+
+/// Encryption Change names the link it is for (Core 6.0 Vol 4 Part E §7.7.8), so a sensor's says
+/// nothing of the phone's.
+#[test]
+fn another_links_encryption_is_not_the_phones() {
+    let mut s = up();
+    s.event(Instant(200), PHONE);
+    s.event(Instant(250), SENSOR);
+    s.event(Instant(300), &[0x04, 0x08, 0x04, 0x00, 0x02, 0x08, 0x01]);
+    s.event(Instant(400), CUT);
+    let n = s.observer.snapshots.last().expect("no snapshot");
+    assert_eq!(n.links[0].map(|l| (l.link.raw(), l.encrypted)), Some((0x0801, None)));
 }
 
 #[test]
@@ -270,4 +305,14 @@ fn the_centrals_acceptance_ends_the_ask_and_nothing_else_does() {
     assert_eq!(asks(&s.observer), first, "a second ask while the first is on air");
     s.event(Instant(600), ACCEPTED);
     assert_eq!(asks(&s.observer).last(), Some(&600));
+}
+
+#[test]
+fn the_core_takes_the_consoles_ask_where_the_drivers_console_does() {
+    for min in 0..=3_300 {
+        for max in 0..=3_300 {
+            let ask = interval_now_ask(min, max);
+            assert_eq!(wrist_ble_core::phone::askable(&ask), wrist_wake::ble::interval_now(min, max), "{min}-{max}");
+        }
+    }
 }

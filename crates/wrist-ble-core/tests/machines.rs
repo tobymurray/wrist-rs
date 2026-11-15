@@ -5,7 +5,7 @@ use wrist_ble::{Activities, Admitted, Change, ConnParams, Duration, Exclusion, F
 use wrist_ble_core::chip::{self, Chip, ChipMachine, FaultCause, StartId};
 use wrist_ble_core::goals::Power;
 use wrist_ble_core::peripheral::{self as per, Event, Peripheral, Stage, StopReason, Then, GIVE_UP};
-use wrist_ble_core::phone::{self, Action, Phone, Security};
+use wrist_ble_core::phone::{self, askable, Action, Phone, Security};
 use wrist_ble_core::plan::{fingerprint, Conflict, Refused, REFUSED_CAPACITY};
 use wrist_ble_core::status::PeerState;
 
@@ -141,6 +141,43 @@ fn phone_link_found_unencrypted_after_encryption_starts_afresh() {
     let (p, a) = actions(p, 101_000, phone::Event::BondLost(phone()));
     assert_eq!(a, [Action::AllowRebond(phone())]);
     assert_eq!(actions(p, 102_000, phone::Event::Pairing(phone(), PairingStep::Failed)).1, [Action::TellBondLost(phone())]);
+}
+
+/// A resync that finds a link unencrypted after its pairing failed can't say it is the same link,
+/// so holds it as a new one, without telling its lost bond twice.
+#[test]
+fn phone_link_whose_pairing_failed_found_unencrypted_is_held_again() {
+    let (p, _) = actions(up(0), 100, phone::Event::BondLost(phone()));
+    let (p, a) = actions(p, 30_000, phone::Event::Pairing(phone(), PairingStep::Failed));
+    assert_eq!(a, [Action::TellBondLost(phone())]);
+    assert!(p.may_ask_params(t(30_000)));
+    let (p, _) = actions(p, 40_000, phone::Event::Resynced(phone(), Some(false)));
+    assert!(!p.may_ask_params(t(40_000)));
+    assert_eq!(p.deadline(), Some(t(45_000)));
+    let (p, a) = actions(p, 45_000, phone::Event::Tick);
+    assert_eq!(a, [Action::RequestSecurity(phone())]);
+    // A central the chip has keys for answers the request by pairing, and the chip says so again.
+    let (p, a) = actions(p, 46_000, phone::Event::BondLost(phone()));
+    assert_eq!(a, [Action::AllowRebond(phone())]);
+    let (p, a) = actions(p, 75_000, phone::Event::Pairing(phone(), PairingStep::Failed));
+    assert_eq!(a, NONE, "told once");
+    assert!(p.may_ask_params(t(75_000)));
+}
+
+/// An unencrypted link still waiting on its pairing is the link it was, so a resync changes nothing.
+#[test]
+fn phone_link_waiting_to_pair_found_unencrypted_is_unchanged() {
+    let p = up(0);
+    let (q, a) = actions(p, 2_000, phone::Event::Resynced(phone(), Some(false)));
+    assert_eq!((q, a), (p, NONE));
+    let (p, _) = actions(p, 3_000, phone::Event::Pairing(phone(), PairingStep::Numeric(7)));
+    let (q, a) = actions(p, 4_000, phone::Event::Resynced(phone(), Some(false)));
+    assert_eq!((q, a), (p, NONE));
+    // A pairing started again after one failed is left to finish.
+    let (p, _) = actions(p, 34_000, phone::Event::Pairing(phone(), PairingStep::Failed));
+    let (p, _) = actions(p, 35_000, phone::Event::Pairing(phone(), PairingStep::Numeric(8)));
+    let (q, a) = actions(p, 36_000, phone::Event::Resynced(phone(), Some(false)));
+    assert_eq!((q, a), (p, NONE));
 }
 
 #[test]
@@ -532,4 +569,29 @@ fn a_peripheral_link_ends_advertising() {
     let a = Activities { advertising: Some(ADV_995), ..Activities::IDLE };
     let a = a.walk(&Careless, &[Change::PeripheralUp]).unwrap();
     assert_eq!((a.advertising, a.peripheral), (None, 1));
+}
+
+fn ask(min: u16, max: u16, latency: u16, timeout: u16) -> ConnParams {
+    ConnParams { interval_min: Duration::from_u16(min), interval_max: Duration::from_u16(max), latency, timeout: Duration::from_u16(timeout), ce_len: Duration::from_u16(0) }
+}
+
+/// What an L2CAP connection parameter update request may carry (Core 6.0 Vol 3 Part A §4.20), and
+/// the supervision timeout's floor (Vol 6 Part B §4.5.2), at each bound.
+#[test]
+fn phone_asks_only_what_a_request_may_carry() {
+    assert!(askable(&ask(6, 6, 0, 10)));
+    assert!(!askable(&ask(5, 6, 0, 10)), "under 7.5 ms");
+    assert!(!askable(&ask(7, 6, 0, 500)), "the least above the most");
+    assert!(askable(&ask(3_200, 3_200, 0, 3_200)));
+    assert!(!askable(&ask(3_200, 3_201, 0, 3_200)), "over 4 s");
+    assert!(askable(&ask(6, 6, 499, 3_200)));
+    assert!(!askable(&ask(6, 6, 500, 3_200)), "latency 500");
+    assert!(!askable(&ask(6, 6, 0, 9)), "under 100 ms");
+    assert!(!askable(&ask(6, 6, 0, 3_201)), "over 32 s");
+    // 8 s against (1 + 0) × 4 s × 2: the timeout must be longer.
+    assert!(!askable(&ask(3_200, 3_200, 0, 800)));
+    assert!(askable(&ask(3_200, 3_200, 0, 801)));
+    // 6 s against (1 + 4) × 600 ms × 2.
+    assert!(!askable(&ask(80, 480, 4, 600)));
+    assert!(askable(&ask(80, 479, 4, 600)));
 }
