@@ -89,7 +89,8 @@ fn state() -> UsbState {
     UsbState::Waiting
 }
 
-pub fn write_regs(uart: Uart) {
+/// The link's state, then the supply and PHY registers; [`write_core_regs`] follows.
+pub fn write_phy_regs(uart: Uart) {
     uart.write_str("[usb] state ");
     uart.write_str(state().word());
     uart.write_line("");
@@ -105,6 +106,9 @@ pub fn write_regs(uart: Uart) {
         uart.write_hex32(unsafe { read32(addr) });
         uart.write_line("");
     }
+}
+
+pub fn write_core_regs(uart: Uart) {
     if !clocked() {
         uart.write_line("  OTG_HS unclocked; no core registers");
         return;

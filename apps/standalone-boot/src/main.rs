@@ -1326,6 +1326,7 @@ async fn full_report(
     uart.write_str(" from ");
     uart.write_u32(measured_hz);
     uart.write_line(" Hz");
+    make_room().await;
 
     uart.write_str("[step] wdog  : ");
     uart.write_line(watchdog.as_str());
@@ -1335,18 +1336,37 @@ async fn full_report(
     uart.write_line("");
     make_room().await;
 
+    // A few lines between yields, so that no poll of the report holds the executor long.
     uart.write_line("[step] rtc   :");
-    rtc::write_report(uart);
+    let calendar = rtc::write_clocks(uart);
+    make_room().await;
+    let zone = rtc::write_zone_record(uart);
+    make_room().await;
+    for change in zone.iter().flat_map(|z| z.next).flatten() {
+        rtc::write_change(uart, change);
+        make_room().await;
+    }
+    rtc::write_last_set(uart);
+    make_room().await;
+    rtc::write_alarm(uart);
+    make_room().await;
+    rtc::write_calendar(uart, calendar);
     make_room().await;
     uart.write_line("[step] usb   :");
-    console::write_regs(uart);
+    console::write_phy_regs(uart);
+    make_room().await;
+    console::write_core_regs(uart);
     make_room().await;
     usblog::dump(uart).await;
+    make_room().await;
 
     uart.write_line("[step] clocks:");
     report_handoff(uart, handoff);
     make_room().await;
-    report_clocks(uart);
+    let now = report_clocks(uart);
+    make_room().await;
+    report_clock_source(uart, now);
+    make_room().await;
     report_enables(uart);
     make_room().await;
     uart.write_line("[step] park  :");
@@ -1445,7 +1465,16 @@ fn report_handoff(uart: Uart, h: &RccSnapshot) {
     uart.write_line("");
 }
 
-fn report_clocks(uart: Uart) {
+/// The registers [`report_clocks`] read, which [`report_clock_source`] decodes.
+#[derive(Clone, Copy)]
+struct RccNow {
+    cr: u32,
+    icscr1: u32,
+    csr: u32,
+    cfgr1: u32,
+}
+
+fn report_clocks(uart: Uart) -> RccNow {
     uart.write_line("-- RCC now --");
     let cr = unsafe { read32(RCC_CR) };
     let icscr1 = unsafe { read32(RCC_ICSCR1) };
@@ -1463,7 +1492,11 @@ fn report_clocks(uart: Uart) {
     uart.write_reg("RCC_CCIPR3  = ", unsafe { read32(RCC_CCIPR3) });
     uart.write_reg("FLASH_ACR   = ", unsafe { read32(FLASH_ACR) });
     uart.write_reg("FLASH_OPTR  = ", unsafe { read32(FLASH_OPTR) });
+    RccNow { cr, icscr1, csr, cfgr1 }
+}
 
+fn report_clock_source(uart: Uart, now: RccNow) {
+    let RccNow { cr, icscr1, csr, cfgr1 } = now;
     uart.write_str("SYSCLK src  = ");
     uart.write_line(match (cfgr1 & RCC_CFGR1_SWS_MASK) >> RCC_CFGR1_SWS_SHIFT {
         0b00 => "MSIS",

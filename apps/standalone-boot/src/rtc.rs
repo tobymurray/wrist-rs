@@ -52,7 +52,7 @@ const SRC_LSI: u8 = 2;
 
 pub use wrist_time::alarm::Alarm;
 use wrist_time::backup::{self, Flags};
-pub use wrist_time::zone::Zone;
+pub use wrist_time::zone::{Change, Zone};
 pub use wrist_time::{civil_of_seconds, parse_civil, seconds_of, Civil};
 
 const CYCLES_PER_MS: u32 = crate::busy::CORE_MHZ * 1_000;
@@ -256,7 +256,30 @@ pub fn set(c: Civil) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// The calendar's registers, read together so that the report's lines agree.
+#[derive(Clone, Copy)]
+pub struct Calendar {
+    icsr: u32,
+    ssr: u32,
+    tr: u32,
+    dr: u32,
+}
+
+/// `time`: the whole report at once. `report` writes the same pieces with a yield between
+/// each, so that none holds the executor long.
 pub fn write_report(uart: Uart) {
+    let calendar = write_clocks(uart);
+    let zone = write_zone_record(uart);
+    for change in zone.iter().flat_map(|z| z.next).flatten() {
+        write_change(uart, change);
+    }
+    write_last_set(uart);
+    write_alarm(uart);
+    write_calendar(uart, calendar);
+}
+
+/// The report's first piece: the backup domain's clocks and the calendar's control registers.
+pub fn write_clocks(uart: Uart) -> Calendar {
     use wrist_flash::vectors::{MAILBOX_BDCR, MAILBOX_MAGIC, MAILBOX_TAG};
     if unsafe { read32(MAILBOX_MAGIC) } == MAILBOX_TAG {
         uart.write_reg("  RCC_BDCR at the loader's entry = ", unsafe {
@@ -304,7 +327,54 @@ pub fn write_report(uart: Uart) {
     uart.write_reg("  RTC_PRER  = ", prer);
     uart.write_reg("  RTC_CR    = ", cr);
     uart.write_reg("  TAMP_BKP0R= ", unsafe { read32(TAMP_BKP0R) });
-    write_sources(uart);
+    Calendar { icsr, ssr, tr, dr }
+}
+
+/// The zone line; the zone, whose changes [`write_change`] writes.
+pub fn write_zone_record(uart: Uart) -> Option<Zone> {
+    uart.write_str("  zone      : ");
+    let zone = zone();
+    match zone {
+        Some(z) => {
+            write_zone(uart, z.offset);
+            uart.write_line("");
+        }
+        None => uart.write_line("no record: daylight saving is not followed (tools/wrist-time.py)"),
+    }
+    zone
+}
+
+pub fn write_change(uart: Uart, c: Change) {
+    uart.write_str("  change    : ");
+    write_civil(uart, civil_of_seconds(i64::from(c.at)));
+    uart.write_str(" UTC, to ");
+    write_zone(uart, c.offset);
+    uart.write_line("");
+}
+
+pub fn write_last_set(uart: Uart) {
+    uart.write_str("  last set  : ");
+    match last_set() {
+        Some((source, at)) => {
+            uart.write_str("by ");
+            uart.write_str(source.name());
+            uart.write_str(", to ");
+            write_civil(uart, at);
+            uart.write_line(" local");
+        }
+        None => uart.write_line("no record (the backup domain was reset)"),
+    }
+}
+
+pub fn write_alarm(uart: Uart) {
+    uart.write_str("  alarm     : ");
+    crate::alarm::write_record(uart);
+    uart.write_line("");
+}
+
+/// The report's last piece: the calendar as [`write_clocks`] read it.
+pub fn write_calendar(uart: Uart, calendar: Calendar) {
+    let Calendar { icsr, ssr, tr, dr } = calendar;
     uart.write_reg("  RTC_TR    = ", tr);
     uart.write_reg("  RTC_DR    = ", dr);
     uart.write_reg("  RTC_SSR   = ", ssr);
@@ -335,38 +405,6 @@ pub fn write_report(uart: Uart) {
     uart.write_str("  (weekday ");
     uart.write_u32((dr >> 13) & 0b111);
     uart.write_line(", 1 = Monday)");
-}
-
-fn write_sources(uart: Uart) {
-    uart.write_str("  zone      : ");
-    match zone() {
-        Some(z) => {
-            write_zone(uart, z.offset);
-            uart.write_line("");
-            for c in z.next.iter().flatten() {
-                uart.write_str("  change    : ");
-                write_civil(uart, civil_of_seconds(i64::from(c.at)));
-                uart.write_str(" UTC, to ");
-                write_zone(uart, c.offset);
-                uart.write_line("");
-            }
-        }
-        None => uart.write_line("no record: daylight saving is not followed (tools/wrist-time.py)"),
-    }
-    uart.write_str("  last set  : ");
-    match last_set() {
-        Some((source, at)) => {
-            uart.write_str("by ");
-            uart.write_str(source.name());
-            uart.write_str(", to ");
-            write_civil(uart, at);
-            uart.write_line(" local");
-        }
-        None => uart.write_line("no record (the backup domain was reset)"),
-    }
-    uart.write_str("  alarm     : ");
-    crate::alarm::write_record(uart);
-    uart.write_line("");
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
