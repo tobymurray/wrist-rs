@@ -31,7 +31,8 @@ pub enum Input {
     /// The user asked for the radio again after a fault.
     RetryRadio,
     /// The console's ask of the phone's link (`ble interval now`), in place of the menu's until that
-    /// link ends or the menu's ask changes; ignored with no phone link or unless [`phone::askable`].
+    /// link ends, a resync finds it, or the menu's ask changes; ignored with no phone link or unless
+    /// [`phone::askable`].
     IntervalNow(ConnParams),
     Tick,
 }
@@ -565,9 +566,10 @@ impl<'a> Core<'a> {
         }
         if !mismatch && phone.is_some() {
             // The same handle may have been ended and made again behind the lost events, which a
-            // snapshot cannot show: what was known of its parameters is let go, so the link is
-            // judged afresh by its next update or the ask.
+            // snapshot cannot show: what was known of its parameters, and the console's ask of it,
+            // are let go, so the link is judged afresh by its next update or the menu's ask.
             self.forget_phone_params();
+            self.console = None;
         }
         if let Some(l) = found {
             self.state.phone = self.state.phone.step(now, phone::Event::Resynced(l.link, l.encrypted)).0;

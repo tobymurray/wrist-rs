@@ -501,3 +501,25 @@ fn the_consoles_ask_ends_with_its_link_or_the_menus_ask() {
     b.phone_up(7_000);
     assert_eq!(b.core.phone_want(), Some(MENU.phone[1].params), "nor the next link");
 }
+
+/// A snapshot can't show that the link on the phone's handle is the one the console asked for, so
+/// a resync ends the ask, whatever it finds of the link's encryption.
+#[test]
+fn the_consoles_ask_ends_with_a_resync() {
+    let resync = |b: &mut Bench, ms: u64, encrypted: bool| {
+        b.at(ms, Input::Radio(RadioEvent::EventsLost));
+        let mut links = [None; MAX_LINKS];
+        links[0] = Some(wrist_ble::LinkStatus { link: link(), role: LeConnRole::Peripheral, peer: phone(), encrypted: Some(encrypted) });
+        b.at(ms + 1, Input::Snapshot(Ok(Snapshot { at: Instant(ms + 1), links, advertising: false, scanning: false, initiating: false, anchor: None })))
+    };
+    let mut b = Bench::new(cable());
+    b.phone_up(1_000);
+    b.encrypted(1_300);
+    let now = interval_now_ask(12, 12);
+    for (at, encrypted) in [(2_000, true), (5_000, false)] {
+        b.at(at, Input::IntervalNow(now));
+        assert_eq!(b.core.phone_want(), Some(now));
+        resync(&mut b, at + 1_000, encrypted);
+        assert_eq!(b.core.phone_want(), Some(MENU.phone[0].params), "found encrypted: {encrypted}");
+    }
+}
