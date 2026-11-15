@@ -166,6 +166,9 @@ enum Request {
     /// `ble probe snapshot`: the driver's snapshot of the chip.
     #[cfg(feature = "ble-probe")]
     ProbeSnapshot,
+    /// `ble probe security`: `ACI_GAP_SLAVE_SECURITY_REQ` again on an unencrypted link.
+    #[cfg(feature = "ble-probe")]
+    ProbeSecurity,
 }
 
 static REQUESTS: Channel<CriticalSectionRawMutex, Request, 4> = Channel::new();
@@ -329,6 +332,8 @@ pub fn command(args: &[u8], uart: Uart) {
         b"probe adv" => Request::ProbeAdvertising,
         #[cfg(feature = "ble-probe")]
         b"probe snapshot" => Request::ProbeSnapshot,
+        #[cfg(feature = "ble-probe")]
+        b"probe security" => Request::ProbeSecurity,
         #[cfg(feature = "ble-probe")]
         rest if rest.starts_with(b"probe drop ") => {
             match core::str::from_utf8(&rest[11..]).ok().and_then(|t| u8::from_str_radix(t.trim(), 16).ok()) {
@@ -566,7 +571,8 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
                 | Request::Restart(_)
                 | Request::ProbeAdvertising
                 | Request::ProbeDrop(_)
-                | Request::ProbeSnapshot => {
+                | Request::ProbeSnapshot
+                | Request::ProbeSecurity => {
                     uart.write_line("[ble] off; `ble on` starts it");
                 }
                 Request::Off => {
@@ -903,6 +909,8 @@ impl Link<'_> {
             Request::ProbeDrop(reason) => self.probe_drop(reason).await,
             #[cfg(feature = "ble-probe")]
             Request::ProbeSnapshot => self.probe_snapshot().await,
+            #[cfg(feature = "ble-probe")]
+            Request::ProbeSecurity => self.ask_to_pair().await,
         }
     }
 

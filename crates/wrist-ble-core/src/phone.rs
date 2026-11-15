@@ -7,14 +7,21 @@ use wrist_ble::{ConnHandle, ConnParams, Instant, Millis, PairingStep};
 pub const ASK_TO_PAIR_AFTER: Millis = Millis::secs(5);
 
 
-/// A numeric comparison the user has not answered is rejected after this long: the Security
-/// Manager's own timeout (Core Vol 3 Part H §3.4), which ends it on the chip and on every central
-/// measured (HARDWARE.md).
+/// A numeric comparison waits this long for the user: the Security Manager's own timeout (Core 6.0
+/// Vol 3 Part H §3.4).
 pub const NUMERIC_DEADLINE: Millis = Millis::secs(30);
+
+/// A comparison still open this long past [`NUMERIC_DEADLINE`] lost the chip's outcome, so it is
+/// refused and counted failed.
+pub const NUMERIC_BACKSTOP: Millis = Millis::secs(30);
 
 /// A pairing with no outcome this long after its comparison was answered or timed out has failed:
 /// the Security Manager's own timeout (Core Vol 3 Part H §3.4).
 pub const PAIRING_OUTCOME: Millis = Millis::secs(30);
+
+/// A security request with no outcome this long after it has failed: past the chip's own report of
+/// an unanswered one, which a link whose earlier pairing timed out never gets (HARDWARE.md).
+pub const SECURITY_REQUEST_OUTCOME: Millis = Millis::secs(35);
 
 /// No central start this soon after the phone connects or its parameters change.
 pub const SETTLE: Millis = Millis::secs(3);
@@ -45,6 +52,8 @@ pub struct PhoneLink {
     /// When the link's parameters last changed, or when it connected.
     pub params_at: Instant,
     ask_pair: Option<Instant>,
+    /// When a security request, or a pairing the central began, with no outcome yet has failed.
+    asked_pair: Option<Instant>,
     params: Params,
     bond_lost: bool,
     pairing_failed: bool,
@@ -54,7 +63,8 @@ pub struct PhoneLink {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Security {
     Unsecured,
-    /// Until `deadline` the comparison waits for an answer; once answered, the outcome.
+    /// Until `deadline` the comparison waits for an answer, and the chip's timeout ends it there;
+    /// once answered, the outcome.
     Pairing { value: u32, deadline: Instant, answered: bool },
     Secure,
     /// A resync found the link and the chip could not say whether it is encrypted.
@@ -81,6 +91,8 @@ pub enum Event {
     ParamsChanged(ConnHandle),
     /// A resync found the link, encrypted or not, or `None` when the chip could not say.
     Resynced(ConnHandle, Option<bool>),
+    /// The chip refused the link's security request for good: no outcome will follow.
+    SecurityRefused(ConnHandle),
     /// The user's answer to a numeric comparison.
     Answer(bool),
     Tick,
@@ -135,10 +147,11 @@ impl Phone {
     pub fn deadline(&self) -> Option<Instant> {
         let Phone::Up(l) = self else { return None };
         let numeric = match l.security {
-            Security::Pairing { deadline, .. } => Some(deadline),
+            Security::Pairing { deadline, answered: false, .. } => Some(deadline + NUMERIC_BACKSTOP),
+            Security::Pairing { deadline, answered: true, .. } => Some(deadline),
             _ => None,
         };
-        [l.ask_pair, numeric].into_iter().flatten().min()
+        [l.ask_pair, l.asked_pair, numeric].into_iter().flatten().min()
     }
 
     /// Whether this device may ask the phone for new parameters now.
@@ -174,10 +187,22 @@ impl PhoneLink {
             security: Security::Unsecured,
             params_at: now,
             ask_pair: Some(now + ASK_TO_PAIR_AFTER),
+            asked_pair: None,
             params: Params::Held,
             bond_lost: false,
             pairing_failed: false,
             told_bond_lost: false,
+        }
+    }
+
+    /// Held again as new after lost events that may have hidden a new link, keeping what
+    /// [`Self::tell_bond_lost`] has learned in case it is the same one.
+    fn remade(&self, now: Instant) -> Self {
+        PhoneLink {
+            bond_lost: self.bond_lost,
+            pairing_failed: self.pairing_failed,
+            told_bond_lost: self.told_bond_lost,
+            ..PhoneLink::new(self.link, now)
         }
     }
 
@@ -188,9 +213,14 @@ impl PhoneLink {
                 if on {
                     self.secure();
                 } else {
-                    if self.security == Security::Unknown {
-                        self.ask_pair = Some(now + ASK_TO_PAIR_AFTER);
-                        self.params = Params::Held;
+                    match self.security {
+                        Security::Unknown => {
+                            self.ask_pair = Some(now + ASK_TO_PAIR_AFTER);
+                            self.params = Params::Held;
+                        }
+                        // No outcome of the pairing, which its deadlines still end.
+                        Security::Pairing { .. } => return,
+                        Security::Unsecured | Security::Secure => {}
                     }
                     self.security = Security::Unsecured;
                 }
@@ -198,20 +228,19 @@ impl PhoneLink {
             // Lost events may have hidden an encryption, a re-pair or a new link on this handle.
             Event::Resynced(id, encrypted) if id == link => match encrypted {
                 Some(true) => self.secure(),
-                // A link is never unencrypted once encrypted, so one found so is new.
-                Some(false) => {
-                    if matches!(self.security, Security::Secure | Security::Unknown) {
-                        *self = PhoneLink::new(link, now);
-                    } else if self.pairing_failed && self.security == Security::Unsecured {
-                        // The lost events may hide a new link on this handle that may yet pair,
-                        // so it is held as a new one, its lost bond already told.
-                        *self = PhoneLink { told_bond_lost: self.told_bond_lost, ..PhoneLink::new(link, now) };
-                    }
-                }
+                Some(false) => match self.security {
+                    // A link is never unencrypted once encrypted, so one found so is new.
+                    Security::Secure => *self = PhoneLink::new(link, now),
+                    // Lost events may hide the outcome or a new link, so it starts again as new.
+                    Security::Unknown => *self = self.remade(now),
+                    Security::Unsecured if self.ask_pair.is_none() => *self = self.remade(now),
+                    _ => {}
+                },
                 None if matches!(self.security, Security::Pairing { .. }) => {}
                 None => {
                     self.security = Security::Unknown;
                     self.ask_pair = None;
+                    self.asked_pair = None;
                     self.params = Params::Held;
                 }
             },
@@ -219,8 +248,14 @@ impl PhoneLink {
                 PairingStep::Numeric(value) => {
                     self.security = Security::Pairing { value, deadline: now + NUMERIC_DEADLINE, answered: false };
                     self.ask_pair = None;
+                    self.asked_pair = None;
                 }
-                PairingStep::Complete | PairingStep::PasskeyWanted => self.ask_pair = None,
+                PairingStep::Complete | PairingStep::PasskeyWanted => {
+                    self.ask_pair = None;
+                    if self.security == Security::Unsecured {
+                        self.asked_pair = Some(now + SECURITY_REQUEST_OUTCOME);
+                    }
+                }
                 PairingStep::Failed => self.fail_pairing(out),
             },
             Event::BondLost(id) if id == link => {
@@ -229,6 +264,7 @@ impl PhoneLink {
                 self.tell_bond_lost(out);
             }
             Event::ParamsChanged(id) if id == link => self.params_at = now,
+            Event::SecurityRefused(id) if id == link && self.asked_pair.is_some() && self.security == Security::Unsecured => self.fail_pairing(out),
             Event::Answer(yes) => {
                 if let Security::Pairing { ref mut deadline, answered: ref mut a @ false, .. } = self.security {
                     *a = true;
@@ -238,15 +274,22 @@ impl PhoneLink {
             }
             Event::Tick => {
                 match self.security {
-                    Security::Pairing { deadline, answered: false, value } if now >= deadline => {
-                        self.security = Security::Pairing { value, deadline: now + PAIRING_OUTCOME, answered: true };
+                    Security::Pairing { deadline, answered: false, .. } if now >= deadline + NUMERIC_BACKSTOP => {
                         out.push(Action::ConfirmNumeric(link, false));
+                        self.fail_pairing(out);
                     }
                     Security::Pairing { deadline, answered: true, .. } if now >= deadline => self.fail_pairing(out),
                     _ => {}
                 }
+                if self.asked_pair.is_some_and(|at| now >= at) {
+                    self.asked_pair = None;
+                    if self.security == Security::Unsecured {
+                        self.fail_pairing(out);
+                    }
+                }
                 if self.ask_pair.is_some_and(|at| now >= at) {
                     self.ask_pair = None;
+                    self.asked_pair = Some(now + SECURITY_REQUEST_OUTCOME);
                     out.push(Action::RequestSecurity(link));
                 }
             }
@@ -257,12 +300,14 @@ impl PhoneLink {
     fn secure(&mut self) {
         self.security = Security::Secure;
         self.ask_pair = None;
+        self.asked_pair = None;
         self.params = Params::Open;
     }
 
     fn fail_pairing(&mut self, out: &mut Actions) {
         self.security = Security::Unsecured;
         self.ask_pair = None;
+        self.asked_pair = None;
         self.params = Params::Open;
         self.pairing_failed = true;
         self.tell_bond_lost(out);

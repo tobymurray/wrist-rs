@@ -27,7 +27,8 @@ adds `ble restart`, which resets the chip through its pin behind the driver's ba
 restart updater`, which starts the chip's updater, so a check can watch the driver find the
 restart and bring the chip back. `ble probe gatt services|records|values` fills the GATT table
 until the chip refuses, to measure how much room is left; `ble off` then `ble on` after it puts
-the image's own table back. `ble probe snapshot` prints the driver's snapshot of the chip.
+the image's own table back. `ble probe snapshot` prints the driver's snapshot of the chip,
+and `ble probe security` sends the phone's unencrypted link another security request.
 
 The console's `version` prints the image's version, build ID and CRC:
 

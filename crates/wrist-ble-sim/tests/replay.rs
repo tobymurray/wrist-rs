@@ -20,11 +20,7 @@ fn traces() -> Vec<(String, String)> {
 }
 
 /// Where the core is known to act otherwise than the driver did, by fixture.
-const KNOWN: &[(&str, &[&str])] = &[(
-    // Nobody answered: the core refuses at its own deadline; the driver leaves it to the chip's.
-    "android14-comparison-unanswered.log",
-    &["1062525: the core refused the comparison and the driver did not"],
-)];
+const KNOWN: &[(&str, &[&str])] = &[];
 
 #[test]
 fn the_core_acts_where_and_as_the_driver_did() {
@@ -74,12 +70,14 @@ fn only_a_disconnect_the_operator_asked_for_is_the_drivers_alone() {
 #[test]
 fn the_cores_disagreements_are_listed_before_the_drivers() {
     let capture = fixture("android14-comparison-unanswered.log");
-    let mut lines: Vec<&str> = capture.lines().collect();
+    // The driver's ask for parameters gone, so the core asks alone.
+    let mut lines: Vec<&str> = capture.lines().filter(|l| !l.ends_with(" c 0181FD0A05080C0018000000F401")).collect();
+    assert_eq!(lines.len() + 1, capture.lines().count());
     let at = lines.iter().position(|l| host_ms(l).is_some_and(|ms| ms > 355_211)).unwrap();
     lines.insert(at, "355.211 [trace] 945700 c 0195FC020408");
     let d = replay(&lines.join("\n")).disagreements();
     assert_eq!(d.len(), 2, "{d:?}");
-    assert!(d[0].starts_with("1062525: the core") && d[1].starts_with("945700: the driver"), "{d:?}");
+    assert!(d[0].starts_with("10625") && d[0].contains(": the core asked") && d[1].starts_with("945700: the driver"), "{d:?}");
 }
 
 #[test]
@@ -107,7 +105,7 @@ fn traces_hold_only_what_the_scrub_keeps() {
     for (name, capture) in traces() {
         for line in capture.lines() {
             let (_, text) = line.split_once(' ').unwrap();
-            if text.starts_with("== ") || text.starts_with(">> usb ble ") {
+            if text.starts_with("== ") || text.starts_with(">> usb ble ") || text.starts_with(">> usb update ") || text.starts_with("[update] ") {
                 let joined: String = text.chars().filter(|c| !matches!(c, ':' | '-' | '_')).collect();
                 assert!(!joined.split(|c: char| !c.is_ascii_hexdigit()).any(|w| w.len() >= 12), "{name}: an address in {line}");
                 continue;
@@ -277,6 +275,72 @@ fn wall_clock_stamps_replay_as_seconds_do() {
     }
 }
 
+/// An image over the air is a transfer from its `[update] send` line to the line that ends it,
+/// which ends the console's `interval now` ask on the watch as in the core: without the lines,
+/// the core keeps the ask and makes it again after the settle.
+#[test]
+fn an_update_over_the_air_is_a_transfer() {
+    let capture = fixture("bluez-update-on-battery.log");
+    assert_eq!(replay(&capture).disagreements(), Vec::<String>::new());
+    let without = capture.lines().filter(|l| !l.contains(" [update] ")).collect::<Vec<_>>().join("\n");
+    let d = replay(&without).disagreements();
+    assert!(d.len() == 1 && d[0].contains("the core asked for 12-12 units"), "{d:?}");
+}
+
+/// A USB `update` sends its image over the cable, not the phone's link, so it is no transfer.
+#[test]
+fn an_update_over_usb_is_no_transfer() {
+    let capture = fixture("bluez-update-on-battery.log");
+    let send = capture.lines().find(|l| l.contains(" [update] send ")).unwrap();
+    let at = send.split_once(' ').unwrap().0;
+    let over_usb = capture.replace(send, &format!("{at} >> usb update 345624 FE7A7220\n{send}"));
+    let d = replay(&over_usb).disagreements();
+    assert!(d.len() == 1 && d[0].contains("the core asked for 12-12 units"), "{d:?}");
+}
+
+/// A USB `update` the watch refused before sending leaves no mark on a later image over the air.
+#[test]
+fn a_refused_usb_update_does_not_hide_a_later_transfer() {
+    let capture = fixture("bluez-update-on-battery.log");
+    let mut lines: Vec<&str> = capture.lines().collect();
+    lines.insert(1, "2500.000 >> usb update 999999999 0");
+    lines.insert(2, "2500.050 [update] error: length out of range for this target");
+    assert_eq!(replay(&lines.join("\n")).disagreements(), Vec::<String>::new());
+}
+
+/// A profile changed during a transfer keeps the transfer's timing: the replay's goal for it is
+/// the transfer, not the profile alone.
+#[test]
+fn a_profile_changed_during_a_transfer_keeps_it() {
+    let capture = fixture("bluez-update-on-battery.log");
+    let mut lines: Vec<&str> = capture.lines().collect();
+    let at = lines.iter().position(|l| l.contains(" [update] received 16492")).unwrap();
+    lines.insert(at + 1, "2530.000 >> usb ble profile battery");
+    assert_eq!(replay(&lines.join("\n")).disagreements(), Vec::<String>::new());
+}
+
+/// An `update` the console does not take as one marks no USB update, so the image over the air
+/// after it is a transfer.
+#[test]
+fn an_update_the_console_rejects_does_not_hide_a_later_transfer() {
+    let capture = fixture("bluez-update-on-battery.log");
+    let mut lines: Vec<&str> = capture.lines().collect();
+    lines.insert(1, "2500.000 >> usb update 5 0x1234");
+    lines.insert(2, "2500.050 [usb] unknown command: update 5 0x1234");
+    assert_eq!(replay(&lines.join("\n")).disagreements(), Vec::<String>::new());
+}
+
+/// A USB `update` refused while an image comes over the air leaves that transfer running.
+#[test]
+fn a_usb_update_refused_during_a_transfer_leaves_it() {
+    let capture = fixture("bluez-update-on-battery.log");
+    let mut lines: Vec<&str> = capture.lines().collect();
+    let at = lines.iter().position(|l| l.contains(" [update] received 16492")).unwrap();
+    lines.insert(at + 1, "2530.000 >> usb update 5 1234");
+    lines.insert(at + 2, "2530.050 [update] error: a transfer is already in progress");
+    assert_eq!(replay(&lines.join("\n")).disagreements(), Vec::<String>::new());
+}
+
 /// On the console's cable, `ble profile auto` is cable timing.
 #[test]
 fn a_profile_put_back_to_auto_is_cable_timing() {
@@ -284,4 +348,25 @@ fn a_profile_put_back_to_auto_is_cable_timing() {
     let auto = capture.replace(">> usb ble profile cable\n", ">> usb ble profile auto\n");
     assert_ne!(auto, capture);
     assert_eq!(replay(&auto).disagreements(), Vec::<String>::new());
+}
+
+/// A length the watch's `usize` can't hold makes no USB update.
+#[test]
+fn an_update_too_long_for_the_watch_is_no_usb_update() {
+    let capture = fixture("bluez-update-on-battery.log");
+    let mut lines: Vec<&str> = capture.lines().collect();
+    lines.insert(1, "2500.000 >> usb update 4294967296 1234");
+    assert_eq!(replay(&lines.join("\n")).disagreements(), Vec::<String>::new());
+}
+
+/// Progress over the air between the console's `update` and its refusal leaves the transfer.
+#[test]
+fn progress_before_a_usb_refusal_leaves_the_transfer() {
+    let capture = fixture("bluez-update-on-battery.log");
+    let mut lines: Vec<&str> = capture.lines().collect();
+    let at = lines.iter().position(|l| l.contains(" [update] received 16492")).unwrap();
+    for (i, line) in ["2529.600 >> usb update 5 1234", "2529.601 [update] received 16493", "2529.602 [update] error: a transfer is already in progress"].into_iter().enumerate() {
+        lines.insert(at + 1 + i, line);
+    }
+    assert_eq!(replay(&lines.join("\n")).disagreements(), Vec::<String>::new());
 }

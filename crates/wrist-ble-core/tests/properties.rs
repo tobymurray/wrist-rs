@@ -193,6 +193,10 @@ proptest! {
             if matches!(state.phone, Phone::Up(l) if l.security == Security::Unknown) {
                 prop_assert!(!state.phone.may_ask_params(now), "{:?}", state.phone);
             }
+            // Held unsecured, a link is waiting on something that will end the wait.
+            if matches!(state.phone, Phone::Up(l) if l.security == Security::Unsecured) && !state.phone.may_ask_params(now) {
+                prop_assert!(state.phone.deadline().is_some(), "held for life: {:?}", state.phone);
+            }
         }
     }
 

@@ -518,10 +518,10 @@ pub fn command(cmd: &[u8], flash: &'static FlashMutex) {
         #[cfg(feature = "ble")]
         rest if rest.starts_with(b"ble ") => crate::ble::command(&rest[4..], uart),
         rest if rest == b"haptic" || rest.starts_with(b"haptic ") => crate::haptic::command(&rest[6..], uart),
-        b"usblog" => crate::REPORT.signal(crate::Report::UsbLog),
-        b"report" => crate::REPORT.signal(crate::Report::Full),
+        b"usblog" => crate::ask_report(crate::Report::UsbLog, uart),
+        b"report" => crate::ask_report(crate::Report::Full, uart),
         rest if rest == b"modules" || rest.starts_with(b"modules ") => crate::modules::command(&rest[7..], uart),
-        b"rtc" | b"time" => crate::rtc::write_report(uart),
+        b"rtc" | b"time" => crate::ask_report(crate::Report::Rtc, uart),
         rest if rest == b"power" || rest.starts_with(b"power ") => crate::power::command(&rest[5..], uart),
         rest if rest == b"alarm" || rest.starts_with(b"alarm ") => crate::alarm::command(&rest[5..], uart),
         set if set.starts_with(b"time set ") => {

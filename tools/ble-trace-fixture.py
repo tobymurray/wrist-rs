@@ -6,8 +6,8 @@
 Kept: chip resets; the driver's commands that are one of the core's operations; the chip's
 events but its replies (one lists the bonded addresses), advertising reports and console writes,
 with a connection's peer and resolvable addresses zeroed; the console commands the replay reads
-(its goals, answers and `ble disconnect`); scenario marks, with anything shaped like an address
-replaced. Every line keeps its host time, as seconds or the wall clock's HH:MM:SS.mmm.
+(its goals, answers, `ble disconnect` and a USB `update`); the `[update]` lines that bound an
+image's transfer; scenario marks, with anything shaped like an address replaced. Every line keeps its host time, as seconds or the wall clock's HH:MM:SS.mmm.
 """
 
 import argparse
@@ -17,6 +17,8 @@ import sys
 # The driver's commands the replay reads as operations (wrist-ble-shadow's lib.rs, driver_op).
 OPS = {0xFC83, 0xFC81, 0xFD81, 0xFC8D, 0xFC95, 0xFCA5, 0xFC88, 0xFC93, 0xFC97, 0xFC9D}
 GOALS = re.compile(r'^ble (on|off|yes|no|disconnect|profile (auto|cable|battery))$')
+DECIMAL = re.compile(r'^\+?[0-9]+$')
+HEX = re.compile(r'^\+?[0-9A-Fa-f]+$')
 LINE = re.compile(r'^\s*((?:\d{2}:\d{2}:\d{2}|\d+)\.\d{3}) (.*)$')
 # Six bytes, with or without separators.
 ADDRESS = re.compile(r'(?<![0-9A-Fa-f])[0-9A-Fa-f]{2}(?:[:_-]?[0-9A-Fa-f]{2}){5,}(?![0-9A-Fa-f])')
@@ -44,6 +46,17 @@ def event(packet):
     return packet
 
 
+def usb_update(cmd):
+    """`cmd` as `parse_transfer` in the firmware's console.rs reads it, normalised, or None."""
+    words = cmd.split()
+    if len(words) < 3 or words[0] != 'update' or not cmd.startswith('update '):
+        return None
+    length, crc = words[1], words[2]
+    if not (DECIMAL.match(length) and int(length) < 1 << 32 and HEX.match(crc) and int(crc, 16) < 1 << 32):
+        return None
+    return f'update {int(length)} {int(crc, 16):X}'
+
+
 def scrub(line):
     """The line as the fixture keeps it, or None."""
     m = LINE.match(line)
@@ -51,11 +64,14 @@ def scrub(line):
         return None
     host, text = m.groups()
     text = text.strip()
-    if text.startswith('== '):
+    if text.startswith('== ') or text.startswith('[update] '):
         return f'{host} {ADDRESS.sub("<address>", text)}'
     if text.startswith('>> usb '):
         cmd = text[len('>> usb '):].strip()
-        return f'{host} >> usb {cmd}' if GOALS.match(cmd) else None
+        if GOALS.match(cmd):
+            return f'{host} >> usb {cmd}'
+        update = usb_update(cmd)
+        return f'{host} >> usb {update}' if update else None
     fields = text.split()
     if len(fields) < 3 or fields[0] != '[trace]':
         return None

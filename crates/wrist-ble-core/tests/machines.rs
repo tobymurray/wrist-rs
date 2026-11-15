@@ -28,8 +28,9 @@ fn phone_asks_an_unencrypted_link_to_pair_once() {
     assert_eq!(a, NONE);
     let (p, a) = actions(p, 5_000, phone::Event::Tick);
     assert_eq!(a, [Action::RequestSecurity(phone())]);
-    assert_eq!(p.deadline(), None);
+    assert_eq!(p.deadline(), Some(t(5_000) + phone::SECURITY_REQUEST_OUTCOME), "its outcome");
     assert_eq!(actions(p, 9_000, phone::Event::Tick).1, NONE);
+    assert_eq!(actions(p, 60_000, phone::Event::Tick).1, NONE);
 }
 
 /// No parameter ask before encryption, however long the link has been up unencrypted.
@@ -59,13 +60,51 @@ fn phone_parameters_wait_out_a_pairing() {
 }
 
 #[test]
-fn phone_numeric_comparison_is_rejected_at_its_deadline() {
+fn phone_numeric_comparison_is_left_to_the_chips_timeout() {
     let (p, _) = actions(up(0), 1_000, phone::Event::Pairing(phone(), PairingStep::Numeric(42)));
     let deadline = 1_000 + u64::from(phone::NUMERIC_DEADLINE.0);
-    assert_eq!(p.deadline(), Some(t(deadline)));
+    assert_eq!(p.deadline(), Some(t(deadline) + phone::NUMERIC_BACKSTOP));
     let (p, a) = actions(p, deadline, phone::Event::Tick);
+    assert_eq!(a, NONE);
+    assert!(matches!(p, Phone::Up(l) if matches!(l.security, Security::Pairing { .. })));
+    let (p, a) = actions(p, deadline + 2, phone::Event::Pairing(phone(), PairingStep::Failed));
+    assert_eq!(a, NONE);
+    assert!(matches!(p, Phone::Up(l) if l.security == Security::Unsecured));
+    assert!(p.may_ask_params(t(deadline + 2)));
+}
+
+#[test]
+fn phone_numeric_comparison_the_chip_never_ends_is_refused_at_the_backstop() {
+    let (p, _) = actions(up(0), 1_000, phone::Event::Pairing(phone(), PairingStep::Numeric(42)));
+    let backstop = 1_000 + u64::from(phone::NUMERIC_DEADLINE.0 + phone::NUMERIC_BACKSTOP.0);
+    let (p, a) = actions(p, backstop - 1, phone::Event::Tick);
+    assert_eq!(a, NONE);
+    let (p, a) = actions(p, backstop, phone::Event::Tick);
     assert_eq!(a, [Action::ConfirmNumeric(phone(), false)]);
-    assert_eq!(actions(p, deadline + 500, phone::Event::Answer(true)).1, NONE);
+    assert!(matches!(p, Phone::Up(l) if l.security == Security::Unsecured));
+    assert!(p.may_ask_params(t(backstop)));
+    assert_eq!(p.deadline(), None);
+    assert_eq!(actions(p, backstop + 500, phone::Event::Answer(true)).1, NONE);
+    // The chip's refusal, late, changes nothing.
+    let (q, a) = actions(p, backstop + 600, phone::Event::Pairing(phone(), PairingStep::Failed));
+    assert_eq!((q, a), (p, NONE));
+}
+
+#[test]
+fn phone_numeric_backstop_after_a_lost_bond_tells_it() {
+    let (p, _) = actions(up(0), 500, phone::Event::BondLost(phone()));
+    let (p, _) = actions(p, 1_000, phone::Event::Pairing(phone(), PairingStep::Numeric(42)));
+    let backstop = 1_000 + u64::from(phone::NUMERIC_DEADLINE.0 + phone::NUMERIC_BACKSTOP.0);
+    assert_eq!(actions(p, backstop, phone::Event::Tick).1, [Action::ConfirmNumeric(phone(), false), Action::TellBondLost(phone())]);
+}
+
+#[test]
+fn phone_answer_past_the_deadline_is_still_passed_on() {
+    let (p, _) = actions(up(0), 1_000, phone::Event::Pairing(phone(), PairingStep::Numeric(42)));
+    let late = 1_000 + u64::from(phone::NUMERIC_DEADLINE.0) + 1_000;
+    let (p, a) = actions(p, late, phone::Event::Answer(false));
+    assert_eq!(a, [Action::ConfirmNumeric(phone(), false)]);
+    assert_eq!(p.deadline(), Some(t(late) + phone::PAIRING_OUTCOME));
 }
 
 #[test]
@@ -90,11 +129,6 @@ fn phone_pairing_with_no_outcome_fails_after_the_security_managers_timeout() {
     assert_eq!(a, NONE);
     assert!(matches!(p, Phone::Up(l) if l.security == Security::Unsecured));
     assert!(p.may_ask_params(t(32_000)));
-    let (p, _) = actions(up(0), 1_000, phone::Event::Pairing(phone(), PairingStep::Numeric(42)));
-    let deadline = 1_000 + u64::from(phone::NUMERIC_DEADLINE.0);
-    let (p, _) = actions(p, deadline, phone::Event::Tick);
-    let (p, _) = actions(p, deadline + u64::from(phone::PAIRING_OUTCOME.0), phone::Event::Tick);
-    assert!(matches!(p, Phone::Up(l) if l.security == Security::Unsecured));
 }
 
 #[test]
@@ -162,6 +196,81 @@ fn phone_link_whose_pairing_failed_found_unencrypted_is_held_again() {
     let (p, a) = actions(p, 75_000, phone::Event::Pairing(phone(), PairingStep::Failed));
     assert_eq!(a, NONE, "told once");
     assert!(p.may_ask_params(t(75_000)));
+}
+
+/// A remade link's security request may go unanswered with no outcome from the chip, after an
+/// earlier pairing on the link timed out (Core 6.0 Vol 3 Part H §3.4), so it fails at a deadline.
+#[test]
+fn phone_link_remade_after_a_failed_pairing_is_not_held_for_life() {
+    let (p, _) = actions(up(0), 100, phone::Event::BondLost(phone()));
+    let (p, _) = actions(p, 30_000, phone::Event::Pairing(phone(), PairingStep::Failed));
+    let (p, _) = actions(p, 40_000, phone::Event::Resynced(phone(), Some(false)));
+    let (p, a) = actions(p, 45_000, phone::Event::Tick);
+    assert_eq!(a, [Action::RequestSecurity(phone())]);
+    let outcome = t(45_000) + phone::SECURITY_REQUEST_OUTCOME;
+    assert_eq!(p.deadline(), Some(outcome));
+    let (p, a) = actions(p, outcome.0 - 1, phone::Event::Tick);
+    assert_eq!(a, NONE);
+    assert!(!p.may_ask_params(t(outcome.0 - 1)));
+    let (p, a) = actions(p, outcome.0, phone::Event::Tick);
+    assert_eq!(a, NONE, "its lost bond told once");
+    assert!(p.may_ask_params(outcome));
+    assert_eq!(p.deadline(), None);
+}
+
+/// A request the chip refuses for good fails the pairing at once; one not outstanding is left be.
+#[test]
+fn phone_security_request_refused_for_good_fails_the_pairing_at_once() {
+    let (p, _) = actions(up(0), 500, phone::Event::BondLost(phone()));
+    let (p, a) = actions(p, 5_000, phone::Event::Tick);
+    assert_eq!(a, [Action::RequestSecurity(phone())]);
+    let (p, a) = actions(p, 5_010, phone::Event::SecurityRefused(phone()));
+    assert_eq!(a, [Action::TellBondLost(phone())]);
+    assert!(p.may_ask_params(t(5_010)));
+    assert_eq!(p.deadline(), None);
+    let p = up(0);
+    assert_eq!(actions(p, 1_000, phone::Event::SecurityRefused(phone())), (p, NONE), "nothing asked yet");
+    let (p, _) = actions(p, 5_000, phone::Event::Tick);
+    let (p, _) = actions(p, 5_500, phone::Event::Encryption(phone(), true));
+    assert_eq!(actions(p, 5_600, phone::Event::SecurityRefused(phone())), (p, NONE), "already secure");
+}
+
+/// An outcome the chip reports before the core's deadline is the one that counts.
+#[test]
+fn phone_security_request_outcome_is_the_chips_when_it_comes() {
+    let (p, a) = actions(up(0), 5_000, phone::Event::Tick);
+    assert_eq!(a, [Action::RequestSecurity(phone())]);
+    assert!(phone::SECURITY_REQUEST_OUTCOME > Millis::secs(30));
+    let (p, a) = actions(p, 35_000, phone::Event::Pairing(phone(), PairingStep::Failed));
+    assert_eq!(a, NONE);
+    assert!(p.may_ask_params(t(35_000)));
+    assert_eq!(p.deadline(), None);
+    let (p, _) = actions(up(0), 5_000, phone::Event::Tick);
+    let (p, _) = actions(p, 6_000, phone::Event::Encryption(phone(), true));
+    assert_eq!(p.deadline(), None);
+    let (p, _) = actions(up(0), 5_000, phone::Event::Tick);
+    let (p, _) = actions(p, 6_000, phone::Event::Pairing(phone(), PairingStep::Numeric(7)));
+    assert_eq!(p.deadline(), Some(t(6_000) + phone::NUMERIC_DEADLINE + phone::NUMERIC_BACKSTOP));
+}
+
+/// A failure event lost leaves a link unsecured, its ask spent: its deadline ends the wait, and a
+/// resync that finds it unencrypted holds it as a new link, which is asked to pair again.
+#[test]
+fn phone_link_whose_failure_was_lost_is_not_held_for_life() {
+    let (p, _) = actions(up(0), 5_000, phone::Event::Tick);
+    let outcome = t(5_000) + phone::SECURITY_REQUEST_OUTCOME;
+    let (q, a) = actions(p, outcome.0, phone::Event::Tick);
+    assert_eq!(a, NONE);
+    assert!(q.may_ask_params(outcome));
+    let (p, _) = actions(p, 7_000, phone::Event::Pairing(phone(), PairingStep::PasskeyWanted));
+    let (p, a) = actions(p, 20_000, phone::Event::Resynced(phone(), Some(false)));
+    assert_eq!(a, NONE);
+    assert!(matches!(p, Phone::Up(l) if l.since == t(20_000) && l.security == Security::Unsecured), "{p:?}");
+    assert!(!p.may_ask_params(t(20_000)));
+    let (p, a) = actions(p, 25_000, phone::Event::Tick);
+    assert_eq!(a, [Action::RequestSecurity(phone())]);
+    let (p, _) = actions(p, 25_000 + u64::from(phone::SECURITY_REQUEST_OUTCOME.0), phone::Event::Tick);
+    assert!(p.may_ask_params(t(25_000) + phone::SECURITY_REQUEST_OUTCOME));
 }
 
 /// An unencrypted link still waiting on its pairing is the link it was, so a resync changes nothing.
@@ -594,4 +703,41 @@ fn phone_asks_only_what_a_request_may_carry() {
     // 6 s against (1 + 4) × 600 ms × 2.
     assert!(!askable(&ask(80, 480, 4, 600)));
     assert!(askable(&ask(80, 479, 4, 600)));
+}
+
+/// A lost bond the chip reported mid-pairing is still told when the pairing fails, though events
+/// were lost and a resync found the link unencrypted while its request was outstanding.
+#[test]
+fn phone_link_remade_mid_pairing_keeps_its_lost_bond() {
+    let (p, a) = actions(up(0), 5_000, phone::Event::Tick);
+    assert_eq!(a, [Action::RequestSecurity(phone())]);
+    let (p, a) = actions(p, 6_000, phone::Event::BondLost(phone()));
+    assert_eq!(a, [Action::AllowRebond(phone())]);
+    let (p, _) = actions(p, 8_000, phone::Event::Resynced(phone(), Some(false)));
+    let (_, a) = actions(p, 20_000, phone::Event::Pairing(phone(), PairingStep::Failed));
+    assert_eq!(a, [Action::TellBondLost(phone())]);
+}
+
+/// A link a resync could not tell about, then found unencrypted, is remade still knowing its lost
+/// bond, which its failed pairing tells.
+#[test]
+fn phone_link_remade_from_unknown_keeps_its_lost_bond() {
+    let (p, _) = actions(up(0), 5_000, phone::Event::Tick);
+    let (p, _) = actions(p, 6_000, phone::Event::BondLost(phone()));
+    let (p, _) = actions(p, 7_000, phone::Event::Resynced(phone(), None));
+    let (p, _) = actions(p, 8_000, phone::Event::Resynced(phone(), Some(false)));
+    let (p, a) = actions(p, 13_000, phone::Event::Tick);
+    assert_eq!(a, [Action::RequestSecurity(phone())]);
+    let (_, a) = actions(p, 14_000, phone::Event::Pairing(phone(), PairingStep::Failed));
+    assert_eq!(a, [Action::TellBondLost(phone())]);
+}
+
+/// A remade link keeps its failed pairing too, so a lost bond the chip reports after it is told.
+#[test]
+fn phone_link_remade_after_a_failed_pairing_tells_a_later_lost_bond() {
+    let (p, _) = actions(up(0), 5_000, phone::Event::Tick);
+    let (p, _) = actions(p, 6_000, phone::Event::Pairing(phone(), PairingStep::Failed));
+    let (p, _) = actions(p, 8_000, phone::Event::Resynced(phone(), Some(false)));
+    let (_, a) = actions(p, 9_000, phone::Event::BondLost(phone()));
+    assert_eq!(a, [Action::AllowRebond(phone()), Action::TellBondLost(phone())]);
 }

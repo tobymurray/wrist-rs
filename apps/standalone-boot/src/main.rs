@@ -88,12 +88,25 @@ const SWEEP_BAUDS: [u32; 5] = [115_200, 57_600, 38_400, 19_200, 9600];
 #[derive(Clone, Copy)]
 pub enum Report {
     Full,
+    /// `time`: the RTC section alone.
+    Rtc,
     UsbLog,
     Staging(usize),
     FlashSurvey,
 }
 
-pub static REPORT: Signal<CriticalSectionRawMutex, Report> = Signal::new();
+/// How many report requests may wait for the report task.
+const REPORT_QUEUE: usize = 4;
+
+/// The report task's requests, each printed in turn.
+static REPORT: Channel<CriticalSectionRawMutex, Report, REPORT_QUEUE> = Channel::new();
+
+/// Queues `r` for the report task, or says the queue is full.
+pub fn ask_report(r: Report, uart: Uart) {
+    if REPORT.try_send(r).is_err() {
+        uart.write_line("[usb] busy: reports are already waiting");
+    }
+}
 
 fn image_origin() -> u32 {
     core::ptr::addr_of!(__vector_table) as u32
@@ -1261,11 +1274,24 @@ async fn report(handoff: RccSnapshot, measured_hz: u32, watchdog: watchdog::Star
     version::compute_crc().await;
     full_report(uart, &handoff, measured_hz, watchdog, "boot").await;
     loop {
-        match REPORT.wait().await {
+        match REPORT.receive().await {
             Report::Full => full_report(uart, &handoff, measured_hz, watchdog, "asked for").await,
+            Report::Rtc => write_rtc(uart).await,
             Report::UsbLog => usblog::dump(uart).await,
             Report::Staging(len) => update::staging_crcs(uart, len).await,
             Report::FlashSurvey => flash::survey(uart).await,
+        }
+    }
+}
+
+/// The RTC section, read as one snapshot and printed a few lines between yields, so that no poll
+/// holds the executor long.
+async fn write_rtc(uart: Uart) {
+    let snapshot = rtc::write_clocks(uart);
+    console::make_room().await;
+    for piece in rtc::PIECES {
+        if rtc::write_piece(uart, &snapshot, piece) {
+            console::make_room().await;
         }
     }
 }
@@ -1338,20 +1364,7 @@ async fn full_report(
 
     // A few lines between yields, so that no poll of the report holds the executor long.
     uart.write_line("[step] rtc   :");
-    let calendar = rtc::write_clocks(uart);
-    make_room().await;
-    let zone = rtc::write_zone_record(uart);
-    make_room().await;
-    for change in zone.iter().flat_map(|z| z.next).flatten() {
-        rtc::write_change(uart, change);
-        make_room().await;
-    }
-    rtc::write_last_set(uart);
-    make_room().await;
-    rtc::write_alarm(uart);
-    make_room().await;
-    rtc::write_calendar(uart, calendar);
-    make_room().await;
+    write_rtc(uart).await;
     uart.write_line("[step] usb   :");
     console::write_phy_regs(uart);
     make_room().await;
