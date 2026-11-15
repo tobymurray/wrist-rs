@@ -19,11 +19,8 @@ pub const PAIRING_OUTCOME: Millis = Millis::secs(30);
 /// No central start this soon after the phone connects or its parameters change.
 pub const SETTLE: Millis = Millis::secs(3);
 
-/// Whether the phone may be asked for `p`: what an L2CAP connection parameter update request may
-/// carry (Core 6.0 Vol 3 Part A §4.20: an interval of 6 to 3200 in 1.25 ms, the least no more than
-/// the most, a latency below 500, a supervision timeout of 10 to 3200 in 10 ms), with the timeout
-/// longer than the link may go unheard (Vol 6 Part B §4.5.2: more than (1 + latency) × the most
-/// interval × 2).
+/// Whether an L2CAP connection parameter update request may carry `p` (Core 6.0 Vol 3 Part A
+/// §4.20), its supervision timeout above the floor of Vol 6 Part B §4.5.2.
 #[must_use]
 pub fn askable(p: &ConnParams) -> bool {
     let (min, max, timeout) = (p.interval_min.as_u16(), p.interval_max.as_u16(), p.timeout.as_u16());
@@ -206,10 +203,8 @@ impl PhoneLink {
                     if matches!(self.security, Security::Secure | Security::Unknown) {
                         *self = PhoneLink::new(link, now);
                     } else if self.pairing_failed && self.security == Security::Unsecured {
-                        // Its pairing failed, but the lost events may have hidden a new link on
-                        // the handle, which may yet pair: held as a new one is, so not asked across
-                        // a re-pair (F62). A pairing under way is left to finish; the bond told
-                        // lost stays told.
+                        // The lost events may hide a new link on this handle that may yet pair,
+                        // so it is held as a new one, its lost bond already told.
                         *self = PhoneLink { bond_lost: self.bond_lost, told_bond_lost: self.told_bond_lost, ..PhoneLink::new(link, now) };
                     }
                 }

@@ -143,9 +143,8 @@ fn phone_link_found_unencrypted_after_encryption_starts_afresh() {
     assert_eq!(actions(p, 102_000, phone::Event::Pairing(phone(), PairingStep::Failed)).1, [Action::TellBondLost(phone())]);
 }
 
-/// A failed pairing opens the link to the ask (F62), but a resync that finds it unencrypted can't
-/// say it is the same link: the lost events may hold a new one that may yet pair, so it is held and
-/// asked to pair as a new link is, and its lost bond is not told twice.
+/// A resync that finds a link unencrypted after its pairing failed can't say it is the same link,
+/// so holds it as a new one, without telling its lost bond twice.
 #[test]
 fn phone_link_whose_pairing_failed_found_unencrypted_is_held_again() {
     let (p, _) = actions(up(0), 100, phone::Event::BondLost(phone()));
@@ -162,8 +161,7 @@ fn phone_link_whose_pairing_failed_found_unencrypted_is_held_again() {
     assert!(p.may_ask_params(t(75_000)));
 }
 
-/// An unencrypted link still waiting on its pairing is the link it was: a resync that finds it so
-/// changes nothing.
+/// An unencrypted link still waiting on its pairing is the link it was, so a resync changes nothing.
 #[test]
 fn phone_link_waiting_to_pair_found_unencrypted_is_unchanged() {
     let p = up(0);

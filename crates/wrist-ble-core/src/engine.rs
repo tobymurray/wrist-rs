@@ -30,11 +30,8 @@ pub enum Input {
     Retry(usize),
     /// The user asked for the radio again after a fault.
     RetryRadio,
-    /// The console's ask of the phone's link (`ble interval now`), in place of the menu's: for the
-    /// link up now, until it ends or the menu's own ask changes with the power or a transfer.
-    /// Ignored with no phone link, and for parameters no request may carry ([`phone::askable`]).
-    /// Asked as any want is: once the link may be asked, if it doesn't fit, within
-    /// [`ASKS_PER_WANT`].
+    /// The console's ask of the phone's link (`ble interval now`), in place of the menu's until that
+    /// link ends or the menu's ask changes; ignored with no phone link or unless [`phone::askable`].
     IntervalNow(ConnParams),
     Tick,
 }

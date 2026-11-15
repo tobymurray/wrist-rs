@@ -134,8 +134,6 @@ fn the_end_of_a_record_judges_what_still_waits() {
     assert_eq!(s.observer.found.len(), 1, "{:?}", s.observer.found);
 }
 
-/// `ble interval now` is for the phone's link while it is up, as the driver takes it, and the
-/// core holds it there.
 #[test]
 fn the_consoles_ask_is_for_the_phones_link() {
     let mut s = up();
@@ -153,7 +151,6 @@ fn the_consoles_ask_is_for_the_phones_link() {
     assert_ne!(s.phone_want(), ask, "the phone's link ended");
 }
 
-/// The driver's ask after `ble interval now` lasts until its timing asks for something else.
 #[test]
 fn the_consoles_ask_ends_where_the_drivers_timing_changes_or_the_radio_goes_off() {
     let mut s = up();
@@ -297,8 +294,6 @@ fn the_centrals_acceptance_ends_the_ask_and_nothing_else_does() {
     assert_eq!(asks(&s.observer).last(), Some(&600));
 }
 
-/// The core takes `ble interval now` where the driver's console does, so the two read it alike
-/// until the driver's goes.
 #[test]
 fn the_core_takes_the_consoles_ask_where_the_drivers_console_does() {
     for min in 0..=3_300 {

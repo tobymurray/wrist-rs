@@ -209,8 +209,7 @@ impl<O: Observer> Shadow<O> {
         self.set_goals(at, Goals { power, transfer, ..self.goals });
     }
 
-    /// `ble interval now <min> <max>`, in 1.25 ms: the core's [`Input::IntervalNow`], which holds
-    /// it to the phone's link and the menu's ask of the moment.
+    /// `ble interval now <min> <max>`, in 1.25 ms, as the core's [`Input::IntervalNow`].
     pub fn interval_now(&mut self, at: Instant, min: u16, max: u16) {
         self.advance(at);
         self.feed(Input::IntervalNow(interval_now_ask(min, max)));
@@ -282,7 +281,7 @@ impl<O: Observer> Shadow<O> {
             _ => DriverOp::Other(kind),
         };
         // An ask the menu never makes is taken as the console's `ble interval now`, over USB or
-        // over the air; the core takes the same ask on the same link as the one it has.
+        // over the air.
         if let DriverOp::AskParams(min, max, latency) = op {
             let menu = MENU.phone.iter().any(|c| (c.params.interval_min.as_u16(), c.params.interval_max.as_u16(), c.params.latency) == (min, max, latency));
             if !menu {
@@ -394,11 +393,8 @@ impl<O: Observer> Shadow<O> {
         len
     }
 
-    /// The chip as the driver's commands and the chip's events have left it. The phone's link is
-    /// encrypted once seen so, since encryption lasts as long as the link; otherwise the lost
-    /// events may have held its encryption, so the shadow can't say, where the chip would
-    /// (`ACI_GAP_GET_SECURITY_LEVEL` reports the link's encryption, not the bond: measured on the
-    /// watch 2026-11-13, a bonded Mac reading `01 01` before its Encryption Change and `01 03` after).
+    /// The chip as the driver's commands and the chip's events have left it, the phone's link
+    /// encrypted once seen so and otherwise unknown, since the lost events may have held it.
     fn snapshot(&self) -> Snapshot {
         let mut links = [None; MAX_LINKS];
         if let Some(link) = self.phone {

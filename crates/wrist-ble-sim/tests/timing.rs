@@ -70,8 +70,7 @@ fn the_core_advertises_on_a_cable_at_the_drivers_interval() {
     }
 }
 
-/// A transfer is the cable's timing for the phone's link only: advertising stays the power
-/// source's, as the driver's `advertise` takes its timing without the transfer (F48).
+/// A transfer is the cable's timing for the phone's link only, not for advertising.
 #[test]
 fn a_transfer_leaves_advertising_at_the_power_sources_interval() {
     for power in [Power::Cable, Power::Battery] {

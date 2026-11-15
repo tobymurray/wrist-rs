@@ -417,8 +417,8 @@ fn a_full_bucket_earns_no_credit() {
     assert_eq!(b.core.counters.busy_spent, 1);
 }
 
-/// `ble interval now` with no phone connected is refused by the driver's console; the core holds
-/// the console's ask to the link up when it came, so a link that connects later is not asked it.
+/// The console's ask is held to the link up when it came, so a link that connects later is not
+/// asked it.
 #[test]
 fn the_consoles_ask_with_no_link_is_ignored() {
     let mut b = Bench::new(cable());
@@ -430,9 +430,8 @@ fn the_consoles_ask_with_no_link_is_ignored() {
     assert_eq!(b.core.phone_want(), Some(MENU.phone[0].params));
 }
 
-/// An ask no request may carry is ignored, as the driver's console refuses it: an interval below
-/// 7.5 ms or above 4 s, the least above the most (Core 6.0 Vol 3 Part A §4.20), or one the
-/// supervision timeout can't cover (Vol 6 Part B §4.5.2: 5 s against 2000 × 1.25 ms × 2).
+/// An ask no request may carry is ignored, 2000 being past what `interval_now_ask`'s supervision
+/// timeout covers (Core 6.0 Vol 6 Part B §4.5.2).
 #[test]
 fn the_consoles_ask_no_request_may_carry_is_ignored() {
     let mut b = Bench::new(cable());
@@ -445,8 +444,7 @@ fn the_consoles_ask_no_request_may_carry_is_ignored() {
     }
 }
 
-/// The console's ask waits for encryption as the menu's does (F62): asked 1.5 s after connecting,
-/// before encryption, a re-pairing link was lost 16 times in 90; held, none in 76 (HARDWARE.md).
+/// The console's ask waits for encryption as the menu's does.
 #[test]
 fn the_consoles_ask_waits_for_encryption() {
     let mut b = Bench::new(cable());
@@ -483,9 +481,7 @@ fn the_consoles_ask_is_made_only_where_the_link_does_not_fit_it() {
     assert_eq!(total, usize::from(ASKS_PER_WANT));
 }
 
-/// The console's ask lasts until its link ends, or until the menu's own ask changes, as the
-/// driver's next timing replaces it: a transfer on the cable keeps the cable's timing, the battery
-/// doesn't.
+/// The console's ask lasts until its link ends or the menu's own ask changes.
 #[test]
 fn the_consoles_ask_ends_with_its_link_or_the_menus_ask() {
     let mut b = Bench::new(cable());
