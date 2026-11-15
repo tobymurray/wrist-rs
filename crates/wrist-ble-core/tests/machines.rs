@@ -59,13 +59,51 @@ fn phone_parameters_wait_out_a_pairing() {
 }
 
 #[test]
-fn phone_numeric_comparison_is_rejected_at_its_deadline() {
+fn phone_numeric_comparison_is_left_to_the_chips_timeout() {
     let (p, _) = actions(up(0), 1_000, phone::Event::Pairing(phone(), PairingStep::Numeric(42)));
     let deadline = 1_000 + u64::from(phone::NUMERIC_DEADLINE.0);
-    assert_eq!(p.deadline(), Some(t(deadline)));
+    assert_eq!(p.deadline(), Some(t(deadline) + phone::NUMERIC_BACKSTOP));
     let (p, a) = actions(p, deadline, phone::Event::Tick);
+    assert_eq!(a, NONE);
+    assert!(matches!(p, Phone::Up(l) if matches!(l.security, Security::Pairing { .. })));
+    let (p, a) = actions(p, deadline + 2, phone::Event::Pairing(phone(), PairingStep::Failed));
+    assert_eq!(a, NONE);
+    assert!(matches!(p, Phone::Up(l) if l.security == Security::Unsecured));
+    assert!(p.may_ask_params(t(deadline + 2)));
+}
+
+#[test]
+fn phone_numeric_comparison_the_chip_never_ends_is_refused_at_the_backstop() {
+    let (p, _) = actions(up(0), 1_000, phone::Event::Pairing(phone(), PairingStep::Numeric(42)));
+    let backstop = 1_000 + u64::from(phone::NUMERIC_DEADLINE.0 + phone::NUMERIC_BACKSTOP.0);
+    let (p, a) = actions(p, backstop - 1, phone::Event::Tick);
+    assert_eq!(a, NONE);
+    let (p, a) = actions(p, backstop, phone::Event::Tick);
     assert_eq!(a, [Action::ConfirmNumeric(phone(), false)]);
-    assert_eq!(actions(p, deadline + 500, phone::Event::Answer(true)).1, NONE);
+    assert!(matches!(p, Phone::Up(l) if l.security == Security::Unsecured));
+    assert!(p.may_ask_params(t(backstop)));
+    assert_eq!(p.deadline(), None);
+    assert_eq!(actions(p, backstop + 500, phone::Event::Answer(true)).1, NONE);
+    // The chip's refusal, late, changes nothing.
+    let (q, a) = actions(p, backstop + 600, phone::Event::Pairing(phone(), PairingStep::Failed));
+    assert_eq!((q, a), (p, NONE));
+}
+
+#[test]
+fn phone_numeric_backstop_after_a_lost_bond_tells_it() {
+    let (p, _) = actions(up(0), 500, phone::Event::BondLost(phone()));
+    let (p, _) = actions(p, 1_000, phone::Event::Pairing(phone(), PairingStep::Numeric(42)));
+    let backstop = 1_000 + u64::from(phone::NUMERIC_DEADLINE.0 + phone::NUMERIC_BACKSTOP.0);
+    assert_eq!(actions(p, backstop, phone::Event::Tick).1, [Action::ConfirmNumeric(phone(), false), Action::TellBondLost(phone())]);
+}
+
+#[test]
+fn phone_answer_past_the_deadline_is_still_passed_on() {
+    let (p, _) = actions(up(0), 1_000, phone::Event::Pairing(phone(), PairingStep::Numeric(42)));
+    let late = 1_000 + u64::from(phone::NUMERIC_DEADLINE.0) + 1_000;
+    let (p, a) = actions(p, late, phone::Event::Answer(false));
+    assert_eq!(a, [Action::ConfirmNumeric(phone(), false)]);
+    assert_eq!(p.deadline(), Some(t(late) + phone::PAIRING_OUTCOME));
 }
 
 #[test]
@@ -90,11 +128,6 @@ fn phone_pairing_with_no_outcome_fails_after_the_security_managers_timeout() {
     assert_eq!(a, NONE);
     assert!(matches!(p, Phone::Up(l) if l.security == Security::Unsecured));
     assert!(p.may_ask_params(t(32_000)));
-    let (p, _) = actions(up(0), 1_000, phone::Event::Pairing(phone(), PairingStep::Numeric(42)));
-    let deadline = 1_000 + u64::from(phone::NUMERIC_DEADLINE.0);
-    let (p, _) = actions(p, deadline, phone::Event::Tick);
-    let (p, _) = actions(p, deadline + u64::from(phone::PAIRING_OUTCOME.0), phone::Event::Tick);
-    assert!(matches!(p, Phone::Up(l) if l.security == Security::Unsecured));
 }
 
 #[test]

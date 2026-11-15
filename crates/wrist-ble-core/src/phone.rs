@@ -7,10 +7,13 @@ use wrist_ble::{ConnHandle, ConnParams, Instant, Millis, PairingStep};
 pub const ASK_TO_PAIR_AFTER: Millis = Millis::secs(5);
 
 
-/// A numeric comparison the user has not answered is rejected after this long: the Security
-/// Manager's own timeout (Core Vol 3 Part H §3.4), which ends it on the chip and on every central
-/// measured (HARDWARE.md).
+/// A numeric comparison waits this long for the user: the Security Manager's own timeout (Core
+/// Vol 3 Part H §3.4), which ends it on the chip and on every central measured (HARDWARE.md).
 pub const NUMERIC_DEADLINE: Millis = Millis::secs(30);
+
+/// A comparison still open this long past [`NUMERIC_DEADLINE`] is refused and counted failed: the
+/// chip's timeout ends it first, so this ends one whose outcome was lost.
+pub const NUMERIC_BACKSTOP: Millis = Millis::secs(30);
 
 /// A pairing with no outcome this long after its comparison was answered or timed out has failed:
 /// the Security Manager's own timeout (Core Vol 3 Part H §3.4).
@@ -54,7 +57,8 @@ pub struct PhoneLink {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Security {
     Unsecured,
-    /// Until `deadline` the comparison waits for an answer; once answered, the outcome.
+    /// Until `deadline` the comparison waits for an answer, and the chip's timeout ends it there;
+    /// once answered, the outcome.
     Pairing { value: u32, deadline: Instant, answered: bool },
     Secure,
     /// A resync found the link and the chip could not say whether it is encrypted.
@@ -135,7 +139,8 @@ impl Phone {
     pub fn deadline(&self) -> Option<Instant> {
         let Phone::Up(l) = self else { return None };
         let numeric = match l.security {
-            Security::Pairing { deadline, .. } => Some(deadline),
+            Security::Pairing { deadline, answered: false, .. } => Some(deadline + NUMERIC_BACKSTOP),
+            Security::Pairing { deadline, answered: true, .. } => Some(deadline),
             _ => None,
         };
         [l.ask_pair, numeric].into_iter().flatten().min()
@@ -238,9 +243,9 @@ impl PhoneLink {
             }
             Event::Tick => {
                 match self.security {
-                    Security::Pairing { deadline, answered: false, value } if now >= deadline => {
-                        self.security = Security::Pairing { value, deadline: now + PAIRING_OUTCOME, answered: true };
+                    Security::Pairing { deadline, answered: false, .. } if now >= deadline + NUMERIC_BACKSTOP => {
                         out.push(Action::ConfirmNumeric(link, false));
+                        self.fail_pairing(out);
                     }
                     Security::Pairing { deadline, answered: true, .. } if now >= deadline => self.fail_pairing(out),
                     _ => {}

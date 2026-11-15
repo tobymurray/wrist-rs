@@ -329,8 +329,8 @@ impl Model for Phones {
                 !matches!(s.phone, Phone::Up(l) if l.security == Security::Unknown) || !s.phone.may_ask_params(s.now)
             }),
             Property::always("the lost bond told at most once a link", |_, s: &PhoneModel| s.told <= 1),
-            Property::always("a comparison is answered by its deadline", |_, s: &PhoneModel| {
-                s.showing.is_none_or(|at| s.now.since(at) <= phone::NUMERIC_DEADLINE)
+            Property::always("a comparison is answered by its backstop", |_, s: &PhoneModel| {
+                s.showing.is_none_or(|at| s.now.since(at) <= phone::NUMERIC_DEADLINE + phone::NUMERIC_BACKSTOP)
             }),
             Property::always("the machine's link is the radio's", |_, s: &PhoneModel| s.up == matches!(s.phone, Phone::Up(_))),
         ]

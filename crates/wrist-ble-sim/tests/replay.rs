@@ -20,11 +20,7 @@ fn traces() -> Vec<(String, String)> {
 }
 
 /// Where the core is known to act otherwise than the driver did, by fixture.
-const KNOWN: &[(&str, &[&str])] = &[(
-    // Nobody answered: the core refuses at its own deadline; the driver leaves it to the chip's.
-    "android14-comparison-unanswered.log",
-    &["1062525: the core refused the comparison and the driver did not"],
-)];
+const KNOWN: &[(&str, &[&str])] = &[];
 
 #[test]
 fn the_core_acts_where_and_as_the_driver_did() {
@@ -74,12 +70,14 @@ fn only_a_disconnect_the_operator_asked_for_is_the_drivers_alone() {
 #[test]
 fn the_cores_disagreements_are_listed_before_the_drivers() {
     let capture = fixture("android14-comparison-unanswered.log");
-    let mut lines: Vec<&str> = capture.lines().collect();
+    // The driver's ask for parameters gone, so the core asks alone.
+    let mut lines: Vec<&str> = capture.lines().filter(|l| !l.ends_with(" c 0181FD0A05080C0018000000F401")).collect();
+    assert_eq!(lines.len() + 1, capture.lines().count());
     let at = lines.iter().position(|l| host_ms(l).is_some_and(|ms| ms > 355_211)).unwrap();
     lines.insert(at, "355.211 [trace] 945700 c 0195FC020408");
     let d = replay(&lines.join("\n")).disagreements();
     assert_eq!(d.len(), 2, "{d:?}");
-    assert!(d[0].starts_with("1062525: the core") && d[1].starts_with("945700: the driver"), "{d:?}");
+    assert!(d[0].starts_with("10625") && d[0].contains(": the core asked") && d[1].starts_with("945700: the driver"), "{d:?}");
 }
 
 #[test]
