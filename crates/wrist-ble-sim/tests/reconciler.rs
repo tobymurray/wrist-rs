@@ -168,6 +168,16 @@ fn an_ask_refused_busy_waits_for_the_centrals_answer() {
     assert!(matches!(out.op, Some(Op::UpdateParams(l, _)) if l == link()), "{out:?}");
 }
 
+/// A busy ask goes again as soon as the central accepts the one before, before its update lands.
+#[test]
+fn an_ask_refused_busy_goes_when_the_central_accepts_the_one_before() {
+    let mut b = asked_on_battery();
+    b.refuse(FailureKind::Busy);
+    assert_eq!(b.at(2_300, Input::Tick).op, None);
+    let out = b.at(2_400, Input::Radio(RadioEvent::ParamsAccepted { link: link() }));
+    assert!(matches!(out.op, Some(Op::UpdateParams(l, _)) if l == link()), "{out:?}");
+}
+
 /// A busy ask whose central never answers is asked again at the operation's deadline.
 #[test]
 fn an_ask_refused_busy_is_asked_again_if_the_central_never_answers() {

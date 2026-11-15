@@ -400,6 +400,12 @@ impl<'a> Core<'a> {
                     }
                 }
             }
+            // The central's answer frees the chip for another request (HARDWARE.md).
+            RadioEvent::ParamsAccepted { link } => {
+                if self.state.phone.link() == Some(link) {
+                    self.phone_busy_until = None;
+                }
+            }
             RadioEvent::Params { link, result } => {
                 self.end_pending(|op| op.kind() == OpKind::UpdateParams && op.link() == Some(link));
                 if self.state.phone.link() == Some(link) {
