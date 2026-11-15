@@ -135,6 +135,9 @@ pub struct Core<'a> {
     phone_held: bool,
     /// The last ask was refused before it reached the air.
     phone_refused: bool,
+    /// The chip holds one parameter request at a time until the central answers it, so an ask
+    /// refused busy waits for that answer, or until this.
+    phone_busy_until: Option<Instant>,
     /// The console's ask ([`Input::IntervalNow`]) and the phone link it is for.
     console: Option<(ConnHandle, ConnParams)>,
     /// Busy refusals the chip may still give before it is restarted, and when one came back.
@@ -173,6 +176,7 @@ impl<'a> Core<'a> {
             phone_asks: 0,
             phone_held: false,
             phone_refused: false,
+            phone_busy_until: None,
             console: None,
             busy: Bucket::FULL,
             retry: [false; MAX_PERIPHERALS],
@@ -398,6 +402,9 @@ impl<'a> Core<'a> {
             }
             RadioEvent::Params { link, result } => {
                 self.end_pending(|op| op.kind() == OpKind::UpdateParams && op.link() == Some(link));
+                if self.state.phone.link() == Some(link) {
+                    self.phone_busy_until = None;
+                }
                 match result {
                     Ok(p) if self.state.phone.link() == Some(link) => {
                         self.phone_params = Some(p);
@@ -467,7 +474,9 @@ impl<'a> Core<'a> {
                     self.counters.timed_out += 1;
                 }
                 self.security_refused(now, &p.op, f, out);
-                self.back_off(now, p.op.kind());
+                if !self.hold_busy_ask(now, &p.op, f) {
+                    self.back_off(now, p.op.kind());
+                }
             }
         }
     }
@@ -518,7 +527,9 @@ impl<'a> Core<'a> {
                         self.phone_refused = true;
                     }
                     self.security_refused(now, &op, f, out);
-                    self.back_off(now, op.kind());
+                    if !self.hold_busy_ask(now, &op, f) {
+                        self.back_off(now, op.kind());
+                    }
                 }
             }
         }
@@ -530,6 +541,16 @@ impl<'a> Core<'a> {
         if let (Op::RequestSecurity(link), FailureKind::Security) = (*op, f.kind) {
             self.phone(now, phone::Event::SecurityRefused(link), out);
         }
+    }
+
+    /// Whether `op` is a parameter ask the chip refused busy, now held for the central's answer.
+    fn hold_busy_ask(&mut self, now: Instant, op: &Op, f: Failure) -> bool {
+        let held = op.kind() == OpKind::UpdateParams && f.kind == FailureKind::Busy;
+        if held {
+            self.phone_refused = true;
+            self.phone_busy_until = Some(now + (self.caps.op_deadline)(OpKind::UpdateParams));
+        }
+        held
     }
 
     fn back_off(&mut self, now: Instant, kind: OpKind) {
@@ -555,6 +576,7 @@ impl<'a> Core<'a> {
         self.phone_asks = 0;
         self.phone_held = false;
         self.phone_refused = false;
+        self.phone_busy_until = None;
     }
 
     fn resync(&mut self, now: Instant, r: Result<Snapshot, Fault>) {
@@ -736,7 +758,7 @@ impl<'a> Core<'a> {
     /// Ask the phone for the menu's parameters once a link, if its own do not already fit.
     fn phone_ask(&mut self, now: Instant) -> Option<Op> {
         let link = self.state.phone.link()?;
-        if !self.state.phone.may_ask_params(now) || !self.ready_for(now, OpKind::UpdateParams) {
+        if !self.state.phone.may_ask_params(now) || !self.ready_for(now, OpKind::UpdateParams) || self.phone_busy_until.is_some_and(|t| now < t) {
             return None;
         }
         if matches!(self.state.phone, Phone::Up(l) if matches!(l.security, Security::Pairing { .. })) {
@@ -805,7 +827,8 @@ impl<'a> Core<'a> {
         let backoff = self.backoff.iter().filter_map(|b| b.until).filter(|&t| t > now);
         let pending = self.pending.map(|p| p.deadline + GRACE);
         let reask = self.reask_at().filter(|&t| t > now);
-        let marks = [self.state.chip.deadline(self.caps), self.state.phone.deadline(), pending, self.phone_mark(now), reask];
+        let busy = self.phone_busy_until.filter(|&t| t > now);
+        let marks = [self.state.chip.deadline(self.caps), self.state.phone.deadline(), pending, self.phone_mark(now), reask, busy];
         marks.into_iter().flatten().chain(peers).chain(backoff).min()
     }
 

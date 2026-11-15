@@ -148,10 +148,33 @@ fn asked_on_battery() -> Bench {
 #[test]
 fn an_ask_refused_at_submit_is_asked_again_after_the_backoff() {
     let mut b = asked_on_battery();
-    b.refuse(FailureKind::Busy);
+    b.refuse(FailureKind::NoResources);
     let out = b.at(1_301, Input::Tick);
     assert_eq!(out.op, None);
     let out = b.at(2_300, Input::Tick);
+    assert!(matches!(out.op, Some(Op::UpdateParams(l, _)) if l == link()), "{out:?}");
+}
+
+/// An ask refused busy waits for the central to answer the one before, however long that takes.
+#[test]
+fn an_ask_refused_busy_waits_for_the_centrals_answer() {
+    let mut b = asked_on_battery();
+    b.refuse(FailureKind::Busy);
+    for t in [2_300, 5_000, 20_000] {
+        assert_eq!(b.at(t, Input::Tick).op, None, "at {t} ms");
+    }
+    let rejected = Err(Failure { kind: FailureKind::PeerRejected, native: 0 });
+    let out = b.at(21_000, Input::Radio(RadioEvent::Params { link: link(), result: rejected }));
+    assert!(matches!(out.op, Some(Op::UpdateParams(l, _)) if l == link()), "{out:?}");
+}
+
+/// A busy ask whose central never answers is asked again at the operation's deadline.
+#[test]
+fn an_ask_refused_busy_is_asked_again_if_the_central_never_answers() {
+    let mut b = asked_on_battery();
+    b.refuse(FailureKind::Busy);
+    assert_eq!(b.at(31_000, Input::Tick).op, None);
+    let out = b.at(31_301, Input::Tick);
     assert!(matches!(out.op, Some(Op::UpdateParams(l, _)) if l == link()), "{out:?}");
 }
 
