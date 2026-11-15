@@ -47,8 +47,7 @@ def event(packet):
 
 
 def usb_update(cmd):
-    """`cmd` as the firmware's `parse_transfer` (console.rs) takes a USB `update`, as
-    `update <len> <crc>` with the words after it dropped, or None."""
+    """`cmd` as `parse_transfer` in the firmware's console.rs reads it, normalised, or None."""
     words = cmd.split()
     if len(words) < 3 or words[0] != 'update' or not cmd.startswith('update '):
         return None

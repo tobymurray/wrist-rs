@@ -95,7 +95,7 @@ pub enum Report {
     FlashSurvey,
 }
 
-/// Report requests waiting for the report task.
+/// How many report requests may wait for the report task.
 const REPORT_QUEUE: usize = 4;
 
 /// The report task's requests, each printed in turn.

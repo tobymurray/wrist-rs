@@ -303,7 +303,6 @@ fn an_update_over_usb_is_no_transfer() {
 fn a_refused_usb_update_does_not_hide_a_later_transfer() {
     let capture = fixture("bluez-update-on-battery.log");
     let mut lines: Vec<&str> = capture.lines().collect();
-    // After `ble profile battery`, before the link: no `>> usb` line between it and the image.
     lines.insert(1, "2500.000 >> usb update 999999999 0");
     lines.insert(2, "2500.050 [update] error: length out of range for this target");
     assert_eq!(replay(&lines.join("\n")).disagreements(), Vec::<String>::new());
@@ -320,8 +319,8 @@ fn a_profile_changed_during_a_transfer_keeps_it() {
     assert_eq!(replay(&lines.join("\n")).disagreements(), Vec::<String>::new());
 }
 
-/// An `update` the console does not take as one (its CRC is hex without `0x`) marks no USB
-/// update, so the image over the air after it is a transfer.
+/// An `update` the console does not take as one marks no USB update, so the image over the air
+/// after it is a transfer.
 #[test]
 fn an_update_the_console_rejects_does_not_hide_a_later_transfer() {
     let capture = fixture("bluez-update-on-battery.log");
