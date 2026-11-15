@@ -113,7 +113,7 @@ fn ecc_test(uart: Uart) {
 
 pub fn command(args: &[u8], uart: Uart) {
     match args {
-        b" survey" => crate::REPORT.signal(crate::Report::FlashSurvey),
+        b" survey" => crate::ask_report(crate::Report::FlashSurvey, uart),
         b" ecc-test" => ecc_test(uart),
         _ => uart.write_line("[flash] usage: flash survey|ecc-test"),
     }

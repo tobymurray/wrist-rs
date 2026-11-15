@@ -36,6 +36,16 @@ class Scrub(unittest.TestCase):
         self.assertEqual(fixture.scrub('1.000 >> usb update 345624 FE7A7220'), '1.000 >> usb update 345624 FE7A7220')
         self.assertIsNone(fixture.scrub('1.000 >> usb update now'))
 
+    def test_only_an_update_the_console_takes_is_kept(self):
+        # As `parse_transfer` in the firmware's console.rs.
+        self.assertIsNone(fixture.scrub('1.000 >> usb update 5 0x1234'))
+        self.assertIsNone(fixture.scrub('1.000 >> usb update 4294967296 1234'))
+        self.assertIsNone(fixture.scrub('1.000 >> usb update\t5 1234'))
+        self.assertIsNone(fixture.scrub('1.000 >> usb update 5 123456789'))
+        self.assertIsNone(fixture.scrub('1.000 >> usb update -5 1234'))
+        self.assertEqual(fixture.scrub('1.000 >> usb update +5 +00001234 more'), '1.000 >> usb update 5 1234')
+        self.assertEqual(fixture.scrub('1.000 >> usb update 345624 fe7a7220'), '1.000 >> usb update 345624 FE7A7220')
+
     def test_wall_clock_times_are_read_as_seconds_are(self):
         self.assertEqual(fixture.scrub('09:27:15.813 >> usb ble off'), '09:27:15.813 >> usb ble off')
         self.assertEqual(fixture.scrub('09:27:15.870 [trace] 946160 r'), '09:27:15.870 [trace] 946160 r')

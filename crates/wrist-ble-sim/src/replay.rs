@@ -247,7 +247,7 @@ impl Replay {
         if let Some(rest) = text.strip_prefix("[trace] ") {
             self.trace(rest);
         } else if let Some(cmd) = text.strip_prefix(">> usb ") {
-            self.usb_update = cmd.trim().starts_with("update ");
+            self.usb_update = usb_update(cmd.trim());
             match cmd.trim() {
                 "ble off" => self.shadow.radio(now, false),
                 "ble on" => self.shadow.radio(now, true),
@@ -277,13 +277,15 @@ impl Replay {
 
     /// An over-the-air image is a transfer from its `send` line until any line but its progress.
     fn update_line(&mut self, rest: &str) {
-        let transfer = if rest.starts_with("send ") {
-            !core::mem::take(&mut self.usb_update)
-        } else if rest.strip_prefix("received ").is_some_and(|n| n.starts_with(|c: char| c.is_ascii_digit())) {
-            self.transfer
-        } else {
-            false
-        };
+        if rest.strip_prefix("received ").is_some_and(|n| n.starts_with(|c: char| c.is_ascii_digit())) {
+            return;
+        }
+        let usb_update = core::mem::take(&mut self.usb_update);
+        // The console's refusal, which an over-the-air image's own error can't be told from.
+        if usb_update && rest.starts_with("error: ") {
+            return;
+        }
+        let transfer = rest.starts_with("send ") && !usb_update;
         if transfer != self.transfer {
             self.transfer = transfer;
             let now = self.shadow.now();
@@ -332,6 +334,14 @@ fn uptime_ms(text: &str) -> Option<u64> {
     let (_, rest) = text.split_once(" uptime ")?;
     let (s, _) = rest.split_once(" s")?;
     s.parse::<u64>().ok().map(|s| s * 1_000)
+}
+
+/// Whether the console takes `cmd` as a USB `update`, as `parse_transfer` in the firmware's
+/// console.rs reads it.
+fn usb_update(cmd: &str) -> bool {
+    let Some(rest) = cmd.strip_prefix("update ") else { return false };
+    let mut parts = rest.split_whitespace();
+    parts.next().is_some_and(|len| len.parse::<u32>().is_ok()) && parts.next().is_some_and(|crc| u32::from_str_radix(crc, 16).is_ok())
 }
 
 /// Replays lines of `<host seconds> <console line>`, as `tools/ble-trace-capture.py` writes them.

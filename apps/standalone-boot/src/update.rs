@@ -160,7 +160,7 @@ pub fn staging_command(args: &[u8], uart: Uart) {
     let text = core::str::from_utf8(args).unwrap_or("");
     let mut words = text.split_whitespace().map(|w| w.parse::<usize>().ok());
     match (words.next().flatten(), words.next().flatten()) {
-        (Some(len), None) => crate::REPORT.signal(crate::Report::Staging(len.min(STAGING_SIZE))),
+        (Some(len), None) => crate::ask_report(crate::Report::Staging(len.min(STAGING_SIZE)), uart),
         (Some(off), Some(n)) => {
             let off = off.min(STAGING_SIZE);
             let end = (off + n.min(64)).min(STAGING_SIZE);

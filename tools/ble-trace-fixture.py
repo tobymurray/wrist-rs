@@ -16,7 +16,9 @@ import sys
 
 # The driver's commands the replay reads as operations (wrist-ble-shadow's lib.rs, driver_op).
 OPS = {0xFC83, 0xFC81, 0xFD81, 0xFC8D, 0xFC95, 0xFCA5, 0xFC88, 0xFC93, 0xFC97, 0xFC9D}
-GOALS = re.compile(r'^(ble (on|off|yes|no|disconnect|profile (auto|cable|battery))|update \d+ (0x)?[0-9A-Fa-f]{1,8})$')
+GOALS = re.compile(r'^ble (on|off|yes|no|disconnect|profile (auto|cable|battery))$')
+DECIMAL = re.compile(r'^\+?[0-9]+$')
+HEX = re.compile(r'^\+?[0-9A-Fa-f]+$')
 LINE = re.compile(r'^\s*((?:\d{2}:\d{2}:\d{2}|\d+)\.\d{3}) (.*)$')
 # Six bytes, with or without separators.
 ADDRESS = re.compile(r'(?<![0-9A-Fa-f])[0-9A-Fa-f]{2}(?:[:_-]?[0-9A-Fa-f]{2}){5,}(?![0-9A-Fa-f])')
@@ -44,6 +46,18 @@ def event(packet):
     return packet
 
 
+def usb_update(cmd):
+    """`cmd` as the firmware's `parse_transfer` (console.rs) takes a USB `update`, as
+    `update <len> <crc>` with the words after it dropped, or None."""
+    words = cmd.split()
+    if len(words) < 3 or words[0] != 'update' or not cmd.startswith('update '):
+        return None
+    length, crc = words[1], words[2]
+    if not (DECIMAL.match(length) and int(length) < 1 << 32 and HEX.match(crc) and int(crc, 16) < 1 << 32):
+        return None
+    return f'update {int(length)} {int(crc, 16):X}'
+
+
 def scrub(line):
     """The line as the fixture keeps it, or None."""
     m = LINE.match(line)
@@ -55,7 +69,10 @@ def scrub(line):
         return f'{host} {ADDRESS.sub("<address>", text)}'
     if text.startswith('>> usb '):
         cmd = text[len('>> usb '):].strip()
-        return f'{host} >> usb {cmd}' if GOALS.match(cmd) else None
+        if GOALS.match(cmd):
+            return f'{host} >> usb {cmd}'
+        update = usb_update(cmd)
+        return f'{host} >> usb {update}' if update else None
     fields = text.split()
     if len(fields) < 3 or fields[0] != '[trace]':
         return None

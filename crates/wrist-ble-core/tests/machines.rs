@@ -704,3 +704,40 @@ fn phone_asks_only_what_a_request_may_carry() {
     assert!(!askable(&ask(80, 480, 4, 600)));
     assert!(askable(&ask(80, 479, 4, 600)));
 }
+
+/// A lost bond the chip reported mid-pairing is still told when the pairing fails, though events
+/// were lost and a resync found the link unencrypted while its request was outstanding.
+#[test]
+fn phone_link_remade_mid_pairing_keeps_its_lost_bond() {
+    let (p, a) = actions(up(0), 5_000, phone::Event::Tick);
+    assert_eq!(a, [Action::RequestSecurity(phone())]);
+    let (p, a) = actions(p, 6_000, phone::Event::BondLost(phone()));
+    assert_eq!(a, [Action::AllowRebond(phone())]);
+    let (p, _) = actions(p, 8_000, phone::Event::Resynced(phone(), Some(false)));
+    let (_, a) = actions(p, 20_000, phone::Event::Pairing(phone(), PairingStep::Failed));
+    assert_eq!(a, [Action::TellBondLost(phone())]);
+}
+
+/// A link a resync could not tell about, then found unencrypted, is remade still knowing its lost
+/// bond, which its failed pairing tells.
+#[test]
+fn phone_link_remade_from_unknown_keeps_its_lost_bond() {
+    let (p, _) = actions(up(0), 5_000, phone::Event::Tick);
+    let (p, _) = actions(p, 6_000, phone::Event::BondLost(phone()));
+    let (p, _) = actions(p, 7_000, phone::Event::Resynced(phone(), None));
+    let (p, _) = actions(p, 8_000, phone::Event::Resynced(phone(), Some(false)));
+    let (p, a) = actions(p, 13_000, phone::Event::Tick);
+    assert_eq!(a, [Action::RequestSecurity(phone())]);
+    let (_, a) = actions(p, 14_000, phone::Event::Pairing(phone(), PairingStep::Failed));
+    assert_eq!(a, [Action::TellBondLost(phone())]);
+}
+
+/// A remade link keeps its failed pairing too, so a lost bond the chip reports after it is told.
+#[test]
+fn phone_link_remade_after_a_failed_pairing_tells_a_later_lost_bond() {
+    let (p, _) = actions(up(0), 5_000, phone::Event::Tick);
+    let (p, _) = actions(p, 6_000, phone::Event::Pairing(phone(), PairingStep::Failed));
+    let (p, _) = actions(p, 8_000, phone::Event::Resynced(phone(), Some(false)));
+    let (_, a) = actions(p, 9_000, phone::Event::BondLost(phone()));
+    assert_eq!(a, [Action::AllowRebond(phone()), Action::TellBondLost(phone())]);
+}

@@ -95,7 +95,18 @@ pub enum Report {
     FlashSurvey,
 }
 
-pub static REPORT: Signal<CriticalSectionRawMutex, Report> = Signal::new();
+/// Report requests waiting for the report task.
+const REPORT_QUEUE: usize = 4;
+
+/// The report task's requests, each printed in turn.
+static REPORT: Channel<CriticalSectionRawMutex, Report, REPORT_QUEUE> = Channel::new();
+
+/// Queues `r` for the report task, or says the queue is full.
+pub fn ask_report(r: Report, uart: Uart) {
+    if REPORT.try_send(r).is_err() {
+        uart.write_line("[usb] busy: reports are already waiting");
+    }
+}
 
 fn image_origin() -> u32 {
     core::ptr::addr_of!(__vector_table) as u32
@@ -1263,7 +1274,7 @@ async fn report(handoff: RccSnapshot, measured_hz: u32, watchdog: watchdog::Star
     version::compute_crc().await;
     full_report(uart, &handoff, measured_hz, watchdog, "boot").await;
     loop {
-        match REPORT.wait().await {
+        match REPORT.receive().await {
             Report::Full => full_report(uart, &handoff, measured_hz, watchdog, "asked for").await,
             Report::Rtc => write_rtc(uart).await,
             Report::UsbLog => usblog::dump(uart).await,

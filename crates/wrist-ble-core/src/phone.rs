@@ -195,6 +195,17 @@ impl PhoneLink {
         }
     }
 
+    /// Held again as new after lost events that may have hidden a new link, keeping what
+    /// [`Self::tell_bond_lost`] has learned in case it is the same one.
+    fn remade(&self, now: Instant) -> Self {
+        PhoneLink {
+            bond_lost: self.bond_lost,
+            pairing_failed: self.pairing_failed,
+            told_bond_lost: self.told_bond_lost,
+            ..PhoneLink::new(self.link, now)
+        }
+    }
+
     fn on(&mut self, now: Instant, event: Event, out: &mut Actions) {
         let link = self.link;
         match event {
@@ -217,15 +228,14 @@ impl PhoneLink {
             // Lost events may have hidden an encryption, a re-pair or a new link on this handle.
             Event::Resynced(id, encrypted) if id == link => match encrypted {
                 Some(true) => self.secure(),
-                // A link is never unencrypted once encrypted, so one found so is new.
-                Some(false) => {
-                    if matches!(self.security, Security::Secure | Security::Unknown) {
-                        *self = PhoneLink::new(link, now);
-                    } else if self.security == Security::Unsecured && self.ask_pair.is_none() {
-                        // Lost events may hide the outcome or a new link, so it starts again as new.
-                        *self = PhoneLink { told_bond_lost: self.told_bond_lost, ..PhoneLink::new(link, now) };
-                    }
-                }
+                Some(false) => match self.security {
+                    // A link is never unencrypted once encrypted, so one found so is new.
+                    Security::Secure => *self = PhoneLink::new(link, now),
+                    // Lost events may hide the outcome or a new link, so it starts again as new.
+                    Security::Unknown => *self = self.remade(now),
+                    Security::Unsecured if self.ask_pair.is_none() => *self = self.remade(now),
+                    _ => {}
+                },
                 None if matches!(self.security, Security::Pairing { .. }) => {}
                 None => {
                     self.security = Security::Unknown;
