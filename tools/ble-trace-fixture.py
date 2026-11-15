@@ -4,8 +4,9 @@
     tools/ble-trace-fixture.py capture.log > crates/wrist-ble-sim/fixtures/traces/name.log
 
 Kept: chip resets; the driver's commands that are one of the core's operations; the chip's
-events but its replies (one lists the bonded addresses), advertising reports and console writes,
-with a connection's peer and resolvable addresses zeroed; the console commands the replay reads
+events but advertising reports, console writes and replies to other commands (one lists the
+bonded addresses), with a connection's peer and resolvable addresses zeroed and a reply cut after
+its status; the console commands the replay reads
 (its goals, answers, `ble disconnect` and a USB `update`); the `[update]` lines that bound an
 image's transfer; scenario marks, with anything shaped like an address replaced. Every line keeps its host time, as seconds or the wall clock's HH:MM:SS.mmm.
 """
@@ -33,8 +34,16 @@ ADDRESSES = {CONNECTION_COMPLETE: (9, 15), ENHANCED_CONNECTION_COMPLETE: (9, 27)
 
 def event(packet):
     """The event scrubbed, or None when it is not kept."""
-    if len(packet) < 3 or packet[0] != EVENT or packet[1] in (COMMAND_COMPLETE, COMMAND_STATUS):
+    if len(packet) < 3 or packet[0] != EVENT:
         return None
+    if packet[1] in (COMMAND_COMPLETE, COMMAND_STATUS):
+        # Complete: ncmd, opcode, status; Status: status, ncmd, opcode.
+        if len(packet) < 7:
+            return None
+        opcode = packet[4:6] if packet[1] == COMMAND_COMPLETE else packet[5:7]
+        if int.from_bytes(opcode, 'little') not in OPS:
+            return None
+        return packet[:2] + bytes([4]) + packet[3:7]
     if packet[1] == VENDOR and len(packet) >= 5 and int.from_bytes(packet[3:5], 'little') == ATTRIBUTE_MODIFIED:
         return None
     if packet[1] == LE_META and len(packet) >= 4:

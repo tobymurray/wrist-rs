@@ -1,7 +1,8 @@
 #![no_std]
 
 //! The Bluetooth core fed what the BlueNRG-2 driver sends and the chip answers, its operations
-//! taken as the driver's and done at once, each set beside what the driver did ([`verdict`]).
+//! taken as the driver's, done at once or refused as the driver's were, each set beside what the
+//! driver did ([`verdict`]).
 
 pub mod menu;
 pub mod verdict;
@@ -16,6 +17,7 @@ use wrist_ble_core::engine::{Core, Input, Tell};
 use wrist_ble_core::goals::{Goals, Power};
 use wrist_ble_core::State;
 use wrist_bluenrg2::events::Translator;
+use wrist_bluenrg2::ops::refused;
 use wrist_bluenrg2::{Scheduler, CAPABILITIES};
 
 use crate::menu::{interval_now_ask, MENU};
@@ -120,6 +122,10 @@ pub struct Shadow<O> {
     encrypted: bool,
     /// The core's parameter request on air, which the central's answer ends.
     asked_update: Option<OpId>,
+    /// The core's latest operation that waits for an event to end it.
+    awaiting: Option<(OpId, Op)>,
+    /// The driver's latest command that is an operation, and the handle its parameters begin with.
+    sent: Option<(u16, u16)>,
     advertising: bool,
     /// The core is being told of a chip that was up before it was.
     seeding: bool,
@@ -142,6 +148,8 @@ impl<O: Observer> Shadow<O> {
             phone: None,
             encrypted: false,
             asked_update: None,
+            awaiting: None,
+            sent: None,
             advertising: false,
             seeding: false,
             verdict: Verdict::new(),
@@ -262,14 +270,17 @@ impl<O: Observer> Shadow<O> {
         self.phone = None;
         self.encrypted = false;
         self.asked_update = None;
+        self.awaiting = None;
+        self.sent = None;
         self.advertising = false;
     }
 
     /// A command the driver sent the chip.
     pub fn command(&mut self, at: Instant, code: u16, params: &[u8]) {
         self.advance(at);
-        let Some((kind, name)) = driver_op(code) else { return };
         let u16_at = |i: usize| params.get(i..i + 2).map_or(0, |v| u16::from_le_bytes([v[0], v[1]]));
+        self.sent = driver_op(code).map(|_| (code, u16_at(0)));
+        let Some((kind, name)) = driver_op(code) else { return };
         let op = match (kind, name) {
             // Advertising type, then interval min and max (0.625 ms).
             (OpKind::Advertise, "advertise") => DriverOp::Advertise(u16_at(1), u16_at(3)),
@@ -303,6 +314,7 @@ impl<O: Observer> Shadow<O> {
     /// A packet from the chip.
     pub fn event(&mut self, at: Instant, packet: &[u8]) {
         self.advance(at);
+        self.refusal(packet);
         if accepted_update(packet) {
             if let Some(id) = self.asked_update.take() {
                 self.feed(Input::Radio(RadioEvent::Done(id, Ok(Outcome::Done))));
@@ -330,6 +342,23 @@ impl<O: Observer> Shadow<O> {
             (RadioEvent::Ready(info), Some(id)) => self.feed(Input::Started(id, Ok(info))),
             _ => self.feed(Input::Radio(e)),
         }
+    }
+
+    /// The chip's refusal of the driver's command, given to the core as its own answer where the
+    /// core waits on the same operation.
+    fn refusal(&mut self, packet: &[u8]) {
+        let (code, status) = match bluenrg2::parse(packet) {
+            bluenrg2::Event::CommandStatus { cmd_opcode, status, .. } | bluenrg2::Event::CommandComplete { cmd_opcode, status: Some(status), .. } => (cmd_opcode, status.into_inner()),
+            _ => return,
+        };
+        let Some((sent, handle)) = self.sent.filter(|&(c, _)| c == code && status != 0) else { return };
+        let Some((kind, _)) = driver_op(sent) else { return };
+        let Some((id, op)) = self.awaiting.filter(|(_, op)| op.kind() == kind && op.link().is_none_or(|l| l.raw() == handle)) else { return };
+        self.awaiting = None;
+        if self.asked_update == Some(id) {
+            self.asked_update = None;
+        }
+        self.feed(Input::Radio(RadioEvent::Done(id, Err(refused(&op, status)))));
     }
 
     /// One step of the core, then each answer it is owed, depth first, as if each were fed
@@ -377,6 +406,9 @@ impl<O: Observer> Shadow<O> {
             let id = OpId(self.ids);
             if op.kind() == OpKind::UpdateParams {
                 self.asked_update = Some(id);
+            }
+            if op.kind().ends_with_event() {
+                self.awaiting = Some((id, op));
             }
             answers[2] = (!op.kind().ends_with_event()).then_some(Owed::Done(id));
             answers[3] = Some(Owed::Submitted(id));

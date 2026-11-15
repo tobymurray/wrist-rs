@@ -46,6 +46,13 @@ class Scrub(unittest.TestCase):
         self.assertEqual(fixture.scrub('1.000 >> usb update +5 +00001234 more'), '1.000 >> usb update 5 1234')
         self.assertEqual(fixture.scrub('1.000 >> usb update 345624 fe7a7220'), '1.000 >> usb update 345624 FE7A7220')
 
+    def test_only_a_reply_to_an_operation_is_kept_and_only_to_its_status(self):
+        self.assertEqual(fixture.scrub('1.000 [trace] 5 e 040F0440018DFC'), '1.000 [trace] 5 e 040F0440018DFC')
+        self.assertEqual(fixture.scrub('1.000 [trace] 5 e 040E050181FC0012'), '1.000 [trace] 5 e 040E040181FC00')
+        self.assertIsNone(fixture.scrub('1.000 [trace] 5 e 040E0A01030C00010203040506'))
+        self.assertIsNone(fixture.scrub('1.000 [trace] 5 e 040F040001030C'))
+        self.assertIsNone(fixture.scrub('1.000 [trace] 5 e 040E0401'))
+
     def test_wall_clock_times_are_read_as_seconds_are(self):
         self.assertEqual(fixture.scrub('09:27:15.813 >> usb ble off'), '09:27:15.813 >> usb ble off')
         self.assertEqual(fixture.scrub('09:27:15.870 [trace] 946160 r'), '09:27:15.870 [trace] 946160 r')

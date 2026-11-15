@@ -118,7 +118,10 @@ fn traces_hold_only_what_the_scrub_keeps() {
                     let p: Vec<u8> = (0..f[3].len() / 2).map(|i| u8::from_str_radix(&f[3][2 * i..2 * i + 2], 16).unwrap()).collect();
                     assert!(p.len() >= 3, "{name}: {line}");
                     if f[2] == "e" {
-                        assert!(p[0] == 0x04 && !matches!(p[1], 0x0E | 0x0F), "{name}: a reply in {line}");
+                        assert_eq!(p[0], 0x04, "{name}: {line}");
+                        if matches!(p[1], 0x0E | 0x0F) {
+                            assert_eq!((p.len(), p[2]), (7, 4), "{name}: more than a reply's status in {line}");
+                        }
                         if p[1] == 0x3E {
                             assert_ne!(p[3], 0x02, "{name}: a report in {line}");
                             let addresses = match p[3] {
@@ -369,4 +372,26 @@ fn progress_before_a_usb_refusal_leaves_the_transfer() {
         lines.insert(at + 1 + i, line);
     }
     assert_eq!(replay(&lines.join("\n")).disagreements(), Vec::<String>::new());
+}
+
+/// The chip's reply to the driver's security request reaches the core: refused for good, the
+/// pairing fails at once and the link is asked for parameters; refused otherwise, it waits.
+#[test]
+fn a_security_request_the_chip_refuses_for_good_fails_the_pairing_at_once() {
+    for (status, fails) in [("40", true), ("0C", false)] {
+        let mut capture: String = fixture("bluez-update-on-battery.log")
+            .lines()
+            .filter(|l| !l.contains(" e 04FF0601") && !l.contains(" e 040804"))
+            .take_while(|l| !l.contains("[update] send"))
+            .flat_map(|l| {
+                let reply = if l.ends_with(" c 018DFC024308") { format!("2515.300 [trace] 2462560 e 040F04{status}018DFC\n") } else { String::new() };
+                [format!("{l}\n"), reply]
+            })
+            .collect();
+        capture.push_str("2600.000 [trace] 2510000 e 04FF020404\n");
+        let r = replay(&capture);
+        let asked = r.core_ops.iter().any(|(_, op)| op.kind() == OpKind::UpdateParams);
+        assert_eq!(asked, fails, "status {status}\n{}", r.render(false));
+        assert_eq!(r.disagreements(), [] as [String; 0], "status {status}");
+    }
 }
