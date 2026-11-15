@@ -2,6 +2,7 @@
 
 use wrist_ble::{ChipInfo, CoreSpecificationVersion, Instant, LeConnRole, Op, OpKind, Snapshot};
 use wrist_ble_core::goals::{Goals, PhoneGoal, Power};
+use wrist_ble_core::phone::{Phone, Security};
 use wrist_ble_core::State;
 use wrist_ble_shadow::verdict::Disagreement;
 use wrist_ble_shadow::{DriverOp, Observer, Shadow};
@@ -221,6 +222,25 @@ fn a_snapshot_is_the_chip_as_the_driver_and_the_chip_left_it() {
     s.event(Instant(700), CUT);
     let seen: Vec<_> = s.observer.snapshots.iter().map(|n| (n.at.0, n.advertising, n.links[0].map(|l| (l.link.raw(), l.role, l.encrypted)))).collect();
     assert_eq!(seen, [(200, true, None), (400, false, Some((0x0801, LeConnRole::Peripheral, None))), (700, false, None)]);
+}
+
+/// A link seen encrypted stays so until it ends, so the snapshot says so and the core keeps it
+/// secure; one not seen encrypted may have been behind the lost events, so it can't say.
+#[test]
+fn a_snapshot_says_the_phones_link_is_encrypted_once_seen_so() {
+    let mut s = up();
+    s.event(Instant(200), PHONE);
+    s.event(Instant(300), CUT);
+    s.event(Instant(400), ENCRYPTED);
+    s.event(Instant(500), CUT);
+    s.event(Instant(600), &disconnected(0x0801));
+    s.event(Instant(700), PHONE);
+    s.event(Instant(800), CUT);
+    let seen: Vec<_> = s.observer.snapshots.iter().map(|n| (n.at.0, n.links[0].and_then(|l| l.encrypted))).collect();
+    assert_eq!(seen, [(300, None), (500, Some(true)), (800, None)]);
+    s.event(Instant(900), ENCRYPTED);
+    s.event(Instant(1_000), CUT);
+    assert!(matches!(s.state().phone, Phone::Up(l) if l.security == Security::Secure), "{:?}", s.state().phone);
 }
 
 #[test]

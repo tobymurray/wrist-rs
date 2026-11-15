@@ -143,6 +143,42 @@ fn phone_link_found_unencrypted_after_encryption_starts_afresh() {
     assert_eq!(actions(p, 102_000, phone::Event::Pairing(phone(), PairingStep::Failed)).1, [Action::TellBondLost(phone())]);
 }
 
+/// A failed pairing opens the link to the ask (F62), but a resync that finds it unencrypted can't
+/// say it is the same link: the lost events may hold a new one that may yet pair, so it is held and
+/// asked to pair as a new link is, and its lost bond is not told twice.
+#[test]
+fn phone_link_whose_pairing_failed_found_unencrypted_is_held_again() {
+    let (p, _) = actions(up(0), 100, phone::Event::BondLost(phone()));
+    let (p, a) = actions(p, 30_000, phone::Event::Pairing(phone(), PairingStep::Failed));
+    assert_eq!(a, [Action::TellBondLost(phone())]);
+    assert!(p.may_ask_params(t(30_000)));
+    let (p, _) = actions(p, 40_000, phone::Event::Resynced(phone(), Some(false)));
+    assert!(!p.may_ask_params(t(40_000)));
+    assert_eq!(p.deadline(), Some(t(45_000)));
+    let (p, a) = actions(p, 45_000, phone::Event::Tick);
+    assert_eq!(a, [Action::RequestSecurity(phone())]);
+    let (p, a) = actions(p, 75_000, phone::Event::Pairing(phone(), PairingStep::Failed));
+    assert_eq!(a, NONE, "told once");
+    assert!(p.may_ask_params(t(75_000)));
+}
+
+/// An unencrypted link still waiting on its pairing is the link it was: a resync that finds it so
+/// changes nothing.
+#[test]
+fn phone_link_waiting_to_pair_found_unencrypted_is_unchanged() {
+    let p = up(0);
+    let (q, a) = actions(p, 2_000, phone::Event::Resynced(phone(), Some(false)));
+    assert_eq!((q, a), (p, NONE));
+    let (p, _) = actions(p, 3_000, phone::Event::Pairing(phone(), PairingStep::Numeric(7)));
+    let (q, a) = actions(p, 4_000, phone::Event::Resynced(phone(), Some(false)));
+    assert_eq!((q, a), (p, NONE));
+    // A pairing started again after one failed is left to finish.
+    let (p, _) = actions(p, 34_000, phone::Event::Pairing(phone(), PairingStep::Failed));
+    let (p, _) = actions(p, 35_000, phone::Event::Pairing(phone(), PairingStep::Numeric(8)));
+    let (q, a) = actions(p, 36_000, phone::Event::Resynced(phone(), Some(false)));
+    assert_eq!((q, a), (p, NONE));
+}
+
 #[test]
 fn phone_settles_after_connecting_and_each_update() {
     let p = up(0);

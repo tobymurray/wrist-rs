@@ -194,6 +194,12 @@ impl PhoneLink {
                 Some(false) => {
                     if matches!(self.security, Security::Secure | Security::Unknown) {
                         *self = PhoneLink::new(link, now);
+                    } else if self.pairing_failed && self.security == Security::Unsecured {
+                        // Its pairing failed, but the lost events may have hidden a new link on
+                        // the handle, which may yet pair: held as a new one is, so not asked across
+                        // a re-pair (F62). A pairing under way is left to finish; the bond told
+                        // lost stays told.
+                        *self = PhoneLink { bond_lost: self.bond_lost, told_bond_lost: self.told_bond_lost, ..PhoneLink::new(link, now) };
                     }
                 }
                 None if matches!(self.security, Security::Pairing { .. }) => {}

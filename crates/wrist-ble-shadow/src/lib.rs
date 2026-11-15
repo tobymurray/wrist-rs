@@ -117,6 +117,8 @@ pub struct Shadow<O> {
     next: Option<Instant>,
     ids: u16,
     phone: Option<ConnHandle>,
+    /// The phone's link has been seen encrypted, which it stays until it ends.
+    encrypted: bool,
     /// The core's parameter request on air, which the central's answer ends.
     asked_update: Option<OpId>,
     advertising: bool,
@@ -139,6 +141,7 @@ impl<O: Observer> Shadow<O> {
             next: None,
             ids: 0,
             phone: None,
+            encrypted: false,
             asked_update: None,
             advertising: false,
             seeding: false,
@@ -257,6 +260,7 @@ impl<O: Observer> Shadow<O> {
         self.core = Core::new(&CAPABILITIES, &Scheduler, &MENU);
         self.translator = Translator::new(self.info);
         self.phone = None;
+        self.encrypted = false;
         self.asked_update = None;
         self.advertising = false;
     }
@@ -309,9 +313,11 @@ impl<O: Observer> Shadow<O> {
         match e {
             RadioEvent::LinkUp { link, role: LeConnRole::Peripheral, .. } => {
                 self.phone = Some(link);
+                self.encrypted = false;
                 self.advertising = false;
             }
             RadioEvent::LinkDown { link, .. } if self.phone == Some(link) => self.phone = None,
+            RadioEvent::Encryption { link, on: true } if self.phone == Some(link) => self.encrypted = true,
             RadioEvent::Ready(_) => {
                 self.phone = None;
                 self.advertising = false;
@@ -393,11 +399,16 @@ impl<O: Observer> Shadow<O> {
         len
     }
 
-    /// The chip as the driver's commands and the chip's events have left it.
+    /// The chip as the driver's commands and the chip's events have left it. The phone's link is
+    /// encrypted once seen so, since encryption lasts as long as the link; otherwise the lost
+    /// events may have held its encryption, so the shadow can't say, where the chip would
+    /// (`ACI_GAP_GET_SECURITY_LEVEL` reports the link's encryption, not the bond: measured on the
+    /// watch 2026-11-13, a bonded Mac reading `01 01` before its Encryption Change and `01 03` after).
     fn snapshot(&self) -> Snapshot {
         let mut links = [None; MAX_LINKS];
         if let Some(link) = self.phone {
-            links[0] = Some(LinkStatus { link, role: LeConnRole::Peripheral, peer: PeerAddr { kind: AddrKind::RANDOM, addr: BdAddr::new([0; 6]) }, encrypted: None });
+            let encrypted = self.encrypted.then_some(true);
+            links[0] = Some(LinkStatus { link, role: LeConnRole::Peripheral, peer: PeerAddr { kind: AddrKind::RANDOM, addr: BdAddr::new([0; 6]) }, encrypted });
         }
         Snapshot { at: self.now, links, advertising: self.advertising, scanning: false, initiating: false, anchor: None }
     }
