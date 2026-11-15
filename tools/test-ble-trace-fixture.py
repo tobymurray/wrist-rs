@@ -29,6 +29,13 @@ class Scrub(unittest.TestCase):
         self.assertIsNone(fixture.scrub('85.804 >> usb ble bonds'))
         self.assertIsNone(fixture.scrub('85.804 >> usb ble forget C2:3D:4E:5F:60:71'))
 
+    def test_a_transfers_bounds_are_kept(self):
+        for line in ['2524.936 [update] send 345624 bytes', '2529.546 [update] received 16492',
+                     '2625.693 [update] ok 345624 bytes, crc 0xFE7A7220, swap marked; reset to apply']:
+            self.assertEqual(fixture.scrub(line), line)
+        self.assertEqual(fixture.scrub('1.000 >> usb update 345624 FE7A7220'), '1.000 >> usb update 345624 FE7A7220')
+        self.assertIsNone(fixture.scrub('1.000 >> usb update now'))
+
     def test_wall_clock_times_are_read_as_seconds_are(self):
         self.assertEqual(fixture.scrub('09:27:15.813 >> usb ble off'), '09:27:15.813 >> usb ble off')
         self.assertEqual(fixture.scrub('09:27:15.870 [trace] 946160 r'), '09:27:15.870 [trace] 946160 r')

@@ -107,7 +107,7 @@ fn traces_hold_only_what_the_scrub_keeps() {
     for (name, capture) in traces() {
         for line in capture.lines() {
             let (_, text) = line.split_once(' ').unwrap();
-            if text.starts_with("== ") || text.starts_with(">> usb ble ") {
+            if text.starts_with("== ") || text.starts_with(">> usb ble ") || text.starts_with(">> usb update ") || text.starts_with("[update] ") {
                 let joined: String = text.chars().filter(|c| !matches!(c, ':' | '-' | '_')).collect();
                 assert!(!joined.split(|c: char| !c.is_ascii_hexdigit()).any(|w| w.len() >= 12), "{name}: an address in {line}");
                 continue;
@@ -275,6 +275,29 @@ fn wall_clock_stamps_replay_as_seconds_do() {
         assert_eq!(format!("{:?}", a.driver_ops), format!("{:?}", b.driver_ops), "{name}");
         assert_eq!(a.disagreements(), b.disagreements(), "{name}");
     }
+}
+
+/// An image over the air is a transfer from its `[update] send` line to the line that ends it,
+/// which ends the console's `interval now` ask on the watch as in the core: without the lines,
+/// the core keeps the ask and makes it again after the settle.
+#[test]
+fn an_update_over_the_air_is_a_transfer() {
+    let capture = fixture("bluez-update-on-battery.log");
+    assert_eq!(replay(&capture).disagreements(), Vec::<String>::new());
+    let without = capture.lines().filter(|l| !l.contains(" [update] ")).collect::<Vec<_>>().join("\n");
+    let d = replay(&without).disagreements();
+    assert!(d.len() == 1 && d[0].contains("the core asked for 12-12 units"), "{d:?}");
+}
+
+/// A USB `update` sends its image over the cable, not the phone's link, so it is no transfer.
+#[test]
+fn an_update_over_usb_is_no_transfer() {
+    let capture = fixture("bluez-update-on-battery.log");
+    let send = capture.lines().find(|l| l.contains(" [update] send ")).unwrap();
+    let at = send.split_once(' ').unwrap().0;
+    let over_usb = capture.replace(send, &format!("{at} >> usb update 345624 FE7A7220\n{send}"));
+    let d = replay(&over_usb).disagreements();
+    assert!(d.len() == 1 && d[0].contains("the core asked for 12-12 units"), "{d:?}");
 }
 
 /// On the console's cable, `ble profile auto` is cable timing.

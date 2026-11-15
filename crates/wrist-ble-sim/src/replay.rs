@@ -194,6 +194,10 @@ struct Replay {
     base: Option<u64>,
     /// The chip's last milliseconds in this epoch.
     last_ms: Option<u64>,
+    /// An image coming over the air, from its `[update] send` line to the line that ends it.
+    transfer: bool,
+    /// The console's last command was a USB `update`, whose image the phone's link does not carry.
+    usb_update: bool,
 }
 
 impl Replay {
@@ -230,6 +234,8 @@ impl Replay {
         self.shadow.restart(Instant(at));
         self.base = None;
         self.last_ms = None;
+        self.transfer = false;
+        self.usb_update = false;
         self.shadow.observer.report.resets += 1;
         self.push(Who::Line, "-- the watch reset".into());
         self.shadow.set_goals(self.shadow.now(), boot_goals());
@@ -241,11 +247,12 @@ impl Replay {
         if let Some(rest) = text.strip_prefix("[trace] ") {
             self.trace(rest);
         } else if let Some(cmd) = text.strip_prefix(">> usb ") {
+            self.usb_update = cmd.trim().starts_with("update ");
             match cmd.trim() {
                 "ble off" => self.shadow.radio(now, false),
                 "ble on" => self.shadow.radio(now, true),
-                "ble profile battery" => self.shadow.timing(now, Power::Battery, false),
-                "ble profile cable" | "ble profile auto" => self.shadow.timing(now, Power::Cable, false),
+                "ble profile battery" => self.shadow.timing(now, Power::Battery, self.transfer),
+                "ble profile cable" | "ble profile auto" => self.shadow.timing(now, Power::Cable, self.transfer),
                 "ble disconnect" => self.shadow.operator_disconnect(now),
                 c if c.starts_with("ble interval now ") => {
                     let mut units = c[17..].split_whitespace().map(|w| w.parse::<u16>().ok());
@@ -260,8 +267,29 @@ impl Replay {
                 _ => {}
             }
             self.push(Who::Line, format!(">> {cmd}"));
+        } else if let Some(update) = text.strip_prefix("[update] ") {
+            self.update_line(update);
+            self.push(Who::Line, text.to_string());
         } else if text.starts_with("[ble]") || text.starts_with("== ") {
             self.push(Who::Line, text.to_string());
+        }
+    }
+
+    /// An over-the-air image is a transfer from the line that begins it to the one that ends it,
+    /// as the watch's `self.transfer` is: its progress lines are the only others it prints.
+    fn update_line(&mut self, rest: &str) {
+        let transfer = if rest.starts_with("send ") {
+            !core::mem::take(&mut self.usb_update)
+        } else if rest.strip_prefix("received ").is_some_and(|n| n.starts_with(|c: char| c.is_ascii_digit())) {
+            self.transfer
+        } else {
+            false
+        };
+        if transfer != self.transfer {
+            self.transfer = transfer;
+            let now = self.shadow.now();
+            let power = self.shadow.goals().power;
+            self.shadow.timing(now, power, transfer);
         }
     }
 
@@ -311,7 +339,7 @@ fn uptime_ms(text: &str) -> Option<u64> {
 /// A watch reset starts the core again, and the host's clock carries the timeline across it.
 #[must_use]
 pub fn replay(capture: &str) -> Report {
-    let mut r = Replay { shadow: Shadow::new(INFO, boot_goals(), Record::default()), base: Some(0), last_ms: None };
+    let mut r = Replay { shadow: Shadow::new(INFO, boot_goals(), Record::default()), base: Some(0), last_ms: None, transfer: false, usb_update: false };
     let mut started = false;
     let mut offset: Option<i64> = None;
     for line in capture.lines() {
