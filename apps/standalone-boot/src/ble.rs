@@ -113,6 +113,9 @@ pub struct Pins {
 const TRANSFER_IDLE: Duration = Duration::from_secs(5);
 
 const DEVICE_NAME: &[u8] = b"UNA";
+// Advertising carries the name only up to `commands::MAX_NAME` (PM0257 Table 43), and the GATT
+// device name only up to what `ACI_GAP_INIT` gave it room for.
+const _: () = assert!(DEVICE_NAME.len() <= commands::MAX_NAME && DEVICE_NAME.len() <= GAP_NAME_LEN as usize);
 /// `ACI_GAP_INIT`'s `device_name_char_len`.
 const GAP_NAME_LEN: u8 = 7;
 /// `ACI_HAL_SET_TX_POWER_LEVEL`'s `En_High_Power` and `PA_Level`.

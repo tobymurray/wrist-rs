@@ -7,10 +7,10 @@ use core::fmt::{self, Write};
 use core::sync::atomic::Ordering;
 
 use bluenrg2::opcode::{
-    ACI_GAP_SET_DISCOVERABLE, ACI_GAP_SET_NON_DISCOVERABLE, ACI_GAP_TERMINATE, ACI_GATT_ADD_CHAR, ACI_GATT_ADD_SERVICE, ACI_HAL_GET_ANCHOR_PERIOD,
+    ACI_GAP_SET_NON_DISCOVERABLE, ACI_GAP_TERMINATE, ACI_GATT_ADD_CHAR, ACI_GATT_ADD_SERVICE, ACI_HAL_GET_ANCHOR_PERIOD,
     ACI_UPDATER_START,
 };
-use bluenrg2::{ad, adv_filter_policy, adv_type, enc_key_size, evt_mask, permission, props, service_type, uuid_type, value_length, AddrKind};
+use bluenrg2::{enc_key_size, evt_mask, permission, props, service_type, uuid_type, value_length};
 use wrist_bluenrg2::driver::RESET_MS;
 use wrist_bluenrg2::probe::{Beside, Line, Probe, Taken};
 use wrist_bluenrg2::snapshot::{Snap, Snapping};
@@ -320,17 +320,12 @@ impl Link<'_> {
 
     /// `ACI_GAP_SET_DISCOVERABLE` as `advertise` sends it, at `interval`; the chip's status.
     async fn discoverable(&mut self, interval: u16) -> Result<u8, &'static str> {
-        let mut p = [0u8; 20];
-        p[0] = adv_type::ADV_IND;
-        p[1..3].copy_from_slice(&interval.to_le_bytes());
-        p[3..5].copy_from_slice(&interval.to_le_bytes());
-        p[5] = AddrKind::RANDOM.as_raw();
-        p[6] = adv_filter_policy::NO_FILTER;
-        p[7] = u8::try_from(1 + DEVICE_NAME.len()).unwrap_or(0);
-        p[8] = ad::NAME_COMPLETE;
-        p[9..9 + DEVICE_NAME.len()].copy_from_slice(DEVICE_NAME);
-        let n = 9 + DEVICE_NAME.len();
-        self.command(ACI_GAP_SET_DISCOVERABLE, &p[..n + 5]).await.map(|r| {
+        let slots = wrist_ble::Slots::from_u16(interval);
+        let op = wrist_ble::Op::Advertise(Some(wrist_ble::AdvParams { interval_min: slots, interval_max: slots, connectable: true }));
+        let Some(c) = wrist_bluenrg2::commands::command(&op, DEVICE_NAME, |_| None, None) else {
+            return Err("not sent: no command carries it out");
+        };
+        self.command(c.opcode, c.params()).await.map(|r| {
             if r.status == 0 {
                 STATE.store(STATE_ADVERTISING, Ordering::Relaxed);
             }
