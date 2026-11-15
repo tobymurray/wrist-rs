@@ -245,6 +245,19 @@ fn a_snapshot_says_the_phones_link_is_encrypted_once_seen_so() {
     assert!(matches!(s.state().phone, Phone::Up(l) if l.security == Security::Secure), "{:?}", s.state().phone);
 }
 
+/// Encryption Change names the link it is for (Core 6.0 Vol 4 Part E §7.7.8), so a sensor's says
+/// nothing of the phone's.
+#[test]
+fn another_links_encryption_is_not_the_phones() {
+    let mut s = up();
+    s.event(Instant(200), PHONE);
+    s.event(Instant(250), SENSOR);
+    s.event(Instant(300), &[0x04, 0x08, 0x04, 0x00, 0x02, 0x08, 0x01]);
+    s.event(Instant(400), CUT);
+    let n = s.observer.snapshots.last().expect("no snapshot");
+    assert_eq!(n.links[0].map(|l| (l.link.raw(), l.encrypted)), Some((0x0801, None)));
+}
+
 #[test]
 fn a_link_the_watch_made_as_central_is_not_the_phone() {
     let mut s = up();
