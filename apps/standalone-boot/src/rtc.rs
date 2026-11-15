@@ -256,29 +256,57 @@ pub fn set(c: Civil) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// The calendar's registers, read together so that the report's lines agree.
+/// The calendar's registers and the records beside it, read together so that the report's lines
+/// agree however long it takes to print them.
 #[derive(Clone, Copy)]
-pub struct Calendar {
+pub struct Snapshot {
     icsr: u32,
     ssr: u32,
     tr: u32,
     dr: u32,
+    zone: Option<Zone>,
+    last_set: Option<(Source, Civil)>,
+    alarm: u32,
 }
+
+/// The report's lines after [`write_clocks`], in order; a change the zone lacks prints nothing.
+#[derive(Clone, Copy)]
+pub enum Piece {
+    Zone,
+    Change(usize),
+    LastSet,
+    Alarm,
+    Calendar,
+}
+
+pub const PIECES: [Piece; 6] = [Piece::Zone, Piece::Change(0), Piece::Change(1), Piece::LastSet, Piece::Alarm, Piece::Calendar];
 
 /// The whole report without yielding.
 pub fn write_report(uart: Uart) {
-    let calendar = write_clocks(uart);
-    let zone = write_zone_record(uart);
-    for change in zone.iter().flat_map(|z| z.next).flatten() {
-        write_change(uart, change);
+    let snapshot = write_clocks(uart);
+    for piece in PIECES {
+        write_piece(uart, &snapshot, piece);
     }
-    write_last_set(uart);
-    write_alarm(uart);
-    write_calendar(uart, calendar);
 }
 
-/// The backup domain's clocks and the calendar's control registers; returns the calendar.
-pub fn write_clocks(uart: Uart) -> Calendar {
+/// One of the report's [`PIECES`], as `snapshot` read it; whether it printed a line.
+pub fn write_piece(uart: Uart, snapshot: &Snapshot, piece: Piece) -> bool {
+    match piece {
+        Piece::Zone => write_zone_record(uart, snapshot.zone),
+        Piece::Change(i) => match snapshot.zone.and_then(|z| z.next[i]) {
+            Some(change) => write_change(uart, change),
+            None => return false,
+        },
+        Piece::LastSet => write_last_set(uart, snapshot.last_set),
+        Piece::Alarm => write_alarm(uart, snapshot.alarm),
+        Piece::Calendar => write_calendar(uart, snapshot),
+    }
+    true
+}
+
+/// The backup domain's clocks and the calendar's control registers; returns the calendar read
+/// with the zone, last-set and alarm records.
+pub fn write_clocks(uart: Uart) -> Snapshot {
     use wrist_flash::vectors::{MAILBOX_BDCR, MAILBOX_MAGIC, MAILBOX_TAG};
     if unsafe { read32(MAILBOX_MAGIC) } == MAILBOX_TAG {
         uart.write_reg("  RCC_BDCR at the loader's entry = ", unsafe {
@@ -322,17 +350,17 @@ pub fn write_clocks(uart: Uart) -> Calendar {
     let ssr = unsafe { read32(RTC_SSR) };
     let tr = unsafe { read32(RTC_TR) };
     let dr = unsafe { read32(RTC_DR) };
+    let (zone, last_set, alarm) = (zone(), last_set(), alarm_word());
     uart.write_reg("  RTC_ICSR  = ", icsr);
     uart.write_reg("  RTC_PRER  = ", prer);
     uart.write_reg("  RTC_CR    = ", cr);
     uart.write_reg("  TAMP_BKP0R= ", unsafe { read32(TAMP_BKP0R) });
-    Calendar { icsr, ssr, tr, dr }
+    Snapshot { icsr, ssr, tr, dr, zone, last_set, alarm }
 }
 
-/// The zone line; returns the zone it read, `None` when there is no record.
-pub fn write_zone_record(uart: Uart) -> Option<Zone> {
+/// The zone line, `None` when there is no record.
+fn write_zone_record(uart: Uart, zone: Option<Zone>) {
     uart.write_str("  zone      : ");
-    let zone = zone();
     match zone {
         Some(z) => {
             write_zone(uart, z.offset);
@@ -340,10 +368,9 @@ pub fn write_zone_record(uart: Uart) -> Option<Zone> {
         }
         None => uart.write_line("no record: daylight saving is not followed (tools/wrist-time.py)"),
     }
-    zone
 }
 
-pub fn write_change(uart: Uart, c: Change) {
+fn write_change(uart: Uart, c: Change) {
     uart.write_str("  change    : ");
     write_civil(uart, civil_of_seconds(i64::from(c.at)));
     uart.write_str(" UTC, to ");
@@ -351,9 +378,9 @@ pub fn write_change(uart: Uart, c: Change) {
     uart.write_line("");
 }
 
-pub fn write_last_set(uart: Uart) {
+fn write_last_set(uart: Uart, last_set: Option<(Source, Civil)>) {
     uart.write_str("  last set  : ");
-    match last_set() {
+    match last_set {
         Some((source, at)) => {
             uart.write_str("by ");
             uart.write_str(source.name());
@@ -365,15 +392,15 @@ pub fn write_last_set(uart: Uart) {
     }
 }
 
-pub fn write_alarm(uart: Uart) {
+fn write_alarm(uart: Uart, word: u32) {
     uart.write_str("  alarm     : ");
-    crate::alarm::write_record(uart);
+    crate::alarm::write_word(uart, word);
     uart.write_line("");
 }
 
 /// The calendar as [`write_clocks`] read it.
-pub fn write_calendar(uart: Uart, calendar: Calendar) {
-    let Calendar { icsr, ssr, tr, dr } = calendar;
+fn write_calendar(uart: Uart, snapshot: &Snapshot) {
+    let Snapshot { icsr, ssr, tr, dr, .. } = *snapshot;
     uart.write_reg("  RTC_TR    = ", tr);
     uart.write_reg("  RTC_DR    = ", dr);
     uart.write_reg("  RTC_SSR   = ", ssr);

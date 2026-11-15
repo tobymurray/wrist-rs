@@ -1338,20 +1338,13 @@ async fn full_report(
 
     // A few lines between yields, so that no poll of the report holds the executor long.
     uart.write_line("[step] rtc   :");
-    let calendar = rtc::write_clocks(uart);
+    let snapshot = rtc::write_clocks(uart);
     make_room().await;
-    let zone = rtc::write_zone_record(uart);
-    make_room().await;
-    for change in zone.iter().flat_map(|z| z.next).flatten() {
-        rtc::write_change(uart, change);
-        make_room().await;
+    for piece in rtc::PIECES {
+        if rtc::write_piece(uart, &snapshot, piece) {
+            make_room().await;
+        }
     }
-    rtc::write_last_set(uart);
-    make_room().await;
-    rtc::write_alarm(uart);
-    make_room().await;
-    rtc::write_calendar(uart, calendar);
-    make_room().await;
     uart.write_line("[step] usb   :");
     console::write_phy_regs(uart);
     make_room().await;

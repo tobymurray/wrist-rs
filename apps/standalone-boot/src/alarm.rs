@@ -277,7 +277,11 @@ pub fn command(args: &[u8], uart: Uart) {
 
 /// `07:00 on (BKP4R …)`, or that there is none.
 pub fn write_record(uart: Uart) {
-    let word = rtc::alarm_word();
+    write_word(uart, rtc::alarm_word());
+}
+
+/// [`write_record`] for the alarm word `word`, read earlier.
+pub fn write_word(uart: Uart, word: u32) {
     match Alarm::decode(word) {
         Some(a) => {
             write_hm(uart, a.hour(), a.minute());
