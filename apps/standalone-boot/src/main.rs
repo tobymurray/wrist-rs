@@ -449,6 +449,7 @@ fn main() -> ! {
         glass::arm_lag_probe(glass::LAG_BOOT_S);
         spawn(spawner, "lag", glass::lag_probe().unwrap());
         spawn(spawner, "heartbeat", heartbeat(flash).unwrap());
+        spawn(spawner, "revert", update::revert_task(flash).unwrap());
         spawn(spawner, "report", report(handoff, measured_hz, watchdog).unwrap());
         spawn(spawner, "display", display(pwr_int).unwrap());
         spawn(spawner, "haptic", haptic::serve().unwrap());

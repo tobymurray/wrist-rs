@@ -134,6 +134,13 @@ version. After it, the new version is kept once it has run a while with the comp
 connected; a restart before then brings the previous one back. Check `boot` and `version`
 before trying again, rather than restarting a new version repeatedly.
 
+To go back to the version the last update replaced, once the new one is kept:
+`.venv/bin/python tools/wrist-update.py --revert`, or `tools/wrist-ble.py --revert` over
+Bluetooth. The watch copies it back from its second slot, so nothing needs to be sent; it
+then has to keep itself as an update does. Run it again to return. After the watch has put
+a version back by itself, or after an install from stock, there is nothing to go back to,
+and the watch says so.
+
 The loader is separate, and only when the release notes ask for it:
 `.venv/bin/python tools/wrist-update.py --loader loader.bin`. It has no second slot, so a
 power cut while it is written needs the recovery below. Keep the cable in, and check
@@ -157,6 +164,7 @@ watch's number over the cable and confirms it.
 .venv/bin/python tools/wrist-ble.py --pair
 .venv/bin/python tools/wrist-ble.py "boot;version"     # any console command, over the air
 .venv/bin/python tools/wrist-ble.py --update app.bin   # waits, over the air, for state boot
+.venv/bin/python tools/wrist-ble.py --revert           # the version the last update replaced
 .venv/bin/python tools/wrist-time.py --ble             # the clock, zone and --alarm, with no cable
 ```
 

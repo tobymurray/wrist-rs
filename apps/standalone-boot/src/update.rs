@@ -11,8 +11,9 @@ use embassy_stm32::flash::{Bank1Region, Config, Flash, WRITE_SIZE};
 use embassy_stm32::mode::Blocking;
 use embassy_stm32::peripherals::FLASH;
 use embassy_stm32::Peri;
-use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex};
 use embassy_sync::blocking_mutex::Mutex;
+use embassy_sync::signal::Signal;
 use embassy_time::Timer;
 use static_cell::StaticCell;
 use wrist_flash::vectors::Target;
@@ -119,10 +120,7 @@ pub fn begin(
     if len == 0 || len > target.size() as usize {
         return Err("length out of range for this target");
     }
-    if STAGING_BUSY.swap(true, Ordering::Acquire) {
-        return Err("a transfer is already in progress");
-    }
-    unsafe { modify32(PWR_CR2, PWR_CR2_SRAM3_1_TO_8, 0) };
+    claim_staging()?;
     let uart = Uart::best_effort();
     uart.write_str(tag);
     uart.write_str(" send ");
@@ -233,6 +231,15 @@ async fn verify(s: &Session) -> Result<&'static [u8], &'static str> {
     uart.write_hex32(found);
     uart.write_line("; console pauses while flash is written");
     Ok(&staging[..s.len])
+}
+
+/// The staging buffer, kept through Stop until [`release`].
+fn claim_staging() -> Result<(), &'static str> {
+    if STAGING_BUSY.swap(true, Ordering::Acquire) {
+        return Err("a transfer is already in progress");
+    }
+    unsafe { modify32(PWR_CR2, PWR_CR2_SRAM3_1_TO_8, 0) };
+    Ok(())
 }
 
 fn release() {
@@ -407,4 +414,67 @@ fn write_and_mark(flash: &'static FlashMutex, image: &[u8], crc: u32) -> Result<
     updater
         .mark_updated()
         .map_err(|_| "could not mark the swap")
+}
+
+/// `update revert`, asked for on the console and run by [`revert_task`].
+pub static REVERT: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+/// Puts back the image the last kept update replaced, as an update of its own: the next reset
+/// swaps it in, and it has to keep itself as any update does, or the loader brings this one back.
+#[embassy_executor::task]
+pub async fn revert_task(flash: &'static FlashMutex) -> ! {
+    loop {
+        REVERT.wait().await;
+        if let Err(why) = revert(flash).await {
+            let uart = Uart::best_effort();
+            uart.write_str("[update] revert: ");
+            uart.write_line(why);
+        }
+    }
+}
+
+async fn revert(flash: &'static FlashMutex) -> Result<(), &'static str> {
+    app_update_allowed(flash)?;
+    claim_staging()?;
+    let result = revert_staged(flash).await;
+    release();
+    result
+}
+
+async fn revert_staged(flash: &'static FlashMutex) -> Result<(), &'static str> {
+    use wrist_flash::previous::{previous_image, DFU_BASE, DFU_SIZE};
+    // Flash, read while nothing writes it: the write below comes from the copy in RAM.
+    let dfu = unsafe { core::slice::from_raw_parts(DFU_BASE as *const u8, DFU_SIZE) };
+    let active = unsafe {
+        core::slice::from_raw_parts(Target::Application.base() as *const u8, Target::Application.size() as usize)
+    };
+    let found = previous_image(dfu, active).map_err(wrist_flash::previous::Refusal::as_str)?;
+    let len = found.len();
+    let staging = unsafe { core::slice::from_raw_parts_mut(STAGING as *mut u8, STAGING_SIZE) };
+    for (i, piece) in found.chunks(4096).enumerate() {
+        staging[i * 4096..i * 4096 + piece.len()].copy_from_slice(piece);
+        embassy_futures::yield_now().await;
+    }
+    let image = &staging[..len];
+    let crc = crc32_yielding(image).await;
+    if crate::version::crc() == Some(crc) {
+        return Err("the other slot holds this same image; nothing written");
+    }
+    let uart = Uart::best_effort();
+    uart.write_str("[update] reverting to the image this one replaced, ");
+    uart.write_u32(u32::try_from(len).unwrap_or(u32::MAX));
+    uart.write_str(" bytes, crc ");
+    uart.write_hex32(crc);
+    uart.write_line("; console pauses while flash is written");
+    crate::console::quiet(true);
+    Timer::after_millis(200).await;
+    let result = write_and_mark(flash, image, crc);
+    crate::console::quiet(false);
+    result?;
+    uart.write_str("[update] revert ok ");
+    uart.write_u32(u32::try_from(len).unwrap_or(u32::MAX));
+    uart.write_str(" bytes, crc ");
+    uart.write_hex32(crc);
+    uart.write_line(", swap marked; reset to apply");
+    Ok(())
 }
