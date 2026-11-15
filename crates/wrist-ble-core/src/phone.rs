@@ -20,8 +20,8 @@ pub const NUMERIC_BACKSTOP: Millis = Millis::secs(30);
 pub const PAIRING_OUTCOME: Millis = Millis::secs(30);
 
 /// A security request with no outcome this long after it has failed: past the chip's own report
-/// of an unanswered one, 30 s on (HARDWARE.md), which a link whose earlier pairing timed out may
-/// never send (Core 6.0 Vol 3 Part H §3.4).
+/// of an unanswered one, 30 s on, which never comes on a link whose earlier pairing timed out,
+/// since the chip refuses the request there (HARDWARE.md; Core 6.0 Vol 3 Part H §3.4).
 pub const SECURITY_REQUEST_OUTCOME: Millis = Millis::secs(35);
 
 /// No central start this soon after the phone connects or its parameters change.
