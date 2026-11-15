@@ -284,6 +284,20 @@ fn a_security_request_refused_for_an_unknown_connection_can_never_succeed() {
     assert_eq!(refused(&request, 0x0C).kind, FailureKind::ModeExclusion);
 }
 
+#[test]
+fn a_refusal_on_a_link_already_down_is_not_connected_whatever_the_code() {
+    let mut ops = Ops::default();
+    ops.saw(&RadioEvent::LinkDown { link: link(1), reason: Status::new(0x13) });
+    let request = Op::RequestSecurity(link(1));
+    assert_eq!(ops.answered(&request, 0x40, 9), Err(Failure { kind: FailureKind::NotConnected, native: 0x40 }), "not refused for good");
+    assert_eq!(ops.answered(&ask(link(1)), 0x46, 9), Err(Failure { kind: FailureKind::NotConnected, native: 0x46 }));
+    assert_eq!(ops.answered(&Op::RequestSecurity(link(2)), 0x40, 9).map_err(|f| f.kind), Err(FailureKind::Security), "another link's refusal keeps its kind");
+    assert_eq!(ops.answered(&Op::Advertise(Some(ADV)), 0x0C, 9).map_err(|f| f.kind), Err(FailureKind::ModeExclusion), "and so does one on no link");
+    up(&mut ops, link(1), LeConnRole::Peripheral);
+    assert_eq!(ops.answered(&request, 0x40, 9).map_err(|f| f.kind), Err(FailureKind::Security), "made again, the link's refusal is the chip's");
+    assert_eq!(ops.ended(), None, "a refusal ends nothing");
+}
+
 /// The chip's own order on a peripheral link (`ble interval now` three times running, 2026-11-13):
 /// the second ask refused busy, the first answered, the held one taken, then the first's update.
 #[test]
