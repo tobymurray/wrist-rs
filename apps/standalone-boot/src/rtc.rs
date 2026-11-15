@@ -281,14 +281,6 @@ pub enum Piece {
 
 pub const PIECES: [Piece; 6] = [Piece::Zone, Piece::Change(0), Piece::Change(1), Piece::LastSet, Piece::Alarm, Piece::Calendar];
 
-/// The whole report without yielding.
-pub fn write_report(uart: Uart) {
-    let snapshot = write_clocks(uart);
-    for piece in PIECES {
-        write_piece(uart, &snapshot, piece);
-    }
-}
-
 /// One of the report's [`PIECES`], as `snapshot` read it; whether it printed a line.
 pub fn write_piece(uart: Uart, snapshot: &Snapshot, piece: Piece) -> bool {
     match piece {

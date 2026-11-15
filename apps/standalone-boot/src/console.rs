@@ -521,7 +521,7 @@ pub fn command(cmd: &[u8], flash: &'static FlashMutex) {
         b"usblog" => crate::REPORT.signal(crate::Report::UsbLog),
         b"report" => crate::REPORT.signal(crate::Report::Full),
         rest if rest == b"modules" || rest.starts_with(b"modules ") => crate::modules::command(&rest[7..], uart),
-        b"rtc" | b"time" => crate::rtc::write_report(uart),
+        b"rtc" | b"time" => crate::REPORT.signal(crate::Report::Rtc),
         rest if rest == b"power" || rest.starts_with(b"power ") => crate::power::command(&rest[5..], uart),
         rest if rest == b"alarm" || rest.starts_with(b"alarm ") => crate::alarm::command(&rest[5..], uart),
         set if set.starts_with(b"time set ") => {

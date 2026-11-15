@@ -88,6 +88,8 @@ const SWEEP_BAUDS: [u32; 5] = [115_200, 57_600, 38_400, 19_200, 9600];
 #[derive(Clone, Copy)]
 pub enum Report {
     Full,
+    /// `time`: the RTC section alone.
+    Rtc,
     UsbLog,
     Staging(usize),
     FlashSurvey,
@@ -1263,9 +1265,22 @@ async fn report(handoff: RccSnapshot, measured_hz: u32, watchdog: watchdog::Star
     loop {
         match REPORT.wait().await {
             Report::Full => full_report(uart, &handoff, measured_hz, watchdog, "asked for").await,
+            Report::Rtc => write_rtc(uart).await,
             Report::UsbLog => usblog::dump(uart).await,
             Report::Staging(len) => update::staging_crcs(uart, len).await,
             Report::FlashSurvey => flash::survey(uart).await,
+        }
+    }
+}
+
+/// The RTC section, read as one snapshot and printed a few lines between yields, so that no poll
+/// holds the executor long.
+async fn write_rtc(uart: Uart) {
+    let snapshot = rtc::write_clocks(uart);
+    console::make_room().await;
+    for piece in rtc::PIECES {
+        if rtc::write_piece(uart, &snapshot, piece) {
+            console::make_room().await;
         }
     }
 }
@@ -1338,13 +1353,7 @@ async fn full_report(
 
     // A few lines between yields, so that no poll of the report holds the executor long.
     uart.write_line("[step] rtc   :");
-    let snapshot = rtc::write_clocks(uart);
-    make_room().await;
-    for piece in rtc::PIECES {
-        if rtc::write_piece(uart, &snapshot, piece) {
-            make_room().await;
-        }
-    }
+    write_rtc(uart).await;
     uart.write_line("[step] usb   :");
     console::write_phy_regs(uart);
     make_room().await;
