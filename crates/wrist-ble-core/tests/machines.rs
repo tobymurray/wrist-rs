@@ -28,8 +28,9 @@ fn phone_asks_an_unencrypted_link_to_pair_once() {
     assert_eq!(a, NONE);
     let (p, a) = actions(p, 5_000, phone::Event::Tick);
     assert_eq!(a, [Action::RequestSecurity(phone())]);
-    assert_eq!(p.deadline(), None);
+    assert_eq!(p.deadline(), Some(t(5_000) + phone::SECURITY_REQUEST_OUTCOME), "its outcome");
     assert_eq!(actions(p, 9_000, phone::Event::Tick).1, NONE);
+    assert_eq!(actions(p, 60_000, phone::Event::Tick).1, NONE);
 }
 
 /// No parameter ask before encryption, however long the link has been up unencrypted.
@@ -195,6 +196,64 @@ fn phone_link_whose_pairing_failed_found_unencrypted_is_held_again() {
     let (p, a) = actions(p, 75_000, phone::Event::Pairing(phone(), PairingStep::Failed));
     assert_eq!(a, NONE, "told once");
     assert!(p.may_ask_params(t(75_000)));
+}
+
+/// A remade link's security request may go unanswered with no outcome from the chip, after an
+/// earlier pairing on the link timed out (Core 6.0 Vol 3 Part H §3.4), so it fails at a deadline.
+#[test]
+fn phone_link_remade_after_a_failed_pairing_is_not_held_for_life() {
+    let (p, _) = actions(up(0), 100, phone::Event::BondLost(phone()));
+    let (p, _) = actions(p, 30_000, phone::Event::Pairing(phone(), PairingStep::Failed));
+    let (p, _) = actions(p, 40_000, phone::Event::Resynced(phone(), Some(false)));
+    let (p, a) = actions(p, 45_000, phone::Event::Tick);
+    assert_eq!(a, [Action::RequestSecurity(phone())]);
+    let outcome = t(45_000) + phone::SECURITY_REQUEST_OUTCOME;
+    assert_eq!(p.deadline(), Some(outcome));
+    let (p, a) = actions(p, outcome.0 - 1, phone::Event::Tick);
+    assert_eq!(a, NONE);
+    assert!(!p.may_ask_params(t(outcome.0 - 1)));
+    let (p, a) = actions(p, outcome.0, phone::Event::Tick);
+    assert_eq!(a, NONE, "its lost bond told once");
+    assert!(p.may_ask_params(outcome));
+    assert_eq!(p.deadline(), None);
+}
+
+/// The chip reports an unanswered security request 30 s on, before the core's deadline.
+#[test]
+fn phone_security_request_outcome_is_the_chips_when_it_comes() {
+    let (p, a) = actions(up(0), 5_000, phone::Event::Tick);
+    assert_eq!(a, [Action::RequestSecurity(phone())]);
+    assert!(phone::SECURITY_REQUEST_OUTCOME > Millis::secs(30));
+    let (p, a) = actions(p, 35_000, phone::Event::Pairing(phone(), PairingStep::Failed));
+    assert_eq!(a, NONE);
+    assert!(p.may_ask_params(t(35_000)));
+    assert_eq!(p.deadline(), None);
+    let (p, _) = actions(up(0), 5_000, phone::Event::Tick);
+    let (p, _) = actions(p, 6_000, phone::Event::Encryption(phone(), true));
+    assert_eq!(p.deadline(), None);
+    let (p, _) = actions(up(0), 5_000, phone::Event::Tick);
+    let (p, _) = actions(p, 6_000, phone::Event::Pairing(phone(), PairingStep::Numeric(7)));
+    assert_eq!(p.deadline(), Some(t(6_000) + phone::NUMERIC_DEADLINE + phone::NUMERIC_BACKSTOP));
+}
+
+/// A failure event lost leaves a link unsecured, its ask spent: its deadline ends the wait, and a
+/// resync that finds it unencrypted holds it as a new link, which is asked to pair again.
+#[test]
+fn phone_link_whose_failure_was_lost_is_not_held_for_life() {
+    let (p, _) = actions(up(0), 5_000, phone::Event::Tick);
+    let outcome = t(5_000) + phone::SECURITY_REQUEST_OUTCOME;
+    let (q, a) = actions(p, outcome.0, phone::Event::Tick);
+    assert_eq!(a, NONE);
+    assert!(q.may_ask_params(outcome));
+    let (p, _) = actions(p, 7_000, phone::Event::Pairing(phone(), PairingStep::PasskeyWanted));
+    let (p, a) = actions(p, 20_000, phone::Event::Resynced(phone(), Some(false)));
+    assert_eq!(a, NONE);
+    assert!(matches!(p, Phone::Up(l) if l.since == t(20_000) && l.security == Security::Unsecured), "{p:?}");
+    assert!(!p.may_ask_params(t(20_000)));
+    let (p, a) = actions(p, 25_000, phone::Event::Tick);
+    assert_eq!(a, [Action::RequestSecurity(phone())]);
+    let (p, _) = actions(p, 25_000 + u64::from(phone::SECURITY_REQUEST_OUTCOME.0), phone::Event::Tick);
+    assert!(p.may_ask_params(t(25_000) + phone::SECURITY_REQUEST_OUTCOME));
 }
 
 /// An unencrypted link still waiting on its pairing is the link it was, so a resync changes nothing.
