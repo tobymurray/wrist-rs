@@ -349,5 +349,9 @@ fn the_drivers_refusal_is_the_cores_own_answer() {
     let mut s = asked_to_pair();
     s.event(Instant(5_201), &command_status(0x40, 0xFC81));
     assert!(!s.state().phone.may_ask_params(Instant(5_201)), "another command's reply");
+    let mut s = asked_to_pair();
+    s.command(Instant(5_201), 0xFD81, &[0x01, 0x08, 80, 0, 160, 0, 4, 0, 0x58, 0x02]);
+    s.event(Instant(5_202), &command_status(0x40, 0xFD81));
+    assert!(!s.state().phone.may_ask_params(Instant(5_202)), "another kind of command on the link");
     assert!(s.observer.found.is_empty(), "{:?}", s.observer.found);
 }
