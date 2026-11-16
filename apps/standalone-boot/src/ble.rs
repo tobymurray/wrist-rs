@@ -69,10 +69,10 @@ use bluenrg2::opcode::{
 };
 use bluenrg2::{
     event_code, io_capability, AddrKind, BdAddr, BootReason, Event, BleStatus,
-    PairingReason, PairingStatus, VendorEvent, ATT_HEADER_LEN,
+    PairingReason, VendorEvent, ATT_HEADER_LEN,
 };
 use wrist_ble::{
-    AdvParams, Cccd, CharDecl, ConnHandle, ConnParams, DisconnectReason, Failure, FailureKind, Interval, LeConnRole, Micros, Op, OpKind, Payload, RadioEvent, ServerTable,
+    AdvParams, Cccd, CharDecl, ConnHandle, ConnParams, DisconnectReason, Failure, FailureKind, Interval, LeConnRole, Micros, Op, OpKind, PairingEvent, PairingStep, Payload, RadioEvent, ServerTable,
     ServiceDecl, Slots, Timeout, ATT_MAX_MTU,
 };
 use wrist_ble_core::goals::{self, Goals, PhoneGoal};
@@ -1529,6 +1529,14 @@ impl Link<'_> {
                 return self.set_mirror();
             }
             Some(RadioEvent::ParamsAnswered { .. }) => self.held_ask.central_answered(),
+            Some(RadioEvent::Pairing(PairingEvent { step: PairingStep::LocalKeyMissing, .. })) => {
+                if let Some(peer) = self.peer {
+                    old_key(|k| k.refused(peer));
+                }
+            }
+            Some(RadioEvent::Pairing(PairingEvent { step: PairingStep::PeerKeyMissing, .. })) => {
+                self.uart.write_line("[ble] the central has lost its bond; pair again from the central");
+            }
             _ => {}
         }
         match bluenrg2::parse(p) {
@@ -1741,9 +1749,6 @@ impl Link<'_> {
                     self.uart.write_line("[ble] paired");
                     self.recount_bonds = true;
                 } else {
-                    if let (PairingStatus::LTK_MISSING_LOCAL, Some(peer)) = (status, self.peer) {
-                        old_key(|k| k.refused(peer));
-                    }
                     self.interval_ask.pairing_failed();
                     self.uart.write_str("[ble] pairing failed: status ");
                     self.uart.write_hex8(status.into_inner());

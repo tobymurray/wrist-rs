@@ -42,6 +42,8 @@ pub enum Input {
 pub enum Tell {
     /// The phone has lost its bond with this device.
     BondLost(ConnHandle),
+    /// The phone holds a key this device has lost.
+    OldKey(ConnHandle),
     /// The chip refused what its model admitted; the configuration is not tried again.
     Divergence { kind: OpKind, native: u16 },
     /// A peer's request for new parameters was refused.
@@ -342,6 +344,7 @@ impl<'a> Core<'a> {
                 phone::Action::ConfirmNumeric(l, yes) => self.enqueue(Op::ConfirmNumeric(l, yes)),
                 phone::Action::AllowRebond(l) => self.enqueue(Op::AllowRebond(l)),
                 phone::Action::TellBondLost(l) => out.tell(Tell::BondLost(l)),
+                phone::Action::TellOldKey(l) => out.tell(Tell::OldKey(l)),
             }
         }
     }

@@ -144,6 +144,20 @@ fn asked_on_battery() -> Bench {
     b
 }
 
+/// The chip's two key-missing outcomes reach the user: the phone to forget this device, or its
+/// bond lost.
+#[test]
+fn a_missing_key_is_told() {
+    use wrist_ble::{PairingEvent, PairingStep};
+    use wrist_ble_core::engine::Tell;
+    for (step, tell) in [(PairingStep::LocalKeyMissing, Tell::OldKey(link())), (PairingStep::PeerKeyMissing, Tell::BondLost(link()))] {
+        let mut b = Bench::new(battery());
+        b.phone_up(1_000);
+        let out = b.at(1_200, Input::Radio(RadioEvent::Pairing(PairingEvent { link: link(), step })));
+        assert_eq!(out.tell, [Some(tell), None], "{step:?}");
+    }
+}
+
 /// An ask refused before it reached the air is asked again once the backoff ends.
 #[test]
 fn an_ask_refused_at_submit_is_asked_again_after_the_backoff() {

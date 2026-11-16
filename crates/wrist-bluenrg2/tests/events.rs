@@ -121,6 +121,9 @@ fn pairing_steps_come_from_the_gap_events() {
     assert_eq!(one(&vendor(0x0402, &[0x01, 0x08])), step(PairingStep::PasskeyWanted));
     assert_eq!(one(&vendor(0x0401, &[0x01, 0x08, 0x00, 0x00])), step(PairingStep::Complete));
     assert_eq!(one(&vendor(0x0401, &[0x01, 0x08, 0x02, 0x0B])), step(PairingStep::Failed));
+    assert_eq!(one(&vendor(0x0401, &[0x01, 0x08, 0x03, 0x00])), step(PairingStep::LocalKeyMissing));
+    assert_eq!(one(&vendor(0x0401, &[0x01, 0x08, 0x04, 0x00])), step(PairingStep::PeerKeyMissing));
+    assert_eq!(one(&vendor(0x0401, &[0x01, 0x08, 0x05, 0x00])), step(PairingStep::Failed), "encryption not supported");
     assert_eq!(one(&vendor(0x0401, &[0x01, 0x08])), Some(RadioEvent::EventsLost));
 }
 

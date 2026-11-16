@@ -106,6 +106,8 @@ pub enum Action {
     /// Tell the user the phone lost its bond: once a link, whichever of the chip's bond-lost
     /// event and the failed pairing came first.
     TellBondLost(ConnHandle),
+    /// Tell the user the phone holds a key this device has lost: the phone must forget it.
+    TellOldKey(ConnHandle),
 }
 
 /// At most two actions from one step.
@@ -256,6 +258,15 @@ impl PhoneLink {
                     }
                 }
                 PairingStep::Failed => self.fail_pairing(out),
+                PairingStep::LocalKeyMissing => {
+                    out.push(Action::TellOldKey(link));
+                    self.fail_pairing(out);
+                }
+                // The phone lost its bond, though the chip has no bond-lost event to answer.
+                PairingStep::PeerKeyMissing => {
+                    self.bond_lost = true;
+                    self.fail_pairing(out);
+                }
             },
             Event::BondLost(id) if id == link => {
                 self.bond_lost = true;

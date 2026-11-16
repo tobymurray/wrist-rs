@@ -81,6 +81,11 @@ pub enum PairingStep {
     /// Keys exchanged; [`RadioEvent::Encryption`] follows.
     Complete,
     Failed,
+    /// Encryption failed: this device no longer holds the key the peer offered, so the peer must
+    /// forget it before they can pair again.
+    LocalKeyMissing,
+    /// Encryption failed: the peer no longer holds this device's key, so it has lost its bond.
+    PeerKeyMissing,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

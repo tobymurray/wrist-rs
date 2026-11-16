@@ -140,6 +140,26 @@ fn phone_pairing_with_no_outcome_after_a_lost_bond_tells_it() {
     assert_eq!(a, [Action::TellBondLost(phone())]);
 }
 
+/// The phone offered a key this device lost: told once, and the link is a failed pairing.
+#[test]
+fn phone_offering_a_key_this_device_lost_is_told_to_forget_it() {
+    let (p, a) = actions(up(0), 1_000, phone::Event::Pairing(phone(), PairingStep::LocalKeyMissing));
+    assert_eq!(a, [Action::TellOldKey(phone())]);
+    assert!(matches!(p, Phone::Up(l) if l.security == Security::Unsecured));
+    assert!(p.may_ask_params(t(1_000)), "as any failed pairing");
+}
+
+/// The phone lost this device's key: its bond is lost, told at once, with no rebond to allow
+/// until the chip reports one.
+#[test]
+fn phone_missing_its_key_has_lost_its_bond() {
+    let (p, a) = actions(up(0), 1_000, phone::Event::Pairing(phone(), PairingStep::PeerKeyMissing));
+    assert_eq!(a, [Action::TellBondLost(phone())]);
+    assert!(p.may_ask_params(t(1_000)));
+    let (_, a) = actions(p, 2_000, phone::Event::BondLost(phone()));
+    assert_eq!(a, [Action::AllowRebond(phone())], "told once");
+}
+
 #[test]
 fn phone_bond_lost_is_told_in_either_order() {
     let (p, a) = actions(up(0), 100, phone::Event::BondLost(phone()));
