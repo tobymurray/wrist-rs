@@ -118,9 +118,9 @@ fn a_link_going_down_fails_what_waited_on_it() {
 fn the_central_taking_the_ask_ends_it() {
     let mut ops = Ops::default();
     ops.answered(&ask(link(1)), 0, 0).unwrap();
-    ops.responded(link(2), true);
+    ops.saw(&RadioEvent::ParamsAnswered { link: link(2), accepted: true });
     assert_eq!(ops.ended(), None);
-    ops.responded(link(1), true);
+    ops.saw(&RadioEvent::ParamsAnswered { link: link(1), accepted: true });
     assert_eq!(ops.ended(), Some(done(0)));
 }
 
@@ -213,10 +213,10 @@ fn the_central_taking_an_ask_ends_the_oldest_on_its_link() {
     let mut ops = Ops::default();
     ops.answered(&ask(link(1)), 0, 9).unwrap();
     ops.answered(&ask(link(1)), 0, 9).unwrap();
-    ops.responded(link(1), true);
+    ops.saw(&RadioEvent::ParamsAnswered { link: link(1), accepted: true });
     assert_eq!(ops.ended(), Some(RadioEvent::Done(OpId(0), Ok(Outcome::Done))));
     ops.answered(&ask(link(1)), 0, 9).unwrap();
-    ops.responded(link(1), true);
+    ops.saw(&RadioEvent::ParamsAnswered { link: link(1), accepted: true });
     assert_eq!(ops.ended(), Some(RadioEvent::Done(OpId(1), Ok(Outcome::Done))), "not the newer one in the freed slot");
 }
 
@@ -306,13 +306,13 @@ fn on_a_peripheral_link_the_centrals_answer_ends_an_ask_and_an_update_ends_none(
     up(&mut ops, link(1), LeConnRole::Peripheral);
     assert_eq!(ops.answered(&ask(link(1)), 0, 9), Ok(OpId(0)));
     assert_eq!(ops.answered(&ask(link(1)), 0x46, 9).map_err(|f| f.kind), Err(FailureKind::Busy));
-    ops.responded(link(1), true);
+    ops.saw(&RadioEvent::ParamsAnswered { link: link(1), accepted: true });
     assert_eq!(ops.ended(), Some(done(0)));
     assert_eq!(ops.answered(&ask(link(1)), 0, 9), Ok(OpId(1)));
     let params = LinkParams { interval: Interval::from_u16(24), latency: 0, timeout: Timeout::from_u16(500) };
     ops.saw(&RadioEvent::Params { link: link(1), result: Ok(params) });
     assert_eq!((ops.ended(), ops.due()), (None, Some(9)), "the first ask's update leaves the second waiting");
-    ops.responded(link(1), true);
+    ops.saw(&RadioEvent::ParamsAnswered { link: link(1), accepted: true });
     assert_eq!((ops.ended(), ops.due()), (Some(done(1)), None));
 }
 
@@ -322,10 +322,9 @@ fn a_centrals_refusal_ends_only_the_oldest_ask_by_its_own_event() {
     up(&mut ops, link(1), LeConnRole::Peripheral);
     ops.answered(&ask(link(1)), 0, 9).unwrap();
     ops.answered(&ask(link(1)), 0, 9).unwrap();
-    ops.responded(link(1), false);
-    ops.saw(&RadioEvent::Params { link: link(1), result: Err(Failure { kind: FailureKind::PeerRejected, native: 0 }) });
-    assert_eq!((ops.ended(), ops.due()), (None, Some(9)), "the refusal's event is the first's end; the second waits");
-    ops.responded(link(1), true);
+    ops.saw(&RadioEvent::ParamsAnswered { link: link(1), accepted: false });
+    assert_eq!((ops.ended(), ops.due()), (None, Some(9)), "the refusal is the first's end; the second waits");
+    ops.saw(&RadioEvent::ParamsAnswered { link: link(1), accepted: true });
     assert_eq!(ops.ended(), Some(done(1)));
 }
 

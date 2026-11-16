@@ -155,7 +155,8 @@ fn an_ask_refused_at_submit_is_asked_again_after_the_backoff() {
     assert!(matches!(out.op, Some(Op::UpdateParams(l, _)) if l == link()), "{out:?}");
 }
 
-/// An ask refused busy waits for the central to answer the one before, however long that takes.
+/// An ask refused busy waits for the central to answer the one before, however long that takes;
+/// an update completing meanwhile, the central's own or a failed one, is no answer.
 #[test]
 fn an_ask_refused_busy_waits_for_the_centrals_answer() {
     let mut b = asked_on_battery();
@@ -163,9 +164,27 @@ fn an_ask_refused_busy_waits_for_the_centrals_answer() {
     for t in [2_300, 5_000, 20_000] {
         assert_eq!(b.at(t, Input::Tick).op, None, "at {t} ms");
     }
-    let rejected = Err(Failure { kind: FailureKind::PeerRejected, native: 0 });
-    let out = b.at(21_000, Input::Radio(RadioEvent::Params { link: link(), result: rejected }));
+    let params = LinkParams { interval: Duration::from_u16(24), latency: 0, timeout: Duration::from_u16(500) };
+    let failed = Err(Failure { kind: FailureKind::PeerRejected, native: 0x3B });
+    for result in [Ok(params), failed] {
+        let out = b.at(20_500, Input::Radio(RadioEvent::Params { link: link(), result }));
+        assert_eq!(out.op, None, "{result:?}");
+    }
+    let out = b.at(21_000, Input::Radio(RadioEvent::ParamsAnswered { link: link(), accepted: false }));
     assert!(matches!(out.op, Some(Op::UpdateParams(l, _)) if l == link()), "{out:?}");
+}
+
+/// The central's refusal ends the ask and counts as a failed update; its acceptance leaves the ask
+/// to the driver's end of it.
+#[test]
+fn a_centrals_refusal_ends_the_ask_and_its_acceptance_does_not() {
+    for accepted in [false, true] {
+        let mut b = asked_on_battery();
+        b.accept();
+        b.at(1_400, Input::Radio(RadioEvent::ParamsAnswered { link: link(), accepted }));
+        assert_eq!(b.core.counters.update_failures, u32::from(!accepted), "accepted {accepted}");
+        assert_eq!(b.core.pending().is_none(), !accepted, "accepted {accepted}");
+    }
 }
 
 /// A busy ask goes again as soon as the central accepts the one before, before its update lands.
@@ -174,7 +193,7 @@ fn an_ask_refused_busy_goes_when_the_central_accepts_the_one_before() {
     let mut b = asked_on_battery();
     b.refuse(FailureKind::Busy);
     assert_eq!(b.at(2_300, Input::Tick).op, None);
-    let out = b.at(2_400, Input::Radio(RadioEvent::ParamsAccepted { link: link() }));
+    let out = b.at(2_400, Input::Radio(RadioEvent::ParamsAnswered { link: link(), accepted: true }));
     assert!(matches!(out.op, Some(Op::UpdateParams(l, _)) if l == link()), "{out:?}");
 }
 

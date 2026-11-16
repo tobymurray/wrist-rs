@@ -75,6 +75,8 @@ struct Link {
     doomed: bool,
     /// An update this device asked for, until its instant.
     updating: Option<OpId>,
+    /// This peripheral's request, until the central answers it.
+    asking: Option<OpId>,
     /// The peer's own update, until its instant.
     peer_update_until: Option<Instant>,
     subscribed: bool,
@@ -98,6 +100,8 @@ enum Do {
     PeerBurst(ConnHandle),
     PeerUpdate(ConnHandle, u16),
     PeerUpdateApplied(ConnHandle, u16),
+    /// The central's answer to this peripheral's request: the parameters it will apply, if any.
+    Answered(ConnHandle, OpId, Option<LinkParams>),
     UpdateApplied(ConnHandle, LinkParams, OpId),
     UpdateFailed(ConnHandle, OpId),
     PairRequest(ConnHandle),
@@ -662,11 +666,12 @@ impl Fake {
 
     fn update(&mut self, op: Op, l: ConnHandle, params: ConnParams) -> Result<OpId, Failure> {
         let link = self.link(l).ok_or(failure(FailureKind::NotConnected, 0x02))?;
-        if link.updating.is_some() {
-            // As a peripheral the chip holds one L2CAP request at a time and refuses another with
-            // `BLE_STATUS_NOT_ALLOWED` (HARDWARE.md); as a central, unmeasured.
-            let native = if matches!(link.peer, Peer::Phone(_)) { NOT_ALLOWED } else { COMMAND_DISALLOWED };
-            return Err(refused(&op, native));
+        // As a peripheral the chip holds one L2CAP request until the central answers it and refuses
+        // another with `BLE_STATUS_NOT_ALLOWED` (HARDWARE.md); as a central, unmeasured.
+        match link.peer {
+            Peer::Phone(_) if link.asking.is_some() => return Err(refused(&op, NOT_ALLOWED)),
+            Peer::Sensor(_) if link.updating.is_some() => return Err(refused(&op, COMMAND_DISALLOWED)),
+            _ => {}
         }
         let mut granted = None;
         if let Some(slot) = link.slot {
@@ -678,16 +683,20 @@ impl Fake {
         }
         self.procedure(l);
         let id = self.accept(op);
+        let phone = matches!(link.peer, Peer::Phone(_));
         if let Some(link) = self.link_mut(l) {
             link.updating = Some(id);
+            link.asking = phone.then_some(id);
         }
         let iv = interval_ms(link.params);
         let lead = iv * u32::try_from(INSTANT_EVENTS).unwrap_or(6) + self.rng.range(0, iv);
+        // The central answers at its next connection event.
         match link.peer {
-            Peer::Phone(i) if self.phones[i].phone.update_fails => self.after(ms(lead), Do::UpdateFailed(l, id)),
+            Peer::Phone(i) if self.phones[i].phone.update_fails => self.after(ms(iv), Do::Answered(l, id, None)),
             Peer::Phone(i) => {
                 let granted = self.phones[i].phone.grant(params.interval_min, params.interval_max);
                 let p = LinkParams { interval: granted, latency: params.latency, timeout: params.timeout };
+                self.after(ms(iv), Do::Answered(l, id, Some(p)));
                 self.after(ms(lead), Do::UpdateApplied(l, p, id));
             }
             Peer::Sensor(i) if self.sensors[i].sensor.refuses_updates => self.after(ms(lead), Do::UpdateFailed(l, id)),
@@ -893,12 +902,26 @@ impl Fake {
                 let p = link.params;
                 self.emit(RadioEvent::Params { link: l, result: Ok(p) });
             }
-            Do::UpdateApplied(l, p, id) => {
+            Do::Answered(l, id, granted) => {
                 let Some(link) = self.link_mut(l) else { return };
-                if link.updating != Some(id) {
+                if link.asking != Some(id) {
                     return;
                 }
-                link.updating = None;
+                link.asking = None;
+                if granted.is_none() {
+                    link.updating = None;
+                }
+                self.emit(RadioEvent::ParamsAnswered { link: l, accepted: granted.is_some() });
+                if self.end(id).is_some() && granted.is_some() {
+                    self.emit(RadioEvent::Done(id, Ok(Outcome::Done)));
+                }
+            }
+            // A phone's update completes after its answer, and may after a newer ask is taken.
+            Do::UpdateApplied(l, p, id) => {
+                let Some(link) = self.link_mut(l) else { return };
+                if link.updating == Some(id) {
+                    link.updating = None;
+                }
                 link.params = p;
                 self.end(id);
                 self.emit(RadioEvent::Params { link: l, result: Ok(p) });
@@ -1173,6 +1196,7 @@ impl Fake {
             encrypting: false,
             doomed: false,
             updating: None,
+            asking: None,
             peer_update_until: None,
             subscribed: false,
             pairing: false,

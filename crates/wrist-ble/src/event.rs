@@ -18,8 +18,9 @@ pub enum RadioEvent {
     LinkDown { link: ConnHandle, reason: Status },
     /// A parameter update completed, with an error too.
     Params { link: ConnHandle, result: Result<LinkParams, Failure> },
-    /// The central accepted this peripheral's parameter request; its update, if any, follows.
-    ParamsAccepted { link: ConnHandle },
+    /// The central answered this peripheral's parameter request, which ends it: the chip may take
+    /// the next one now; an accepted one's update, if any, follows.
+    ParamsAnswered { link: ConnHandle, accepted: bool },
     Encryption { link: ConnHandle, on: bool },
     Pairing(PairingEvent),
     /// The peer has no bond for a link the chip had bonded keys for.

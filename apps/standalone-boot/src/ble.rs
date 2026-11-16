@@ -1525,6 +1525,7 @@ impl Link<'_> {
                 self.subscribed = cccd == Cccd::Notify;
                 return self.set_mirror();
             }
+            Some(RadioEvent::ParamsAnswered { .. }) => self.held_ask.central_answered(),
             _ => {}
         }
         match bluenrg2::parse(p) {
@@ -1758,7 +1759,6 @@ impl Link<'_> {
             }
             VendorEvent::TxPoolAvailable { .. } | VendorEvent::AttributeModified { .. } => {}
             VendorEvent::L2capUpdateResponse { accepted, .. } => {
-                self.held_ask.central_answered();
                 if !accepted {
                     UPDATES_REFUSED.fetch_add(1, Ordering::Relaxed);
                     self.uart.write_line("[ble] the central refused the interval request");

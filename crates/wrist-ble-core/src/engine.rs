@@ -400,16 +400,18 @@ impl<'a> Core<'a> {
                     }
                 }
             }
-            RadioEvent::ParamsAccepted { link } => {
+            // The chip takes another request once the central answers, and only then (HARDWARE.md).
+            RadioEvent::ParamsAnswered { link, accepted } => {
                 if self.state.phone.link() == Some(link) {
                     self.phone_busy_until = None;
+                }
+                if !accepted {
+                    self.end_pending(|op| op.kind() == OpKind::UpdateParams && op.link() == Some(link));
+                    self.counters.update_failures += 1;
                 }
             }
             RadioEvent::Params { link, result } => {
                 self.end_pending(|op| op.kind() == OpKind::UpdateParams && op.link() == Some(link));
-                if self.state.phone.link() == Some(link) {
-                    self.phone_busy_until = None;
-                }
                 match result {
                     Ok(p) if self.state.phone.link() == Some(link) => {
                         self.phone_params = Some(p);
