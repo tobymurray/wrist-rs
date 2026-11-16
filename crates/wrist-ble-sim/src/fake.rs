@@ -10,6 +10,8 @@ use wrist_ble::{
     PairingStep, PeerAddr, RadioEvent, ResetCause, ScanParams, SchedKind, Schedule, ServerAttr, ServiceRef, CharRef, Snapshot, Status,
     MAX_LINKS,
 };
+use wrist_bluenrg2::driver::Unanswered;
+use wrist_bluenrg2::ops::{refused, unanswered};
 use wrist_bluenrg2::{adv_period, anchor_reading, interval_ns, native, Scheduler, CAPABILITIES, INFO};
 
 use crate::peers::{Keys, Os, Phone, Sensor};
@@ -216,7 +218,9 @@ fn interval_ms(p: LinkParams) -> u32 {
 }
 
 /// ST's `BLE_STATUS_NOT_ALLOWED`.
-const NOT_ALLOWED: u16 = 0x46;
+const NOT_ALLOWED: u8 = 0x46;
+/// HCI's Command Disallowed, ST's `BLE_ERROR_COMMAND_DISALLOWED`.
+const COMMAND_DISALLOWED: u8 = 0x0C;
 
 fn failure(kind: FailureKind, native: u16) -> Failure {
     Failure { kind, native }
@@ -469,7 +473,7 @@ impl Fake {
     #[allow(clippy::too_many_lines, reason = "one arm an operation")]
     fn take(&mut self, op: Op) -> Result<OpId, Failure> {
         if self.power != Power::Ready {
-            return Err(failure(FailureKind::Busy, 0x0C));
+            return Err(unanswered(Unanswered::NotTaken));
         }
         if let Some(l) = op.link() {
             if self.link(l).is_none() {
@@ -481,7 +485,7 @@ impl Fake {
                 // `ACI_GAP_SET_DISCOVERABLE` while advertising is refused at any interval, as is
                 // `ACI_GAP_SET_NON_DISCOVERABLE` with nothing advertising (HARDWARE.md).
                 if p.is_some() == self.acts.get().advertising.is_some() {
-                    return Err(failure(FailureKind::ModeExclusion, NOT_ALLOWED));
+                    return Err(refused(&op, NOT_ALLOWED));
                 }
                 self.admit(Change::Advertise(p))?;
                 let id = self.accept(op);
@@ -508,7 +512,7 @@ impl Fake {
             }
             Op::Connect(peer, params) => {
                 if self.initiating.is_some() {
-                    return Err(failure(FailureKind::Busy, 0x0C));
+                    return Err(refused(&op, COMMAND_DISALLOWED));
                 }
                 self.admit(Change::Initiate(Some(params)))?;
                 self.central_start();
@@ -519,7 +523,7 @@ impl Fake {
                 Ok(id)
             }
             Op::CancelConnect => {
-                let Some((cid, ..)) = self.initiating.take() else { return Err(failure(FailureKind::Busy, 0x0C)) };
+                let Some((cid, ..)) = self.initiating.take() else { return Err(refused(&op, COMMAND_DISALLOWED)) };
                 let _ = self.acts.apply(Change::Initiate(None));
                 let id = self.accept(op);
                 self.done_after(cid, ms(1), Err(failure(FailureKind::NotConnected, 0x02)));
@@ -660,9 +664,9 @@ impl Fake {
         let link = self.link(l).ok_or(failure(FailureKind::NotConnected, 0x02))?;
         if link.updating.is_some() {
             // As a peripheral the chip holds one L2CAP request at a time and refuses another with
-            // `BLE_STATUS_NOT_ALLOWED` (HARDWARE.md).
-            let native = if matches!(link.peer, Peer::Phone(_)) { NOT_ALLOWED } else { 0x0C };
-            return Err(failure(FailureKind::Busy, native));
+            // `BLE_STATUS_NOT_ALLOWED` (HARDWARE.md); as a central, unmeasured.
+            let native = if matches!(link.peer, Peer::Phone(_)) { NOT_ALLOWED } else { COMMAND_DISALLOWED };
+            return Err(refused(&op, native));
         }
         let mut granted = None;
         if let Some(slot) = link.slot {

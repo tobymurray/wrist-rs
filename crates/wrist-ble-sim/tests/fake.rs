@@ -141,6 +141,32 @@ fn a_phones_second_interval_ask_is_refused_busy_as_the_driver_reads_the_chips_co
     assert_eq!(wrist_bluenrg2::ops::refused(&ask, 0x46), refused);
 }
 
+/// Each refusal the fake makes is the one the driver makes of the chip's code, so the core reads
+/// the fake as it reads the chip.
+#[test]
+fn every_refusal_reads_as_the_driver_reads_the_chips_code() {
+    use wrist_bluenrg2::driver::Unanswered;
+    use wrist_bluenrg2::ops::{refused, unanswered};
+    let mut off = Fake::new(1);
+    assert_eq!(off.submit(Op::Advertise(Some(ADV_100))), Err(unanswered(Unanswered::NotTaken)), "a chip not up takes nothing");
+
+    let mut f = ready(1);
+    assert_eq!(f.submit(Op::CancelConnect), Err(refused(&Op::CancelConnect, 0x0C)));
+    assert_eq!(f.submit(Op::Advertise(None)), Err(refused(&Op::Advertise(None), 0x46)));
+    f.sensor_on(Sensor::strap(1));
+    let connect = Op::Connect(Sensor::strap(1).addr, conn(40));
+    f.submit(connect).unwrap();
+    assert_eq!(f.submit(connect), Err(refused(&connect, 0x0C)));
+    let (_, link) = until(&mut f, |e| match e {
+        RadioEvent::LinkUp { link, .. } => Some(*link),
+        _ => None,
+    });
+    let ask = Op::UpdateParams(link, conn(80));
+    f.submit(ask).unwrap();
+    let again = f.submit(ask).unwrap_err();
+    assert_eq!((again, again.kind), (refused(&ask, 0x0C), FailureKind::ModeExclusion), "a central's second update, unmeasured");
+}
+
 const SCAN_30: ScanParams = ScanParams { interval: Duration::from_u16(160), window: Duration::from_u16(32), active: false, duration: Millis::secs(30) };
 
 /// The events after the first `ScanDone`.
