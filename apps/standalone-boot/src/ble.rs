@@ -84,7 +84,7 @@ use wrist_bluenrg2::start::{Setup, Start, Starting, Step};
 use wrist_bluenrg2::transport::{self, Counts};
 use wrist_pages::{OldKey, Pairing, Prompt};
 use wrist_wake::ble::restart::{Boot, Restarts};
-use wrist_wake::ble::{server, timing, HeldAsk, IntervalAsk, Lines, Outbox, PairAsk, Power, Radio, Scan, Sink, Timing};
+use wrist_wake::ble::{server, timing, ConsoleOver, HeldAsk, IntervalAsk, Lines, Outbox, PairAsk, Power, Radio, Scan, Sink, Timing};
 
 use crate::console::Target;
 use crate::uart::Uart;
@@ -702,8 +702,9 @@ struct Link<'d> {
     /// The timing last asked of this connection, and the one advertising runs at.
     asked: Option<Timing>,
     advertised: Option<Timing>,
-    /// `ble interval now`: ask for this range (1.25 ms units) once, whatever the timing.
+    /// `ble interval now`: ask for this range (1.25 ms units) once the link may be asked.
     request_interval: Option<(u16, u16)>,
+    console_over: ConsoleOver<Timing>,
     /// The central wrote TX's CCCD on: the mirror runs while the link is encrypted too.
     subscribed: bool,
     /// The connected central's address, as the link gave it.
@@ -744,6 +745,7 @@ impl<'d> Link<'d> {
             asked: None,
             advertised: None,
             request_interval: None,
+            console_over: ConsoleOver::default(),
             subscribed: false,
             peer: None,
             transfer: None,
@@ -843,7 +845,7 @@ impl Link<'_> {
         let one = Duration::from_ticks(1);
         let state = State {
             now: tick(Instant::now()),
-            work: self.request_interval.is_some()
+            work: (self.request_interval.is_some() && self.interval_ask.open())
                 || self.held_ask.due()
                 || self.finish_transfer
                 || self.rebond_for.is_some()
@@ -892,6 +894,7 @@ impl Link<'_> {
                 if STATE.load(Ordering::Relaxed) == STATE_CONNECTED {
                     self.shadow.interval_now(now_ms(), min, max);
                     self.request_interval = Some((min, max));
+                    self.console_over.asked();
                 } else {
                     self.uart.write_line("[ble] interval now: not connected");
                 }
@@ -940,13 +943,16 @@ impl Link<'_> {
     /// the new interval, or the connection asked for new parameters.
     async fn retime(&mut self) {
         let want = timing(power(), self.transfer.is_some());
+        if self.console_over.retime(want) {
+            self.request_interval = None;
+        }
         match STATE.load(Ordering::Relaxed) {
             STATE_ADVERTISING if self.advertised != Some(want) => {
                 if self.submit(Op::Advertise(None)).await.is_ok() {
                     self.advertise().await;
                 }
             }
-            STATE_CONNECTED if self.asked != Some(want) && self.interval_ask.open() => {
+            STATE_CONNECTED if self.asked != Some(want) && self.interval_ask.open() && !self.console_over.holds() => {
                 self.asked = Some(want);
                 self.ask_connection(want.interval_min, want.interval_max, want.latency, want.timeout).await;
             }
@@ -992,7 +998,7 @@ impl Link<'_> {
         if self.pair_ask.take(Instant::now().as_ticks()) {
             self.ask_to_pair().await;
         }
-        if let Some((min, max)) = self.request_interval.take() {
+        if let Some((min, max)) = self.request_interval.take_if(|_| self.interval_ask.open()) {
             self.ask_connection(min, max, wrist_wake::ble::NOW_LATENCY, wrist_wake::ble::NOW_TIMEOUT).await;
         }
         if let Some(params) = self.held_ask.take() {
@@ -1621,6 +1627,7 @@ impl Link<'_> {
         self.peer = None;
         self.set_mirror();
         self.request_interval = None;
+        self.console_over.clear();
         self.held_ask.clear();
         self.pair_ask.settled();
         self.interval_ask.disconnected();

@@ -3,7 +3,7 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
-use wrist_ble::OpKind;
+use wrist_ble::{Op, OpKind};
 use wrist_ble_shadow::DriverOp;
 use wrist_ble_sim::replay::{replay, Report, Who};
 
@@ -118,7 +118,10 @@ fn traces_hold_only_what_the_scrub_keeps() {
                     let p: Vec<u8> = (0..f[3].len() / 2).map(|i| u8::from_str_radix(&f[3][2 * i..2 * i + 2], 16).unwrap()).collect();
                     assert!(p.len() >= 3, "{name}: {line}");
                     if f[2] == "e" {
-                        assert!(p[0] == 0x04 && !matches!(p[1], 0x0E | 0x0F), "{name}: a reply in {line}");
+                        assert_eq!(p[0], 0x04, "{name}: {line}");
+                        if matches!(p[1], 0x0E | 0x0F) {
+                            assert_eq!((p.len(), p[2]), (7, 4), "{name}: more than a reply's status in {line}");
+                        }
                         if p[1] == 0x3E {
                             assert_ne!(p[3], 0x02, "{name}: a report in {line}");
                             let addresses = match p[3] {
@@ -367,6 +370,69 @@ fn progress_before_a_usb_refusal_leaves_the_transfer() {
     let at = lines.iter().position(|l| l.contains(" [update] received 16492")).unwrap();
     for (i, line) in ["2529.600 >> usb update 5 1234", "2529.601 [update] received 16493", "2529.602 [update] error: a transfer is already in progress"].into_iter().enumerate() {
         lines.insert(at + 1 + i, line);
+    }
+    assert_eq!(replay(&lines.join("\n")).disagreements(), Vec::<String>::new());
+}
+
+/// The chip's reply to the driver's security request reaches the core: refused for good, the
+/// pairing fails at once and the link is asked for parameters; refused otherwise, it waits.
+#[test]
+fn a_security_request_the_chip_refuses_for_good_fails_the_pairing_at_once() {
+    for (status, fails) in [("40", true), ("0C", false)] {
+        let mut capture: String = fixture("bluez-update-on-battery.log")
+            .lines()
+            .filter(|l| !l.contains(" e 04FF0601") && !l.contains(" e 040804"))
+            .take_while(|l| !l.contains("[update] send"))
+            .flat_map(|l| {
+                let reply = if l.ends_with(" c 018DFC024308") { format!("2515.300 [trace] 2462560 e 040F04{status}018DFC\n") } else { String::new() };
+                [format!("{l}\n"), reply]
+            })
+            .collect();
+        capture.push_str("2600.000 [trace] 2510000 e 04FF020404\n");
+        let r = replay(&capture);
+        let asked = r.core_ops.iter().any(|(_, op)| op.kind() == OpKind::UpdateParams);
+        assert_eq!(asked, fails, "status {status}\n{}", r.render(false));
+        assert_eq!(r.disagreements(), [] as [String; 0], "status {status}");
+    }
+}
+
+/// A USB `update` the console never answered, its command lost, hides no image over the air of
+/// another length.
+#[test]
+fn an_unanswered_usb_update_does_not_hide_a_later_transfer() {
+    let capture = fixture("bluez-update-on-battery.log");
+    let mut lines: Vec<&str> = capture.lines().collect();
+    lines.insert(1, "2500.000 >> usb update 5 1234");
+    lines.insert(2, "2500.001 [usb] rx overflow: a packet was lost");
+    assert_eq!(replay(&lines.join("\n")).disagreements(), Vec::<String>::new());
+}
+
+/// While a USB `update` waits, an error only an image already sent can print is the image's
+/// over the air, and ends its transfer.
+#[test]
+fn an_error_after_a_send_ends_the_transfer_while_a_usb_update_waits() {
+    let capture = fixture("bluez-update-on-battery.log");
+    let mut lines: Vec<&str> = capture.lines().collect();
+    let verified = lines.iter().position(|l| l.contains(" [update] received and verified ")).unwrap();
+    lines[verified] = "2625.693 [update] error: transfer incomplete";
+    lines.remove(verified + 1);
+    lines.truncate(verified + 2);
+    let at = lines.iter().position(|l| l.contains(" [update] received 16492")).unwrap();
+    lines.insert(at + 1, "2530.000 >> usb update 5 1234");
+    let r = replay(&lines.join("\n"));
+    assert_eq!(r.disagreements(), Vec::<String>::new());
+    let battery = |op: &Op| matches!(op, Op::UpdateParams(_, p) if p.interval_min.as_u16() == 80);
+    assert!(r.core_ops.last().is_some_and(|(_, op)| battery(op)), "the core asks the battery's timing once the transfer ends\n{}", r.render(false));
+}
+
+/// A USB `update` sent and answered leaves the next image over the air its transfer, even one of
+/// the same length.
+#[test]
+fn a_usb_update_answered_leaves_the_next_transfer() {
+    let capture = fixture("bluez-update-on-battery.log");
+    let mut lines: Vec<&str> = capture.lines().collect();
+    for (i, line) in ["2500.000 >> usb update 345624 1234", "2500.001 [update] send 345624 bytes", "2500.002 [update] error: crc mismatch; nothing written"].into_iter().enumerate() {
+        lines.insert(1 + i, line);
     }
     assert_eq!(replay(&lines.join("\n")).disagreements(), Vec::<String>::new());
 }

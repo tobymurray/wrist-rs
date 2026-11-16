@@ -108,8 +108,8 @@ impl Translator {
                 RadioEvent::Params { link: handle, result: Err(failure(FailureKind::PeerRejected, 0)) }
             }
             VendorEvent::AttributeModified { handle, attr, offset, more, data, .. } => self.server.as_ref()?.written(handle, attr, offset, more, data)?,
-            VendorEvent::L2capUpdateResponse { accepted: true, .. }
-            | VendorEvent::SlaveSecurityInitiated
+            VendorEvent::L2capUpdateResponse { handle, accepted: true, .. } => RadioEvent::ParamsAccepted { link: handle },
+            VendorEvent::SlaveSecurityInitiated
             | VendorEvent::GapProcComplete { .. }
             | VendorEvent::TxPoolAvailable { .. }
             | VendorEvent::ServerConfirmation { .. } => return None,

@@ -316,3 +316,42 @@ fn the_core_takes_the_consoles_ask_where_the_drivers_console_does() {
         }
     }
 }
+
+/// The chip's Command Status for `opcode`.
+fn command_status(status: u8, opcode: u16) -> Vec<u8> {
+    let [lo, hi] = opcode.to_le_bytes();
+    vec![0x04, 0x0F, 0x04, status, 0x01, lo, hi]
+}
+
+/// The phone up unencrypted and the core's security request asked beside the driver's.
+fn asked_to_pair() -> Shadow<Log> {
+    let mut s = up();
+    s.event(Instant(200), PHONE);
+    s.advance(Instant(5_200));
+    assert_eq!(s.observer.ops.last(), Some(&(5_200, Op::RequestSecurity(wrist_ble::ConnHandle::new(0x0801)))));
+    s.command(Instant(5_200), 0xFC8D, &[0x01, 0x08]);
+    s
+}
+
+/// The driver's security request refused for good fails the core's pairing at once, where any
+/// other refusal leaves it waiting for the outcome.
+#[test]
+fn the_drivers_refusal_is_the_cores_own_answer() {
+    for (status, fails) in [(0x40, true), (0x0C, false), (0x00, false)] {
+        let mut s = asked_to_pair();
+        s.event(Instant(5_201), &command_status(status, 0xFC8D));
+        assert_eq!(s.state().phone.may_ask_params(Instant(5_201)), fails, "status {status:02x}");
+    }
+    let mut s = asked_to_pair();
+    s.command(Instant(5_201), 0xFC8D, &[0x02, 0x08]);
+    s.event(Instant(5_202), &command_status(0x40, 0xFC8D));
+    assert!(!s.state().phone.may_ask_params(Instant(5_202)), "another link's request");
+    let mut s = asked_to_pair();
+    s.event(Instant(5_201), &command_status(0x40, 0xFC81));
+    assert!(!s.state().phone.may_ask_params(Instant(5_201)), "another command's reply");
+    let mut s = asked_to_pair();
+    s.command(Instant(5_201), 0xFD81, &[0x01, 0x08, 80, 0, 160, 0, 4, 0, 0x58, 0x02]);
+    s.event(Instant(5_202), &command_status(0x40, 0xFD81));
+    assert!(!s.state().phone.may_ask_params(Instant(5_202)), "another kind of command on the link");
+    assert!(s.observer.found.is_empty(), "{:?}", s.observer.found);
+}

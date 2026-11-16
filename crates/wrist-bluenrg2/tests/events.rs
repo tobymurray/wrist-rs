@@ -84,7 +84,7 @@ fn an_update_gives_the_new_parameters_or_its_refusal() {
 fn a_central_refusing_the_watchs_request_fails_it_and_accepting_waits_for_the_update() {
     let refused = Failure { kind: FailureKind::PeerRejected, native: 0 };
     assert_eq!(one(&vendor(0x0800, &[0x01, 0x08, 0x01, 0x00])), Some(RadioEvent::Params { link: link(), result: Err(refused) }));
-    assert_eq!(one(&vendor(0x0800, &[0x01, 0x08, 0x00, 0x00])), None);
+    assert_eq!(one(&vendor(0x0800, &[0x01, 0x08, 0x00, 0x00])), Some(RadioEvent::ParamsAccepted { link: link() }));
     assert_eq!(one(&vendor(0x0800, &[0x01, 0x08, 0x01])), Some(RadioEvent::EventsLost), "malformed");
 }
 

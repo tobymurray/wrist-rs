@@ -196,9 +196,25 @@ struct Replay {
     last_ms: Option<u64>,
     /// An image coming over the air, from its `[update] send` line to the line that ends it.
     transfer: bool,
-    /// The console's last command was a USB `update`, whose image the phone's link does not carry.
-    usb_update: bool,
+    /// A USB `update` the console took and has not answered, whose image the phone's link does not carry.
+    usb_update: Option<UsbUpdate>,
 }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UsbUpdate {
+    /// Its length, until its `send` line.
+    Asked(u32),
+    Sending,
+}
+
+/// What `update::begin` and `app_update_allowed` in the firmware refuse a start with, before its
+/// `send` line.
+const REFUSED_BEFORE_SEND: &[&str] = &[
+    "length out of range for this target",
+    "a transfer is already in progress",
+    "this image is not marked booted yet; wait for [boot] marked, then retry",
+    "state partition unreadable",
+];
 
 impl Replay {
     fn push(&mut self, who: Who, what: String) {
@@ -235,7 +251,7 @@ impl Replay {
         self.base = None;
         self.last_ms = None;
         self.transfer = false;
-        self.usb_update = false;
+        self.usb_update = None;
         self.shadow.observer.report.resets += 1;
         self.push(Who::Line, "-- the watch reset".into());
         self.shadow.set_goals(self.shadow.now(), boot_goals());
@@ -247,7 +263,9 @@ impl Replay {
         if let Some(rest) = text.strip_prefix("[trace] ") {
             self.trace(rest);
         } else if let Some(cmd) = text.strip_prefix(">> usb ") {
-            self.usb_update = usb_update(cmd.trim());
+            if let Some(len) = usb_update(cmd.trim()) {
+                self.usb_update = Some(UsbUpdate::Asked(len));
+            }
             match cmd.trim() {
                 "ble off" => self.shadow.radio(now, false),
                 "ble on" => self.shadow.radio(now, true),
@@ -280,12 +298,28 @@ impl Replay {
         if rest.strip_prefix("received ").is_some_and(|n| n.starts_with(|c: char| c.is_ascii_digit())) {
             return;
         }
-        let usb_update = core::mem::take(&mut self.usb_update);
-        // The console's refusal, which an over-the-air image's own error can't be told from.
-        if usb_update && rest.starts_with("error: ") {
-            return;
+        let mut console_send = false;
+        match self.usb_update {
+            // Staging is the USB image's alone until its answer, so no line between is a transfer's.
+            Some(UsbUpdate::Sending) => {
+                if rest.starts_with("ok ") || rest.starts_with("error: ") {
+                    self.usb_update = None;
+                }
+                return;
+            }
+            Some(UsbUpdate::Asked(len)) if rest.strip_prefix("send ").and_then(|r| r.strip_suffix(" bytes")) == Some(&*len.to_string()) => {
+                self.usb_update = Some(UsbUpdate::Sending);
+                console_send = true;
+            }
+            // The console's refusal, which an over-the-air start refused with the same text
+            // cannot be told from.
+            Some(UsbUpdate::Asked(_)) if rest.strip_prefix("error: ").is_some_and(|why| REFUSED_BEFORE_SEND.contains(&why)) => {
+                self.usb_update = None;
+                return;
+            }
+            _ => {}
         }
-        let transfer = rest.starts_with("send ") && !usb_update;
+        let transfer = rest.starts_with("send ") && !console_send;
         if transfer != self.transfer {
             self.transfer = transfer;
             let now = self.shadow.now();
@@ -336,19 +370,19 @@ fn uptime_ms(text: &str) -> Option<u64> {
     s.parse::<u64>().ok().map(|s| s * 1_000)
 }
 
-/// Whether the console takes `cmd` as a USB `update`, as `parse_transfer` in the firmware's
-/// console.rs reads it.
-fn usb_update(cmd: &str) -> bool {
-    let Some(rest) = cmd.strip_prefix("update ") else { return false };
-    let mut parts = rest.split_whitespace();
-    parts.next().is_some_and(|len| len.parse::<u32>().is_ok()) && parts.next().is_some_and(|crc| u32::from_str_radix(crc, 16).is_ok())
+/// The length of the USB `update` the console takes `cmd` as, as `parse_transfer` in the
+/// firmware's console.rs reads it.
+fn usb_update(cmd: &str) -> Option<u32> {
+    let mut parts = cmd.strip_prefix("update ")?.split_whitespace();
+    let len = parts.next()?.parse::<u32>().ok()?;
+    u32::from_str_radix(parts.next()?, 16).ok().map(|_| len)
 }
 
 /// Replays lines of `<host seconds> <console line>`, as `tools/ble-trace-capture.py` writes them.
 /// A watch reset starts the core again, and the host's clock carries the timeline across it.
 #[must_use]
 pub fn replay(capture: &str) -> Report {
-    let mut r = Replay { shadow: Shadow::new(INFO, boot_goals(), Record::default()), base: Some(0), last_ms: None, transfer: false, usb_update: false };
+    let mut r = Replay { shadow: Shadow::new(INFO, boot_goals(), Record::default()), base: Some(0), last_ms: None, transfer: false, usb_update: None };
     let mut started = false;
     let mut offset: Option<i64> = None;
     for line in capture.lines() {

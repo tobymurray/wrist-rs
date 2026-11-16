@@ -189,6 +189,45 @@ pub mod ble {
         }
     }
 
+    /// `ble interval now` holds over the menu's ask until the menu's timing changes from the one
+    /// last applied, not the one asked for since.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct ConsoleOver<T> {
+        applied: Option<T>,
+        over: Option<T>,
+    }
+
+    impl<T> Default for ConsoleOver<T> {
+        fn default() -> Self {
+            Self { applied: None, over: None }
+        }
+    }
+
+    impl<T: Copy + PartialEq> ConsoleOver<T> {
+        pub fn asked(&mut self) {
+            self.over = self.applied;
+        }
+
+        /// The menu's timing applied; whether a held console ask ended with it.
+        pub fn retime(&mut self, want: T) -> bool {
+            self.applied = Some(want);
+            let ended = self.over.is_some_and(|t| t != want);
+            if ended {
+                self.over = None;
+            }
+            ended
+        }
+
+        #[must_use]
+        pub fn holds(&self) -> bool {
+            self.over.is_some()
+        }
+
+        pub fn clear(&mut self) {
+            self.over = None;
+        }
+    }
+
     /// Where the watch's power comes from, as the radio sees it.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum Power {

@@ -90,14 +90,18 @@ impl Ops {
     ///
     /// # Errors
     ///
-    /// The chip refused it, or more are waiting than fit.
+    /// The chip refused it, or more are waiting than fit; a refusal on a link already down is
+    /// not connected, whatever the chip's code.
     pub fn answered(&mut self, op: &Op, status: u8, deadline: u64) -> Result<OpId, Failure> {
+        let down = op.link().is_some_and(|l| self.down.contains(&Some(l)));
+        if status != 0 && down {
+            return Err(Failure { kind: FailureKind::NotConnected, native: u16::from(status) });
+        }
         if status != 0 {
             return Err(refused(op, status));
         }
         let kind = op.kind();
         let id = OpId(self.next);
-        let down = op.link().is_some_and(|l| self.down.contains(&Some(l)));
         if kind.ends_with_event() && down {
             self.end(id, if kind == OpKind::Disconnect { Ok(()) } else { Err(Failure { kind: FailureKind::NotConnected, native: 0 }) });
         } else if kind.ends_with_event() {
