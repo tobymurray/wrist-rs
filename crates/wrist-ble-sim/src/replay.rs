@@ -311,9 +311,8 @@ impl Replay {
                 self.usb_update = Some(UsbUpdate::Sending);
                 console_send = true;
             }
-            // The console's refusal; an error only a sent image prints is the one over the air.
-            // Still taken as the console's: an over-the-air start refused with these same texts,
-            // and an image over the air of the USB update's own length.
+            // The console's refusal, which an over-the-air start refused with the same text
+            // cannot be told from.
             Some(UsbUpdate::Asked(_)) if rest.strip_prefix("error: ").is_some_and(|why| REFUSED_BEFORE_SEND.contains(&why)) => {
                 self.usb_update = None;
                 return;

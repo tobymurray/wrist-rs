@@ -195,8 +195,8 @@ impl PhoneLink {
         }
     }
 
-    /// Held again as new after lost events, still the same link since the chip never reuses a
-    /// handle within a boot (HARDWARE.md), so its lost bond waits on the new attempt's outcome.
+    /// Held again as new after lost events, as the same link since a handle is not reused within
+    /// a boot (HARDWARE.md).
     fn remade(&self, now: Instant) -> Self {
         PhoneLink {
             bond_lost: self.bond_lost,

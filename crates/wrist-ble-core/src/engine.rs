@@ -135,8 +135,8 @@ pub struct Core<'a> {
     phone_held: bool,
     /// The last ask was refused before it reached the air.
     phone_refused: bool,
-    /// The chip holds one parameter request at a time until the central answers it, so an ask
-    /// refused busy waits for that answer, or until this.
+    /// An ask refused busy waits until this for the central's answer to the one before
+    /// (HARDWARE.md).
     phone_busy_until: Option<Instant>,
     /// The console's ask ([`Input::IntervalNow`]) and the phone link it is for.
     console: Option<(ConnHandle, ConnParams)>,
@@ -400,7 +400,6 @@ impl<'a> Core<'a> {
                     }
                 }
             }
-            // The central's answer frees the chip for another request (HARDWARE.md).
             RadioEvent::ParamsAccepted { link } => {
                 if self.state.phone.link() == Some(link) {
                     self.phone_busy_until = None;

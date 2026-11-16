@@ -704,8 +704,8 @@ struct Link<'d> {
     advertised: Option<Timing>,
     /// `ble interval now`: ask for this range (1.25 ms units) once the link may be asked.
     request_interval: Option<(u16, u16)>,
-    /// The menu's timing when `ble interval now` was asked: the console's ask holds over the
-    /// menu's until that changes, as the core's does.
+    /// The menu's timing when `ble interval now` was asked, which the console's ask holds over
+    /// until it changes.
     console_over: Option<Timing>,
     /// The central wrote TX's CCCD on: the mirror runs while the link is encrypted too.
     subscribed: bool,
