@@ -220,8 +220,8 @@ fn a_boot_after_the_resets_own_is_a_packet() {
     assert_eq!(got, [Got::Boot { len: 6, reason: Some(BootReason::STARTED) }, Got::Packet { len: 6, event: Some(RadioEvent::ChipReset(ResetCause::Brownout)) }]);
 }
 
-/// The one answer to whether the chip restarted since the last reset, which ble.rs reads too: a
-/// boot nobody asked for sets it, a reset clears it, and a reset's own boot leaves it clear.
+/// Whether the chip restarted since the last reset: a boot nobody asked for sets it, a reset clears
+/// it, and a reset's own boot leaves it clear.
 #[test]
 fn restarted_is_set_by_a_boot_nobody_asked_for_and_cleared_by_a_reset() {
     let (c, mut d) = driver(128);

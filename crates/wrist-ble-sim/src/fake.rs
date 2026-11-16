@@ -667,7 +667,7 @@ impl Fake {
     fn update(&mut self, op: Op, l: ConnHandle, params: ConnParams) -> Result<OpId, Failure> {
         let link = self.link(l).ok_or(failure(FailureKind::NotConnected, 0x02))?;
         // As a peripheral the chip holds one L2CAP request until the central answers it and refuses
-        // another with `BLE_STATUS_NOT_ALLOWED` (HARDWARE.md); as a central, unmeasured.
+        // another with `BLE_STATUS_NOT_ALLOWED` (HARDWARE.md).
         match link.peer {
             Peer::Phone(_) if link.asking.is_some() => return Err(refused(&op, NOT_ALLOWED)),
             Peer::Sensor(_) if link.updating.is_some() => return Err(refused(&op, COMMAND_DISALLOWED)),

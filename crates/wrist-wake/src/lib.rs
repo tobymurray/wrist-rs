@@ -162,11 +162,10 @@ pub mod ble {
     }
 
     impl<T: Copy> HeldAsk<T> {
-        /// The chip's answer to `ask`: held until the tick `busy` gives, and nothing held if the
-        /// chip took it. A held ask may go at once if the central answered the one on air while
-        /// the chip was refusing it.
-        pub fn answered(&mut self, ask: T, busy: Option<u64>) {
-            *self = Self { held: busy.map(|until| (ask, until)), due: busy.is_some() && self.due };
+        /// The chip's answer to `ask`: held until the tick `held_until` if refused busy, and the
+        /// central's answer to the one on air meanwhile lets it go at once.
+        pub fn answered(&mut self, ask: T, held_until: Option<u64>) {
+            *self = Self { held: held_until.map(|until| (ask, until)), due: held_until.is_some() && self.due };
         }
 
         /// The central answered the ask on air: the held one may go.

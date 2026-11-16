@@ -18,8 +18,8 @@ pub enum RadioEvent {
     LinkDown { link: ConnHandle, reason: Status },
     /// A parameter update completed, with an error too.
     Params { link: ConnHandle, result: Result<LinkParams, Failure> },
-    /// The central answered this peripheral's parameter request, which ends it: the chip may take
-    /// the next one now; an accepted one's update, if any, follows.
+    /// The central answered this peripheral's parameter request, which ends it; an accepted one's
+    /// update, if any, follows.
     ParamsAnswered { link: ConnHandle, accepted: bool },
     Encryption { link: ConnHandle, on: bool },
     Pairing(PairingEvent),

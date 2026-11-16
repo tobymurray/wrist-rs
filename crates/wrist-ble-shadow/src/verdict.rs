@@ -198,8 +198,7 @@ impl Verdict {
         self.driver_acted(at, act, false, found);
     }
 
-    /// The driver's latest `act` never reached the air: the chip refused it busy, as it refuses any
-    /// ask while the one before waits for the central's answer, so it is owed nothing.
+    /// The driver's latest `act` never reached the air, since the chip refused it busy: owed nothing.
     pub fn refused_busy(&mut self, act: Act) {
         let w = &mut self.driver;
         if let Some(s) = w.seen[..w.len].iter_mut().rev().find(|s| s.act == act) {

@@ -53,7 +53,7 @@ pub enum Tell {
 /// Why the core asks the phone for nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Omitted {
-    /// The link is neither encrypted nor past a failed pairing, or is pairing ([`Phone::may_ask_params`]).
+    /// [`Phone::may_ask_params`] says no, or the link is pairing.
     NotOpen,
     /// The link's parameters already fit the ask.
     Fits,

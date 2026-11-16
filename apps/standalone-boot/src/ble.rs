@@ -1594,7 +1594,6 @@ impl Link<'_> {
         }
     }
 
-    /// A link up, as the translator reads the chip's connection, with its timing or without.
     fn connected(&mut self, link: ConnHandle, peer: wrist_ble::PeerAddr, params: Option<wrist_ble::LinkParams>) {
         CONN_HANDLE.store(link.raw(), Ordering::Relaxed);
         self.peer = Some(bluenrg2::Address { kind: peer.kind, addr: peer.addr });
