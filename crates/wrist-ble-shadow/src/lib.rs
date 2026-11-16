@@ -1,19 +1,19 @@
 #![no_std]
 
-//! The Bluetooth core fed what the BlueNRG-2 driver sends and the chip answers, its operations
-//! taken as the driver's, done at once or refused as the driver's were, each set beside what the
-//! driver did ([`verdict`]).
+//! The Bluetooth core fed what the BlueNRG-2 driver sends and the chip answers, each of its
+//! operations set beside what the driver did ([`verdict`]): taken as the driver's and answered here
+//! ([`Mode::Shadow`]), or handed to the driver to carry out ([`Mode::Drive`]).
 
 pub mod menu;
 pub mod verdict;
 
 use bluenrg2::opcode;
 use wrist_ble::{
-    AddrKind, BdAddr, ChipInfo, ConnHandle, ConnParams, FailureKind, Instant, LeConnRole, LinkStatus, Op, OpId, OpKind, Outcome, PeerAddr, RadioEvent, Snapshot,
+    AddrKind, BdAddr, ChipInfo, ConnHandle, ConnParams, Failure, FailureKind, Instant, LeConnRole, LinkStatus, Op, OpId, OpKind, Outcome, PeerAddr, RadioEvent, Snapshot,
     MAX_LINKS,
 };
 use wrist_ble_core::chip::Action;
-use wrist_ble_core::engine::{Core, Input, Omitted, Tell};
+use wrist_ble_core::engine::{Core, Counters, Input, Omitted, Tell};
 use wrist_ble_core::goals::{Goals, Power};
 use wrist_ble_core::State;
 use wrist_bluenrg2::events::Translator;
@@ -79,6 +79,18 @@ fn ask_of(min: u16, max: u16, latency: u16, timeout: u16) -> ConnParams {
 /// The chip's report that the central accepted the watch's parameter request.
 fn accepted_update(packet: &[u8]) -> bool {
     matches!(bluenrg2::parse(packet), bluenrg2::Event::Vendor(bluenrg2::VendorEvent::L2capUpdateResponse { accepted: true, .. }))
+}
+
+/// Who carries out the core's operations.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Mode {
+    /// Nobody: each is taken as the driver's command, done at once or refused as that command was.
+    #[default]
+    Shadow,
+    /// The driver: each is handed out ([`Shadow::issue`]) and answered with the driver's own
+    /// answers ([`Shadow::submitted`], [`Shadow::reported`]); every command the driver sends that
+    /// is one of the core's must be the core's.
+    Drive,
 }
 
 /// Why a driver's ask the core did not make is no disagreement.
@@ -152,6 +164,11 @@ pub struct Shadow<O> {
     advertising: bool,
     /// The core is being told of a chip that was up before it was.
     seeding: bool,
+    mode: Mode,
+    /// The core's operation for the driver to carry out, in [`Mode::Drive`].
+    issue: Option<Op>,
+    /// The core's last word on the chip, in [`Mode::Drive`].
+    chip_action: Option<Action>,
     verdict: Verdict,
     pub observer: O,
 }
@@ -176,9 +193,71 @@ impl<O: Observer> Shadow<O> {
             asked: None,
             advertising: false,
             seeding: false,
+            mode: Mode::Shadow,
+            issue: None,
+            chip_action: None,
             verdict: Verdict::new(),
             observer,
         }
+    }
+
+    #[must_use]
+    pub fn mode(&self) -> Mode {
+        self.mode
+    }
+
+    /// Who carries out the core's operations from the radio's next start; refused, false, while the
+    /// radio is wanted on, since operations of the other mode may be in flight.
+    pub fn set_mode(&mut self, mode: Mode) -> bool {
+        if self.goals.radio_on {
+            return false;
+        }
+        self.mode = mode;
+        self.issue = None;
+        self.chip_action = None;
+        // What the shadow answers for, which a driven core never leaves.
+        self.asked_update = None;
+        self.awaiting = None;
+        self.asked = None;
+        true
+    }
+
+    /// The operation the core asked for, for the driver to carry out and answer with
+    /// [`Self::submitted`]; the core asks for no other until then.
+    pub fn issue(&mut self) -> Option<Op> {
+        self.issue.take()
+    }
+
+    /// Whether an operation waits for [`Self::issue`].
+    #[must_use]
+    pub fn issuing(&self) -> bool {
+        self.issue.is_some()
+    }
+
+    /// What the core last asked of the chip: a start, or to hold it in reset.
+    pub fn chip_action(&mut self) -> Option<Action> {
+        self.chip_action.take()
+    }
+
+    /// The driver's answer to the operation [`Self::issue`] handed out.
+    pub fn submitted(&mut self, at: Instant, r: Result<OpId, Failure>) {
+        self.advance(at);
+        self.feed(Input::Submitted(r));
+    }
+
+    /// What the driver itself reports: an operation's end, taken in [`Mode::Drive`] only, as the
+    /// shadow's own operations have ids of their own.
+    pub fn reported(&mut self, at: Instant, e: RadioEvent) {
+        if let (Mode::Drive, RadioEvent::Done(..)) = (self.mode, e) {
+            self.advance(at);
+            self.observer.event(self.now, &e);
+            self.feed(Input::Radio(e));
+        }
+    }
+
+    #[must_use]
+    pub fn counters(&self) -> &Counters {
+        &self.core.counters
     }
 
     #[must_use]
@@ -195,6 +274,12 @@ impl<O: Observer> Shadow<O> {
     #[must_use]
     pub fn state(&self) -> &State {
         &self.core.state
+    }
+
+    /// The core's operation in flight.
+    #[must_use]
+    pub fn core_pending(&self) -> Option<&wrist_ble_core::plan::Pending> {
+        self.core.pending()
     }
 
     #[must_use]
@@ -298,6 +383,8 @@ impl<O: Observer> Shadow<O> {
         self.sent = None;
         self.asked = None;
         self.advertising = false;
+        self.issue = None;
+        self.chip_action = None;
     }
 
     /// A command the driver sent the chip.
@@ -316,6 +403,15 @@ impl<O: Observer> Shadow<O> {
             (OpKind::ConfirmNumeric, _) => DriverOp::Confirm(params.get(2) == Some(&1)),
             _ => DriverOp::Other(kind),
         };
+        if self.mode == Mode::Drive {
+            if let Some(act) = Act::of_driver(op) {
+                let Self { verdict, observer, .. } = self;
+                verdict.driver(self.now.0, act, &mut |d| observer.disagreed(d));
+            }
+            self.observer.driver(self.now, op, name, params);
+            self.advertised(name);
+            return;
+        }
         // An ask the menu never makes is taken as the console's `ble interval now`, over USB or
         // over the air.
         if let DriverOp::AskParams(min, max, latency) = op {
@@ -341,6 +437,10 @@ impl<O: Observer> Shadow<O> {
             }
         }
         self.observer.driver(self.now, op, name, params);
+        self.advertised(name);
+    }
+
+    fn advertised(&mut self, name: &str) {
         match name {
             "advertise" => self.advertising = true,
             "stop advertising" => self.advertising = false,
@@ -429,7 +529,7 @@ impl<O: Observer> Shadow<O> {
     }
 
     /// The core's step, what it is owed for it pushed on `owed[..len]`; the new length.
-    fn step(&mut self, input: Input, owed: &mut [Owed; OWED], mut len: usize) -> usize {
+    fn step(&mut self, input: Input, owed: &mut [Owed; OWED], len: usize) -> usize {
         let out = self.core.step(self.now, input);
         self.next = out.next;
         for t in out.tell.into_iter().flatten() {
@@ -437,6 +537,9 @@ impl<O: Observer> Shadow<O> {
         }
         if let Some(a) = out.chip {
             self.observer.chip(self.now, a);
+            if self.mode == Mode::Drive {
+                self.chip_action = Some(a);
+            }
         }
         let mut answers = [Some(Owed::Stepped), out.snapshot.then_some(Owed::Snapshot), None, None];
         if let Some(op) = out.op {
@@ -444,6 +547,10 @@ impl<O: Observer> Shadow<O> {
             if let (false, Some(act)) = (self.seeding, Act::of_core(&op)) {
                 let Self { verdict, observer, .. } = self;
                 verdict.core(self.now.0, act, &mut |d| observer.disagreed(d));
+            }
+            if self.mode == Mode::Drive {
+                self.issue = Some(op);
+                return self.owe(&mut answers, owed, len);
             }
             self.ids = self.ids.wrapping_add(1);
             let id = OpId(self.ids);
@@ -456,8 +563,13 @@ impl<O: Observer> Shadow<O> {
             answers[2] = (!op.kind().ends_with_event()).then_some(Owed::Done(id));
             answers[3] = Some(Owed::Submitted(id));
         }
-        // Pushed in reverse, so taken in the order owed, `Stepped` after everything the step led to.
-        for a in answers.into_iter().flatten() {
+        self.owe(&mut answers, owed, len)
+    }
+
+    /// `answers` pushed on `owed[..len]` in reverse, so taken in the order owed, `Stepped` after
+    /// everything the step led to; the new length.
+    fn owe(&mut self, answers: &mut [Option<Owed>; 4], owed: &mut [Owed; OWED], mut len: usize) -> usize {
+        for a in answers.iter_mut().filter_map(Option::take) {
             if let Some(slot) = owed.get_mut(len) {
                 *slot = a;
                 len += 1;

@@ -85,6 +85,28 @@ fn a_reply_ends_the_exchange_once_the_drain_that_brought_it_is_over() {
     assert_eq!(drained(&mut d), [], "nothing is drained until asked");
 }
 
+/// The packets handed out before the reply came before it, and those after it after it.
+#[test]
+fn the_reply_is_known_at_its_place_in_the_stream() {
+    let (c, mut d) = driver(128);
+    let reply = complete(OPCODE, 0x00, &[]);
+    block_on(d.send(OPCODE, &[])).unwrap();
+    c.borrow_mut().queued.extend([[down(1), reply, down(2)].concat()]);
+    assert!(!d.replied());
+    assert!(block_on(d.awaiting()));
+    let mut out = [0u8; MAX_READ];
+    let mut seen = Vec::new();
+    while let Some(got) = block_on(d.next(&mut out)) {
+        seen.push((got, d.replied()));
+    }
+    let replied: Vec<bool> = seen.iter().map(|(_, r)| *r).collect();
+    assert_eq!(replied, [false, true, true], "{seen:?}");
+    assert!(matches!(seen[2].0, Got::Packet { event, .. } if event == Some(link_down(2))));
+    assert!(!block_on(d.awaiting()));
+    assert!(d.reply().is_ok());
+    assert!(!d.replied(), "the reply taken ends it");
+}
+
 #[test]
 fn a_command_status_is_a_reply_with_no_parameters() {
     let (c, mut d) = driver(128);
