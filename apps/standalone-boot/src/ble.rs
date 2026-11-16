@@ -1528,6 +1528,7 @@ impl Link<'_> {
                 self.subscribed = cccd == Cccd::Notify;
                 return self.set_mirror();
             }
+            Some(RadioEvent::LinkUp { link, peer, params, .. }) => return self.connected(link, peer, params),
             Some(RadioEvent::ParamsAnswered { .. }) => self.held_ask.central_answered(),
             Some(RadioEvent::Pairing(PairingEvent { step: PairingStep::LocalKeyMissing, .. })) => {
                 if let Some(peer) = self.peer {
@@ -1542,28 +1543,6 @@ impl Link<'_> {
         match bluenrg2::parse(p) {
             // Replies are the driver's.
             Event::CommandComplete { .. } | Event::CommandStatus { .. } => {}
-            Event::LeConnectionComplete { handle, peer, timing, .. } => {
-                CONN_HANDLE.store(handle.raw(), Ordering::Relaxed);
-                self.peer = Some(peer);
-                self.pair_ask.connected(Instant::now().as_ticks(), embassy_time::TICK_HZ);
-                self.interval_ask.connected();
-                if let Some(t) = timing {
-                    INTERVAL.store(t.conn_interval.as_u16(), Ordering::Relaxed);
-                    LATENCY.store(t.peripheral_latency, Ordering::Relaxed);
-                }
-                set_state(STATE_CONNECTED);
-                set_encrypted(false);
-                self.subscribed = false;
-                self.set_mirror();
-                self.outbox = Outbox::default();
-                // No request here: one crossing the central's own encryption start ended a
-                // bonded macOS central's link (HARDWARE.md).
-                self.mtu = DEFAULT_MTU;
-                self.asked = None;
-                self.held_ask.clear();
-                self.advertised = None;
-                self.uart.write_line("[ble] connected");
-            }
             Event::LeConnectionFailed { .. } => {
                 CONNECT_FAILURES.fetch_add(1, Ordering::Relaxed);
             }
@@ -1613,6 +1592,30 @@ impl Link<'_> {
                 UNKNOWN.fetch_add(1, Ordering::Relaxed);
             }
         }
+    }
+
+    /// A link up, as the translator reads the chip's connection, with its timing or without.
+    fn connected(&mut self, link: ConnHandle, peer: wrist_ble::PeerAddr, params: Option<wrist_ble::LinkParams>) {
+        CONN_HANDLE.store(link.raw(), Ordering::Relaxed);
+        self.peer = Some(bluenrg2::Address { kind: peer.kind, addr: peer.addr });
+        self.pair_ask.connected(Instant::now().as_ticks(), embassy_time::TICK_HZ);
+        self.interval_ask.connected();
+        if let Some(p) = params {
+            INTERVAL.store(p.interval.as_u16(), Ordering::Relaxed);
+            LATENCY.store(p.latency, Ordering::Relaxed);
+        }
+        set_state(STATE_CONNECTED);
+        set_encrypted(false);
+        self.subscribed = false;
+        self.set_mirror();
+        self.outbox = Outbox::default();
+        // No request here: one crossing the central's own encryption start ended a
+        // bonded macOS central's link (HARDWARE.md).
+        self.mtu = DEFAULT_MTU;
+        self.asked = None;
+        self.held_ask.clear();
+        self.advertised = None;
+        self.uart.write_line("[ble] connected");
     }
 
     /// The link's encryption, from either event that reports it, so a refresh after a lost
