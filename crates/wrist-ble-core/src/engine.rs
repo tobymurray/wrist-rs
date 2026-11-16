@@ -50,6 +50,15 @@ pub enum Tell {
     RefusedPeerRequest(ConnHandle),
 }
 
+/// Why the core asks the phone for nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Omitted {
+    /// The link is neither encrypted nor past a failed pairing, or is pairing ([`Phone::may_ask_params`]).
+    NotOpen,
+    /// The link's parameters already fit the ask.
+    Fits,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Outputs {
     /// Submit this, and answer with [`Input::Submitted`] exactly once, before the core can ask
@@ -798,6 +807,16 @@ impl<'a> Core<'a> {
         self.phone_held = false;
         self.phone_refused = false;
         Some(Op::UpdateParams(link, want))
+    }
+
+    /// Which of the core's rules keeps it from asking the phone for `ask` now, if one does.
+    #[must_use]
+    pub fn omits_ask(&self, now: Instant, ask: &ConnParams) -> Option<Omitted> {
+        let Phone::Up(l) = self.state.phone else { return None };
+        if !self.state.phone.may_ask_params(now) || matches!(l.security, Security::Pairing { .. }) {
+            return Some(Omitted::NotOpen);
+        }
+        self.phone_fits(ask).then_some(Omitted::Fits)
     }
 
     /// The parameters wanted of the phone link: the console's ask, else the menu's.

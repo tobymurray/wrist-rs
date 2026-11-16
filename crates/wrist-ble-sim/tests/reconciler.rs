@@ -158,6 +158,24 @@ fn a_missing_key_is_told() {
     }
 }
 
+/// The core's rules for leaving an ask out, as the shadow reads them: no link, a link not yet open
+/// to asks or pairing, and a link that already fits.
+#[test]
+fn an_ask_is_left_out_by_the_cores_rules() {
+    use wrist_ble::{ConnParams, PairingEvent, PairingStep};
+    use wrist_ble_core::engine::Omitted;
+    let fits = ConnParams { interval_min: OPENED.interval, interval_max: OPENED.interval, latency: OPENED.latency, timeout: OPENED.timeout, ce_len: Duration::from_u16(0) };
+    let other = ConnParams { latency: OPENED.latency + 1, ..fits };
+    let mut b = Bench::new(battery());
+    assert_eq!(b.core.omits_ask(b.now, &fits), None, "no link");
+    b.phone_up(1_000);
+    assert_eq!(b.core.omits_ask(b.now, &other), Some(Omitted::NotOpen));
+    b.encrypted(1_100);
+    assert_eq!((b.core.omits_ask(b.now, &fits), b.core.omits_ask(b.now, &other)), (Some(Omitted::Fits), None));
+    b.at(1_200, Input::Radio(RadioEvent::Pairing(PairingEvent { link: link(), step: PairingStep::Numeric(1) })));
+    assert_eq!(b.core.omits_ask(b.now, &other), Some(Omitted::NotOpen), "pairing");
+}
+
 /// An ask refused before it reached the air is asked again once the backoff ends.
 #[test]
 fn an_ask_refused_at_submit_is_asked_again_after_the_backoff() {

@@ -355,3 +355,34 @@ fn the_drivers_refusal_is_the_cores_own_answer() {
     assert!(!s.state().phone.may_ask_params(Instant(5_202)), "another kind of command on the link");
     assert!(s.observer.found.is_empty(), "{:?}", s.observer.found);
 }
+
+/// `ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_REQ`'s parameters for the phone's link.
+fn ask_params(min: u16, max: u16, latency: u16, timeout: u16) -> Vec<u8> {
+    [0x0801u16, min, max, latency, timeout].iter().flat_map(|v| v.to_le_bytes()).collect()
+}
+
+/// The phone's link encrypted and the core's ask on air beside the driver's, then the console's
+/// ask while the central has yet to answer, which the chip answers `status`.
+fn console_ask_answered(status: u8) -> Shadow<Log> {
+    let mut s = up();
+    s.event(Instant(200), PHONE);
+    s.event(Instant(300), ENCRYPTED);
+    let Some(&(_, Op::UpdateParams(_, p))) = s.observer.ops.last() else { panic!("{:?}", s.observer.ops) };
+    s.command(Instant(300), 0xFD81, &ask_params(p.interval_min.as_u16(), p.interval_max.as_u16(), p.latency, p.timeout.as_u16()));
+    s.event(Instant(301), &command_status(0x00, 0xFD81));
+    s.command(Instant(400), 0xFD81, &ask_params(6, 6, 0, 500));
+    s.event(Instant(401), &command_status(status, 0xFD81));
+    s.advance(Instant(2_000));
+    s.finish();
+    s
+}
+
+/// An ask the chip refused busy never reached the air, so the core's not making it is no
+/// disagreement; one refused otherwise is owed as any ask is.
+#[test]
+fn a_drivers_ask_the_chip_refused_busy_is_owed_nothing() {
+    assert_eq!(console_ask_answered(0x46).observer.found, []);
+    let found = console_ask_answered(0x12).observer.found;
+    let lines: Vec<String> = found.iter().map(ToString::to_string).collect();
+    assert_eq!(lines.first().map(String::as_str), Some("400: the driver asked for 6-6 units, latency 0 and the core did not"), "{lines:?}");
+}
