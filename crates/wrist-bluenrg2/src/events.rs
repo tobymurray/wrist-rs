@@ -1,6 +1,6 @@
 //! What each packet from the BlueNRG-2 tells the core.
 
-use bluenrg2::{BleStatus, BootReason, Event, VendorEvent};
+use bluenrg2::{BleStatus, BootReason, Event, PairingStatus, VendorEvent};
 use wrist_ble::{
     ChipInfo, ConnHandle, Failure, FailureKind, LeConnRole, LinkParams, Micros, PairingEvent, PairingStep, PeerAddr, RadioEvent,
     ResetCause, Status,
@@ -99,16 +99,18 @@ impl Translator {
             VendorEvent::NumericComparison { handle, value, .. } => RadioEvent::Pairing(PairingEvent { link: handle, step: PairingStep::Numeric(value) }),
             VendorEvent::PassKeyRequest { handle, .. } => RadioEvent::Pairing(PairingEvent { link: handle, step: PairingStep::PasskeyWanted }),
             VendorEvent::PairingComplete { handle, status, .. } => {
-                let step = if status.is_success() { PairingStep::Complete } else { PairingStep::Failed };
+                let step = match status {
+                    PairingStatus::SUCCESS => PairingStep::Complete,
+                    PairingStatus::LTK_MISSING_LOCAL => PairingStep::LocalKeyMissing,
+                    PairingStatus::LTK_MISSING_PEER => PairingStep::PeerKeyMissing,
+                    _ => PairingStep::Failed,
+                };
                 RadioEvent::Pairing(PairingEvent { link: handle, step })
             }
             VendorEvent::BondLost => RadioEvent::BondLost(self.phone?),
             VendorEvent::ExchangeMtuResponse { handle, server_mtu, .. } => RadioEvent::Mtu(handle, server_mtu),
-            VendorEvent::L2capUpdateResponse { handle, accepted: false, .. } => {
-                RadioEvent::Params { link: handle, result: Err(failure(FailureKind::PeerRejected, 0)) }
-            }
             VendorEvent::AttributeModified { handle, attr, offset, more, data, .. } => self.server.as_ref()?.written(handle, attr, offset, more, data)?,
-            VendorEvent::L2capUpdateResponse { handle, accepted: true, .. } => RadioEvent::ParamsAccepted { link: handle },
+            VendorEvent::L2capUpdateResponse { handle, accepted, .. } => RadioEvent::ParamsAnswered { link: handle, accepted },
             VendorEvent::SlaveSecurityInitiated
             | VendorEvent::GapProcComplete { .. }
             | VendorEvent::TxPoolAvailable { .. }

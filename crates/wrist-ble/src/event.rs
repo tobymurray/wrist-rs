@@ -18,8 +18,9 @@ pub enum RadioEvent {
     LinkDown { link: ConnHandle, reason: Status },
     /// A parameter update completed, with an error too.
     Params { link: ConnHandle, result: Result<LinkParams, Failure> },
-    /// The central accepted this peripheral's parameter request; its update, if any, follows.
-    ParamsAccepted { link: ConnHandle },
+    /// The central answered this peripheral's parameter request, which ends it; an accepted one's
+    /// update, if any, follows.
+    ParamsAnswered { link: ConnHandle, accepted: bool },
     Encryption { link: ConnHandle, on: bool },
     Pairing(PairingEvent),
     /// The peer has no bond for a link the chip had bonded keys for.
@@ -80,6 +81,11 @@ pub enum PairingStep {
     /// Keys exchanged; [`RadioEvent::Encryption`] follows.
     Complete,
     Failed,
+    /// Encryption failed: this device no longer holds the key the peer offered, so the peer must
+    /// forget it before they can pair again.
+    LocalKeyMissing,
+    /// Encryption failed: the peer no longer holds this device's key, so it has lost its bond.
+    PeerKeyMissing,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

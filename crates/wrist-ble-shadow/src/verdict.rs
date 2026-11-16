@@ -188,13 +188,29 @@ impl Verdict {
         self.core.push(Seen { at, act, owed }, found);
     }
 
-    /// The driver's ask for parameters is owed nothing, nor is a disconnect within [`OPERATOR`]
-    /// after the operator's.
+    /// A disconnect within [`OPERATOR`] after the operator's is owed nothing.
     pub fn driver(&mut self, at: u64, act: Act, found: &mut impl FnMut(Disagreement)) {
+        self.driver_acted(at, act, true, found);
+    }
+
+    /// The driver's action, which one of the core's rules says it would not take: owed nothing.
+    pub fn excused(&mut self, at: u64, act: Act, found: &mut impl FnMut(Disagreement)) {
+        self.driver_acted(at, act, false, found);
+    }
+
+    /// The driver's latest `act` never reached the air, since the chip refused it busy: owed nothing.
+    pub fn refused_busy(&mut self, act: Act) {
+        let w = &mut self.driver;
+        if let Some(s) = w.seen[..w.len].iter_mut().rev().find(|s| s.act == act) {
+            s.owed = false;
+        }
+    }
+
+    fn driver_acted(&mut self, at: u64, act: Act, owed: bool, found: &mut impl FnMut(Disagreement)) {
         self.advance(at, found);
         let answered = self.core.answer(act);
         let operator = act == Act::Disconnect && self.operator.is_some_and(|t| t <= at && at - t <= OPERATOR);
-        let owed = !answered && !matches!(act, Act::Ask(..)) && !operator;
+        let owed = owed && !answered && !operator;
         self.driver.push(Seen { at, act, owed }, found);
     }
 

@@ -81,10 +81,9 @@ fn an_update_gives_the_new_parameters_or_its_refusal() {
 }
 
 #[test]
-fn a_central_refusing_the_watchs_request_fails_it_and_accepting_waits_for_the_update() {
-    let refused = Failure { kind: FailureKind::PeerRejected, native: 0 };
-    assert_eq!(one(&vendor(0x0800, &[0x01, 0x08, 0x01, 0x00])), Some(RadioEvent::Params { link: link(), result: Err(refused) }));
-    assert_eq!(one(&vendor(0x0800, &[0x01, 0x08, 0x00, 0x00])), Some(RadioEvent::ParamsAccepted { link: link() }));
+fn a_centrals_answer_to_the_watchs_request_is_one_event_accepted_or_not() {
+    assert_eq!(one(&vendor(0x0800, &[0x01, 0x08, 0x01, 0x00])), Some(RadioEvent::ParamsAnswered { link: link(), accepted: false }));
+    assert_eq!(one(&vendor(0x0800, &[0x01, 0x08, 0x00, 0x00])), Some(RadioEvent::ParamsAnswered { link: link(), accepted: true }));
     assert_eq!(one(&vendor(0x0800, &[0x01, 0x08, 0x01])), Some(RadioEvent::EventsLost), "malformed");
 }
 
@@ -122,6 +121,9 @@ fn pairing_steps_come_from_the_gap_events() {
     assert_eq!(one(&vendor(0x0402, &[0x01, 0x08])), step(PairingStep::PasskeyWanted));
     assert_eq!(one(&vendor(0x0401, &[0x01, 0x08, 0x00, 0x00])), step(PairingStep::Complete));
     assert_eq!(one(&vendor(0x0401, &[0x01, 0x08, 0x02, 0x0B])), step(PairingStep::Failed));
+    assert_eq!(one(&vendor(0x0401, &[0x01, 0x08, 0x03, 0x00])), step(PairingStep::LocalKeyMissing));
+    assert_eq!(one(&vendor(0x0401, &[0x01, 0x08, 0x04, 0x00])), step(PairingStep::PeerKeyMissing));
+    assert_eq!(one(&vendor(0x0401, &[0x01, 0x08, 0x05, 0x00])), step(PairingStep::Failed), "encryption not supported");
     assert_eq!(one(&vendor(0x0401, &[0x01, 0x08])), Some(RadioEvent::EventsLost));
 }
 

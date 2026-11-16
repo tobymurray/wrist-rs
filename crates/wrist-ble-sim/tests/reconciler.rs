@@ -144,6 +144,61 @@ fn asked_on_battery() -> Bench {
     b
 }
 
+/// The chip's two key-missing outcomes reach the user: the phone to forget this device, or its
+/// bond lost.
+#[test]
+fn a_missing_key_is_told() {
+    use wrist_ble::{PairingEvent, PairingStep};
+    use wrist_ble_core::engine::Tell;
+    for (step, tell) in [(PairingStep::LocalKeyMissing, Tell::OldKey(link())), (PairingStep::PeerKeyMissing, Tell::BondLost(link()))] {
+        let mut b = Bench::new(battery());
+        b.phone_up(1_000);
+        let out = b.at(1_200, Input::Radio(RadioEvent::Pairing(PairingEvent { link: link(), step })));
+        assert_eq!(out.tell, [Some(tell), None], "{step:?}");
+    }
+}
+
+/// The core's rules for leaving an ask out, as the shadow reads them: no link, a link not yet open
+/// to asks or pairing, a link that already fits, and an ask already made that may not go again yet.
+#[test]
+fn an_ask_is_left_out_by_the_cores_rules() {
+    use wrist_ble::{ConnParams, PairingEvent, PairingStep};
+    use wrist_ble_core::engine::Omitted;
+    let fits = ConnParams { interval_min: OPENED.interval, interval_max: OPENED.interval, latency: OPENED.latency, timeout: OPENED.timeout, ce_len: Duration::from_u16(0) };
+    let other = ConnParams { latency: OPENED.latency + 1, ..fits };
+    let mut b = Bench::new(battery());
+    assert_eq!(b.core.omits_ask(b.now, &fits), None, "no link");
+    b.phone_up(1_000);
+    assert_eq!(b.core.omits_ask(b.now, &other), Some(Omitted::NotOpen));
+    b.encrypted(1_100);
+    assert_eq!((b.core.omits_ask(b.now, &fits), b.core.omits_ask(b.now, &other)), (Some(Omitted::Fits), None));
+    b.at(1_200, Input::Radio(RadioEvent::Pairing(PairingEvent { link: link(), step: PairingStep::Numeric(1) })));
+    assert_eq!(b.core.omits_ask(b.now, &other), Some(Omitted::NotOpen), "pairing");
+    let mut b = Bench::new(cable());
+    b.phone_up(1_000);
+    b.encrypted(1_100);
+    let now = interval_now_ask(6, 6);
+    assert_eq!(b.at(1_150, Input::IntervalNow(now)).op, Some(Op::UpdateParams(link(), now)));
+    b.accept();
+    let driver = ConnParams { ce_len: Duration::from_u16(0), ..now };
+    assert_eq!(b.core.omits_ask(b.now, &driver), Some(Omitted::Asked), "the core's own ask, made");
+    b.at(1_180, Input::Radio(RadioEvent::ParamsAnswered { link: link(), accepted: false }));
+    assert_eq!(b.core.omits_ask(b.now, &driver), Some(Omitted::Asked), "refused, the same ask again");
+    let mut b = Bench::new(cable());
+    b.phone_up(1_000);
+    b.encrypted(1_100);
+    assert!(b.at(1_150, Input::IntervalNow(now)).op.is_some());
+    b.refuse(FailureKind::ModeExclusion);
+    assert_eq!(b.at(1_160, Input::IntervalNow(interval_now_ask(8, 8))).op, None, "backing off");
+    assert_eq!(b.core.omits_ask(b.now, &driver), None, "a want since replaced");
+    let mut b = Bench::new(battery());
+    b.phone_up(1_000);
+    let Some(Op::UpdateParams(_, menu)) = b.encrypted(1_100).op else { panic!("the menu's ask") };
+    b.accept();
+    b.at(1_180, Input::Radio(RadioEvent::ParamsAnswered { link: link(), accepted: false }));
+    assert_eq!(b.core.omits_ask(b.now, &menu), None, "the menu's ask, which only the console's is excused");
+}
+
 /// An ask refused before it reached the air is asked again once the backoff ends.
 #[test]
 fn an_ask_refused_at_submit_is_asked_again_after_the_backoff() {
@@ -155,7 +210,8 @@ fn an_ask_refused_at_submit_is_asked_again_after_the_backoff() {
     assert!(matches!(out.op, Some(Op::UpdateParams(l, _)) if l == link()), "{out:?}");
 }
 
-/// An ask refused busy waits for the central to answer the one before, however long that takes.
+/// An ask refused busy waits for the central to answer the one before, however long that takes;
+/// an update completing meanwhile, the central's own or a failed one, is no answer.
 #[test]
 fn an_ask_refused_busy_waits_for_the_centrals_answer() {
     let mut b = asked_on_battery();
@@ -163,9 +219,27 @@ fn an_ask_refused_busy_waits_for_the_centrals_answer() {
     for t in [2_300, 5_000, 20_000] {
         assert_eq!(b.at(t, Input::Tick).op, None, "at {t} ms");
     }
-    let rejected = Err(Failure { kind: FailureKind::PeerRejected, native: 0 });
-    let out = b.at(21_000, Input::Radio(RadioEvent::Params { link: link(), result: rejected }));
+    let params = LinkParams { interval: Duration::from_u16(24), latency: 0, timeout: Duration::from_u16(500) };
+    let failed = Err(Failure { kind: FailureKind::PeerRejected, native: 0x3B });
+    for result in [Ok(params), failed] {
+        let out = b.at(20_500, Input::Radio(RadioEvent::Params { link: link(), result }));
+        assert_eq!(out.op, None, "{result:?}");
+    }
+    let out = b.at(21_000, Input::Radio(RadioEvent::ParamsAnswered { link: link(), accepted: false }));
     assert!(matches!(out.op, Some(Op::UpdateParams(l, _)) if l == link()), "{out:?}");
+}
+
+/// The central's refusal ends the ask and counts as a failed update; its acceptance leaves the ask
+/// to the driver's end of it.
+#[test]
+fn a_centrals_refusal_ends_the_ask_and_its_acceptance_does_not() {
+    for accepted in [false, true] {
+        let mut b = asked_on_battery();
+        b.accept();
+        b.at(1_400, Input::Radio(RadioEvent::ParamsAnswered { link: link(), accepted }));
+        assert_eq!(b.core.counters.update_failures, u32::from(!accepted), "accepted {accepted}");
+        assert_eq!(b.core.pending().is_none(), !accepted, "accepted {accepted}");
+    }
 }
 
 /// A busy ask goes again as soon as the central accepts the one before, before its update lands.
@@ -174,7 +248,16 @@ fn an_ask_refused_busy_goes_when_the_central_accepts_the_one_before() {
     let mut b = asked_on_battery();
     b.refuse(FailureKind::Busy);
     assert_eq!(b.at(2_300, Input::Tick).op, None);
-    let out = b.at(2_400, Input::Radio(RadioEvent::ParamsAccepted { link: link() }));
+    let out = b.at(2_400, Input::Radio(RadioEvent::ParamsAnswered { link: link(), accepted: true }));
+    assert!(matches!(out.op, Some(Op::UpdateParams(l, _)) if l == link()), "{out:?}");
+}
+
+/// An ask the chip never took is not held for an answer: it backs off as any refusal does.
+#[test]
+fn an_ask_the_chip_never_took_is_not_held() {
+    let mut b = asked_on_battery();
+    b.refuse(FailureKind::NotTaken);
+    let out = b.at(2_300, Input::Tick);
     assert!(matches!(out.op, Some(Op::UpdateParams(l, _)) if l == link()), "{out:?}");
 }
 
@@ -295,28 +378,31 @@ fn stop_advertising() -> Goals {
     Goals { phone: PhoneGoal { discoverable: false, pairing_open: false }, ..battery() }
 }
 
-/// I2: a chip that says busy to everything is restarted once its budget is spent, not retried for ever.
+/// I2: a chip that says busy to everything, or takes nothing, is restarted once its budget is
+/// spent, not retried for ever.
 #[test]
 fn a_chip_that_stays_busy_is_restarted() {
-    let mut b = Bench::new(battery());
-    let out = b.at(1_000, Input::Goals(stop_advertising()));
-    assert_eq!(out.op, Some(Op::Advertise(None)), "{out:?}");
-    let mut refusals = 0;
-    let mut restarted = None;
-    while b.now.0 < 600_000 && restarted.is_none() {
-        if b.asked.is_some() {
-            b.refuse(FailureKind::Busy);
-            refusals += 1;
+    for kind in [FailureKind::Busy, FailureKind::NotTaken] {
+        let mut b = Bench::new(battery());
+        let out = b.at(1_000, Input::Goals(stop_advertising()));
+        assert_eq!(out.op, Some(Op::Advertise(None)), "{out:?}");
+        let mut refusals = 0;
+        let mut restarted = None;
+        while b.now.0 < 600_000 && restarted.is_none() {
+            if b.asked.is_some() {
+                b.refuse(kind);
+                refusals += 1;
+            }
+            let next = b.core.step(b.now, Input::Tick).next.expect("a wake");
+            let out = b.at(next.0, Input::Tick);
+            if matches!(out.chip, Some(wrist_ble_core::chip::Action::Start(_))) {
+                restarted = Some(b.now);
+            }
         }
-        let next = b.core.step(b.now, Input::Tick).next.expect("a wake");
-        let out = b.at(next.0, Input::Tick);
-        if matches!(out.chip, Some(wrist_ble_core::chip::Action::Start(_))) {
-            restarted = Some(b.now);
-        }
+        assert_eq!(refusals, usize::from(BUSY_BUDGET), "{kind:?}");
+        assert_eq!(b.core.counters.busy_spent, 1, "{kind:?}");
+        assert!(restarted.is_some_and(|t| t.0 < 150_000), "{kind:?}: {restarted:?}");
     }
-    assert_eq!(refusals, usize::from(BUSY_BUDGET));
-    assert_eq!(b.core.counters.busy_spent, 1);
-    assert!(restarted.is_some_and(|t| t.0 < 150_000), "{restarted:?}");
 }
 
 /// An occasional busy refusal, one every 15 minutes, never restarts the chip.

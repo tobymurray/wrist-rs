@@ -10,8 +10,8 @@ use wrist_ble_core::chip::Action;
 use wrist_ble_core::engine::Tell;
 use wrist_ble_core::goals::{Goals, PhoneGoal, Power};
 use wrist_ble_core::{status, State};
-use wrist_ble_shadow::verdict::Disagreement;
-use wrist_ble_shadow::{DriverOp, Observer, Shadow};
+use wrist_ble_shadow::verdict::{Act, Disagreement};
+use wrist_ble_shadow::{DriverOp, Excuse, Observer, Shadow};
 use wrist_bluenrg2::INFO;
 
 /// One line of the replay's timeline.
@@ -54,6 +54,8 @@ pub struct Report {
     pub driver_ops: Vec<(u64, DriverOp)>,
     /// Where the core and the driver acted differently.
     pub found: Vec<Disagreement>,
+    /// The driver's asks owed nothing, and why.
+    pub excused: Vec<(u64, Excuse)>,
     /// Answers the core was owed that the shadow had no room for.
     pub lost: u32,
 }
@@ -184,6 +186,11 @@ impl Observer for Record {
 
     fn lost(&mut self, _at: Instant) {
         self.report.lost += 1;
+    }
+
+    fn excused(&mut self, at: Instant, act: Act, why: Excuse) {
+        self.report.excused.push((at.0, why));
+        self.push(at, Who::Driver, format!("{act} alone: {why:?}"));
     }
 }
 

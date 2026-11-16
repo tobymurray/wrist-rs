@@ -69,10 +69,10 @@ use bluenrg2::opcode::{
 };
 use bluenrg2::{
     event_code, io_capability, AddrKind, BdAddr, BootReason, Event, BleStatus,
-    PairingReason, PairingStatus, VendorEvent, ATT_HEADER_LEN,
+    PairingReason, VendorEvent, ATT_HEADER_LEN,
 };
 use wrist_ble::{
-    AdvParams, Cccd, CharDecl, ConnHandle, ConnParams, DisconnectReason, Failure, FailureKind, Interval, LeConnRole, Micros, Op, Payload, RadioEvent, ServerTable,
+    AdvParams, Cccd, CharDecl, ConnHandle, ConnParams, DisconnectReason, Failure, FailureKind, Interval, LeConnRole, Micros, Op, OpKind, PairingEvent, PairingStep, Payload, RadioEvent, ServerTable,
     ServiceDecl, Slots, Timeout, ATT_MAX_MTU,
 };
 use wrist_ble_core::goals::{self, Goals, PhoneGoal};
@@ -723,8 +723,8 @@ struct Link<'d> {
     seen: Seen,
     /// How the boot a reset asked for came up.
     boot: Option<Boot>,
-    /// The chip restarted by itself and has not been brought up again.
-    restart: Option<Boot>,
+    /// The chip restarted by itself more often than [`Restarts`] allows: hold it in reset.
+    kept_restarting: bool,
     restarts: Restarts,
     shadow: &'d mut Shadow<Said>,
 }
@@ -759,7 +759,7 @@ impl<'d> Link<'d> {
             scanner: scan::Scanner::default(),
             seen: Seen::default(),
             boot: None,
-            restart: None,
+            kept_restarting: false,
             restarts: Restarts::default(),
             shadow,
         }
@@ -791,7 +791,7 @@ impl Link<'_> {
     /// the earliest deadline.
     async fn serve(&mut self, changes: &mut crate::power::Changes) -> bool {
         loop {
-            if self.restart.is_some() && !self.recover().await {
+            if self.chip.restarted() && !self.recover().await {
                 return false;
             }
             WAKE.reset();
@@ -863,6 +863,7 @@ impl Link<'_> {
             abandon_at: self.transfer.as_ref().map(|_| tick(self.last_data + TRANSFER_IDLE + one)),
             ask_at: self.pair_ask.due(),
             scan_end: self.scanner.until().map(tick),
+            held_until: self.held_ask.until(),
         };
         // The first tick at which `now_ms` reaches it.
         let shadow = self.shadow.next().map(|at| (at.0 * embassy_time::TICK_HZ).div_ceil(1000));
@@ -971,11 +972,13 @@ impl Link<'_> {
         self.ask(params).await;
     }
 
-    /// One ask; refused busy, it is held for the central's answer to the one before.
+    /// One ask; refused busy, it is held for the central's answer to the one before, or until
+    /// the core's deadline for an ask.
     async fn ask(&mut self, params: ConnParams) {
         let (reply, taken) = self.settled(Op::UpdateParams(link(), params)).await;
-        let busy = reply.is_ok() && matches!(taken, Err(Failure { kind: FailureKind::Busy, .. }));
-        self.held_ask.answered(params, busy);
+        let busy = matches!(taken, Err(Failure { kind: FailureKind::Busy, .. }));
+        let wait = Duration::from_millis(u64::from(wrist_bluenrg2::op_deadline(OpKind::UpdateParams).0));
+        self.held_ask.answered(params, busy.then(|| (Instant::now() + wait).as_ticks()));
         match reply {
             Ok(r) if r.status == 0 => {}
             Ok(_) if busy => self.uart.write_line("[ble] interval request held: the central has yet to answer the one before"),
@@ -1001,7 +1004,7 @@ impl Link<'_> {
         if let Some((min, max)) = self.request_interval.take_if(|_| self.interval_ask.open()) {
             self.ask_connection(min, max, wrist_wake::ble::NOW_LATENCY, wrist_wake::ble::NOW_TIMEOUT).await;
         }
-        if let Some(params) = self.held_ask.take() {
+        if let Some(params) = self.held_ask.take(Instant::now().as_ticks()) {
             self.ask(params).await;
         }
         if self.finish_transfer {
@@ -1090,10 +1093,11 @@ impl Link<'_> {
         self.shadow.finish();
     }
 
-    /// Bring up again a chip that restarted by itself, within the budget; whether it is up.
+    /// Bring up again a chip that restarted by itself since the driver last reset it, within the
+    /// budget; whether it is up.
     async fn recover(&mut self) -> bool {
-        while let Some(boot) = self.restart.take() {
-            if boot == Boot::KeptRestarting {
+        while self.chip.restarted() {
+            if self.kept_restarting {
                 self.uart.write_line("[ble] the chip restarted more than 3 times in an hour");
                 return false;
             }
@@ -1108,7 +1112,6 @@ impl Link<'_> {
         clear_prompt();
         #[cfg(feature = "ble-trace")]
         trace::packet(trace::Dir::Reset, &[]);
-        self.restart = None;
         self.boot = None;
         CONN_HANDLE.store(0, Ordering::Relaxed);
         let addr = address_from_uid();
@@ -1525,33 +1528,21 @@ impl Link<'_> {
                 self.subscribed = cccd == Cccd::Notify;
                 return self.set_mirror();
             }
+            Some(RadioEvent::LinkUp { link, peer, params, .. }) => return self.connected(link, peer, params),
+            Some(RadioEvent::ParamsAnswered { .. }) => self.held_ask.central_answered(),
+            Some(RadioEvent::Pairing(PairingEvent { step: PairingStep::LocalKeyMissing, .. })) => {
+                if let Some(peer) = self.peer {
+                    old_key(|k| k.refused(peer));
+                }
+            }
+            Some(RadioEvent::Pairing(PairingEvent { step: PairingStep::PeerKeyMissing, .. })) => {
+                self.uart.write_line("[ble] the central has lost its bond; pair again from the central");
+            }
             _ => {}
         }
         match bluenrg2::parse(p) {
             // Replies are the driver's.
             Event::CommandComplete { .. } | Event::CommandStatus { .. } => {}
-            Event::LeConnectionComplete { handle, peer, timing, .. } => {
-                CONN_HANDLE.store(handle.raw(), Ordering::Relaxed);
-                self.peer = Some(peer);
-                self.pair_ask.connected(Instant::now().as_ticks(), embassy_time::TICK_HZ);
-                self.interval_ask.connected();
-                if let Some(t) = timing {
-                    INTERVAL.store(t.conn_interval.as_u16(), Ordering::Relaxed);
-                    LATENCY.store(t.peripheral_latency, Ordering::Relaxed);
-                }
-                set_state(STATE_CONNECTED);
-                set_encrypted(false);
-                self.subscribed = false;
-                self.set_mirror();
-                self.outbox = Outbox::default();
-                // No request here: one crossing the central's own encryption start ended a
-                // bonded macOS central's link (HARDWARE.md).
-                self.mtu = DEFAULT_MTU;
-                self.asked = None;
-                self.held_ask.clear();
-                self.advertised = None;
-                self.uart.write_line("[ble] connected");
-            }
             Event::LeConnectionFailed { .. } => {
                 CONNECT_FAILURES.fetch_add(1, Ordering::Relaxed);
             }
@@ -1601,6 +1592,29 @@ impl Link<'_> {
                 UNKNOWN.fetch_add(1, Ordering::Relaxed);
             }
         }
+    }
+
+    fn connected(&mut self, link: ConnHandle, peer: wrist_ble::PeerAddr, params: Option<wrist_ble::LinkParams>) {
+        CONN_HANDLE.store(link.raw(), Ordering::Relaxed);
+        self.peer = Some(bluenrg2::Address { kind: peer.kind, addr: peer.addr });
+        self.pair_ask.connected(Instant::now().as_ticks(), embassy_time::TICK_HZ);
+        self.interval_ask.connected();
+        if let Some(p) = params {
+            INTERVAL.store(p.interval.as_u16(), Ordering::Relaxed);
+            LATENCY.store(p.latency, Ordering::Relaxed);
+        }
+        set_state(STATE_CONNECTED);
+        set_encrypted(false);
+        self.subscribed = false;
+        self.set_mirror();
+        self.outbox = Outbox::default();
+        // No request here: one crossing the central's own encryption start ended a
+        // bonded macOS central's link (HARDWARE.md).
+        self.mtu = DEFAULT_MTU;
+        self.asked = None;
+        self.held_ask.clear();
+        self.advertised = None;
+        self.uart.write_line("[ble] connected");
     }
 
     /// The link's encryption, from either event that reports it, so a refresh after a lost
@@ -1665,7 +1679,7 @@ impl Link<'_> {
         self.passkey_for = None;
         self.rebond_for = None;
         self.recount_bonds = false;
-        self.restart = Some(boot);
+        self.kept_restarting |= boot == Boot::KeptRestarting;
     }
 
     /// `[ble] data length TX 251 octets in 2120 us, RX 27 octets in 328 us`.
@@ -1737,9 +1751,6 @@ impl Link<'_> {
                     self.uart.write_line("[ble] paired");
                     self.recount_bonds = true;
                 } else {
-                    if let (PairingStatus::LTK_MISSING_LOCAL, Some(peer)) = (status, self.peer) {
-                        old_key(|k| k.refused(peer));
-                    }
                     self.interval_ask.pairing_failed();
                     self.uart.write_str("[ble] pairing failed: status ");
                     self.uart.write_hex8(status.into_inner());
@@ -1758,7 +1769,6 @@ impl Link<'_> {
             }
             VendorEvent::TxPoolAvailable { .. } | VendorEvent::AttributeModified { .. } => {}
             VendorEvent::L2capUpdateResponse { accepted, .. } => {
-                self.held_ask.central_answered();
                 if !accepted {
                     UPDATES_REFUSED.fetch_add(1, Ordering::Relaxed);
                     self.uart.write_line("[ble] the central refused the interval request");

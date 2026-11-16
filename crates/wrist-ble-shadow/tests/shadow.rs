@@ -355,3 +355,136 @@ fn the_drivers_refusal_is_the_cores_own_answer() {
     assert!(!s.state().phone.may_ask_params(Instant(5_202)), "another kind of command on the link");
     assert!(s.observer.found.is_empty(), "{:?}", s.observer.found);
 }
+
+/// `ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_REQ`'s parameters for the phone's link.
+fn ask_params(min: u16, max: u16, latency: u16, timeout: u16) -> Vec<u8> {
+    [0x0801u16, min, max, latency, timeout].iter().flat_map(|v| v.to_le_bytes()).collect()
+}
+
+/// The phone's link encrypted and the core's ask on air beside the driver's, then the console's
+/// ask while the central has yet to answer, which the chip answers `status`.
+fn console_ask_answered(status: u8) -> Shadow<Log> {
+    let mut s = up();
+    s.event(Instant(200), PHONE);
+    s.event(Instant(300), ENCRYPTED);
+    let Some(&(_, Op::UpdateParams(_, p))) = s.observer.ops.last() else { panic!("{:?}", s.observer.ops) };
+    s.command(Instant(300), 0xFD81, &ask_params(p.interval_min.as_u16(), p.interval_max.as_u16(), p.latency, p.timeout.as_u16()));
+    s.event(Instant(301), &command_status(0x00, 0xFD81));
+    s.command(Instant(400), 0xFD81, &ask_params(6, 6, 0, 500));
+    s.event(Instant(401), &command_status(status, 0xFD81));
+    s.advance(Instant(2_000));
+    s.finish();
+    s
+}
+
+/// An ask the chip refused busy never reached the air, so the core's not making it is no
+/// disagreement; one refused otherwise is owed as any ask is.
+#[test]
+fn a_drivers_ask_the_chip_refused_busy_is_owed_nothing() {
+    assert_eq!(console_ask_answered(0x46).observer.found, []);
+    let found = console_ask_answered(0x12).observer.found;
+    let lines: Vec<String> = found.iter().map(ToString::to_string).collect();
+    assert_eq!(lines.first().map(String::as_str), Some("400: the driver asked for 6-6 units, latency 0 and the core did not"), "{lines:?}");
+}
+
+/// `LE Connection Update Complete` on the phone's link.
+fn updated(interval: u16, latency: u16, timeout: u16) -> Vec<u8> {
+    let mut packet = vec![0x04, 0x3E, 0x0A, 0x03, 0x00, 0x01, 0x08];
+    for v in [interval, latency, timeout] {
+        packet.extend(v.to_le_bytes());
+    }
+    packet
+}
+
+/// `ble interval now 6 6` as the watch runs it: the console's request, then the driver's ask.
+fn interval_now_6(s: &mut Shadow<Log>, at: u64) {
+    s.interval_now(Instant(at), 6, 6);
+    s.command(Instant(at), 0xFD81, &ask_params(6, 6, 0, 500));
+    s.event(Instant(at + 1), &command_status(0x00, 0xFD81));
+}
+
+/// The operator's repeat of an ask the central refused, or granted outside its range, is one the
+/// core has already made: the driver's is owed nothing.
+#[test]
+fn a_console_ask_repeated_after_the_centrals_answer_is_no_disagreement() {
+    let refused: &[u8] = &[0x04, 0xFF, 0x06, 0x00, 0x08, 0x01, 0x08, 0x01, 0x00];
+    for answer in [vec![refused.to_vec()], vec![ACCEPTED.to_vec(), updated(12, 0, 500)]] {
+        let mut s = up();
+        s.event(Instant(200), PHONE);
+        s.event(Instant(300), ENCRYPTED);
+        let Some(&(_, Op::UpdateParams(_, p))) = s.observer.ops.last() else { panic!("{:?}", s.observer.ops) };
+        s.command(Instant(300), 0xFD81, &ask_params(p.interval_min.as_u16(), p.interval_max.as_u16(), p.latency, p.timeout.as_u16()));
+        s.event(Instant(301), &command_status(0x00, 0xFD81));
+        s.event(Instant(400), ACCEPTED);
+        s.event(Instant(500), &updated(p.interval_max.as_u16(), p.latency, p.timeout.as_u16()));
+        interval_now_6(&mut s, 5_000);
+        for (i, packet) in answer.iter().enumerate() {
+            s.event(Instant(5_100 + 100 * i as u64), packet);
+        }
+        interval_now_6(&mut s, 10_000);
+        s.advance(Instant(12_000));
+        s.finish();
+        assert_eq!(asks(&s.observer), [300, 5_000], "{answer:02x?}");
+        assert_eq!(s.observer.found, [], "{answer:02x?}");
+    }
+}
+
+/// The operator's repeat while the core still holds its own ask open, for a central that never
+/// answered it, is that ask again.
+#[test]
+fn a_console_ask_repeated_over_the_cores_unanswered_one_is_no_disagreement() {
+    let mut s = up();
+    s.event(Instant(200), PHONE);
+    s.event(Instant(300), ENCRYPTED);
+    let Some(&(_, Op::UpdateParams(_, p))) = s.observer.ops.last() else { panic!("{:?}", s.observer.ops) };
+    s.command(Instant(300), 0xFD81, &ask_params(p.interval_min.as_u16(), p.interval_max.as_u16(), p.latency, p.timeout.as_u16()));
+    s.event(Instant(301), &command_status(0x00, 0xFD81));
+    s.event(Instant(400), ACCEPTED);
+    s.event(Instant(500), &updated(p.interval_max.as_u16(), p.latency, p.timeout.as_u16()));
+    interval_now_6(&mut s, 5_000);
+    interval_now_6(&mut s, 35_500);
+    s.advance(Instant(60_000));
+    s.finish();
+    assert_eq!(s.observer.found, []);
+}
+
+/// The same after lost events, which the core recovers from with its ask still open: the driver's
+/// repeat is owed nothing.
+#[test]
+fn a_console_ask_repeated_after_lost_events_is_owed_nothing() {
+    let mut s = up();
+    s.event(Instant(200), PHONE);
+    s.event(Instant(300), ENCRYPTED);
+    let Some(&(_, Op::UpdateParams(_, p))) = s.observer.ops.last() else { panic!("{:?}", s.observer.ops) };
+    s.command(Instant(300), 0xFD81, &ask_params(p.interval_min.as_u16(), p.interval_max.as_u16(), p.latency, p.timeout.as_u16()));
+    s.event(Instant(301), &command_status(0x00, 0xFD81));
+    s.event(Instant(400), ACCEPTED);
+    s.event(Instant(500), &updated(p.interval_max.as_u16(), p.latency, p.timeout.as_u16()));
+    interval_now_6(&mut s, 5_000);
+    s.event(Instant(5_100), CUT);
+    interval_now_6(&mut s, 10_000);
+    s.event(Instant(10_500), &[0x04, 0xFF, 0x06, 0x00, 0x08, 0x01, 0x08, 0x01, 0x00]);
+    s.advance(Instant(60_000));
+    s.finish();
+    assert!(s.observer.found.iter().all(|d| d.core), "{:?}", s.observer.found);
+}
+
+/// A console ask the core holds back for the link to settle is not one it has made: the driver's
+/// repeat in the meantime is owed.
+#[test]
+fn a_console_ask_the_core_has_yet_to_make_is_owed() {
+    let mut s = up();
+    s.event(Instant(200), PHONE);
+    s.event(Instant(300), ENCRYPTED);
+    let Some(&(_, Op::UpdateParams(_, p))) = s.observer.ops.last() else { panic!("{:?}", s.observer.ops) };
+    s.command(Instant(300), 0xFD81, &ask_params(p.interval_min.as_u16(), p.interval_max.as_u16(), p.latency, p.timeout.as_u16()));
+    s.event(Instant(301), &command_status(0x00, 0xFD81));
+    s.event(Instant(400), ACCEPTED);
+    s.event(Instant(1_000), &updated(6, 0, 500));
+    interval_now_6(&mut s, 2_000);
+    s.event(Instant(3_000), &updated(12, 0, 500));
+    interval_now_6(&mut s, 3_500);
+    s.advance(Instant(4_500));
+    s.finish();
+    assert!(s.observer.found.iter().any(|d| d.at == 3_500 && !d.core), "{:?}", s.observer.found);
+}

@@ -9,11 +9,11 @@ pub mod verdict;
 
 use bluenrg2::opcode;
 use wrist_ble::{
-    AddrKind, BdAddr, ChipInfo, ConnHandle, ConnParams, Instant, LeConnRole, LinkStatus, Op, OpId, OpKind, Outcome, PeerAddr, RadioEvent, Snapshot,
+    AddrKind, BdAddr, ChipInfo, ConnHandle, ConnParams, FailureKind, Instant, LeConnRole, LinkStatus, Op, OpId, OpKind, Outcome, PeerAddr, RadioEvent, Snapshot,
     MAX_LINKS,
 };
 use wrist_ble_core::chip::Action;
-use wrist_ble_core::engine::{Core, Input, Tell};
+use wrist_ble_core::engine::{Core, Input, Omitted, Tell};
 use wrist_ble_core::goals::{Goals, Power};
 use wrist_ble_core::State;
 use wrist_bluenrg2::events::Translator;
@@ -65,9 +65,28 @@ fn driver_op(opcode: u16) -> Option<(OpKind, &'static str)> {
     })
 }
 
+/// The driver's ask, as the core would make it.
+fn ask_of(min: u16, max: u16, latency: u16, timeout: u16) -> ConnParams {
+    ConnParams {
+        interval_min: wrist_ble::Interval::from_u16(min),
+        interval_max: wrist_ble::Interval::from_u16(max),
+        latency,
+        timeout: wrist_ble::Timeout::from_u16(timeout),
+        ce_len: wrist_ble::Slots::from_u16(0),
+    }
+}
+
 /// The chip's report that the central accepted the watch's parameter request.
 fn accepted_update(packet: &[u8]) -> bool {
     matches!(bluenrg2::parse(packet), bluenrg2::Event::Vendor(bluenrg2::VendorEvent::L2capUpdateResponse { accepted: true, .. }))
+}
+
+/// Why a driver's ask the core did not make is no disagreement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Excuse {
+    Core(Omitted),
+    /// The chip refused it busy, so it never reached the air.
+    ChipBusy,
 }
 
 /// Told what the shadow does, for a caller that keeps a record of it.
@@ -86,6 +105,8 @@ pub trait Observer {
     /// After each of the core's steps.
     fn stepped(&mut self, _at: Instant, _state: &State) {}
     fn disagreed(&mut self, _d: Disagreement) {}
+    /// A driver's ask owed nothing: the core leaves it out by one of its rules, or the chip refused it.
+    fn excused(&mut self, _at: Instant, _act: Act, _why: Excuse) {}
     /// An answer the core was owed that found no room, so was never given.
     fn lost(&mut self, _at: Instant) {}
 }
@@ -126,6 +147,8 @@ pub struct Shadow<O> {
     awaiting: Option<(OpId, Op)>,
     /// The driver's latest command that is an operation, and the handle its parameters begin with.
     sent: Option<(u16, u16)>,
+    /// The driver's latest ask for parameters.
+    asked: Option<(u16, ConnParams)>,
     advertising: bool,
     /// The core is being told of a chip that was up before it was.
     seeding: bool,
@@ -150,6 +173,7 @@ impl<O: Observer> Shadow<O> {
             asked_update: None,
             awaiting: None,
             sent: None,
+            asked: None,
             advertising: false,
             seeding: false,
             verdict: Verdict::new(),
@@ -272,6 +296,7 @@ impl<O: Observer> Shadow<O> {
         self.asked_update = None;
         self.awaiting = None;
         self.sent = None;
+        self.asked = None;
         self.advertising = false;
     }
 
@@ -299,9 +324,21 @@ impl<O: Observer> Shadow<O> {
                 self.feed(Input::IntervalNow(interval_now_ask(min, max)));
             }
         }
+        let ask = match op {
+            DriverOp::AskParams(min, max, latency) => Some(ask_of(min, max, latency, u16_at(8))),
+            _ => None,
+        };
+        self.asked = ask.map(|a| (u16_at(0), a));
+        let excuse = ask.and_then(|a| self.core.omits_ask(self.now, &a));
         if let Some(act) = Act::of_driver(op) {
             let Self { verdict, observer, .. } = self;
-            verdict.driver(self.now.0, act, &mut |d| observer.disagreed(d));
+            match excuse {
+                Some(why) => {
+                    observer.excused(self.now, act, Excuse::Core(why));
+                    verdict.excused(self.now.0, act, &mut |d| observer.disagreed(d));
+                }
+                None => verdict.driver(self.now.0, act, &mut |d| observer.disagreed(d)),
+            }
         }
         self.observer.driver(self.now, op, name, params);
         match name {
@@ -353,6 +390,15 @@ impl<O: Observer> Shadow<O> {
         };
         let Some((sent, handle)) = self.sent.filter(|&(c, _)| c == code && status != 0) else { return };
         let Some((kind, _)) = driver_op(sent) else { return };
+        if let Some((link, ask)) = self.asked.filter(|_| kind == OpKind::UpdateParams) {
+            let op = Op::UpdateParams(ConnHandle::new(link), ask);
+            if refused(&op, status).kind == FailureKind::Busy {
+                if let Some(act) = Act::of_core(&op) {
+                    self.verdict.refused_busy(act);
+                    self.observer.excused(self.now, act, Excuse::ChipBusy);
+                }
+            }
+        }
         let Some((id, op)) = self.awaiting.filter(|(_, op)| op.kind() == kind && op.link().is_none_or(|l| l.raw() == handle)) else { return };
         self.awaiting = None;
         self.feed(Input::Radio(RadioEvent::Done(id, Err(refused(&op, status)))));

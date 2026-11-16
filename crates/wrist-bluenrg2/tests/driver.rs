@@ -220,6 +220,24 @@ fn a_boot_after_the_resets_own_is_a_packet() {
     assert_eq!(got, [Got::Boot { len: 6, reason: Some(BootReason::STARTED) }, Got::Packet { len: 6, event: Some(RadioEvent::ChipReset(ResetCause::Brownout)) }]);
 }
 
+/// Whether the chip restarted since the last reset: a boot nobody asked for sets it, a reset clears
+/// it, and a reset's own boot leaves it clear.
+#[test]
+fn restarted_is_set_by_a_boot_nobody_asked_for_and_cleared_by_a_reset() {
+    let (c, mut d) = driver(128);
+    assert!(!d.restarted());
+    c.borrow_mut().queued.push(boot(0x05));
+    d.drain();
+    drained(&mut d);
+    assert!(d.restarted());
+    block_on(d.reset());
+    assert!(!d.restarted());
+    c.borrow_mut().queued.push(boot(0x01));
+    assert!(block_on(d.boot()));
+    drained(&mut d);
+    assert!(!d.restarted(), "the reset's own boot");
+}
+
 #[test]
 fn a_reset_that_never_boots_ends_its_window() {
     let (c, mut d) = driver(128);
@@ -300,7 +318,7 @@ fn an_operation_answered_around_a_restart_is_not_taken() {
     let (_, r) = exchange(&c, &mut d, vec![[complete(OPCODE, 0x00, &[]), boot(0x01)].concat()]);
     assert!(r.is_ok(), "the reply came before the restart");
     let params = ConnParams { interval_min: Interval::from_u16(12), interval_max: Interval::from_u16(24), latency: 0, timeout: Timeout::from_u16(500), ce_len: Slots::from_u16(0) };
-    assert_eq!(d.settle(&Op::UpdateParams(ConnHandle::new(0x0801), params), &r).map_err(|f| f.kind), Err(FailureKind::Busy));
+    assert_eq!(d.settle(&Op::UpdateParams(ConnHandle::new(0x0801), params), &r).map_err(|f| f.kind), Err(FailureKind::NotTaken));
     assert_eq!(d.due(), None, "nothing waits on a chip that restarted");
     let refused = Ok(Reply { status: 0x0C, params: [0; bluenrg2::RETURN_PARAMS_MAX], len: 0 });
     assert_eq!(d.settle(&Op::UpdateParams(ConnHandle::new(0x0801), params), &refused).map_err(|f| f.native), Err(0x0C), "a refusal stays one");

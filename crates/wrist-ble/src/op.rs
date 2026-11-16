@@ -163,7 +163,10 @@ pub enum FailureKind {
     Schedule(SchedKind),
     /// Not allowed in the chip's current mode, as advertising while initiating.
     ModeExclusion,
+    /// The chip answered that it is busy.
     Busy,
+    /// The chip never took the command: not sent, or it restarted first.
+    NotTaken,
     NotConnected,
     PeerRejected,
     NoResources,

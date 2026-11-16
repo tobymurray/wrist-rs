@@ -42,10 +42,23 @@ pub enum Input {
 pub enum Tell {
     /// The phone has lost its bond with this device.
     BondLost(ConnHandle),
+    /// The phone holds a key this device has lost.
+    OldKey(ConnHandle),
     /// The chip refused what its model admitted; the configuration is not tried again.
     Divergence { kind: OpKind, native: u16 },
     /// A peer's request for new parameters was refused.
     RefusedPeerRequest(ConnHandle),
+}
+
+/// Why the core asks the phone for nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Omitted {
+    /// [`Phone::may_ask_params`] says no, or the link is pairing.
+    NotOpen,
+    /// The link's parameters already fit the ask.
+    Fits,
+    /// The console's ask, which the core has made already.
+    Asked,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -342,6 +355,7 @@ impl<'a> Core<'a> {
                 phone::Action::ConfirmNumeric(l, yes) => self.enqueue(Op::ConfirmNumeric(l, yes)),
                 phone::Action::AllowRebond(l) => self.enqueue(Op::AllowRebond(l)),
                 phone::Action::TellBondLost(l) => out.tell(Tell::BondLost(l)),
+                phone::Action::TellOldKey(l) => out.tell(Tell::OldKey(l)),
             }
         }
     }
@@ -400,16 +414,18 @@ impl<'a> Core<'a> {
                     }
                 }
             }
-            RadioEvent::ParamsAccepted { link } => {
+            // The chip takes another request once the central answers, and only then (HARDWARE.md).
+            RadioEvent::ParamsAnswered { link, accepted } => {
                 if self.state.phone.link() == Some(link) {
                     self.phone_busy_until = None;
+                }
+                if !accepted {
+                    self.end_pending(|op| op.kind() == OpKind::UpdateParams && op.link() == Some(link));
+                    self.counters.update_failures += 1;
                 }
             }
             RadioEvent::Params { link, result } => {
                 self.end_pending(|op| op.kind() == OpKind::UpdateParams && op.link() == Some(link));
-                if self.state.phone.link() == Some(link) {
-                    self.phone_busy_until = None;
-                }
                 match result {
                     Ok(p) if self.state.phone.link() == Some(link) => {
                         self.phone_params = Some(p);
@@ -523,7 +539,7 @@ impl<'a> Core<'a> {
                         self.chip(now, chip::Event::BaselineRefused, out);
                     }
                 } else {
-                    if f.kind == FailureKind::Busy {
+                    if matches!(f.kind, FailureKind::Busy | FailureKind::NotTaken) {
                         self.busy = self.busy.take(now);
                     }
                     // An ask refused before it reached the air is asked again after the backoff,
@@ -795,6 +811,21 @@ impl<'a> Core<'a> {
         Some(Op::UpdateParams(link, want))
     }
 
+    /// Which of the core's rules keeps it from asking the phone for `ask` now, if one does.
+    #[must_use]
+    pub fn omits_ask(&self, now: Instant, ask: &ConnParams) -> Option<Omitted> {
+        let Phone::Up(l) = self.state.phone else { return None };
+        if !self.state.phone.may_ask_params(now) || matches!(l.security, Security::Pairing { .. }) {
+            return Some(Omitted::NotOpen);
+        }
+        if self.phone_fits(ask) {
+            return Some(Omitted::Fits);
+        }
+        let same = |w: ConnParams| (w.interval_min, w.interval_max, w.latency, w.timeout) == (ask.interval_min, ask.interval_max, ask.latency, ask.timeout);
+        let on_air = self.pending.is_some_and(|p| matches!(p.op, Op::UpdateParams(_, w) if same(w)));
+        (self.console.is_some_and(|(_, w)| same(w)) && ((self.phone_asked.is_some_and(same) && self.phone_asks > 0) || on_air)).then_some(Omitted::Asked)
+    }
+
     /// The parameters wanted of the phone link: the console's ask, else the menu's.
     #[must_use]
     pub fn phone_want(&self) -> Option<ConnParams> {
@@ -866,7 +897,7 @@ const GRACE: Millis = Millis(1_000);
 /// updates undid it.
 pub const ASKS_PER_WANT: u8 = 3;
 
-/// Busy refusals the chip may give before it is restarted.
+/// Busy refusals, and commands the chip did not take, before it is restarted.
 pub const BUSY_BUDGET: u8 = 7;
 
 /// A busy refusal's token comes back after this.

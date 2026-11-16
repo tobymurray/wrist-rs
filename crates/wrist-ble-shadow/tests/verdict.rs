@@ -10,6 +10,8 @@ use wrist_ble_shadow::DriverOp;
 enum Side {
     Core(Op),
     Driver(DriverOp),
+    /// The driver's action, which a rule of the core's leaves out.
+    Excused(DriverOp),
     Operator,
 }
 
@@ -28,6 +30,10 @@ fn judge(actions: &[(u64, Side)]) -> Vec<Disagreement> {
             },
             Side::Driver(d) => match Act::of_driver(d) {
                 Some(act) => v.driver(at, act, &mut tell),
+                None => v.advance(at, &mut tell),
+            },
+            Side::Excused(d) => match Act::of_driver(d) {
+                Some(act) => v.excused(at, act, &mut tell),
                 None => v.advance(at, &mut tell),
             },
             Side::Operator => v.operator(at, &mut tell),
@@ -98,11 +104,34 @@ fn the_same_ask_within_the_window_agrees_and_any_other_does_not() {
     assert_eq!(count(&core, &[(1_300, DriverOp::AskParams(80, 160, 4))]), 0);
     assert_eq!(count(&core, &[(700, DriverOp::AskParams(80, 160, 4))]), 0);
     for driver in [DriverOp::AskParams(80, 160, 0), DriverOp::AskParams(12, 160, 4), DriverOp::AskParams(80, 24, 4)] {
-        assert_eq!(count(&core, &[(1_000, driver)]), 1, "{driver:?}");
+        assert_eq!(count(&core, &[(1_000, driver)]), 2, "{driver:?}");
     }
-    assert_eq!(count(&core, &[(1_301, DriverOp::AskParams(80, 160, 4))]), 1);
-    assert_eq!(count(&core, &[(699, DriverOp::AskParams(80, 160, 4))]), 1);
-    assert_eq!(count(&[], &[(1_000, DriverOp::AskParams(80, 160, 4))]), 0, "the driver asks at every connection");
+    assert_eq!(count(&core, &[(1_301, DriverOp::AskParams(80, 160, 4))]), 2);
+    assert_eq!(count(&core, &[(699, DriverOp::AskParams(80, 160, 4))]), 2);
+    assert_eq!(count(&[], &[(1_000, DriverOp::AskParams(80, 160, 4))]), 1, "the core left it out");
+}
+
+/// A driver's ask that one of the core's rules leaves out is owed nothing, though it still
+/// answers the core's own.
+#[test]
+fn an_excused_ask_is_owed_nothing_and_still_answers() {
+    let excused = [(1_000, Side::Excused(DriverOp::AskParams(80, 160, 4)))];
+    assert_eq!(judge(&excused).len(), 0);
+    assert_eq!(judge(&[excused[0], (1_100, Side::Core(ask(80, 160, 4)))]).len(), 0);
+    assert_eq!(judge(&[excused[0], (1_100, Side::Core(ask(12, 24, 0)))]).len(), 1, "the core's other ask");
+}
+
+/// The chip's busy refusal excuses the driver's latest such ask, not an earlier one that went.
+#[test]
+fn a_busy_refusal_excuses_the_latest_ask_alone() {
+    let act = Act::Ask(80, 160, 4);
+    let mut v = Verdict::new();
+    let mut found = Vec::new();
+    v.driver(1_000, act, &mut |d| found.push(d));
+    v.driver(1_100, act, &mut |d| found.push(d));
+    v.refused_busy(act);
+    v.finish(&mut |d| found.push(d));
+    assert_eq!(found.iter().map(|d| d.at).collect::<Vec<_>>(), [1_000]);
 }
 
 #[test]
@@ -110,7 +139,7 @@ fn advertising_on_one_side_alone_is_a_disagreement() {
     assert_eq!(count(&[(1_000, advertise())], &[(1_000, DriverOp::Advertise(160, 160))]), 0);
     assert_eq!(count(&[(1_000, advertise())], &[(1_301, DriverOp::Advertise(160, 160))]), 2);
     assert_eq!(count(&[(1_000, advertise())], &[(1_000, DriverOp::StopAdvertising)]), 1);
-    assert_eq!(count(&[(1_000, advertise())], &[(1_000, DriverOp::AskParams(80, 160, 4))]), 1);
+    assert_eq!(count(&[(1_000, advertise())], &[(1_000, DriverOp::AskParams(80, 160, 4))]), 2);
     assert_eq!(count(&[(1_000, Op::Advertise(None))], &[(1_000, DriverOp::Advertise(160, 160))]), 1);
     assert_eq!(count(&[], &[(1_000, DriverOp::Advertise(160, 160))]), 1);
 }
@@ -119,7 +148,14 @@ fn advertising_on_one_side_alone_is_a_disagreement() {
 fn a_disagreement_names_the_side_that_acted_and_what_it_did() {
     let found = judge(&sides(&[(1_000, Op::ConfirmNumeric(ConnHandle::new(1), false))], &[(5_000, DriverOp::AskParams(80, 160, 4)), (6_000, DriverOp::Advertise(160, 160))]));
     let lines: Vec<String> = found.iter().map(ToString::to_string).collect();
-    assert_eq!(lines, ["1000: the core refused the comparison and the driver did not", "6000: the driver advertised and the core did not"]);
+    assert_eq!(
+        lines,
+        [
+            "1000: the core refused the comparison and the driver did not",
+            "5000: the driver asked for 80-160 units, latency 4 and the core did not",
+            "6000: the driver advertised and the core did not"
+        ]
+    );
 }
 
 #[test]
@@ -139,7 +175,14 @@ fn more_actions_within_near_than_the_window_holds_judge_the_oldest_early() {
 /// The verdict over a whole record at once, the reference for [`Verdict`].
 fn whole(actions: &[(u64, Side)]) -> Vec<(u64, bool, Act)> {
     let core: Vec<(u64, Op)> = actions.iter().filter_map(|&(t, s)| if let Side::Core(op) = s { Some((t, op)) } else { None }).collect();
-    let driver: Vec<(u64, DriverOp)> = actions.iter().filter_map(|&(t, s)| if let Side::Driver(d) = s { Some((t, d)) } else { None }).collect();
+    let driver: Vec<(u64, DriverOp, bool)> = actions
+        .iter()
+        .filter_map(|&(t, s)| match s {
+            Side::Driver(d) => Some((t, d, true)),
+            Side::Excused(d) => Some((t, d, false)),
+            _ => None,
+        })
+        .collect();
     let operator: Vec<u64> = actions.iter().filter_map(|&(t, s)| matches!(s, Side::Operator).then_some(t)).collect();
     let near = |a: u64, b: u64| a.abs_diff(b) <= NEAR;
     let same = |op: &Op, d: DriverOp| match (op, d) {
@@ -154,21 +197,30 @@ fn whole(actions: &[(u64, Side)]) -> Vec<(u64, bool, Act)> {
     let mut out = Vec::new();
     for &(at, op) in &core {
         let alone = match op {
-            Op::Advertise(Some(_)) => !driver.iter().any(|&(t, d)| near(t, at) && matches!(d, DriverOp::Advertise(..))),
+            Op::Advertise(Some(_)) => !driver.iter().any(|&(t, d, _)| near(t, at) && matches!(d, DriverOp::Advertise(..))),
             Op::UpdateParams(_, p) => {
                 let asked = DriverOp::AskParams(p.interval_min.as_u16(), p.interval_max.as_u16(), p.latency);
-                !driver.iter().any(|&(t, d)| near(t, at) && d == asked)
+                !driver.iter().any(|&(t, d, _)| near(t, at) && d == asked)
             }
-            op if compared(&op) => !driver.iter().any(|&(t, d)| near(t, at) && same(&op, d)),
+            op if compared(&op) => !driver.iter().any(|&(t, d, _)| near(t, at) && same(&op, d)),
             _ => false,
         };
         if alone {
             out.push((at, true, Act::of_core(&op).unwrap()));
         }
     }
-    for &(at, d) in &driver {
+    for &(at, d, owed) in &driver {
+        if !owed {
+            continue;
+        }
         if matches!(d, DriverOp::Advertise(..)) && !core.iter().any(|&(t, op)| near(t, at) && matches!(op, Op::Advertise(Some(_)))) {
             out.push((at, false, Act::Advertise));
+        }
+        if let DriverOp::AskParams(min, max, latency) = d {
+            let same_ask = |op: &Op| matches!(op, Op::UpdateParams(_, p) if (p.interval_min.as_u16(), p.interval_max.as_u16(), p.latency) == (min, max, latency));
+            if !core.iter().any(|&(t, op)| near(t, at) && same_ask(&op)) {
+                out.push((at, false, Act::Ask(min, max, latency)));
+            }
         }
         let asked = operator.iter().any(|&t| t <= at && at - t <= OPERATOR);
         let operators = d == DriverOp::Other(OpKind::Disconnect) && asked;
@@ -194,6 +246,7 @@ fn side() -> impl Strategy<Value = Side> {
         Just(Side::Driver(DriverOp::Advertise(160, 160))),
         Just(Side::Driver(DriverOp::StopAdvertising)),
         (0..asks.len() + 1).prop_map(move |i| Side::Driver(asks.get(i).map_or(DriverOp::AskParams(80, 160, 0), |a| DriverOp::AskParams(a.0, a.1, a.2)))),
+        (0..asks.len()).prop_map(move |i| Side::Excused(DriverOp::AskParams(asks[i].0, asks[i].1, asks[i].2))),
         any::<bool>().prop_map(|yes| Side::Driver(DriverOp::Confirm(yes))),
         prop::sample::select(vec![OpKind::RequestSecurity, OpKind::AllowRebond, OpKind::Disconnect, OpKind::Scan, OpKind::Passkey])
             .prop_map(|k| Side::Driver(DriverOp::Other(k))),

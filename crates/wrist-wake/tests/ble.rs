@@ -15,6 +15,7 @@ fn idle() -> State {
         abandon_at: None,
         ask_at: None,
         scan_end: None,
+        held_until: None,
     }
 }
 
@@ -371,6 +372,12 @@ fn a_scan_wakes_the_loop_when_it_ends() {
 }
 
 #[test]
+fn a_held_ask_wakes_the_loop_at_its_deadline() {
+    let s = State { held_until: Some(NOW + 30_000), scan_end: Some(NOW + 40_000), ..idle() };
+    assert_eq!(due(&s), Some(NOW + 30_000));
+}
+
+#[test]
 fn scanning_listens_less_on_battery() {
     for power in [Power::Cable, Power::Battery] {
         let s = scan(power);
@@ -447,30 +454,30 @@ fn the_consoles_ask_holds_over_the_timing_last_applied() {
 fn an_ask_refused_busy_goes_once_the_central_answers_and_the_latest_wins() {
     use wrist_wake::ble::HeldAsk;
     let mut held = HeldAsk::default();
-    held.answered(1, false);
-    held.answered(2, true);
-    held.answered(3, true);
-    assert_eq!((held.due(), held.take()), (false, None), "not before the central's answer");
+    held.answered(1, None);
+    held.answered(2, Some(UNTIL));
+    held.answered(3, Some(UNTIL));
+    assert_eq!((held.due(), held.take(NOW)), (false, None), "not before the central's answer");
     held.central_answered();
     assert!(held.due());
-    assert_eq!(held.take(), Some(3));
-    assert_eq!((held.due(), held.take()), (false, None), "once");
+    assert_eq!(held.take(NOW), Some(3));
+    assert_eq!((held.due(), held.take(NOW), held.until()), (false, None, None), "once");
     held.central_answered();
-    assert_eq!(held.take(), None, "an answer with nothing held asks nothing");
+    assert_eq!(held.take(NOW), None, "an answer with nothing held asks nothing");
 }
 
 #[test]
 fn a_held_ask_goes_with_a_later_ask_taken_or_the_link() {
     use wrist_wake::ble::HeldAsk;
     let mut held = HeldAsk::default();
-    held.answered(2, true);
-    held.answered(3, false);
+    held.answered(2, Some(UNTIL));
+    held.answered(3, None);
     held.central_answered();
-    assert_eq!(held.take(), None, "the later one was taken");
-    held.answered(4, true);
+    assert_eq!((held.take(UNTIL), held.until()), (None, None), "the later one was taken");
+    held.answered(4, Some(UNTIL));
     held.central_answered();
     held.clear();
-    assert_eq!((held.due(), held.take()), (false, None));
+    assert_eq!((held.due(), held.take(UNTIL)), (false, None));
 }
 
 /// The central's answer read in the same exchange as the chip's busy refusal of the next ask.
@@ -478,9 +485,23 @@ fn a_held_ask_goes_with_a_later_ask_taken_or_the_link() {
 fn an_answer_read_while_the_chip_refuses_the_next_ask_lets_that_ask_go() {
     use wrist_wake::ble::HeldAsk;
     let mut held = HeldAsk::default();
-    held.answered(1, false);
+    held.answered(1, None);
     held.central_answered();
-    held.answered(2, true);
+    held.answered(2, Some(UNTIL));
     assert!(held.due());
-    assert_eq!(held.take(), Some(2));
+    assert_eq!(held.take(NOW), Some(2));
 }
+
+/// With no answer from the central the held ask goes at the core's deadline, as the core's does.
+#[test]
+fn a_held_ask_with_no_answer_goes_at_its_deadline() {
+    use wrist_wake::ble::HeldAsk;
+    let mut held = HeldAsk::default();
+    held.answered(2, Some(UNTIL));
+    assert_eq!((held.until(), held.take(UNTIL - 1)), (Some(UNTIL), None));
+    assert_eq!(held.take(UNTIL), Some(2));
+    assert_eq!(held.take(UNTIL + 1), None);
+}
+
+/// When a held ask goes without an answer.
+const UNTIL: u64 = NOW + 30_000;

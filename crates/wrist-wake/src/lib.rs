@@ -58,6 +58,8 @@ pub mod ble {
         pub ask_at: Option<u64>,
         /// A scan ends at this tick.
         pub scan_end: Option<u64>,
+        /// An ask the chip refused busy goes at this tick ([`HeldAsk`]).
+        pub held_until: Option<u64>,
     }
 
     /// When the loop must next run by time; `None` means only the chip's IRQ, a request or
@@ -67,7 +69,7 @@ pub mod ble {
         let now = s.now;
         let quiet = s.transfer == Transfer::Started;
         let console = s.console.and_then(|c| (c.pending && !quiet).then_some(c.next_at.max(now)));
-        earliest([s.work.then_some(now), s.confirm_by, console, s.abandon_at, s.ask_at, s.scan_end])
+        earliest([s.work.then_some(now), s.confirm_by, console, s.abandon_at, s.ask_at, s.scan_end, s.held_until])
     }
 
     /// How long a link stays unencrypted before the watch asks its central to pair: well past a
@@ -145,10 +147,11 @@ pub mod ble {
     }
 
     /// An interval ask the chip refused busy, since the one before it still waits for the
-    /// central's answer: asked again once that answer comes. A later ask replaces it.
+    /// central's answer: asked again once that answer comes, or at the core's deadline for an ask
+    /// without one. A later ask replaces it.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub struct HeldAsk<T> {
-        held: Option<T>,
+        held: Option<(T, u64)>,
         due: bool,
     }
 
@@ -159,10 +162,10 @@ pub mod ble {
     }
 
     impl<T: Copy> HeldAsk<T> {
-        /// The chip's answer to `ask`: held if `busy`, and nothing held if not. A held ask may go at
-        /// once if the central answered the one on air while the chip was refusing it.
-        pub fn answered(&mut self, ask: T, busy: bool) {
-            *self = Self { held: busy.then_some(ask), due: busy && self.due };
+        /// The chip's answer to `ask`: held until the tick `held_until` if refused busy, and the
+        /// central's answer to the one on air meanwhile lets it go at once.
+        pub fn answered(&mut self, ask: T, held_until: Option<u64>) {
+            *self = Self { held: held_until.map(|until| (ask, until)), due: held_until.is_some() && self.due };
         }
 
         /// The central answered the ask on air: the held one may go.
@@ -170,17 +173,27 @@ pub mod ble {
             self.due = true;
         }
 
-        /// The held ask, once it may go.
-        pub fn take(&mut self) -> Option<T> {
-            if !core::mem::take(&mut self.due) {
+        /// The held ask, once it may go at `now`.
+        pub fn take(&mut self, now: u64) -> Option<T> {
+            let due = core::mem::take(&mut self.due);
+            let (ask, until) = self.held?;
+            if !due && now < until {
                 return None;
             }
-            self.held.take()
+            self.held = None;
+            Some(ask)
         }
 
+        /// Whether the central's answer lets the held ask go on the next pass.
         #[must_use]
         pub fn due(&self) -> bool {
             self.due
+        }
+
+        /// When the held ask goes without the central's answer.
+        #[must_use]
+        pub fn until(&self) -> Option<u64> {
+            self.held.map(|(_, until)| until)
         }
 
         /// The link is gone, and the ask with it.

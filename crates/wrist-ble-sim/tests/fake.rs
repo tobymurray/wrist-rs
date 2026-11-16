@@ -141,6 +141,82 @@ fn a_phones_second_interval_ask_is_refused_busy_as_the_driver_reads_the_chips_co
     assert_eq!(wrist_bluenrg2::ops::refused(&ask, 0x46), refused);
 }
 
+/// As the chip does (HARDWARE.md): the central's answer ends the ask, and the next is taken before
+/// the first's update completes.
+#[test]
+fn a_phones_answer_ends_the_ask_and_frees_the_chip_for_the_next() {
+    let mut f = ready(1);
+    f.submit(Op::Advertise(Some(ADV_100))).unwrap();
+    f.phone_arrives(Phone::new(Os::Mac, 1));
+    let (_, link) = link_up(&run(&mut f, 5_000));
+    let ask = Op::UpdateParams(link, ConnParams { interval_min: Duration::from_u16(12), interval_max: Duration::from_u16(24), ..conn(12) });
+    let id = f.submit(ask).unwrap();
+    let (_, accepted) = until(&mut f, |e| if let RadioEvent::ParamsAnswered { link: l, accepted } = e { Some((*l, *accepted)) } else { None });
+    assert_eq!(accepted, (link, true));
+    assert_eq!(f.advance(Instant(u64::MAX)).map(|(_, e)| e), Some(RadioEvent::Done(id, Ok(Outcome::Done))));
+    let next = Op::UpdateParams(link, ConnParams { interval_min: Duration::from_u16(80), interval_max: Duration::from_u16(160), ..conn(80) });
+    assert!(f.submit(next).is_ok(), "taken before the first's update completes");
+    let (_, first) = until(&mut f, |e| if let RadioEvent::Params { result: Ok(p), .. } = e { Some(*p) } else { None });
+    assert_eq!(first.interval, Duration::from_u16(24), "the first ask's update");
+}
+
+/// A central that refuses answers so, and no update follows.
+#[test]
+fn a_phones_refusal_is_its_answer_and_nothing_follows() {
+    let mut f = ready(1);
+    f.submit(Op::Advertise(Some(ADV_100))).unwrap();
+    f.phone_arrives(Phone { update_fails: true, ..Phone::new(Os::Linux, 1) });
+    let (_, link) = link_up(&run(&mut f, 5_000));
+    let ask = Op::UpdateParams(link, ConnParams { interval_min: Duration::from_u16(12), interval_max: Duration::from_u16(24), ..conn(12) });
+    f.submit(ask).unwrap();
+    let end = f.now().0 + 10_000;
+    let after = run(&mut f, end);
+    let answers: Vec<_> = after.iter().filter(|(_, e)| matches!(e, RadioEvent::ParamsAnswered { .. } | RadioEvent::Params { .. } | RadioEvent::Done(..))).map(|(_, e)| *e).collect();
+    assert_eq!(answers, [RadioEvent::ParamsAnswered { link, accepted: false }]);
+    assert!(f.submit(ask).is_ok());
+}
+
+/// A phone's update, once applied, no longer holds the link: a central start after it crosses
+/// nothing.
+#[test]
+fn a_phones_applied_update_frees_the_link_for_a_central_start() {
+    let mut f = ready(1);
+    f.submit(Op::Advertise(Some(ADV_100))).unwrap();
+    f.phone_arrives(Phone::new(Os::Linux, 1));
+    let (_, link) = link_up(&run(&mut f, 5_000));
+    f.submit(Op::UpdateParams(link, conn(24))).unwrap();
+    until(&mut f, |e| matches!(e, RadioEvent::Params { result: Ok(_), .. }).then_some(()));
+    f.sensor_on(Sensor::strap(1));
+    f.submit(Op::Connect(Sensor::strap(1).addr, conn(40))).unwrap();
+    assert!(!f.notes.iter().any(|(_, n)| matches!(n, Note::CentralInUpdate(_))), "{:?}", f.notes);
+}
+
+/// Each refusal the fake makes is the one the driver makes of the chip's code, so the core reads
+/// the fake as it reads the chip.
+#[test]
+fn every_refusal_reads_as_the_driver_reads_the_chips_code() {
+    use wrist_bluenrg2::driver::Unanswered;
+    use wrist_bluenrg2::ops::{refused, unanswered};
+    let mut off = Fake::new(1);
+    assert_eq!(off.submit(Op::Advertise(Some(ADV_100))), Err(unanswered(Unanswered::NotTaken)), "a chip not up takes nothing");
+
+    let mut f = ready(1);
+    assert_eq!(f.submit(Op::CancelConnect), Err(refused(&Op::CancelConnect, 0x0C)));
+    assert_eq!(f.submit(Op::Advertise(None)), Err(refused(&Op::Advertise(None), 0x46)));
+    f.sensor_on(Sensor::strap(1));
+    let connect = Op::Connect(Sensor::strap(1).addr, conn(40));
+    f.submit(connect).unwrap();
+    assert_eq!(f.submit(connect), Err(refused(&connect, 0x0C)));
+    let (_, link) = until(&mut f, |e| match e {
+        RadioEvent::LinkUp { link, .. } => Some(*link),
+        _ => None,
+    });
+    let ask = Op::UpdateParams(link, conn(80));
+    f.submit(ask).unwrap();
+    let again = f.submit(ask).unwrap_err();
+    assert_eq!((again, again.kind), (refused(&ask, 0x0C), FailureKind::ModeExclusion), "a central's second update, unmeasured");
+}
+
 const SCAN_30: ScanParams = ScanParams { interval: Duration::from_u16(160), window: Duration::from_u16(32), active: false, duration: Millis::secs(30) };
 
 /// The events after the first `ScanDone`.

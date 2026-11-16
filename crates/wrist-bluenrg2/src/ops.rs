@@ -77,7 +77,7 @@ pub fn refused(op: &Op, status: u8) -> Failure {
 pub fn unanswered(why: Unanswered) -> Failure {
     let kind = match why {
         Unanswered::NoReply => FailureKind::Timeout,
-        Unanswered::NotTaken | Unanswered::Restarted => FailureKind::Busy,
+        Unanswered::NotTaken | Unanswered::Restarted => FailureKind::NotTaken,
         Unanswered::TooLong => FailureKind::Unknown,
     };
     Failure { kind, native: 0 }
@@ -148,11 +148,12 @@ impl Ops {
                     }
                 }
             }
-            // On a peripheral link the central's answer has ended the ask (`Ops::responded`): an
-            // update completing there may be an earlier ask's, with a newer one now on air.
+            // On a peripheral link the central's answer has ended the ask: an update completing
+            // there may be an earlier ask's, with a newer one now on air.
             RadioEvent::Params { link, .. } if !self.peripheral.contains(&Some(link)) => {
                 self.settle(|p| p.kind == OpKind::UpdateParams && p.link == Some(link), None);
             }
+            RadioEvent::ParamsAnswered { link, accepted } => self.responded(link, accepted),
             RadioEvent::Encryption { link, .. } | RadioEvent::Pairing(PairingEvent { link, .. }) => {
                 self.settle(|p| p.kind == OpKind::RequestSecurity && p.link == Some(link), None);
             }
@@ -161,8 +162,8 @@ impl Ops {
     }
 
     /// The central answered the parameters asked of it on `link`: the oldest ask is done if it
-    /// took them, and ended by the refusal's own event if not.
-    pub fn responded(&mut self, link: ConnHandle, accepted: bool) {
+    /// took them, and ended by the answer itself if not.
+    fn responded(&mut self, link: ConnHandle, accepted: bool) {
         let next = self.next;
         let asks = self.pending.iter_mut().filter(|p| p.is_some_and(|p| p.kind == OpKind::UpdateParams && p.link == Some(link)));
         if let Some(p) = asks.max_by_key(|p| p.map_or(0, |p| next.wrapping_sub(p.id.0))).and_then(Option::take) {

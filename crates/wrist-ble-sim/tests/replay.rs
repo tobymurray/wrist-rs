@@ -4,6 +4,8 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use wrist_ble::{Op, OpKind};
+use wrist_ble_core::engine::Omitted;
+use wrist_ble_shadow::Excuse;
 use wrist_ble_shadow::DriverOp;
 use wrist_ble_sim::replay::{replay, Report, Who};
 
@@ -30,6 +32,25 @@ fn the_core_acts_where_and_as_the_driver_did() {
         let known = KNOWN.iter().find(|(f, _)| name.ends_with(f)).map_or(&[][..], |(_, d)| *d);
         assert_eq!(report.disagreements(), known, "{name}\n{}", report.render(false));
     }
+}
+
+/// Asks the core leaves out because the link is not yet open to them: the older driver's before
+/// encryption, and one on a link the capture began inside, whose encryption the core never saw.
+const NOT_OPEN: &[(&str, usize)] = &[("android14-comparison-unanswered.log", 3), ("android17-bond-not-recognised.log", 3), ("bluez-suite.log", 1)];
+
+/// Each ask the driver made alone is one the core's rules leave out, and those that wait for the
+/// link to open are the ones listed.
+#[test]
+fn the_asks_the_core_leaves_out_are_the_ones_its_rules_name() {
+    let mut fits = 0;
+    for (name, capture) in traces() {
+        let report = replay(&capture);
+        let not_open = report.excused.iter().filter(|(_, why)| *why == Excuse::Core(Omitted::NotOpen)).count();
+        let listed = NOT_OPEN.iter().find(|(f, _)| name.ends_with(f)).map_or(0, |(_, n)| *n);
+        assert_eq!(not_open, listed, "{name}\n{}", report.render(false));
+        fits += report.excused.len() - not_open;
+    }
+    assert!(fits > 0, "a link that already fits is asked nothing");
 }
 
 #[test]
@@ -280,14 +301,14 @@ fn wall_clock_stamps_replay_as_seconds_do() {
 
 /// An image over the air is a transfer from its `[update] send` line to the line that ends it,
 /// which ends the console's `interval now` ask on the watch as in the core: without the lines,
-/// the core keeps the ask and makes it again after the settle.
+/// the core keeps the ask, makes it again after the settle, and never makes the battery's.
 #[test]
 fn an_update_over_the_air_is_a_transfer() {
     let capture = fixture("bluez-update-on-battery.log");
     assert_eq!(replay(&capture).disagreements(), Vec::<String>::new());
     let without = capture.lines().filter(|l| !l.contains(" [update] ")).collect::<Vec<_>>().join("\n");
     let d = replay(&without).disagreements();
-    assert!(d.len() == 1 && d[0].contains("the core asked for 12-12 units"), "{d:?}");
+    assert!(d.len() == 2 && d[0].contains("the core asked for 12-12 units") && d[1].contains("the driver asked for 80-160 units"), "{d:?}");
 }
 
 /// A USB `update` sends its image over the cable, not the phone's link, so it is no transfer.
@@ -298,7 +319,7 @@ fn an_update_over_usb_is_no_transfer() {
     let at = send.split_once(' ').unwrap().0;
     let over_usb = capture.replace(send, &format!("{at} >> usb update 345624 FE7A7220\n{send}"));
     let d = replay(&over_usb).disagreements();
-    assert!(d.len() == 1 && d[0].contains("the core asked for 12-12 units"), "{d:?}");
+    assert!(d.len() == 2 && d[0].contains("the core asked for 12-12 units") && d[1].contains("the driver asked for 80-160 units"), "{d:?}");
 }
 
 /// A USB `update` the watch refused before sending leaves no mark on a later image over the air.
