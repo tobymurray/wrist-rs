@@ -176,6 +176,21 @@ fn a_phones_refusal_is_its_answer_and_nothing_follows() {
     assert!(f.submit(ask).is_ok());
 }
 
+/// A phone's update, once applied, no longer holds the link: a central start after it crosses
+/// nothing.
+#[test]
+fn a_phones_applied_update_frees_the_link_for_a_central_start() {
+    let mut f = ready(1);
+    f.submit(Op::Advertise(Some(ADV_100))).unwrap();
+    f.phone_arrives(Phone::new(Os::Linux, 1));
+    let (_, link) = link_up(&run(&mut f, 5_000));
+    f.submit(Op::UpdateParams(link, conn(24))).unwrap();
+    until(&mut f, |e| matches!(e, RadioEvent::Params { result: Ok(_), .. }).then_some(()));
+    f.sensor_on(Sensor::strap(1));
+    f.submit(Op::Connect(Sensor::strap(1).addr, conn(40))).unwrap();
+    assert!(!f.notes.iter().any(|(_, n)| matches!(n, Note::CentralInUpdate(_))), "{:?}", f.notes);
+}
+
 /// Each refusal the fake makes is the one the driver makes of the chip's code, so the core reads
 /// the fake as it reads the chip.
 #[test]

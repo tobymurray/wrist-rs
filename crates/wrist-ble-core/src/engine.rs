@@ -57,6 +57,8 @@ pub enum Omitted {
     NotOpen,
     /// The link's parameters already fit the ask.
     Fits,
+    /// The console's ask, which the core has made already.
+    Asked,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -816,7 +818,12 @@ impl<'a> Core<'a> {
         if !self.state.phone.may_ask_params(now) || matches!(l.security, Security::Pairing { .. }) {
             return Some(Omitted::NotOpen);
         }
-        self.phone_fits(ask).then_some(Omitted::Fits)
+        if self.phone_fits(ask) {
+            return Some(Omitted::Fits);
+        }
+        let same = |w: ConnParams| (w.interval_min, w.interval_max, w.latency, w.timeout) == (ask.interval_min, ask.interval_max, ask.latency, ask.timeout);
+        let on_air = self.pending.is_some_and(|p| matches!(p.op, Op::UpdateParams(_, w) if same(w)));
+        (self.console.is_some_and(|(_, w)| same(w)) && ((self.phone_asked.is_some_and(same) && self.phone_asks > 0) || on_air)).then_some(Omitted::Asked)
     }
 
     /// The parameters wanted of the phone link: the console's ask, else the menu's.

@@ -159,7 +159,7 @@ fn a_missing_key_is_told() {
 }
 
 /// The core's rules for leaving an ask out, as the shadow reads them: no link, a link not yet open
-/// to asks or pairing, and a link that already fits.
+/// to asks or pairing, a link that already fits, and an ask already made that may not go again yet.
 #[test]
 fn an_ask_is_left_out_by_the_cores_rules() {
     use wrist_ble::{ConnParams, PairingEvent, PairingStep};
@@ -174,6 +174,29 @@ fn an_ask_is_left_out_by_the_cores_rules() {
     assert_eq!((b.core.omits_ask(b.now, &fits), b.core.omits_ask(b.now, &other)), (Some(Omitted::Fits), None));
     b.at(1_200, Input::Radio(RadioEvent::Pairing(PairingEvent { link: link(), step: PairingStep::Numeric(1) })));
     assert_eq!(b.core.omits_ask(b.now, &other), Some(Omitted::NotOpen), "pairing");
+    let mut b = Bench::new(cable());
+    b.phone_up(1_000);
+    b.encrypted(1_100);
+    let now = interval_now_ask(6, 6);
+    assert_eq!(b.at(1_150, Input::IntervalNow(now)).op, Some(Op::UpdateParams(link(), now)));
+    b.accept();
+    let driver = ConnParams { ce_len: Duration::from_u16(0), ..now };
+    assert_eq!(b.core.omits_ask(b.now, &driver), Some(Omitted::Asked), "the core's own ask, made");
+    b.at(1_180, Input::Radio(RadioEvent::ParamsAnswered { link: link(), accepted: false }));
+    assert_eq!(b.core.omits_ask(b.now, &driver), Some(Omitted::Asked), "refused, the same ask again");
+    let mut b = Bench::new(cable());
+    b.phone_up(1_000);
+    b.encrypted(1_100);
+    assert!(b.at(1_150, Input::IntervalNow(now)).op.is_some());
+    b.refuse(FailureKind::ModeExclusion);
+    assert_eq!(b.at(1_160, Input::IntervalNow(interval_now_ask(8, 8))).op, None, "backing off");
+    assert_eq!(b.core.omits_ask(b.now, &driver), None, "a want since replaced");
+    let mut b = Bench::new(battery());
+    b.phone_up(1_000);
+    let Some(Op::UpdateParams(_, menu)) = b.encrypted(1_100).op else { panic!("the menu's ask") };
+    b.accept();
+    b.at(1_180, Input::Radio(RadioEvent::ParamsAnswered { link: link(), accepted: false }));
+    assert_eq!(b.core.omits_ask(b.now, &menu), None, "the menu's ask, which only the console's is excused");
 }
 
 /// An ask refused before it reached the air is asked again once the backoff ends.
