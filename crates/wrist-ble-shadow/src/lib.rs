@@ -355,9 +355,6 @@ impl<O: Observer> Shadow<O> {
         let Some((kind, _)) = driver_op(sent) else { return };
         let Some((id, op)) = self.awaiting.filter(|(_, op)| op.kind() == kind && op.link().is_none_or(|l| l.raw() == handle)) else { return };
         self.awaiting = None;
-        if self.asked_update == Some(id) {
-            self.asked_update = None;
-        }
         self.feed(Input::Radio(RadioEvent::Done(id, Err(refused(&op, status)))));
     }
 
