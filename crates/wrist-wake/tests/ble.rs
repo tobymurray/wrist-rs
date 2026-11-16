@@ -421,6 +421,26 @@ fn a_failed_pairing_with_no_link_or_on_an_encrypted_one_arms_nothing() {
     assert_eq!(ask, IntervalAsk::Open);
 }
 
+/// A timing changed after the last retime but before the console's ask still ends the ask at the
+/// next retime, so the menu asks it.
+#[test]
+fn the_consoles_ask_holds_over_the_timing_last_applied() {
+    use wrist_wake::ble::ConsoleOver;
+    let mut over = ConsoleOver::default();
+    over.asked();
+    assert!(!over.holds(), "nothing applied yet");
+    assert!(!over.retime(1));
+    over.asked();
+    assert!(over.holds());
+    assert!(!over.retime(1), "the same timing");
+    assert!(over.holds());
+    assert!(over.retime(2), "the timing changed before the ask was taken");
+    assert!(!over.holds());
+    over.asked();
+    over.clear();
+    assert!(!over.holds(), "the link is gone");
+}
+
 /// `ble interval now` three times running: the chip takes the first and refuses the other two
 /// busy until the central answers it (HARDWARE.md); the last goes then.
 #[test]
