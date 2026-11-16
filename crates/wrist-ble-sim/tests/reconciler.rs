@@ -197,6 +197,15 @@ fn an_ask_refused_busy_goes_when_the_central_accepts_the_one_before() {
     assert!(matches!(out.op, Some(Op::UpdateParams(l, _)) if l == link()), "{out:?}");
 }
 
+/// An ask the chip never took is not held for an answer: it backs off as any refusal does.
+#[test]
+fn an_ask_the_chip_never_took_is_not_held() {
+    let mut b = asked_on_battery();
+    b.refuse(FailureKind::NotTaken);
+    let out = b.at(2_300, Input::Tick);
+    assert!(matches!(out.op, Some(Op::UpdateParams(l, _)) if l == link()), "{out:?}");
+}
+
 /// A busy ask whose central never answers is asked again at the operation's deadline.
 #[test]
 fn an_ask_refused_busy_is_asked_again_if_the_central_never_answers() {
@@ -314,28 +323,31 @@ fn stop_advertising() -> Goals {
     Goals { phone: PhoneGoal { discoverable: false, pairing_open: false }, ..battery() }
 }
 
-/// I2: a chip that says busy to everything is restarted once its budget is spent, not retried for ever.
+/// I2: a chip that says busy to everything, or takes nothing, is restarted once its budget is
+/// spent, not retried for ever.
 #[test]
 fn a_chip_that_stays_busy_is_restarted() {
-    let mut b = Bench::new(battery());
-    let out = b.at(1_000, Input::Goals(stop_advertising()));
-    assert_eq!(out.op, Some(Op::Advertise(None)), "{out:?}");
-    let mut refusals = 0;
-    let mut restarted = None;
-    while b.now.0 < 600_000 && restarted.is_none() {
-        if b.asked.is_some() {
-            b.refuse(FailureKind::Busy);
-            refusals += 1;
+    for kind in [FailureKind::Busy, FailureKind::NotTaken] {
+        let mut b = Bench::new(battery());
+        let out = b.at(1_000, Input::Goals(stop_advertising()));
+        assert_eq!(out.op, Some(Op::Advertise(None)), "{out:?}");
+        let mut refusals = 0;
+        let mut restarted = None;
+        while b.now.0 < 600_000 && restarted.is_none() {
+            if b.asked.is_some() {
+                b.refuse(kind);
+                refusals += 1;
+            }
+            let next = b.core.step(b.now, Input::Tick).next.expect("a wake");
+            let out = b.at(next.0, Input::Tick);
+            if matches!(out.chip, Some(wrist_ble_core::chip::Action::Start(_))) {
+                restarted = Some(b.now);
+            }
         }
-        let next = b.core.step(b.now, Input::Tick).next.expect("a wake");
-        let out = b.at(next.0, Input::Tick);
-        if matches!(out.chip, Some(wrist_ble_core::chip::Action::Start(_))) {
-            restarted = Some(b.now);
-        }
+        assert_eq!(refusals, usize::from(BUSY_BUDGET), "{kind:?}");
+        assert_eq!(b.core.counters.busy_spent, 1, "{kind:?}");
+        assert!(restarted.is_some_and(|t| t.0 < 150_000), "{kind:?}: {restarted:?}");
     }
-    assert_eq!(refusals, usize::from(BUSY_BUDGET));
-    assert_eq!(b.core.counters.busy_spent, 1);
-    assert!(restarted.is_some_and(|t| t.0 < 150_000), "{restarted:?}");
 }
 
 /// An occasional busy refusal, one every 15 minutes, never restarts the chip.

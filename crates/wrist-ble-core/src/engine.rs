@@ -525,7 +525,7 @@ impl<'a> Core<'a> {
                         self.chip(now, chip::Event::BaselineRefused, out);
                     }
                 } else {
-                    if f.kind == FailureKind::Busy {
+                    if matches!(f.kind, FailureKind::Busy | FailureKind::NotTaken) {
                         self.busy = self.busy.take(now);
                     }
                     // An ask refused before it reached the air is asked again after the backoff,
@@ -868,7 +868,7 @@ const GRACE: Millis = Millis(1_000);
 /// updates undid it.
 pub const ASKS_PER_WANT: u8 = 3;
 
-/// Busy refusals the chip may give before it is restarted.
+/// Busy refusals, and commands the chip did not take, before it is restarted.
 pub const BUSY_BUDGET: u8 = 7;
 
 /// A busy refusal's token comes back after this.

@@ -72,7 +72,7 @@ use bluenrg2::{
     PairingReason, PairingStatus, VendorEvent, ATT_HEADER_LEN,
 };
 use wrist_ble::{
-    AdvParams, Cccd, CharDecl, ConnHandle, ConnParams, DisconnectReason, Failure, FailureKind, Interval, LeConnRole, Micros, Op, Payload, RadioEvent, ServerTable,
+    AdvParams, Cccd, CharDecl, ConnHandle, ConnParams, DisconnectReason, Failure, FailureKind, Interval, LeConnRole, Micros, Op, OpKind, Payload, RadioEvent, ServerTable,
     ServiceDecl, Slots, Timeout, ATT_MAX_MTU,
 };
 use wrist_ble_core::goals::{self, Goals, PhoneGoal};
@@ -863,6 +863,7 @@ impl Link<'_> {
             abandon_at: self.transfer.as_ref().map(|_| tick(self.last_data + TRANSFER_IDLE + one)),
             ask_at: self.pair_ask.due(),
             scan_end: self.scanner.until().map(tick),
+            held_until: self.held_ask.until(),
         };
         // The first tick at which `now_ms` reaches it.
         let shadow = self.shadow.next().map(|at| (at.0 * embassy_time::TICK_HZ).div_ceil(1000));
@@ -971,11 +972,13 @@ impl Link<'_> {
         self.ask(params).await;
     }
 
-    /// One ask; refused busy, it is held for the central's answer to the one before.
+    /// One ask; refused busy, it is held for the central's answer to the one before, or until
+    /// the core's deadline for an ask.
     async fn ask(&mut self, params: ConnParams) {
         let (reply, taken) = self.settled(Op::UpdateParams(link(), params)).await;
-        let busy = reply.is_ok() && matches!(taken, Err(Failure { kind: FailureKind::Busy, .. }));
-        self.held_ask.answered(params, busy);
+        let busy = matches!(taken, Err(Failure { kind: FailureKind::Busy, .. }));
+        let wait = Duration::from_millis(u64::from(wrist_bluenrg2::op_deadline(OpKind::UpdateParams).0));
+        self.held_ask.answered(params, busy.then(|| (Instant::now() + wait).as_ticks()));
         match reply {
             Ok(r) if r.status == 0 => {}
             Ok(_) if busy => self.uart.write_line("[ble] interval request held: the central has yet to answer the one before"),
@@ -1001,7 +1004,7 @@ impl Link<'_> {
         if let Some((min, max)) = self.request_interval.take_if(|_| self.interval_ask.open()) {
             self.ask_connection(min, max, wrist_wake::ble::NOW_LATENCY, wrist_wake::ble::NOW_TIMEOUT).await;
         }
-        if let Some(params) = self.held_ask.take() {
+        if let Some(params) = self.held_ask.take(Instant::now().as_ticks()) {
             self.ask(params).await;
         }
         if self.finish_transfer {

@@ -77,7 +77,7 @@ pub fn refused(op: &Op, status: u8) -> Failure {
 pub fn unanswered(why: Unanswered) -> Failure {
     let kind = match why {
         Unanswered::NoReply => FailureKind::Timeout,
-        Unanswered::NotTaken | Unanswered::Restarted => FailureKind::Busy,
+        Unanswered::NotTaken | Unanswered::Restarted => FailureKind::NotTaken,
         Unanswered::TooLong => FailureKind::Unknown,
     };
     Failure { kind, native: 0 }

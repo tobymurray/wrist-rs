@@ -68,8 +68,8 @@ fn the_chips_refusals_read_as_the_core_reads_them() {
         assert_eq!(refusal(status), Failure { kind, native: u16::from(status) }, "{status:02x}");
     }
     assert_eq!(unanswered(Unanswered::NoReply).kind, FailureKind::Timeout);
-    assert_eq!(unanswered(Unanswered::NotTaken).kind, FailureKind::Busy);
-    assert_eq!(unanswered(Unanswered::Restarted).kind, FailureKind::Busy);
+    assert_eq!(unanswered(Unanswered::NotTaken).kind, FailureKind::NotTaken);
+    assert_eq!(unanswered(Unanswered::Restarted).kind, FailureKind::NotTaken);
     assert_eq!(unanswered(Unanswered::TooLong).kind, FailureKind::Unknown);
 }
 

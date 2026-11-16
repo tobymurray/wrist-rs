@@ -300,7 +300,7 @@ fn an_operation_answered_around_a_restart_is_not_taken() {
     let (_, r) = exchange(&c, &mut d, vec![[complete(OPCODE, 0x00, &[]), boot(0x01)].concat()]);
     assert!(r.is_ok(), "the reply came before the restart");
     let params = ConnParams { interval_min: Interval::from_u16(12), interval_max: Interval::from_u16(24), latency: 0, timeout: Timeout::from_u16(500), ce_len: Slots::from_u16(0) };
-    assert_eq!(d.settle(&Op::UpdateParams(ConnHandle::new(0x0801), params), &r).map_err(|f| f.kind), Err(FailureKind::Busy));
+    assert_eq!(d.settle(&Op::UpdateParams(ConnHandle::new(0x0801), params), &r).map_err(|f| f.kind), Err(FailureKind::NotTaken));
     assert_eq!(d.due(), None, "nothing waits on a chip that restarted");
     let refused = Ok(Reply { status: 0x0C, params: [0; bluenrg2::RETURN_PARAMS_MAX], len: 0 });
     assert_eq!(d.settle(&Op::UpdateParams(ConnHandle::new(0x0801), params), &refused).map_err(|f| f.native), Err(0x0C), "a refusal stays one");
