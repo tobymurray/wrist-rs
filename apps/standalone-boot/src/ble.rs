@@ -723,8 +723,8 @@ struct Link<'d> {
     seen: Seen,
     /// How the boot a reset asked for came up.
     boot: Option<Boot>,
-    /// The chip restarted by itself and has not been brought up again.
-    restart: Option<Boot>,
+    /// The chip restarted by itself more often than [`Restarts`] allows: hold it in reset.
+    kept_restarting: bool,
     restarts: Restarts,
     shadow: &'d mut Shadow<Said>,
 }
@@ -759,7 +759,7 @@ impl<'d> Link<'d> {
             scanner: scan::Scanner::default(),
             seen: Seen::default(),
             boot: None,
-            restart: None,
+            kept_restarting: false,
             restarts: Restarts::default(),
             shadow,
         }
@@ -791,7 +791,7 @@ impl Link<'_> {
     /// the earliest deadline.
     async fn serve(&mut self, changes: &mut crate::power::Changes) -> bool {
         loop {
-            if self.restart.is_some() && !self.recover().await {
+            if self.chip.restarted() && !self.recover().await {
                 return false;
             }
             WAKE.reset();
@@ -1093,10 +1093,11 @@ impl Link<'_> {
         self.shadow.finish();
     }
 
-    /// Bring up again a chip that restarted by itself, within the budget; whether it is up.
+    /// Bring up again a chip that restarted by itself since the driver last reset it, within the
+    /// budget; whether it is up.
     async fn recover(&mut self) -> bool {
-        while let Some(boot) = self.restart.take() {
-            if boot == Boot::KeptRestarting {
+        while self.chip.restarted() {
+            if self.kept_restarting {
                 self.uart.write_line("[ble] the chip restarted more than 3 times in an hour");
                 return false;
             }
@@ -1111,7 +1112,6 @@ impl Link<'_> {
         clear_prompt();
         #[cfg(feature = "ble-trace")]
         trace::packet(trace::Dir::Reset, &[]);
-        self.restart = None;
         self.boot = None;
         CONN_HANDLE.store(0, Ordering::Relaxed);
         let addr = address_from_uid();
@@ -1680,7 +1680,7 @@ impl Link<'_> {
         self.passkey_for = None;
         self.rebond_for = None;
         self.recount_bonds = false;
-        self.restart = Some(boot);
+        self.kept_restarting |= boot == Boot::KeptRestarting;
     }
 
     /// `[ble] data length TX 251 octets in 2120 us, RX 27 octets in 328 us`.
