@@ -414,30 +414,8 @@ impl<'a> Core<'a> {
                     }
                 }
             }
-            // The chip takes another request once the central answers, and only then (HARDWARE.md).
-            RadioEvent::ParamsAnswered { link, accepted } => {
-                if self.state.phone.link() == Some(link) {
-                    self.phone_busy_until = None;
-                }
-                if !accepted {
-                    self.end_pending(|op| op.kind() == OpKind::UpdateParams && op.link() == Some(link));
-                    self.counters.update_failures += 1;
-                }
-            }
-            RadioEvent::Params { link, result } => {
-                self.end_pending(|op| op.kind() == OpKind::UpdateParams && op.link() == Some(link));
-                match result {
-                    Ok(p) if self.state.phone.link() == Some(link) => {
-                        self.phone_params = Some(p);
-                        if self.phone_asked.is_some_and(|w| self.phone_fits(&w)) {
-                            self.phone_held = true;
-                        }
-                        self.phone(now, phone::Event::ParamsChanged(link), out);
-                    }
-                    Ok(_) => {}
-                    Err(_) => self.counters.update_failures += 1,
-                }
-            }
+            RadioEvent::ParamsAnswered { link, accepted } => self.answered(link, accepted),
+            RadioEvent::Params { link, result } => self.params(now, link, result, out),
             RadioEvent::Encryption { link, on } => {
                 self.end_pending(|op| op.kind() == OpKind::RequestSecurity && op.link() == Some(link));
                 self.phone(now, phone::Event::Encryption(link, on), out);
@@ -468,6 +446,40 @@ impl<'a> Core<'a> {
             RadioEvent::EventsLost => self.snapshot = true,
             RadioEvent::Unknown { .. } => self.counters.unknown_events += 1,
             RadioEvent::Mtu(..) | RadioEvent::DataLength { .. } | RadioEvent::ServerWrite { .. } | RadioEvent::ServerSubscribe { .. } | RadioEvent::Report(_) => {}
+        }
+    }
+
+    /// The chip takes another request once the central answers, and only then (HARDWARE.md): the
+    /// answer ends the ask, as it does the driver's, and the chip having taken it clears its backoff.
+    fn answered(&mut self, link: ConnHandle, accepted: bool) {
+        if self.state.phone.link() == Some(link) {
+            self.phone_busy_until = None;
+        }
+        let ask = |op: &Op| op.kind() == OpKind::UpdateParams && op.link() == Some(link);
+        if self.pending.is_some_and(|p| ask(&p.op)) {
+            self.backoff[kind_index(OpKind::UpdateParams)] = Backoff::default();
+        }
+        self.end_pending(ask);
+        if !accepted {
+            self.counters.update_failures += 1;
+        }
+    }
+
+    /// A link's new parameters: the end of a central's ask, but not of the phone's, whose update
+    /// may be its own.
+    fn params(&mut self, now: Instant, link: ConnHandle, result: Result<LinkParams, Failure>, out: &mut Outputs) {
+        let phone = self.state.phone.link() == Some(link);
+        self.end_pending(|op| op.kind() == OpKind::UpdateParams && op.link() == Some(link) && !phone);
+        match result {
+            Ok(p) if phone => {
+                self.phone_params = Some(p);
+                if self.phone_asked.is_some_and(|w| self.phone_fits(&w)) {
+                    self.phone_held = true;
+                }
+                self.phone(now, phone::Event::ParamsChanged(link), out);
+            }
+            Ok(_) => {}
+            Err(_) => self.counters.update_failures += 1,
         }
     }
 

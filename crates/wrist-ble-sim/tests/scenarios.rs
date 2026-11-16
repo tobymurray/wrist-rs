@@ -9,6 +9,7 @@ use wrist_ble_core::status::{PeerState, PhoneStatus};
 use wrist_ble_sim::fake::Note;
 use wrist_ble_sim::peers::{Keys, Os, Phone, Sensor};
 use wrist_ble_sim::sim::{on, Sim};
+use wrist_ble_shadow::menu::MENU;
 
 fn hr(data: &[u8]) -> Option<Reading> {
     let contact = if data.first().is_some_and(|f| f & 0x06 == 0x04) { Contact::Lost } else { Contact::Detected };
@@ -99,7 +100,7 @@ fn back_to_cable_after_battery() {
             s.fake.phone_leaves(0);
         }
         s.run_for(Millis::secs(15));
-        assert_eq!(ms(&s), Some(if power == Power::Cable { 160 } else { 1592 }), "after flip {i}");
+        assert_eq!(ms(&s), Some(if power == Power::Cable { 160 } else { 1636 }), "after flip {i}");
     }
 }
 
@@ -121,11 +122,11 @@ fn update_complete_with_error_on_the_phone_link() {
 #[test]
 fn unpredicted_refusal_is_quarantined() {
     let mut s = Sim::new(5);
-    s.fake.diverge(Box::new(|_, c| matches!(c, Change::Advertise(Some(p)) if p.interval_min.as_u16() == 1592).then_some(SchedKind::LengthFailed)));
+    s.fake.diverge(Box::new(|_, c| matches!(c, Change::Advertise(Some(p)) if p.interval_min.as_u16() == 1636).then_some(SchedKind::LengthFailed)));
     s.goals(on(Power::Battery));
     s.run_for(Millis::mins(10));
-    assert_eq!(s.fake.advertising().map(|a| a.interval_min.as_u16()), Some(3992));
-    assert!(s.line().contains("phone=discoverable(2495ms)"), "{}", s.line());
+    assert_eq!(s.fake.advertising().map(|a| a.interval_min.as_u16()), Some(1592));
+    assert!(s.line().contains("phone=discoverable(995ms)"), "{}", s.line());
     assert_eq!(s.core.counters.divergences, 1);
     assert!(s.tells.iter().any(|(_, t)| *t == Tell::Divergence { kind: wrist_ble::OpKind::Advertise, native: 0x86 }));
     assert_eq!(submitted(&s, |op| matches!(op, Op::Advertise(_))).len(), 2);
@@ -140,12 +141,13 @@ fn everything_refused_ends_in_a_fault_started_once_an_hour() {
     assert!(s.line().contains("phone=fault(baseline-refused)"), "{}", s.line());
     assert!(!s.fake.ready());
     let attempts = submitted(&s, |op| matches!(op, Op::Advertise(_))).len();
-    assert_eq!(attempts, 2 * (wrist_ble_core::chip::RESETS_PER_HOUR + 1));
+    let choices = MENU.advertising.iter().filter(|c| c.when.matches(Power::Battery, false, false)).count();
+    assert_eq!(attempts, choices * (wrist_ble_core::chip::RESETS_PER_HOUR + 1));
     let resets = s.core.counters.resets;
     for hour in 1..=3 {
         s.run_for(Millis::mins(60));
         assert!(s.line().contains("phone=fault(baseline-refused)"), "{}", s.line());
-        assert_eq!(submitted(&s, |op| matches!(op, Op::Advertise(_))).len(), attempts + 2 * hour);
+        assert_eq!(submitted(&s, |op| matches!(op, Op::Advertise(_))).len(), attempts + choices * hour);
         assert_eq!(s.core.counters.resets, resets);
     }
 }

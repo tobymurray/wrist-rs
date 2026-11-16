@@ -121,6 +121,12 @@ impl Bench {
     fn params(&mut self, ms: u64, p: LinkParams) -> Outputs {
         self.at(ms, Input::Radio(RadioEvent::Params { link: link(), result: Ok(p) }))
     }
+
+    /// The central's acceptance of the ask on air, then its update to `p`.
+    fn granted(&mut self, ms: u64, p: LinkParams) -> Outputs {
+        self.at(ms, Input::Radio(RadioEvent::ParamsAnswered { link: link(), accepted: true }));
+        self.params(ms, p)
+    }
 }
 
 fn battery() -> Goals {
@@ -229,17 +235,69 @@ fn an_ask_refused_busy_waits_for_the_centrals_answer() {
     assert!(matches!(out.op, Some(Op::UpdateParams(l, _)) if l == link()), "{out:?}");
 }
 
-/// The central's refusal ends the ask and counts as a failed update; its acceptance leaves the ask
-/// to the driver's end of it.
+/// The central's answer ends the ask, as it does the driver's; a refusal counts as a failed update.
 #[test]
-fn a_centrals_refusal_ends_the_ask_and_its_acceptance_does_not() {
+fn the_centrals_answer_ends_the_ask() {
     for accepted in [false, true] {
         let mut b = asked_on_battery();
         b.accept();
         b.at(1_400, Input::Radio(RadioEvent::ParamsAnswered { link: link(), accepted }));
         assert_eq!(b.core.counters.update_failures, u32::from(!accepted), "accepted {accepted}");
-        assert_eq!(b.core.pending().is_none(), !accepted, "accepted {accepted}");
+        assert!(b.core.pending().is_none(), "accepted {accepted}");
     }
+}
+
+/// An update the central makes before it answers is its own: the ask stays on air until the answer.
+#[test]
+fn the_centrals_own_update_leaves_the_ask_on_air() {
+    let mut b = asked_on_battery();
+    b.accept();
+    b.params(1_400, OWN);
+    assert!(b.core.pending().is_some());
+    b.at(1_500, Input::Radio(RadioEvent::ParamsAnswered { link: link(), accepted: true }));
+    assert!(b.core.pending().is_none());
+}
+
+/// The central's answer ends only the ask: a security request on air stays.
+#[test]
+fn the_centrals_answer_ends_nothing_but_the_ask() {
+    let mut b = Bench::new(battery());
+    b.phone_up(1_000);
+    let out = b.at(6_100, Input::Tick);
+    assert_eq!(out.op, Some(Op::RequestSecurity(link())));
+    b.accept();
+    b.at(6_200, Input::Radio(RadioEvent::ParamsAnswered { link: link(), accepted: false }));
+    assert!(b.core.pending().is_some(), "the security request still on air");
+}
+
+/// A failed update counts once; an update of another link is not the phone's.
+#[test]
+fn a_failed_update_counts_and_another_links_update_is_not_the_phones() {
+    let mut b = asked_on_battery();
+    b.accept();
+    b.granted(1_400, BATTERY);
+    let other = wrist_ble::ConnHandle::new(0x0802);
+    b.at(2_000, Input::Radio(RadioEvent::Params { link: other, result: Ok(OWN) }));
+    let ops = b.run_to(2_000 + u64::from(SETTLE.0) + 10);
+    assert_eq!(asks(&ops), 0, "the phone's link still fits: {ops:?}");
+    let before = b.core.counters.update_failures;
+    b.at(9_000, Input::Radio(RadioEvent::Params { link: link(), result: Err(Failure { kind: FailureKind::PeerRejected, native: 0x3B }) }));
+    assert_eq!(b.core.counters.update_failures, before + 1);
+}
+
+/// An accepted ask clears the backoff of a refusal before it, so a later refusal waits a second again.
+#[test]
+fn an_accepted_ask_clears_the_backoff() {
+    let mut b = asked_on_battery();
+    b.refuse(FailureKind::NoResources);
+    let first = (2_000..10_000).step_by(100).find(|&t| b.at(t, Input::Tick).op.is_some()).expect("asked again");
+    b.accept();
+    b.granted(first + 100, BATTERY);
+    let plugged = first + 200;
+    assert!(b.at(plugged, Input::Goals(cable())).op.is_some(), "the cable's want asked at once");
+    b.refuse(FailureKind::NoResources);
+    let next = (plugged + 100..plugged + 10_000).step_by(100).find(|&t| b.at(t, Input::Tick).op.is_some()).expect("asked again");
+    assert_eq!(next - plugged, 1_000, "a second's backoff, not two");
 }
 
 /// A busy ask goes again as soon as the central accepts the one before, before its update lands.
@@ -296,7 +354,7 @@ fn a_phone_that_undoes_the_ask_is_asked_again_within_the_budget() {
     let mut at = 1_500;
     let mut total = 1;
     for _ in 0..5 {
-        b.params(at, BATTERY);
+        b.granted(at, BATTERY);
         b.params(at + 2_000, OWN);
         let ops = b.run_to(at + 2_000 + u64::from(SETTLE.0) + 10);
         total += asks(&ops);
@@ -312,7 +370,7 @@ fn a_phone_that_undoes_the_ask_is_asked_again_within_the_budget() {
 fn the_ask_again_waits_for_the_phone_to_settle() {
     let mut b = asked_on_battery();
     b.accept();
-    b.params(1_500, BATTERY);
+    b.granted(1_500, BATTERY);
     b.params(3_000, OWN);
     assert_eq!(asks(&b.run_to(3_000 + u64::from(SETTLE.0) - 1)), 0);
     assert_eq!(asks(&b.run_to(3_000 + u64::from(SETTLE.0) + 1)), 1);
@@ -589,7 +647,7 @@ fn the_consoles_ask_is_made_only_where_the_link_does_not_fit_it() {
     let mut at = 3_200;
     let mut total = 1;
     for _ in 0..5 {
-        b.params(at, granted);
+        b.granted(at, granted);
         assert_eq!(b.at(at + 100, Input::IntervalNow(now)).op, None, "fits");
         b.params(at + 2_000, OWN);
         assert_eq!(b.at(at + 2_100, Input::IntervalNow(now)).op, None, "the same ask, not yet settled");

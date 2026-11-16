@@ -54,19 +54,20 @@ fn the_core_asks_the_phone_for_the_drivers_timing() {
     }
 }
 
-/// On a cable the core advertises at the driver's interval. On battery the menu's own 1592 units
-/// stand in for the driver's 1636 (see `menu::MENU`), and the replay lets the interval pass.
+/// With no central link the core advertises at the driver's interval, on either power source.
 #[test]
-fn the_core_advertises_on_a_cable_at_the_drivers_interval() {
-    for transfer in [false, true] {
-        let mut core = Core::new(&CAPABILITIES, &Scheduler, &MENU);
-        let mut ops = Vec::new();
-        run(&mut core, &mut ops, 0, Input::Goals(Goals { radio_on: true, power: Power::Cable, transfer, ..Goals::OFF }));
-        let start = core.state.chip.starting().expect("a start in flight");
-        run(&mut core, &mut ops, 0, Input::Started(start, Ok(INFO)));
-        let Some(Op::Advertise(Some(a))) = ops.first() else { panic!("{ops:?}") };
-        let want = timing(wake::Power::Cable, transfer).advertise;
-        assert_eq!((a.interval_min.as_u16(), a.interval_max.as_u16()), (want, want));
+fn the_core_advertises_at_the_drivers_interval() {
+    for (power, wake_power) in [(Power::Cable, wake::Power::Cable), (Power::Battery, wake::Power::Battery)] {
+        for transfer in [false, true] {
+            let mut core = Core::new(&CAPABILITIES, &Scheduler, &MENU);
+            let mut ops = Vec::new();
+            run(&mut core, &mut ops, 0, Input::Goals(Goals { radio_on: true, power, transfer, ..Goals::OFF }));
+            let start = core.state.chip.starting().expect("a start in flight");
+            run(&mut core, &mut ops, 0, Input::Started(start, Ok(INFO)));
+            let Some(Op::Advertise(Some(a))) = ops.first() else { panic!("{ops:?}") };
+            let want = timing(wake_power, false).advertise;
+            assert_eq!((a.interval_min.as_u16(), a.interval_max.as_u16()), (want, want), "{power:?}, transfer {transfer}");
+        }
     }
 }
 
