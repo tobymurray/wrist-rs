@@ -1813,7 +1813,7 @@ impl Link<'_> {
     /// One thing a drain handed out, its bytes in `packet`.
     fn got(&mut self, packet: &[u8; transport::MAX_READ], got: Got) {
         #[cfg(feature = "ble-probe")]
-        if self.withhold_connection && matches!(got, Got::Packet { event: Some(RadioEvent::LinkUp { .. }), .. }) {
+        if self.withhold_connection && self.drives() && matches!(got, Got::Packet { event: Some(RadioEvent::LinkUp { .. }), .. }) {
             self.withhold_connection = false;
             self.uart.write_line("[ble] probe: a connection withheld from the core, a lost read reported");
             if let Got::Packet { len, event } = got {
@@ -1838,7 +1838,7 @@ impl Link<'_> {
             }
             Got::Event(e) => {
                 if e == RadioEvent::EventsLost {
-                    self.uart.write_line("[ble] the driver dropped a read it could not parse");
+                    self.uart.write_line("[ble] the driver lost events");
                 }
                 self.shadow.reported(now_ms(), e);
             }

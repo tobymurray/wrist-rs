@@ -157,6 +157,9 @@ pub struct Core<'a> {
     busy: Bucket,
     retry: [bool; MAX_PERIPHERALS],
     snapshot: bool,
+    /// A snapshot failed: another is asked for then, and how many have failed running.
+    snapshot_retry: Option<Instant>,
+    snapshot_failures: u8,
     /// Advertising may be on air that the core has no record of: an advertising operation's
     /// outcome was lost, or a snapshot found it.
     advertising_unknown: bool,
@@ -194,6 +197,8 @@ impl<'a> Core<'a> {
             busy: Bucket::FULL,
             retry: [false; MAX_PERIPHERALS],
             snapshot: false,
+            snapshot_retry: None,
+            snapshot_failures: 0,
             advertising_unknown: false,
             asked_unknown: false,
             settled_since: Instant(0),
@@ -256,6 +261,10 @@ impl<'a> Core<'a> {
                 self.phone(now, phone::Event::Tick, &mut out);
                 self.peers(now, peripheral::Event::Tick);
                 self.expire(now);
+                if self.snapshot_retry.is_some_and(|t| now >= t) {
+                    self.snapshot_retry = None;
+                    self.snapshot = true;
+                }
             }
         }
         // The console's ask ends with its link.
@@ -339,6 +348,8 @@ impl<'a> Core<'a> {
             }
         }
         self.state.radio = Activities::IDLE;
+        self.snapshot_retry = None;
+        self.snapshot_failures = 0;
         self.advertising_unknown = false;
         self.state.silent_since = now;
         self.refused.clear();
@@ -618,7 +629,13 @@ impl<'a> Core<'a> {
     }
 
     fn resync(&mut self, now: Instant, r: Result<Snapshot, Fault>) {
-        let Ok(s) = r else { return };
+        let Ok(s) = r else {
+            self.snapshot_retry = Some(now + Millis(SNAPSHOT_RETRY.0 << self.snapshot_failures.min(5)));
+            self.snapshot_failures = self.snapshot_failures.saturating_add(1);
+            return;
+        };
+        self.snapshot_retry = None;
+        self.snapshot_failures = 0;
         let mut mismatch = false;
         let found = s.links.iter().flatten().find(|l| l.role == LeConnRole::Peripheral);
         let phone = found.map(|l| l.link);
@@ -881,7 +898,7 @@ impl<'a> Core<'a> {
         let pending = self.pending.map(|p| p.deadline + GRACE);
         let reask = self.reask_at().filter(|&t| t > now);
         let busy = self.phone_busy_until.filter(|&t| t > now);
-        let marks = [self.state.chip.deadline(self.caps), self.state.phone.deadline(), pending, self.phone_mark(now), reask, busy];
+        let marks = [self.state.chip.deadline(self.caps), self.state.phone.deadline(), pending, self.phone_mark(now), reask, busy, self.snapshot_retry];
         marks.into_iter().flatten().chain(peers).chain(backoff).min()
     }
 
@@ -909,6 +926,9 @@ impl<'a> Core<'a> {
 
 /// Past an operation's deadline, the driver has this long to report its timeout.
 const GRACE: Millis = Millis(1_000);
+
+/// A failed snapshot is asked for again after this, doubled for each that failed before it, up to 32 times.
+pub const SNAPSHOT_RETRY: Millis = Millis(1_000);
 
 /// Asks of the phone for one want on one link: the first, and two re-asks after the phone's own
 /// updates undid it.

@@ -258,6 +258,8 @@ where
                     };
                     return Some(Snapping::Taken(taken));
                 }
+                // A link that went down after the reading has no security to read.
+                Stage::Send(Ask::Security(i)) if s.snapshot.links[i].is_none() => s.security_from(i + 1).map_or(Stage::Ending(Ok(())), Stage::Send),
                 Stage::Send(ask) => match s.command(ask) {
                     Some(c) if !self.restarted() => {
                         s.stage = Stage::Write(ask);

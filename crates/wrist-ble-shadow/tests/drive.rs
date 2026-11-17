@@ -323,7 +323,7 @@ fn a_snapshot_asked_for_while_one_is_taken_is_taken_after_it() {
     assert!(s.take_snapshot());
 }
 
-/// A failed snapshot leaves the core as it was.
+/// A failed snapshot leaves the core as it was, and is asked for again.
 #[test]
 fn a_failed_snapshot_changes_nothing() {
     let mut s = driving();
@@ -334,6 +334,8 @@ fn a_failed_snapshot_changes_nothing() {
     assert!(!s.snapshot_wanted());
     assert!(s.state().radio.advertising.is_some());
     assert_eq!(s.observer.snapshots, 0);
+    s.advance(Instant(2_010));
+    assert!(s.take_snapshot());
 }
 
 /// In the shadow's own mode the driver's lost reads are not the core's: its record is the shadow's.

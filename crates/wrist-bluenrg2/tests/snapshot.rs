@@ -374,3 +374,31 @@ fn a_link_a_snapshot_misses_has_its_peer_let_go() {
     let links = snapshot(&mut d).1.unwrap().links;
     assert_eq!(links[..2], [Some(link(0x0801, LeConnRole::Central, UNSEEN, None)), Some(link(0x0802, LeConnRole::Central, peer(), None))]);
 }
+
+/// A link that goes down after the reading but before its security is read is left out, not a failure.
+#[test]
+fn a_link_gone_before_its_security_is_read_is_left_out() {
+    let (c, mut d) = scripted(Script {
+        links: Some((0x00, link_status(&[(link_status::PERIPHERAL, 0x0801)]))),
+        anchor: Some((0x00, anchor_period(0, 0))),
+        security: vec![(0x0801, 1, 2)],
+        behind: Some((ACI_HAL_GET_ANCHOR_PERIOD, vec![disconnection(0x0801)])),
+        ..Script::default()
+    });
+    drain(&c, &mut d, &[connection(0x0801, 0x01)]);
+    let (notes, r, _) = snapshot(&mut d);
+    assert_eq!(sent(&notes).len(), 2, "no security asked");
+    assert_eq!(r.unwrap().links, [None; MAX_LINKS]);
+
+    let (c, mut d) = scripted(Script {
+        links: Some((0x00, link_status(&[(link_status::PERIPHERAL, 0x0801), (link_status::CENTRAL, 0x0802)]))),
+        anchor: Some((0x00, anchor_period(0, 0))),
+        security: vec![(0x0801, 1, 2), (0x0802, 1, 2)],
+        behind: Some((ACI_GAP_GET_SECURITY_LEVEL, vec![disconnection(0x0802)])),
+        ..Script::default()
+    });
+    drain(&c, &mut d, &[connection(0x0801, 0x01), connection(0x0802, 0x00)]);
+    let s = snapshot(&mut d).1.unwrap();
+    assert_eq!(s.links[0], Some(link(0x0801, LeConnRole::Peripheral, peer(), Some(true))));
+    assert_eq!(s.links[1], None);
+}
