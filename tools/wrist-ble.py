@@ -90,8 +90,10 @@ async def transfer(client, con, path, chunk_pace, chunk_max=VALUE_LEN):
     mtu = mtu_of(client)
     chunk = max(DEFAULT_MTU - ATT_HEADER, min(chunk_max, mtu - ATT_HEADER))
     print(f"-- update {len(image)} bytes, crc {crc:08X}, mtu {mtu}, chunks of {chunk}", flush=True)
+    # The answer can arrive before the write's own response does.
+    since = len(con.lines)
     await send(client, f"update {len(image)} {crc:08X}")
-    if not await con.wait_for(["send "], 5):
+    if not await con.wait_for(["send "], 5, since):
         print("-- the watch did not open a transfer", flush=True)
         return False
     t0 = time.time()

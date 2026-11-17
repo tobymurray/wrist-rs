@@ -376,7 +376,8 @@ class Scenario:
 
 def counters(status):
     """The `ble` line's counters of things that should never happen, by name; a field's later counters
-    take its first one's prefix (`irq stuck after write`)."""
+    take its first one's prefix (`irq stuck after write`). The core's operations asked and re-asked
+    are its ordinary work."""
     found = {}
     for field in status.split(', '):
         prefix = None
@@ -385,7 +386,7 @@ def counters(status):
                 prefix = name.rpartition(' ')[0]
             elif prefix and ' ' not in name:
                 name = f'{prefix} {name}'
-            if not re.search(r'events|bonded|interval|latency|address', name):
+            if not re.search(r'events|bonded|interval|latency|address|core asked|core reasks', name):
                 found[name] = int(value)
     return found
 
