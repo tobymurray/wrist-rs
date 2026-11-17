@@ -289,3 +289,43 @@ fn the_drivers_advertising_is_recorded_while_driving() {
     assert!(s.state().radio.advertising.is_some(), "the snapshot found it still on");
     assert!(!s.issuing(), "and so nothing to stop or start");
 }
+
+/// The phone's link ends during the driver's scan, the chip refusing the menu's first interval
+/// meanwhile: advertising goes back to it once the scan is over, by the chip's end or the driver's.
+#[test]
+fn a_refusal_during_the_drivers_scan_ends_with_it() {
+    const SCAN: u16 = 0xFC97;
+    const DOWN: &[u8] = &[0x04, 0x05, 0x04, 0x00, 0x01, 0x08, 0x13];
+    const SCAN_DONE: &[u8] = &[0x04, 0xFF, 0x04, 0x07, 0x04, 0x02, 0x00];
+    const SCAN_END: u16 = 0xFC9D;
+    let interval = |op: Option<Op>| match op {
+        Some(Op::Advertise(Some(a))) => Some(a.interval_min.as_u16()),
+        _ => None,
+    };
+    for by_the_chip in [true, false] {
+        let mut s = asked();
+        carry_out(&mut s, 1_310, Ok(OpId(2)));
+        s.command(Instant(2_000), SCAN, &[0xA0, 0x00, 0x60, 0x00, 0x01, 0x01]);
+        s.event(Instant(2_001), &command_status(0x00, SCAN));
+        s.event(Instant(3_000), DOWN);
+        let first = s.issue();
+        assert_eq!(interval(first), Some(160), "{first:?}");
+        let op = first.unwrap();
+        let (code, params) = sent(&op);
+        s.command(Instant(3_010), code, &params);
+        s.submitted(Instant(3_010), Err(refused(&op, 0x85)));
+        let fallback = carry_out(&mut s, 3_020, Ok(OpId(7)));
+        assert_ne!(interval(Some(fallback)), Some(160));
+        s.advance(Instant(5_000));
+        assert_eq!(s.issue(), None, "the fallback holds while the scan runs");
+        if by_the_chip {
+            s.event(Instant(13_000), SCAN_DONE);
+        } else {
+            s.command(Instant(13_000), SCAN_END, &[0x02]);
+        }
+        assert_eq!(s.issue(), Some(Op::Advertise(None)), "by the chip {by_the_chip}");
+        s.submitted(Instant(13_010), Ok(OpId(8)));
+        s.reported(Instant(13_010), RadioEvent::Done(OpId(8), Ok(Outcome::Done)));
+        assert_eq!(interval(s.issue()), Some(160), "by the chip {by_the_chip}");
+    }
+}

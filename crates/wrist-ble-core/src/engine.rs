@@ -44,7 +44,7 @@ pub enum Tell {
     BondLost(ConnHandle),
     /// The phone holds a key this device has lost.
     OldKey(ConnHandle),
-    /// The chip refused what its model admitted; the configuration is not tried again.
+    /// The chip refused what its model admitted; the configuration is not tried again for now.
     Divergence { kind: OpKind, native: u16 },
     /// A peer's request for new parameters was refused.
     RefusedPeerRequest(ConnHandle),
@@ -209,6 +209,11 @@ impl<'a> Core<'a> {
     #[must_use]
     pub fn goals(&self) -> &Goals {
         &self.goals
+    }
+
+    /// The chip's refusals let go, as a scan the core does not run ends: one may have been the scan's.
+    pub fn forget_refusals(&mut self) {
+        self.refused.clear();
     }
 
     /// The operation in flight.

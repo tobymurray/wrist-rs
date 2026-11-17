@@ -86,7 +86,11 @@ impl ChipMachine {
                 self.state = Chip::Off;
                 Some(Action::Hold)
             }
-            (Chip::Off, Event::RadioOn) | (Chip::Fault { .. }, Event::Retry) => Some(self.begin(now)),
+            (Chip::Off, Event::RadioOn) => {
+                self.resets = [None; RESETS_PER_HOUR];
+                Some(self.begin(now))
+            }
+            (Chip::Fault { .. }, Event::Retry) => Some(self.begin(now)),
             (Chip::Fault { retry_at, .. }, Event::Tick) if now >= retry_at => {
                 self.resets = [Some(now + RETRY_PROVEN - HOUR); RESETS_PER_HOUR];
                 Some(self.begin(now))

@@ -187,7 +187,7 @@ impl Hasher for Fnv {
     }
 }
 
-/// Refused configurations the planner may not choose again until the chip resets.
+/// Refused configurations the planner may not choose again until they are forgotten.
 pub const REFUSED_CAPACITY: usize = 32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

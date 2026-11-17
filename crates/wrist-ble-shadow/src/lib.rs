@@ -392,6 +392,9 @@ impl<O: Observer> Shadow<O> {
         self.advance(at);
         let u16_at = |i: usize| params.get(i..i + 2).map_or(0, |v| u16::from_le_bytes([v[0], v[1]]));
         self.sent = driver_op(code).map(|_| (code, u16_at(0)));
+        if code == opcode::ACI_GAP_TERMINATE_GAP_PROC {
+            self.scan_ended();
+        }
         let Some((kind, name)) = driver_op(code) else { return };
         let op = match (kind, name) {
             // Advertising type, then interval min and max (0.625 ms).
@@ -452,6 +455,9 @@ impl<O: Observer> Shadow<O> {
     pub fn event(&mut self, at: Instant, packet: &[u8]) {
         self.advance(at);
         self.refusal(packet);
+        if matches!(bluenrg2::parse(packet), bluenrg2::Event::Vendor(bluenrg2::VendorEvent::GapProcComplete { procedure: bluenrg2::gap_proc::GENERAL_DISCOVERY, .. })) {
+            self.scan_ended();
+        }
         if accepted_update(packet) {
             if let Some(id) = self.asked_update.take() {
                 self.feed(Input::Radio(RadioEvent::Done(id, Ok(Outcome::Done))));
@@ -479,6 +485,12 @@ impl<O: Observer> Shadow<O> {
             (RadioEvent::Ready(info), Some(id)) => self.feed(Input::Started(id, Ok(info))),
             _ => self.feed(Input::Radio(e)),
         }
+    }
+
+    /// The driver's scan over: every refusal is asked again, since one may have been the scan's.
+    fn scan_ended(&mut self) {
+        self.core.forget_refusals();
+        self.feed(Input::Tick);
     }
 
     /// The chip's refusal of the driver's command, given to the core as its own answer where the
