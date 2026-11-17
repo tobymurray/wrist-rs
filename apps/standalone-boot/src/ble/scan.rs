@@ -251,8 +251,7 @@ impl Link<'_> {
     }
 
     fn resume_advertising(&mut self) {
-        // The core's goal is the pause, lifted however the scan ended: a restart or an unanswered
-        // stop leaves no record of it here.
+        // The core's goal is the pause, lifted whatever ended the scan.
         if self.drives() {
             if !self.shadow.goals().phone.discoverable {
                 self.want_discoverable(true);

@@ -309,8 +309,7 @@ fn encryption(handle: u16) -> Vec<u8> {
     event(0x08, &[0x00, h[0], h[1], 0x01])
 }
 
-/// What the chip reports after reading its links is in the snapshot, which is the chip as of its
-/// end: handed out before it, the events and the snapshot agree in whichever order they are taken.
+/// What the chip reports after reading its links is in the snapshot, which is the chip as of its end.
 #[test]
 fn the_events_after_the_links_reading_are_in_the_snapshot() {
     let reading = || Script {

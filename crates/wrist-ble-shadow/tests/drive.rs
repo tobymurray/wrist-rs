@@ -293,8 +293,7 @@ fn snapshot(phone: Option<ConnHandle>, advertising: bool) -> Snapshot {
     Snapshot { at: Instant(0), links, advertising, scanning: false, initiating: false, anchor: None }
 }
 
-/// The driver dropped a read that held the phone's link: the core resyncs from the driver's
-/// snapshot, so the link's end brings advertising back.
+/// A phone's link lost in the driver's dropped read is found by its snapshot, so its end readvertises.
 #[test]
 fn a_link_lost_with_the_drivers_dropped_read_is_found_and_its_end_readvertised() {
     const DOWN: &[u8] = &[0x04, 0x05, 0x04, 0x00, 0x01, 0x08, 0x13];

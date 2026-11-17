@@ -629,9 +629,7 @@ fn a_centrals_acceptance_ends_the_request_though_nothing_changes() {
     assert_eq!(asks, 2, "{:?}", h.ops);
 }
 
-/// A snapshot whose reading straddles events (F136's shape, settled in the driver): the events
-/// handed out before it are taken first, in the order they came, and the snapshot holds those after
-/// its reading, so the two agree.
+/// Events taken in the order they came, then a snapshot holding those after its reading: the two agree.
 #[test]
 fn a_snapshot_taken_after_the_events_it_holds_agrees_with_them() {
     let link = ConnHandle::new(0x801);
