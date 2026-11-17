@@ -391,9 +391,10 @@ where
         self.peers.saw(event);
     }
 
-    /// A snapshot found only `links`: operations on the others end.
+    /// A snapshot found only `links`: operations on the others end, and their peers are let go.
     pub(crate) fn resynced(&mut self, links: &[Option<wrist_ble::LinkStatus>]) {
         self.ops.resynced(links);
+        self.peers.keep(links);
     }
 
     pub(crate) fn peers(&self) -> &Peers {

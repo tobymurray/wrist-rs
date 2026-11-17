@@ -28,7 +28,11 @@ restart updater`, which starts the chip's updater, so a check can watch the driv
 restart and bring the chip back. `ble probe gatt services|records|values` fills the GATT table
 until the chip refuses, to measure how much room is left; `ble off` then `ble on` after it puts
 the image's own table back. `ble probe snapshot` prints the driver's snapshot of the chip,
-and `ble probe security` sends the phone's unencrypted link another security request.
+and `ble probe security` sends the phone's unencrypted link another security request. `ble probe
+stop` sends `ACI_GAP_SET_NON_DISCOVERABLE` twice in a row. `ble probe refuse <status>` and `ble
+probe refuse scan <status>` answer the core's next command, or the next scan's start, with that
+status without sending it, and `ble probe lose link` gives the core the next connection as a lost
+read.
 
 The console's `version` prints the image's version, build ID and CRC:
 

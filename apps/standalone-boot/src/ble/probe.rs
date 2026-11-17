@@ -318,6 +318,22 @@ impl Link<'_> {
         self.uart.write_line("[ble] probe adv: done");
     }
 
+    /// Two `ACI_GAP_SET_NON_DISCOVERABLE` with nothing between, each status on the line.
+    pub(super) async fn probe_stop(&mut self) {
+        let state = STATE.load(Ordering::Relaxed);
+        let first = self.command(ACI_GAP_SET_NON_DISCOVERABLE, &[]).await.map(|r| r.status);
+        let second = self.command(ACI_GAP_SET_NON_DISCOVERABLE, &[]).await.map(|r| r.status);
+        let mut t = Text(self.uart);
+        let _ = write!(t, "[ble] probe stop state={state}");
+        for status in [first, second] {
+            let _ = match status {
+                Ok(s) => write!(t, " status={s:02X}"),
+                Err(why) => write!(t, " error={why}"),
+            };
+        }
+        self.uart.write_line("");
+    }
+
     /// `ACI_GAP_SET_DISCOVERABLE` as `advertise` sends it, at `interval`; the chip's status.
     async fn discoverable(&mut self, interval: u16) -> Result<u8, &'static str> {
         let slots = wrist_ble::Slots::from_u16(interval);

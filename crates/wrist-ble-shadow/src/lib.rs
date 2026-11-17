@@ -9,7 +9,7 @@ pub mod verdict;
 
 use bluenrg2::opcode;
 use wrist_ble::{
-    AddrKind, BdAddr, ChipInfo, ConnHandle, ConnParams, Failure, FailureKind, Instant, LeConnRole, LinkStatus, Op, OpId, OpKind, Outcome, PeerAddr, RadioEvent, Snapshot,
+    AddrKind, BdAddr, ChipInfo, ConnHandle, ConnParams, Failure, FailureKind, Fault, Instant, LeConnRole, LinkStatus, Op, OpId, OpKind, Outcome, PeerAddr, RadioEvent, Snapshot,
     MAX_LINKS,
 };
 use wrist_ble_core::chip::Action;
@@ -142,6 +142,7 @@ const OWED: usize = 32;
 /// Ticks given at once, so that a core that kept asking for them could not hold its caller.
 const TICKS: usize = 1024;
 
+#[allow(clippy::struct_excessive_bools, reason = "each is its own fact of the record, not a state")]
 pub struct Shadow<O> {
     core: Core<'static>,
     translator: Translator,
@@ -169,6 +170,8 @@ pub struct Shadow<O> {
     issue: Option<Op>,
     /// The core's last word on the chip, in [`Mode::Drive`].
     chip_action: Option<Action>,
+    /// The core asked for a snapshot, for the driver to take in [`Mode::Drive`].
+    snapshot_wanted: bool,
     verdict: Verdict,
     pub observer: O,
 }
@@ -196,6 +199,7 @@ impl<O: Observer> Shadow<O> {
             mode: Mode::Shadow,
             issue: None,
             chip_action: None,
+            snapshot_wanted: false,
             verdict: Verdict::new(),
             observer,
         }
@@ -215,6 +219,7 @@ impl<O: Observer> Shadow<O> {
         self.mode = mode;
         self.issue = None;
         self.chip_action = None;
+        self.snapshot_wanted = false;
         // What the shadow answers for, which a driven core never leaves.
         self.asked_update = None;
         self.awaiting = None;
@@ -239,16 +244,38 @@ impl<O: Observer> Shadow<O> {
         self.chip_action.take()
     }
 
+    /// Whether the core asked for a snapshot, in [`Mode::Drive`], that [`Self::take_snapshot`]
+    /// has yet to take.
+    #[must_use]
+    pub fn snapshot_wanted(&self) -> bool {
+        self.snapshot_wanted
+    }
+
+    /// Whether the core asked for a snapshot, for the driver to take now and answer with
+    /// [`Self::snapshotted`]; one asked for meanwhile is wanted again.
+    pub fn take_snapshot(&mut self) -> bool {
+        core::mem::take(&mut self.snapshot_wanted)
+    }
+
+    /// The driver's snapshot, holding every event handed out before it.
+    pub fn snapshotted(&mut self, at: Instant, r: Result<Snapshot, Fault>) {
+        self.advance(at);
+        if let Ok(s) = &r {
+            self.observer.snapshot(s);
+        }
+        self.feed(Input::Snapshot(r));
+    }
+
     /// The driver's answer to the operation [`Self::issue`] handed out.
     pub fn submitted(&mut self, at: Instant, r: Result<OpId, Failure>) {
         self.advance(at);
         self.feed(Input::Submitted(r));
     }
 
-    /// What the driver itself reports: an operation's end, taken in [`Mode::Drive`] only, as the
-    /// shadow's own operations have ids of their own.
+    /// What the driver itself reports, an operation's end or packets it dropped, taken in
+    /// [`Mode::Drive`] only, as the shadow's own operations have ids of their own.
     pub fn reported(&mut self, at: Instant, e: RadioEvent) {
-        if let (Mode::Drive, RadioEvent::Done(..)) = (self.mode, e) {
+        if let (Mode::Drive, RadioEvent::Done(..) | RadioEvent::EventsLost) = (self.mode, e) {
             self.advance(at);
             self.observer.event(self.now, &e);
             self.feed(Input::Radio(e));
@@ -385,6 +412,7 @@ impl<O: Observer> Shadow<O> {
         self.advertising = false;
         self.issue = None;
         self.chip_action = None;
+        self.snapshot_wanted = false;
     }
 
     /// A command the driver sent the chip.
@@ -412,7 +440,6 @@ impl<O: Observer> Shadow<O> {
                 verdict.driver(self.now.0, act, &mut |d| observer.disagreed(d));
             }
             self.observer.driver(self.now, op, name, params);
-            self.advertised(name);
             return;
         }
         // An ask the menu never makes is taken as the console's `ble interval now`, over USB or
@@ -526,6 +553,10 @@ impl<O: Observer> Shadow<O> {
             let input = match owed[top] {
                 Owed::Submitted(id) => Input::Submitted(Ok(id)),
                 Owed::Done(id) => Input::Radio(RadioEvent::Done(id, Ok(Outcome::Done))),
+                Owed::Snapshot if self.mode == Mode::Drive => {
+                    self.snapshot_wanted = true;
+                    continue;
+                }
                 Owed::Snapshot => {
                     let s = self.snapshot();
                     self.observer.snapshot(&s);
@@ -593,7 +624,8 @@ impl<O: Observer> Shadow<O> {
     }
 
     /// The chip as the driver's commands and the chip's events have left it, the phone's link
-    /// encrypted once seen so and otherwise unknown, since the lost events may have held it.
+    /// encrypted once seen so and otherwise unknown, since the lost events may have held it; in
+    /// [`Mode::Shadow`], as a driven core's is the driver's.
     fn snapshot(&self) -> Snapshot {
         let mut links = [None; MAX_LINKS];
         if let Some(link) = self.phone {
