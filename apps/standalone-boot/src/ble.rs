@@ -158,6 +158,9 @@ enum Request {
     /// `ble probe refuse scan <hex>`: the next scan's start answered with this status, unsent.
     #[cfg(feature = "ble-probe")]
     ProbeRefuseScan(u8),
+    /// `ble probe lose link`: the next connection withheld from the core, a lost read reported.
+    #[cfg(feature = "ble-probe")]
+    ProbeLoseLink,
     #[cfg(feature = "ble-probe")]
     Probe,
     /// `ble probe gatt services|records|values`: fill the GATT table until the chip refuses.
@@ -359,6 +362,8 @@ pub fn command(args: &[u8], uart: Uart) {
         b"probe adv" => Request::ProbeAdvertising,
         #[cfg(feature = "ble-probe")]
         b"probe stop" => Request::ProbeStop,
+        #[cfg(feature = "ble-probe")]
+        b"probe lose link" => Request::ProbeLoseLink,
         #[cfg(feature = "ble-probe")]
         b"probe snapshot" => Request::ProbeSnapshot,
         #[cfg(feature = "ble-probe")]
@@ -644,7 +649,8 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
                 | Request::ProbeSnapshot
                 | Request::ProbeSecurity
                 | Request::ProbeRefuse(_)
-                | Request::ProbeRefuseScan(_) => {
+                | Request::ProbeRefuseScan(_)
+                | Request::ProbeLoseLink => {
                     uart.write_line("[ble] off; `ble on` starts it");
                 }
                 Request::Off => {
@@ -805,6 +811,9 @@ struct Link<'d> {
     /// `ble probe refuse scan`: the next scan's start answered with this status, unsent.
     #[cfg(feature = "ble-probe")]
     refuse_scan: Option<u8>,
+    /// `ble probe lose link`: the next connection withheld from the core.
+    #[cfg(feature = "ble-probe")]
+    withhold_connection: bool,
 }
 
 impl<'d> Link<'d> {
@@ -844,6 +853,8 @@ impl<'d> Link<'d> {
             refuse_next: None,
             #[cfg(feature = "ble-probe")]
             refuse_scan: None,
+            #[cfg(feature = "ble-probe")]
+            withhold_connection: false,
         }
     }
 }
@@ -1020,6 +1031,11 @@ impl Link<'_> {
                 self.uart.write_str("[ble] the core's next command goes unsent, answered with status ");
                 self.uart.write_hex8(status);
                 self.uart.write_line("");
+            }
+            #[cfg(feature = "ble-probe")]
+            Request::ProbeLoseLink => {
+                self.withhold_connection = true;
+                self.uart.write_line("[ble] the next connection goes to the core as a lost read");
             }
             #[cfg(feature = "ble-probe")]
             Request::ProbeRefuseScan(status) => {
@@ -1796,6 +1812,15 @@ impl Link<'_> {
 
     /// One thing a drain handed out, its bytes in `packet`.
     fn got(&mut self, packet: &[u8; transport::MAX_READ], got: Got) {
+        #[cfg(feature = "ble-probe")]
+        if self.withhold_connection && matches!(got, Got::Packet { event: Some(RadioEvent::LinkUp { .. }), .. }) {
+            self.withhold_connection = false;
+            self.uart.write_line("[ble] probe: a connection withheld from the core, a lost read reported");
+            if let Got::Packet { len, event } = got {
+                self.shadow.reported(now_ms(), RadioEvent::EventsLost);
+                return self.handle(&packet[..len], event);
+            }
+        }
         if let Got::Packet { len, .. } | Got::Boot { len, .. } = got {
             #[cfg(feature = "ble-trace")]
             trace::packet(trace::Dir::FromChip, &packet[..len]);
