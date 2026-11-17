@@ -1638,7 +1638,7 @@ impl Link<'_> {
 
     /// The driver's snapshot for the core, which asks for one after lost events.
     async fn resync(&mut self) {
-        if !self.shadow.snapshot_wanted() {
+        if !self.shadow.take_snapshot() {
             return;
         }
         let mut snap = Snap::default();

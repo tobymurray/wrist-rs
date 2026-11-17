@@ -280,6 +280,8 @@ fn lost_events_are_resynced_from_the_drivers_snapshot() {
     s.event(Instant(2_000), CUT);
     assert!(s.snapshot_wanted());
     assert_eq!(s.observer.snapshots, 0, "the shadow's record is not the core's");
+    assert!(s.take_snapshot());
+    assert!(!s.snapshot_wanted(), "taken once");
     s.snapshotted(Instant(2_100), Ok(snapshot(Some(link()), false)));
     assert!(!s.snapshot_wanted());
     assert_eq!(s.observer.snapshots, 1);
@@ -301,12 +303,24 @@ fn a_link_lost_with_the_drivers_dropped_read_is_found_and_its_end_readvertised()
     carry_out(&mut s, 100, Ok(OpId(1)));
     assert!(s.state().radio.advertising.is_some());
     s.reported(Instant(1_000), RadioEvent::EventsLost);
-    assert!(s.snapshot_wanted());
+    assert!(s.take_snapshot());
     s.snapshotted(Instant(1_010), Ok(snapshot(Some(link()), false)));
     assert_eq!(s.state().radio.advertising, None);
     assert_eq!(s.state().phone.link(), Some(link()));
     s.event(Instant(5_000), DOWN);
     assert!(matches!(s.issue(), Some(Op::Advertise(Some(_)))));
+}
+
+/// Events lost while the driver takes a snapshot want another after it.
+#[test]
+fn a_snapshot_asked_for_while_one_is_taken_is_taken_after_it() {
+    let mut s = driving();
+    carry_out(&mut s, 100, Ok(OpId(1)));
+    s.reported(Instant(1_000), RadioEvent::EventsLost);
+    assert!(s.take_snapshot());
+    s.reported(Instant(1_005), RadioEvent::EventsLost);
+    s.snapshotted(Instant(1_010), Ok(snapshot(None, true)));
+    assert!(s.take_snapshot());
 }
 
 /// A failed snapshot leaves the core as it was.
@@ -315,6 +329,7 @@ fn a_failed_snapshot_changes_nothing() {
     let mut s = driving();
     carry_out(&mut s, 100, Ok(OpId(1)));
     s.reported(Instant(1_000), RadioEvent::EventsLost);
+    assert!(s.take_snapshot());
     s.snapshotted(Instant(1_010), Err(Fault::Silent));
     assert!(!s.snapshot_wanted());
     assert!(s.state().radio.advertising.is_some());

@@ -366,9 +366,11 @@ fn a_link_that_came_up_during_the_snapshot_keeps_its_operations() {
 /// A link whose end was lost has its peer let go once a snapshot misses it.
 #[test]
 fn a_link_a_snapshot_misses_has_its_peer_let_go() {
-    let (c, mut d) = scripted(Script { links: Some((0x00, link_status(&[]))), anchor: Some((0x00, anchor_period(0, 0))), ..Script::default() });
-    drain(&c, &mut d, &[connection(0x0801, 0x01)]);
-    assert_eq!(snapshot(&mut d).1.unwrap().links, [None; MAX_LINKS]);
-    SCRIPT.with_borrow_mut(|s| s.links = Some((0x00, link_status(&[(link_status::PERIPHERAL, 0x0801)]))));
-    assert_eq!(snapshot(&mut d).1.unwrap().links[0], Some(link(0x0801, LeConnRole::Peripheral, UNSEEN, None)));
+    let found = |handles: &[u16]| Some((0x00, link_status(&handles.iter().map(|&h| (link_status::CENTRAL, h)).collect::<Vec<_>>())));
+    let (c, mut d) = scripted(Script { links: found(&[0x0802]), anchor: Some((0x00, anchor_period(0, 0))), ..Script::default() });
+    drain(&c, &mut d, &[connection(0x0801, 0x00), connection(0x0802, 0x00)]);
+    assert_eq!(snapshot(&mut d).1.unwrap().links[0], Some(link(0x0802, LeConnRole::Central, peer(), None)));
+    SCRIPT.with_borrow_mut(|s| s.links = found(&[0x0801, 0x0802]));
+    let links = snapshot(&mut d).1.unwrap().links;
+    assert_eq!(links[..2], [Some(link(0x0801, LeConnRole::Central, UNSEEN, None)), Some(link(0x0802, LeConnRole::Central, peer(), None))]);
 }

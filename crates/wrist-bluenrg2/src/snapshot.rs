@@ -143,7 +143,6 @@ impl Snap {
                     *free = Some(LinkStatus { link, role, peer, encrypted: Some(false) });
                 }
                 s.advertising &= role != LeConnRole::Peripheral;
-                s.initiating &= role != LeConnRole::Central;
             }
             RadioEvent::LinkDown { link, .. } => forget(&mut s.links, link),
             RadioEvent::Encryption { link, on } => {
@@ -151,10 +150,7 @@ impl Snap {
                     l.encrypted = Some(on);
                 }
             }
-            RadioEvent::ScanDone => s.scanning = false,
-            RadioEvent::Ready(_) | RadioEvent::ChipReset(_) => {
-                *s = Snapshot { at: s.at, ..Snap::default().snapshot };
-            }
+            // A restart after the reading fails the snapshot.
             _ => {}
         }
     }

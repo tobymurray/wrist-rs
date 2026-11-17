@@ -244,17 +244,22 @@ impl<O: Observer> Shadow<O> {
         self.chip_action.take()
     }
 
-    /// Whether the core asked for a snapshot, in [`Mode::Drive`], for the driver to take and
-    /// answer with [`Self::snapshotted`].
+    /// Whether the core asked for a snapshot, in [`Mode::Drive`], that [`Self::take_snapshot`]
+    /// has yet to take.
     #[must_use]
     pub fn snapshot_wanted(&self) -> bool {
         self.snapshot_wanted
     }
 
+    /// Whether the core asked for a snapshot, for the driver to take now and answer with
+    /// [`Self::snapshotted`]; one asked for meanwhile is wanted again.
+    pub fn take_snapshot(&mut self) -> bool {
+        core::mem::take(&mut self.snapshot_wanted)
+    }
+
     /// The driver's snapshot, holding every event handed out before it.
     pub fn snapshotted(&mut self, at: Instant, r: Result<Snapshot, Fault>) {
         self.advance(at);
-        self.snapshot_wanted = false;
         if let Ok(s) = &r {
             self.observer.snapshot(s);
         }
