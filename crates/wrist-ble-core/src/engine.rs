@@ -927,7 +927,7 @@ impl<'a> Core<'a> {
 /// Past an operation's deadline, the driver has this long to report its timeout.
 const GRACE: Millis = Millis(1_000);
 
-/// A failed snapshot is asked for again after this, doubled for each that failed before it, up to 32 times.
+/// A failed snapshot is asked for again after this, doubled for each one that failed before it.
 pub const SNAPSHOT_RETRY: Millis = Millis(1_000);
 
 /// Asks of the phone for one want on one link: the first, and two re-asks after the phone's own
