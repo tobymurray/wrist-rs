@@ -52,6 +52,15 @@ impl Peers {
             }
         }
     }
+
+    /// Only the peers of `links`: a link whose end was lost is let go.
+    pub(crate) fn keep(&mut self, links: &[Option<LinkStatus>]) {
+        for p in &mut self.0 {
+            if p.is_some_and(|(l, _)| !links.iter().flatten().any(|k| k.link == l)) {
+                *p = None;
+            }
+        }
+    }
 }
 
 /// A snapshot under way.
@@ -59,6 +68,9 @@ impl Peers {
 pub struct Snap {
     stage: Stage,
     snapshot: Snapshot,
+    /// The links have been read: what is handed out from here came after the reading, and is
+    /// folded into it, so the snapshot taken is the chip as of [`Snapping::Taken`].
+    read: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,6 +78,8 @@ enum Stage {
     Send(Ask),
     Write(Ask),
     Wait(Ask),
+    /// Every answer is in; what the last drain holds is handed out before the snapshot.
+    Ending(Result<(), Fault>),
     Over,
 }
 
@@ -91,7 +105,7 @@ pub enum Snapping {
 impl Default for Snap {
     fn default() -> Self {
         let snapshot = Snapshot { at: Instant(0), links: [None; MAX_LINKS], advertising: false, scanning: false, initiating: false, anchor: None };
-        Self { stage: Stage::Send(Ask::Links), snapshot }
+        Self { stage: Stage::Send(Ask::Links), snapshot, read: false }
     }
 }
 
@@ -109,6 +123,42 @@ impl Snap {
         (from..MAX_LINKS).find(|&i| self.snapshot.links[i].is_some()).map(Ask::Security)
     }
 
+    /// `ask`'s answer, at `now` ms: the stage it leads to.
+    fn next(&mut self, ask: Ask, reply: &Result<Reply, Unanswered>, peers: &Peers, now: u64) -> Stage {
+        match self.answered(ask, reply, peers, now) {
+            Ok(Some(next)) => Stage::Send(next),
+            Ok(None) => Stage::Ending(Ok(())),
+            Err(f) => Stage::Ending(Err(f)),
+        }
+    }
+
+    /// What the driver handed out after the reading, as the chip's record would have it.
+    fn fold(&mut self, got: &Got) {
+        let (true, Got::Packet { event: Some(e), .. } | Got::Event(e)) = (self.read, got) else { return };
+        let s = &mut self.snapshot;
+        match *e {
+            RadioEvent::LinkUp { link, role, peer, .. } => {
+                forget(&mut s.links, link);
+                if let Some(free) = s.links.iter_mut().find(|l| l.is_none()) {
+                    *free = Some(LinkStatus { link, role, peer, encrypted: Some(false) });
+                }
+                s.advertising &= role != LeConnRole::Peripheral;
+                s.initiating &= role != LeConnRole::Central;
+            }
+            RadioEvent::LinkDown { link, .. } => forget(&mut s.links, link),
+            RadioEvent::Encryption { link, on } => {
+                if let Some(l) = s.links.iter_mut().flatten().find(|l| l.link == link) {
+                    l.encrypted = Some(on);
+                }
+            }
+            RadioEvent::ScanDone => s.scanning = false,
+            RadioEvent::Ready(_) | RadioEvent::ChipReset(_) => {
+                *s = Snapshot { at: s.at, ..Snap::default().snapshot };
+            }
+            _ => {}
+        }
+    }
+
     /// `ask`'s answer, at `now` ms: what to ask next, if anything.
     fn answered(&mut self, ask: Ask, reply: &Result<Reply, Unanswered>, peers: &Peers, now: u64) -> Result<Option<Ask>, Fault> {
         let r = reply.as_ref().map_err(|&why| fault(why))?;
@@ -119,6 +169,7 @@ impl Snap {
                 }
                 let links = hal::LinkStatus::decode(&r.params[..r.len]).ok_or(Fault::Refused(Failure { kind: FailureKind::Unknown, native: 0 }))?;
                 self.taken(&links, peers, now);
+                self.read = true;
                 Ok(Some(Ask::Anchor))
             }
             Ask::Anchor => {
@@ -154,6 +205,12 @@ impl Snap {
     }
 }
 
+fn forget(links: &mut [Option<LinkStatus>; MAX_LINKS], link: ConnHandle) {
+    for l in links.iter_mut().filter(|l| l.is_some_and(|l| l.link == link)) {
+        *l = None;
+    }
+}
+
 /// What an unanswered command makes of the snapshot.
 fn fault(why: Unanswered) -> Fault {
     match why {
@@ -179,21 +236,39 @@ where
     K: Clock,
 {
     /// The snapshot's next step: what a drain hands out first, then each note, until
-    /// [`Snapping::Taken`]; `None` after.
+    /// [`Snapping::Taken`]; `None` after. Each reply is read at its place among the chip's packets,
+    /// so the events after the links' reading are folded into the snapshot.
     pub async fn snapshotting(&mut self, s: &mut Snap, out: &mut [u8; MAX_READ]) -> Option<Snapping> {
         loop {
+            if let (Stage::Wait(ask), true) = (s.stage, self.replied()) {
+                let reply = self.reply();
+                s.stage = s.next(ask, &reply, self.peers(), self.now_ms());
+            }
             if let Some(got) = self.next(out).await {
+                s.fold(&got);
                 return Some(Snapping::Got(got));
             }
-            let answered = match s.stage {
+            s.stage = match s.stage {
                 Stage::Over => return None,
+                Stage::Ending(r) => {
+                    s.stage = Stage::Over;
+                    let taken = match r {
+                        Ok(()) if self.restarted() => Err(Fault::Silent),
+                        Ok(()) => {
+                            self.resynced(&s.snapshot.links);
+                            Ok(s.snapshot)
+                        }
+                        Err(f) => Err(f),
+                    };
+                    return Some(Snapping::Taken(taken));
+                }
                 Stage::Send(ask) => match s.command(ask) {
                     Some(c) if !self.restarted() => {
                         s.stage = Stage::Write(ask);
                         return Some(Snapping::Sending(c));
                     }
-                    Some(_) => s.answered(ask, &Err(Unanswered::Restarted), self.peers(), self.now_ms()),
-                    None => s.answered(ask, &Err(Unanswered::TooLong), self.peers(), self.now_ms()),
+                    Some(_) => s.next(ask, &Err(Unanswered::Restarted), self.peers(), self.now_ms()),
+                    None => s.next(ask, &Err(Unanswered::TooLong), self.peers(), self.now_ms()),
                 },
                 Stage::Write(ask) => {
                     let sent = match s.command(ask) {
@@ -201,11 +276,8 @@ where
                         None => Err(Unanswered::TooLong),
                     };
                     match sent {
-                        Ok(()) => {
-                            s.stage = Stage::Wait(ask);
-                            continue;
-                        }
-                        Err(why) => s.answered(ask, &Err(why), self.peers(), self.now_ms()),
+                        Ok(()) => Stage::Wait(ask),
+                        Err(why) => s.next(ask, &Err(why), self.peers(), self.now_ms()),
                     }
                 }
                 Stage::Wait(ask) => {
@@ -213,24 +285,9 @@ where
                         continue;
                     }
                     let reply = self.reply();
-                    s.answered(ask, &reply, self.peers(), self.now_ms())
+                    s.next(ask, &reply, self.peers(), self.now_ms())
                 }
             };
-            s.stage = match answered {
-                Ok(Some(next)) => Stage::Send(next),
-                Ok(None) | Err(_) => Stage::Over,
-            };
-            if s.stage == Stage::Over {
-                let taken = match answered {
-                    Ok(_) if self.restarted() => Err(Fault::Silent),
-                    Ok(_) => {
-                        self.resynced(&s.snapshot.links);
-                        Ok(s.snapshot)
-                    }
-                    Err(f) => Err(f),
-                };
-                return Some(Snapping::Taken(taken));
-            }
         }
     }
 }

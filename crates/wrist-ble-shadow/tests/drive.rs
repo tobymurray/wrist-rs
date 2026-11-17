@@ -1,7 +1,10 @@
 //! The shadow driving: the core's operations handed to the driver and answered with the driver's
 //! own answers, every command of the driver's set beside them.
 
-use wrist_ble::{AdvParams, ChipInfo, ConnHandle, CoreSpecificationVersion, Instant, Op, OpId, Outcome, RadioEvent, Slots};
+use wrist_ble::{
+    AddrKind, AdvParams, BdAddr, ChipInfo, ConnHandle, CoreSpecificationVersion, Fault, Instant, LeConnRole, LinkStatus, Op, OpId, Outcome, PeerAddr, RadioEvent,
+    Slots, Snapshot, MAX_LINKS,
+};
 use wrist_ble_core::chip::Action;
 use wrist_ble_core::goals::{Goals, PhoneGoal, Power};
 use wrist_ble_core::phone::{Phone, Security, ASK_TO_PAIR_AFTER};
@@ -269,25 +272,65 @@ fn a_shadow_hands_out_nothing() {
     assert!(s.core_pending().is_some(), "a driver's report is not the shadow's to take");
 }
 
-/// The record the core resyncs from after lost events is still the shadow's own.
+/// After lost events the core waits for the driver's snapshot, not the shadow's record.
 #[test]
-fn lost_events_are_resynced_from_the_shadows_record() {
+fn lost_events_are_resynced_from_the_drivers_snapshot() {
     let mut s = asked();
     carry_out(&mut s, 1_310, Ok(OpId(2)));
     s.event(Instant(2_000), CUT);
+    assert!(s.snapshot_wanted());
+    assert_eq!(s.observer.snapshots, 0, "the shadow's record is not the core's");
+    s.snapshotted(Instant(2_100), Ok(snapshot(Some(link()), false)));
+    assert!(!s.snapshot_wanted());
     assert_eq!(s.observer.snapshots, 1);
     assert_eq!(s.state().phone.link(), Some(link()));
 }
 
-/// Advertising the driver started is the shadow's record, so a snapshot finds it.
+/// The chip's state as the driver read it: `phone` up as a peripheral link, `advertising` or not.
+fn snapshot(phone: Option<ConnHandle>, advertising: bool) -> Snapshot {
+    let mut links = [None; MAX_LINKS];
+    links[0] = phone.map(|link| LinkStatus { link, role: LeConnRole::Peripheral, peer: PeerAddr { kind: AddrKind::RANDOM, addr: BdAddr::new([0; 6]) }, encrypted: Some(false) });
+    Snapshot { at: Instant(0), links, advertising, scanning: false, initiating: false, anchor: None }
+}
+
+/// The driver dropped a read that held the phone's link: the core resyncs from the driver's
+/// snapshot, so the link's end brings advertising back.
 #[test]
-fn the_drivers_advertising_is_recorded_while_driving() {
+fn a_link_lost_with_the_drivers_dropped_read_is_found_and_its_end_readvertised() {
+    const DOWN: &[u8] = &[0x04, 0x05, 0x04, 0x00, 0x01, 0x08, 0x13];
     let mut s = driving();
     carry_out(&mut s, 100, Ok(OpId(1)));
-    s.event(Instant(2_000), CUT);
-    assert_eq!(s.observer.snapshots, 1);
-    assert!(s.state().radio.advertising.is_some(), "the snapshot found it still on");
-    assert!(!s.issuing(), "and so nothing to stop or start");
+    assert!(s.state().radio.advertising.is_some());
+    s.reported(Instant(1_000), RadioEvent::EventsLost);
+    assert!(s.snapshot_wanted());
+    s.snapshotted(Instant(1_010), Ok(snapshot(Some(link()), false)));
+    assert_eq!(s.state().radio.advertising, None);
+    assert_eq!(s.state().phone.link(), Some(link()));
+    s.event(Instant(5_000), DOWN);
+    assert!(matches!(s.issue(), Some(Op::Advertise(Some(_)))));
+}
+
+/// A failed snapshot leaves the core as it was.
+#[test]
+fn a_failed_snapshot_changes_nothing() {
+    let mut s = driving();
+    carry_out(&mut s, 100, Ok(OpId(1)));
+    s.reported(Instant(1_000), RadioEvent::EventsLost);
+    s.snapshotted(Instant(1_010), Err(Fault::Silent));
+    assert!(!s.snapshot_wanted());
+    assert!(s.state().radio.advertising.is_some());
+    assert_eq!(s.observer.snapshots, 0);
+}
+
+/// In the shadow's own mode the driver's lost reads are not the core's: its record is the shadow's.
+#[test]
+fn a_shadow_takes_no_lost_read_of_the_drivers() {
+    let mut s = Shadow::new(CHIP, Goals::OFF, Log::default());
+    s.set_goals(Instant(0), goals());
+    s.event(Instant(100), BOOTED);
+    s.reported(Instant(1_000), RadioEvent::EventsLost);
+    assert_eq!(s.observer.snapshots, 0);
+    assert!(!s.snapshot_wanted());
 }
 
 /// The phone's link ends during the driver's scan, the chip refusing the menu's first interval

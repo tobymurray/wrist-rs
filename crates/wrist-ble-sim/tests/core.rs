@@ -628,3 +628,36 @@ fn a_centrals_acceptance_ends_the_request_though_nothing_changes() {
     let asks = h.ops.iter().filter(|op| matches!(op, Op::UpdateParams(l, _) if *l == link)).count();
     assert_eq!(asks, 2, "{:?}", h.ops);
 }
+
+/// A snapshot whose reading straddles events (F136's shape, settled in the driver): the events
+/// handed out before it are taken first, in the order they came, and the snapshot holds those after
+/// its reading, so the two agree.
+#[test]
+fn a_snapshot_taken_after_the_events_it_holds_agrees_with_them() {
+    let link = ConnHandle::new(0x801);
+    let none = wrist_ble::Snapshot { at: Instant(0), links: [None; wrist_ble::MAX_LINKS], advertising: false, scanning: false, initiating: false, anchor: None };
+
+    // The phone's link ends after the reading: no phantom link, and advertising comes back.
+    let mut h = Harness::new(Goals { radio_on: true, ..Goals::OFF });
+    phone_up(&mut h, 1_000, link);
+    assert!(h.at(10_000, Input::Radio(RadioEvent::EventsLost)).snapshot);
+    h.at(10_001, Input::Radio(RadioEvent::LinkDown { link, reason: Status::new(0x13) }));
+    let before = h.ops.len();
+    h.at(10_002, Input::Snapshot(Ok(none)));
+    assert_eq!(h.core.state.phone.link(), None);
+    run_to(&mut h, 12_000);
+    assert!(h.ops[before..].iter().any(|op| matches!(op, Op::Advertise(Some(_)))), "{:?}", h.ops);
+    assert!(h.core.state.radio.advertising.is_some());
+
+    // The phone connects after the reading: its link kept, and no advertising over it.
+    let mut h = Harness::new(Goals { radio_on: true, ..Goals::OFF });
+    assert!(h.core.state.radio.advertising.is_some());
+    h.at(10_000, Input::Radio(RadioEvent::EventsLost));
+    phone_up(&mut h, 10_001, link);
+    let before = h.ops.len();
+    h.at(10_002, Input::Snapshot(Ok(snapshot_with(link, Some(false)))));
+    run_to(&mut h, 12_000);
+    assert_eq!(h.core.state.phone.link(), Some(link));
+    assert!(!h.ops[before..].iter().any(|op| matches!(op, Op::Advertise(_))), "{:?}", h.ops);
+    assert_eq!(h.core.counters.audit_mismatches, 0);
+}

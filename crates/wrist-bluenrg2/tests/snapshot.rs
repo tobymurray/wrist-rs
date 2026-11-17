@@ -30,6 +30,8 @@ struct Script {
     ahead: Option<Vec<u8>>,
     /// The command whose answer the chip follows by restarting.
     restart_after: Option<u16>,
+    /// The command whose answer the chip follows with these packets.
+    behind: Option<(u16, Vec<Vec<u8>>)>,
 }
 
 thread_local! {
@@ -53,7 +55,8 @@ fn answer(packet: &[u8]) -> Vec<Vec<u8>> {
             _ => None,
         };
         let boot = (s.restart_after == Some(opcode)).then(|| event(0xFF, &[0x01, 0x00, 0x01]));
-        s.ahead.iter().cloned().chain(reply.map(|(status, p)| complete(opcode, status, &p))).chain(boot).collect()
+        let behind = s.behind.iter().filter(|(c, _)| *c == opcode).flat_map(|(_, p)| p.iter().cloned());
+        s.ahead.iter().cloned().chain(reply.map(|(status, p)| complete(opcode, status, &p))).chain(behind).chain(boot).collect()
     })
 }
 
@@ -299,4 +302,74 @@ fn a_chip_that_restarts_after_the_last_answer_has_no_snapshot() {
     assert_eq!(snapshot(&mut d).1, Err(Fault::Silent));
     let (_, mut d) = scripted(Script { links: Some((0x00, link_status(&[]))), anchor: Some((0x00, anchor_period(0, 0))), restart_after: Some(ACI_HAL_GET_ANCHOR_PERIOD), ..Script::default() });
     assert_eq!(snapshot(&mut d).1, Err(Fault::Silent), "no links: the anchor's answer is the last");
+}
+
+fn encryption(handle: u16) -> Vec<u8> {
+    let h = handle.to_le_bytes();
+    event(0x08, &[0x00, h[0], h[1], 0x01])
+}
+
+/// What the chip reports after reading its links is in the snapshot, which is the chip as of its
+/// end: handed out before it, the events and the snapshot agree in whichever order they are taken.
+#[test]
+fn the_events_after_the_links_reading_are_in_the_snapshot() {
+    let reading = || Script {
+        links: Some((0x00, link_status(&[(link_status::ADVERTISING, 0), (link_status::PERIPHERAL, 0x0801)]))),
+        anchor: Some((0x00, anchor_period(0, 0))),
+        security: vec![(0x0801, 1, 1)],
+        ..Script::default()
+    };
+    let (c, mut d) = scripted(Script { behind: Some((ACI_HAL_GET_LINK_STATUS, vec![disconnection(0x0801)])), ..reading() });
+    drain(&c, &mut d, &[connection(0x0801, 0x01)]);
+    let (notes, r, _) = snapshot(&mut d);
+    assert!(notes.iter().any(|n| matches!(n, Snapping::Got(Got::Packet { event: Some(RadioEvent::LinkDown { .. }), .. }))));
+    let s = r.unwrap();
+    assert_eq!(s.links, [None; MAX_LINKS], "the link that went down after the reading");
+    assert_eq!(sent(&notes).len(), 2, "and its security unasked");
+
+    let (c, mut d) = scripted(Script { behind: Some((ACI_HAL_GET_LINK_STATUS, vec![disconnection(0x0801), connection(0x0802, 0x01)])), ..reading() });
+    drain(&c, &mut d, &[connection(0x0801, 0x01)]);
+    let s = snapshot(&mut d).1.unwrap();
+    // Its security is asked after it came, and this chip refuses it.
+    assert_eq!(s.links[0], Some(link(0x0802, LeConnRole::Peripheral, peer(), None)), "a phone connected meanwhile, with its peer");
+    assert_eq!(s.links.iter().flatten().count(), 1);
+    assert!(!s.advertising, "the phone's link ended the advertising the reading found");
+
+    let (_, mut d) = scripted(Script { behind: Some((ACI_GAP_GET_SECURITY_LEVEL, vec![encryption(0x0801)])), ..reading() });
+    assert_eq!(snapshot(&mut d).1.unwrap().links[1].and_then(|l| l.encrypted), Some(true), "encrypted after its security was read");
+}
+
+/// An operation on a link that came up during the snapshot is not ended by it.
+#[test]
+fn a_link_that_came_up_during_the_snapshot_keeps_its_operations() {
+    let (c, mut d) = scripted(Script {
+        links: Some((0x00, link_status(&[]))),
+        anchor: Some((0x00, anchor_period(0, 0))),
+        behind: Some((ACI_HAL_GET_LINK_STATUS, vec![connection(0x0801, 0x01)])),
+        ..Script::default()
+    });
+    let mut s = Snap::default();
+    let mut out = [0u8; MAX_READ];
+    let params = ConnParams { interval_min: Interval::from_u16(12), interval_max: Interval::from_u16(24), latency: 0, timeout: Timeout::from_u16(500), ce_len: Slots::from_u16(0) };
+    let taken = Ok(Reply { status: 0x00, params: [0; bluenrg2::RETURN_PARAMS_MAX], len: 0 });
+    let mut after = Vec::new();
+    while let Some(note) = block_on(d.snapshotting(&mut s, &mut out)) {
+        if let Snapping::Got(Got::Packet { event: Some(RadioEvent::LinkUp { .. }), .. }) = note {
+            assert_eq!(d.settle(&Op::UpdateParams(ConnHandle::new(0x0801), params), &taken), Ok(OpId(0)));
+        }
+        after.push(note);
+    }
+    assert!(matches!(after.last(), Some(Snapping::Taken(Ok(_)))));
+    drain(&c, &mut d, &[]);
+    assert!(d.due().is_some(), "the ask on the new link still waits");
+}
+
+/// A link whose end was lost has its peer let go once a snapshot misses it.
+#[test]
+fn a_link_a_snapshot_misses_has_its_peer_let_go() {
+    let (c, mut d) = scripted(Script { links: Some((0x00, link_status(&[]))), anchor: Some((0x00, anchor_period(0, 0))), ..Script::default() });
+    drain(&c, &mut d, &[connection(0x0801, 0x01)]);
+    assert_eq!(snapshot(&mut d).1.unwrap().links, [None; MAX_LINKS]);
+    SCRIPT.with_borrow_mut(|s| s.links = Some((0x00, link_status(&[(link_status::PERIPHERAL, 0x0801)]))));
+    assert_eq!(snapshot(&mut d).1.unwrap().links[0], Some(link(0x0801, LeConnRole::Peripheral, UNSEEN, None)));
 }

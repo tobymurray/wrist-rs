@@ -251,12 +251,16 @@ impl Link<'_> {
     }
 
     fn resume_advertising(&mut self) {
-        if core::mem::take(&mut self.scanner.paused_advertising) && STATE.load(Ordering::Relaxed) == STATE_IDLE {
-            if self.drives() {
+        // The core's goal is the pause, lifted however the scan ended: a restart or an unanswered
+        // stop leaves no record of it here.
+        if self.drives() {
+            if !self.shadow.goals().phone.discoverable {
                 self.want_discoverable(true);
-            } else {
-                self.readvertise = true;
             }
+            return;
+        }
+        if core::mem::take(&mut self.scanner.paused_advertising) && STATE.load(Ordering::Relaxed) == STATE_IDLE {
+            self.readvertise = true;
         }
     }
 

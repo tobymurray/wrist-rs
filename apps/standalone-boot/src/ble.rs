@@ -81,6 +81,7 @@ use wrist_ble_shadow::verdict::Disagreement;
 use wrist_ble_shadow::{Mode, Observer, Shadow};
 use wrist_bluenrg2::commands;
 use wrist_bluenrg2::driver::{self, Driver, Got, Reply, Unanswered};
+use wrist_bluenrg2::snapshot::{Snap, Snapping};
 use wrist_bluenrg2::start::{Setup, Start, Starting, Step};
 use wrist_bluenrg2::transport::{self, Counts};
 use wrist_pages::{OldKey, Pairing, Prompt};
@@ -154,6 +155,9 @@ enum Request {
     /// `ble probe refuse <hex>`: the core's next command answered with this status, unsent.
     #[cfg(feature = "ble-probe")]
     ProbeRefuse(u8),
+    /// `ble probe refuse scan <hex>`: the next scan's start answered with this status, unsent.
+    #[cfg(feature = "ble-probe")]
+    ProbeRefuseScan(u8),
     #[cfg(feature = "ble-probe")]
     Probe,
     /// `ble probe gatt services|records|values`: fill the GATT table until the chip refuses.
@@ -166,6 +170,9 @@ enum Request {
     /// `ble probe adv`: `ACI_GAP_SET_DISCOVERABLE` sent while already advertising.
     #[cfg(feature = "ble-probe")]
     ProbeAdvertising,
+    /// `ble probe stop`: `ACI_GAP_SET_NON_DISCOVERABLE` twice, nothing between.
+    #[cfg(feature = "ble-probe")]
+    ProbeStop,
     /// `ble probe drop <hex>`: `ACI_GAP_TERMINATE` with this reason.
     #[cfg(feature = "ble-probe")]
     ProbeDrop(u8),
@@ -351,6 +358,8 @@ pub fn command(args: &[u8], uart: Uart) {
         #[cfg(feature = "ble-probe")]
         b"probe adv" => Request::ProbeAdvertising,
         #[cfg(feature = "ble-probe")]
+        b"probe stop" => Request::ProbeStop,
+        #[cfg(feature = "ble-probe")]
         b"probe snapshot" => Request::ProbeSnapshot,
         #[cfg(feature = "ble-probe")]
         b"probe security" => Request::ProbeSecurity,
@@ -377,6 +386,13 @@ pub fn command(args: &[u8], uart: Uart) {
         b"policy core" | b"policy legacy" => {
             LEGACY.store(args == b"policy legacy", Ordering::Relaxed);
             return write_policy(uart);
+        }
+        #[cfg(feature = "ble-probe")]
+        rest if rest.starts_with(b"probe refuse scan ") => {
+            match core::str::from_utf8(&rest[18..]).ok().and_then(|t| u8::from_str_radix(t.trim(), 16).ok()) {
+                Some(status) => Request::ProbeRefuseScan(status),
+                None => return uart.write_line("[ble] usage: ble probe refuse scan <status, hex>"),
+            }
         }
         #[cfg(feature = "ble-probe")]
         rest if rest.starts_with(b"probe refuse ") => {
@@ -623,10 +639,12 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
                 | Request::ProbeGatt(_)
                 | Request::Restart(_)
                 | Request::ProbeAdvertising
+                | Request::ProbeStop
                 | Request::ProbeDrop(_)
                 | Request::ProbeSnapshot
                 | Request::ProbeSecurity
-                | Request::ProbeRefuse(_) => {
+                | Request::ProbeRefuse(_)
+                | Request::ProbeRefuseScan(_) => {
                     uart.write_line("[ble] off; `ble on` starts it");
                 }
                 Request::Off => {
@@ -784,6 +802,9 @@ struct Link<'d> {
     /// `ble probe refuse`: the core's next command answered with this status, unsent.
     #[cfg(feature = "ble-probe")]
     refuse_next: Option<u8>,
+    /// `ble probe refuse scan`: the next scan's start answered with this status, unsent.
+    #[cfg(feature = "ble-probe")]
+    refuse_scan: Option<u8>,
 }
 
 impl<'d> Link<'d> {
@@ -821,6 +842,8 @@ impl<'d> Link<'d> {
             shadow,
             #[cfg(feature = "ble-probe")]
             refuse_next: None,
+            #[cfg(feature = "ble-probe")]
+            refuse_scan: None,
         }
     }
 }
@@ -867,6 +890,7 @@ impl Link<'_> {
             self.shadow.timing(now_ms(), shadow_power(), self.transfer.is_some());
             self.retime().await;
             self.console_tick().await;
+            self.resync().await;
             self.drive().await;
             self.publish();
             let due = self.due();
@@ -915,6 +939,7 @@ impl Link<'_> {
             now: tick(Instant::now()),
             work: (self.request_interval.is_some() && self.interval_ask.open())
                 || self.shadow.issuing()
+                || self.shadow.snapshot_wanted()
                 || self.held_ask.due()
                 || self.finish_transfer
                 || self.rebond_for.is_some()
@@ -982,6 +1007,8 @@ impl Link<'_> {
             #[cfg(feature = "ble-probe")]
             Request::ProbeAdvertising => self.probe_advertising().await,
             #[cfg(feature = "ble-probe")]
+            Request::ProbeStop => self.probe_stop().await,
+            #[cfg(feature = "ble-probe")]
             Request::ProbeDrop(reason) => self.probe_drop(reason).await,
             #[cfg(feature = "ble-probe")]
             Request::ProbeSnapshot => self.probe_snapshot().await,
@@ -991,6 +1018,13 @@ impl Link<'_> {
             Request::ProbeRefuse(status) => {
                 self.refuse_next = Some(status);
                 self.uart.write_str("[ble] the core's next command goes unsent, answered with status ");
+                self.uart.write_hex8(status);
+                self.uart.write_line("");
+            }
+            #[cfg(feature = "ble-probe")]
+            Request::ProbeRefuseScan(status) => {
+                self.refuse_scan = Some(status);
+                self.uart.write_str("[ble] the next scan's start goes unsent, answered with status ");
                 self.uart.write_hex8(status);
                 self.uart.write_line("");
             }
@@ -1555,6 +1589,13 @@ impl Link<'_> {
         if self.chip.restarted() {
             return Err(Unanswered::Restarted);
         }
+        #[cfg(feature = "ble-probe")]
+        if opcode == bluenrg2::opcode::ACI_GAP_START_GENERAL_DISCOVERY_PROC {
+            if let Some(status) = self.refuse_scan.take() {
+                self.shadow.command(now_ms(), opcode, params);
+                return Ok(Reply { status, params: [0; bluenrg2::RETURN_PARAMS_MAX], len: 0 });
+            }
+        }
         trace_command(opcode, params);
         self.shadow.command(now_ms(), opcode, params);
         self.chip.send(opcode, params).await?;
@@ -1577,6 +1618,35 @@ impl Link<'_> {
         let reply = self.exchange(c.opcode, c.params()).await;
         let taken = self.chip.settle(&op, &reply);
         (reply.map_err(unanswered), taken)
+    }
+
+    /// The driver's snapshot for the core, which asks for one after lost events.
+    async fn resync(&mut self) {
+        if !self.shadow.snapshot_wanted() {
+            return;
+        }
+        let mut snap = Snap::default();
+        let mut packet = [0u8; transport::MAX_READ];
+        while let Some(note) = self.chip.snapshotting(&mut snap, &mut packet).await {
+            match note {
+                Snapping::Got(got) => self.got(&packet, got),
+                Snapping::Sending(c) => {
+                    trace_command(c.opcode, c.params());
+                    self.shadow.command(now_ms(), c.opcode, c.params());
+                }
+                Snapping::Taken(r) => {
+                    match &r {
+                        Ok(s) => {
+                            self.uart.write_str("[ble] resynced: links ");
+                            self.uart.write_u32(u32::try_from(s.links.iter().flatten().count()).unwrap_or(u32::MAX));
+                            self.uart.write_line(if s.advertising { ", advertising" } else { ", not advertising" });
+                        }
+                        Err(_) => self.uart.write_line("[ble] resync: the chip gave no snapshot"),
+                    }
+                    self.shadow.snapshotted(now_ms(), r);
+                }
+            }
+        }
     }
 
     /// The core's operations carried out, each answered at its reply's place among the chip's
@@ -1741,7 +1811,12 @@ impl Link<'_> {
                     self.uart.write_line("; backing off to one read per 500 ms");
                 }
             }
-            Got::Event(e) => self.shadow.reported(now_ms(), e),
+            Got::Event(e) => {
+                if e == RadioEvent::EventsLost {
+                    self.uart.write_line("[ble] the driver dropped a read it could not parse");
+                }
+                self.shadow.reported(now_ms(), e);
+            }
         }
     }
 
