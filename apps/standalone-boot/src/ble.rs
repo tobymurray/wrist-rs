@@ -36,11 +36,9 @@
 //! Address. A static random address from the MCU's unique id
 //! (`wrist_bluenrg2::bonds::static_random_address`), so bonds survive updates.
 //!
-//! Decisions. The Bluetooth core (`wrist_ble_shadow`, `Mode::Drive`) asks the central for its
-//! parameters and to pair, times advertising and answers the comparison; this driver carries out
-//! each of its operations, and a policy command sent without the core, or one of the core's never
-//! sent, is a `[ble] shadow:` line, counted on the `ble` line. `ble policy legacy` puts this
-//! driver's own decisions back from the next start, the core beside them as a shadow.
+//! Decisions. The Bluetooth core (`wrist_ble_shadow`, `Mode::Drive`) makes the policy decisions and
+//! this driver carries them out, or under `ble policy legacy` this driver makes them beside the core
+//! as a shadow; where the two differ is a `[ble] shadow:` line, counted on the `ble` line.
 
 #[cfg(feature = "ble-probe")]
 mod probe;
@@ -510,7 +508,7 @@ pub fn write_status(uart: Uart) {
     uart.write_line("");
 }
 
-/// `[ble] policy: core now, core from the next start`.
+/// `ble policy`: the policy in force, and the one the next start takes.
 fn write_policy(uart: Uart) {
     let word = |legacy: bool| if legacy { "legacy" } else { "core" };
     uart.write_str("[ble] policy: ");

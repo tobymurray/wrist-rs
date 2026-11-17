@@ -235,7 +235,7 @@ fn an_ask_refused_busy_waits_for_the_centrals_answer() {
     assert!(matches!(out.op, Some(Op::UpdateParams(l, _)) if l == link()), "{out:?}");
 }
 
-/// The central's answer ends the ask, as it does the driver's; a refusal counts as a failed update.
+/// The central's answer ends the ask; a refusal counts as a failed update.
 #[test]
 fn the_centrals_answer_ends_the_ask() {
     for accepted in [false, true] {

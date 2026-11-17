@@ -450,7 +450,7 @@ impl<'a> Core<'a> {
     }
 
     /// The chip takes another request once the central answers, and only then (HARDWARE.md): the
-    /// answer ends the ask, as it does the driver's, and the chip having taken it clears its backoff.
+    /// answer ends the ask, and the chip having taken it clears its backoff.
     fn answered(&mut self, link: ConnHandle, accepted: bool) {
         if self.state.phone.link() == Some(link) {
             self.phone_busy_until = None;
