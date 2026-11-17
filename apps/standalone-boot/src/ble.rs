@@ -36,9 +36,9 @@
 //! Address. A static random address from the MCU's unique id
 //! (`wrist_bluenrg2::bonds::static_random_address`), so bonds survive updates.
 //!
-//! Shadow. The Bluetooth core runs beside this driver, told what it is told and issuing nothing
-//! (`wrist_ble_shadow`); where the two act differently is a `[ble] shadow:` line, counted on the
-//! `ble` line.
+//! Decisions. The Bluetooth core (`wrist_ble_shadow`, `Mode::Drive`) makes the policy decisions and
+//! this driver carries them out, or under `ble policy legacy` this driver makes them beside the core
+//! as a shadow; where the two differ is a `[ble] shadow:` line, counted on the `ble` line.
 
 #[cfg(feature = "ble-probe")]
 mod probe;
@@ -71,13 +71,14 @@ use bluenrg2::{
     event_code, io_capability, AddrKind, BdAddr, BootReason, Event, BleStatus,
     PairingReason, VendorEvent, ATT_HEADER_LEN,
 };
+use wrist_ble_core::chip::Action;
 use wrist_ble::{
     AdvParams, Cccd, CharDecl, ConnHandle, ConnParams, DisconnectReason, Failure, FailureKind, Interval, LeConnRole, Micros, Op, OpKind, PairingEvent, PairingStep, Payload, RadioEvent, ServerTable,
     ServiceDecl, Slots, Timeout, ATT_MAX_MTU,
 };
 use wrist_ble_core::goals::{self, Goals, PhoneGoal};
 use wrist_ble_shadow::verdict::Disagreement;
-use wrist_ble_shadow::{Observer, Shadow};
+use wrist_ble_shadow::{Mode, Observer, Shadow};
 use wrist_bluenrg2::commands;
 use wrist_bluenrg2::driver::{self, Driver, Got, Reply, Unanswered};
 use wrist_bluenrg2::start::{Setup, Start, Starting, Step};
@@ -131,6 +132,8 @@ const DEFAULT_MTU: usize = bluenrg2::ATT_DEFAULT_MTU;
 const DEFAULT_VALUE_LEN: usize = DEFAULT_MTU - ATT_HEADER_LEN;
 /// Console notifications at most this often.
 const CONSOLE_PACE: Duration = Duration::from_millis(10);
+/// The core's operations carried out in one pass of the loop, at most.
+const ISSUED_PER_PASS: usize = 4;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Request {
@@ -148,6 +151,9 @@ enum Request {
     IntervalNow(u16, u16),
     /// `ble scan`: seconds, and a duty in place of the power source's.
     Scan(u8, Option<Scan>),
+    /// `ble probe refuse <hex>`: the core's next command answered with this status, unsent.
+    #[cfg(feature = "ble-probe")]
+    ProbeRefuse(u8),
     #[cfg(feature = "ble-probe")]
     Probe,
     /// `ble probe gatt services|records|values`: fill the GATT table until the chip refuses.
@@ -235,6 +241,20 @@ static ADDRESS: [AtomicU8; 6] = [const { AtomicU8::new(0) }; 6];
 static PROFILE: AtomicU8 = AtomicU8::new(0);
 /// Where the shadow and this driver acted differently, this boot ([`Said`]).
 static SHADOW: AtomicU32 = AtomicU32::new(0);
+/// `ble policy legacy`: this driver decides from the next start, the core a shadow.
+static LEGACY: AtomicBool = AtomicBool::new(false);
+/// The core decides since the radio's last start.
+static DRIVING: AtomicBool = AtomicBool::new(false);
+/// The driving core's counters, as the `ble` line shows them ([`Link::publish`]).
+static CORE_ASKED: AtomicU32 = AtomicU32::new(0);
+static CORE_REFUSED: AtomicU32 = AtomicU32::new(0);
+static CORE_FAILED: AtomicU32 = AtomicU32::new(0);
+static CORE_TIMED_OUT: AtomicU32 = AtomicU32::new(0);
+static CORE_REASKS: AtomicU32 = AtomicU32::new(0);
+static CORE_DIVERGENCES: AtomicU32 = AtomicU32::new(0);
+static CORE_BUSY_SPENT: AtomicU32 = AtomicU32::new(0);
+/// Chip restarts the core asked for while the chip was up, this boot.
+static CORE_RESTARTS: AtomicU32 = AtomicU32::new(0);
 
 /// Signalled when [`PROVEN`] first becomes true.
 static PROVEN_NOW: Signal<CriticalSectionRawMutex, ()> = Signal::new();
@@ -298,7 +318,7 @@ fn power() -> Power {
     }
 }
 
-/// `ble`, `ble on|off|version|yes|no|bonds|forget [address]|disconnect|profile auto|cable|battery|interval now <min> <max>|scan [s [interval window]]`.
+/// `ble`, `ble on|off|version|yes|no|bonds|forget [address]|disconnect|profile auto|cable|battery|interval now <min> <max>|scan [s [interval window]]|policy [core|legacy]`.
 pub fn command(args: &[u8], uart: Uart) {
     let request = match args {
         b"" => return write_status(uart),
@@ -353,6 +373,18 @@ pub fn command(args: &[u8], uart: Uart) {
             uart.write_str("[ble] timing: ");
             return uart.write_line(word);
         }
+        b"policy" => return write_policy(uart),
+        b"policy core" | b"policy legacy" => {
+            LEGACY.store(args == b"policy legacy", Ordering::Relaxed);
+            return write_policy(uart);
+        }
+        #[cfg(feature = "ble-probe")]
+        rest if rest.starts_with(b"probe refuse ") => {
+            match core::str::from_utf8(&rest[13..]).ok().and_then(|t| u8::from_str_radix(t.trim(), 16).ok()) {
+                Some(status) => Request::ProbeRefuse(status),
+                None => return uart.write_line("[ble] usage: ble probe refuse <status, hex>"),
+            }
+        }
         rest if rest.starts_with(b"interval now") => {
             let text = core::str::from_utf8(&rest[12..]).unwrap_or("");
             let mut units = text.split_whitespace().map(|w| w.parse::<u16>().ok());
@@ -369,7 +401,7 @@ pub fn command(args: &[u8], uart: Uart) {
         },
         _ => {
             return uart.write_line(
-                "[ble] usage: ble [on|off|version|yes|no|bonds|forget [address]|disconnect|profile auto|cable|battery|interval now <min> <max>|scan [s [interval window]]]",
+                "[ble] usage: ble [on|off|version|yes|no|bonds|forget [address]|disconnect|profile auto|cable|battery|interval now <min> <max>|scan [s [interval window]]|policy [core|legacy]]",
             )
         }
     };
@@ -435,6 +467,17 @@ pub fn write_status(uart: Uart) {
         uart.write_hex8(LAST_RESTART.load(Ordering::Relaxed));
         uart.write_str(")");
     }
+    uart.write_str(if DRIVING.load(Ordering::Relaxed) { ", policy core" } else { ", policy legacy" });
+    if DRIVING.load(Ordering::Relaxed) {
+        n(", core asked ", &CORE_ASKED);
+        n(" refused ", &CORE_REFUSED);
+        n(" failed ", &CORE_FAILED);
+        n(" timed out ", &CORE_TIMED_OUT);
+        n(" reasks ", &CORE_REASKS);
+        n(" divergences ", &CORE_DIVERGENCES);
+        n(" busy restarts ", &CORE_BUSY_SPENT);
+        n(" restarts ", &CORE_RESTARTS);
+    }
     n(", shadow disagreements ", &SHADOW);
     match LAST_PAIRING.load(Ordering::Relaxed) {
         0 => {}
@@ -463,6 +506,16 @@ pub fn write_status(uart: Uart) {
     });
     write_six_digits(uart, value);
     uart.write_line("");
+}
+
+/// `ble policy`: the policy in force, and the one the next start takes.
+fn write_policy(uart: Uart) {
+    let word = |legacy: bool| if legacy { "legacy" } else { "core" };
+    uart.write_str("[ble] policy: ");
+    uart.write_str(word(!DRIVING.load(Ordering::Relaxed)));
+    uart.write_str(" now, ");
+    uart.write_str(word(LEGACY.load(Ordering::Relaxed)));
+    uart.write_line(" from the next start (`ble off`, `ble on`)");
 }
 
 /// What the Bluetooth page shows.
@@ -572,7 +625,8 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
                 | Request::ProbeAdvertising
                 | Request::ProbeDrop(_)
                 | Request::ProbeSnapshot
-                | Request::ProbeSecurity => {
+                | Request::ProbeSecurity
+                | Request::ProbeRefuse(_) => {
                     uart.write_line("[ble] off; `ble on` starts it");
                 }
                 Request::Off => {
@@ -727,6 +781,9 @@ struct Link<'d> {
     kept_restarting: bool,
     restarts: Restarts,
     shadow: &'d mut Shadow<Said>,
+    /// `ble probe refuse`: the core's next command answered with this status, unsent.
+    #[cfg(feature = "ble-probe")]
+    refuse_next: Option<u8>,
 }
 
 impl<'d> Link<'d> {
@@ -762,6 +819,8 @@ impl<'d> Link<'d> {
             kept_restarting: false,
             restarts: Restarts::default(),
             shadow,
+            #[cfg(feature = "ble-probe")]
+            refuse_next: None,
         }
     }
 }
@@ -794,13 +853,22 @@ impl Link<'_> {
             if self.chip.restarted() && !self.recover().await {
                 return false;
             }
+            if !self.core_chip().await {
+                return false;
+            }
             WAKE.reset();
             self.shadow.advance(now_ms());
+            if self.drives() {
+                // What the driver ended or let expire since the last drain.
+                self.packets().await;
+            }
             self.deferred().await;
             self.scan_tick().await;
             self.shadow.timing(now_ms(), shadow_power(), self.transfer.is_some());
             self.retime().await;
             self.console_tick().await;
+            self.drive().await;
+            self.publish();
             let due = self.due();
             let timer = async {
                 match due {
@@ -846,6 +914,7 @@ impl Link<'_> {
         let state = State {
             now: tick(Instant::now()),
             work: (self.request_interval.is_some() && self.interval_ask.open())
+                || self.shadow.issuing()
                 || self.held_ask.due()
                 || self.finish_transfer
                 || self.rebond_for.is_some()
@@ -867,7 +936,8 @@ impl Link<'_> {
         };
         // The first tick at which `now_ms` reaches it.
         let shadow = self.shadow.next().map(|at| (at.0 * embassy_time::TICK_HZ).div_ceil(1000));
-        wrist_wake::earliest([wrist_wake::ble::due(&state), shadow]).map(Instant::from_ticks)
+        let ops = self.chip.due().filter(|_| self.drives());
+        wrist_wake::earliest([wrist_wake::ble::due(&state), shadow, ops]).map(Instant::from_ticks)
     }
 
     async fn request(&mut self, req: Request) {
@@ -894,8 +964,10 @@ impl Link<'_> {
             Request::IntervalNow(min, max) => {
                 if STATE.load(Ordering::Relaxed) == STATE_CONNECTED {
                     self.shadow.interval_now(now_ms(), min, max);
-                    self.request_interval = Some((min, max));
-                    self.console_over.asked();
+                    if !self.drives() {
+                        self.request_interval = Some((min, max));
+                        self.console_over.asked();
+                    }
                 } else {
                     self.uart.write_line("[ble] interval now: not connected");
                 }
@@ -915,6 +987,13 @@ impl Link<'_> {
             Request::ProbeSnapshot => self.probe_snapshot().await,
             #[cfg(feature = "ble-probe")]
             Request::ProbeSecurity => self.ask_to_pair().await,
+            #[cfg(feature = "ble-probe")]
+            Request::ProbeRefuse(status) => {
+                self.refuse_next = Some(status);
+                self.uart.write_str("[ble] the core's next command goes unsent, answered with status ");
+                self.uart.write_hex8(status);
+                self.uart.write_line("");
+            }
         }
     }
 
@@ -943,6 +1022,9 @@ impl Link<'_> {
     /// The timing the power source asks for, applied where it changed: advertising again at
     /// the new interval, or the connection asked for new parameters.
     async fn retime(&mut self) {
+        if self.drives() {
+            return;
+        }
         let want = timing(power(), self.transfer.is_some());
         if self.console_over.retime(want) {
             self.request_interval = None;
@@ -998,7 +1080,7 @@ impl Link<'_> {
     /// (or its rejection after the timeout), a quiet transfer abandoned, an unencrypted central
     /// asked to pair, re-advertising after a disconnect.
     async fn deferred(&mut self) {
-        if self.pair_ask.take(Instant::now().as_ticks()) {
+        if self.pair_ask.take(Instant::now().as_ticks()) && !self.drives() {
             self.ask_to_pair().await;
         }
         if let Some((min, max)) = self.request_interval.take_if(|_| self.interval_ask.open()) {
@@ -1024,7 +1106,7 @@ impl Link<'_> {
             }
             self.uart.write_line("[update] error: no data for 5 s; transfer abandoned");
         }
-        if let Some(h) = self.rebond_for.take() {
+        if let Some(h) = self.rebond_for.take().filter(|_| !self.drives()) {
             let _ = self.submit(Op::AllowRebond(ConnHandle::new(h))).await;
             self.uart.write_line("[ble] the central lost its bond; allowing it to pair again");
         }
@@ -1047,7 +1129,9 @@ impl Link<'_> {
             if prompt == Prompt::Answered(yes) {
                 self.shadow.answer(now_ms(), yes);
             }
-            let _ = self.submit(Op::ConfirmNumeric(link(), yes)).await;
+            if !self.drives() {
+                let _ = self.submit(Op::ConfirmNumeric(link(), yes)).await;
+            }
             self.uart.write_line(if yes {
                 "[ble] comparison confirmed"
             } else if prompt == Prompt::Answered(false) {
@@ -1056,8 +1140,7 @@ impl Link<'_> {
                 "[ble] comparison not answered in 60 s: rejected"
             });
         }
-        if self.readvertise {
-            self.readvertise = false;
+        if core::mem::take(&mut self.readvertise) && !self.drives() {
             self.advertise().await;
         }
     }
@@ -1082,9 +1165,18 @@ impl Link<'_> {
 
     /// Bring the chip up, and again if it restarts meanwhile; whether it is up.
     async fn start(&mut self) -> bool {
+        // The radio is off in the shadow until here, so the mode may change.
+        let _ = self.shadow.set_mode(if LEGACY.load(Ordering::Relaxed) { Mode::Shadow } else { Mode::Drive });
+        DRIVING.store(self.drives(), Ordering::Relaxed);
         self.shadow.set_goals(now_ms(), shadow_goals());
+        // The start this bring-up answers.
+        let _ = self.shadow.chip_action();
         self.bring_up().await;
         self.recover().await
+    }
+
+    fn drives(&self) -> bool {
+        self.shadow.mode() == Mode::Drive
     }
 
     /// The radio off as the shadow's core takes it, and everything it still holds judged.
@@ -1172,7 +1264,11 @@ impl Link<'_> {
         write_address(self.uart, bluenrg2::Address { kind: AddrKind::RANDOM, addr: BdAddr(addr) });
         self.uart.write_line(if central { ", peripheral and central" } else { ", peripheral only" });
         self.list_bonds(false).await;
-        self.advertise().await;
+        if self.drives() {
+            set_state(STATE_IDLE);
+        } else {
+            self.advertise().await;
+        }
     }
 
     /// Console output to a subscribed central, one notification per pass.
@@ -1483,6 +1579,137 @@ impl Link<'_> {
         (reply.map_err(unanswered), taken)
     }
 
+    /// The core's operations carried out, each answered at its reply's place among the chip's
+    /// packets; the rest wait for the next pass.
+    async fn drive(&mut self) {
+        for _ in 0..ISSUED_PER_PASS {
+            let Some(op) = self.shadow.issue() else { return };
+            let Some(c) = commands::command(&op, DEVICE_NAME, |_| Some(LeConnRole::Peripheral), self.chip.server()) else {
+                self.shadow.submitted(now_ms(), Err(Failure { kind: FailureKind::Unknown, native: 0 }));
+                continue;
+            };
+            let reply = self.answered(c.opcode, c.params()).await;
+            let taken = self.chip.settle(&op, &reply);
+            self.shadow.submitted(now_ms(), taken);
+            self.issued(&op, reply.as_ref().map(|r| r.status).map_err(|why| unanswered(*why)), taken);
+            // The rest of the drain the reply came in, and what the driver ended meanwhile.
+            self.packets().await;
+        }
+    }
+
+    /// [`Link::exchange`], handing out the chip's packets only up to the reply.
+    async fn answered(&mut self, opcode: u16, params: &[u8]) -> Result<Reply, Unanswered> {
+        if self.chip.restarted() {
+            return Err(Unanswered::Restarted);
+        }
+        #[cfg(feature = "ble-probe")]
+        if let Some(status) = self.refuse_next.take() {
+            self.shadow.command(now_ms(), opcode, params);
+            return Ok(Reply { status, params: [0; bluenrg2::RETURN_PARAMS_MAX], len: 0 });
+        }
+        trace_command(opcode, params);
+        self.shadow.command(now_ms(), opcode, params);
+        self.chip.send(opcode, params).await?;
+        let mut packet = [0u8; transport::MAX_READ];
+        while self.chip.awaiting().await {
+            while !self.chip.replied() {
+                let Some(got) = self.chip.next(&mut packet).await else { break };
+                self.got(&packet, got);
+            }
+        }
+        self.chip.reply()
+    }
+
+    /// The core's operation as this driver's own were reported: its line, and the state the page
+    /// shows.
+    fn issued(&mut self, op: &Op, status: Result<u8, &'static str>, taken: Result<wrist_ble::OpId, Failure>) {
+        match (*op, status) {
+            (Op::Advertise(Some(a)), Ok(0)) => {
+                set_state(STATE_ADVERTISING);
+                self.uart.write_str("[ble] advertising as UNA every ");
+                self.uart.write_u32(u32::from(a.interval_min.as_u16()) * 625 / 1000);
+                self.uart.write_line(" ms");
+            }
+            (Op::Advertise(Some(_)), Ok(s)) => {
+                if self.scanner.advertising_refused() {
+                    set_state(STATE_IDLE);
+                }
+                self.uart.write_str("[ble] advertising refused, status ");
+                self.uart.write_hex8(s);
+                self.uart.write_line("");
+            }
+            (Op::Advertise(Some(_)), Err(why)) => {
+                self.uart.write_str("[ble] advertising: ");
+                self.uart.write_line(why);
+            }
+            (Op::UpdateParams(..), Ok(0)) => {}
+            (Op::UpdateParams(..), Ok(_)) if matches!(taken, Err(Failure { kind: FailureKind::Busy, .. })) => {
+                self.uart.write_line("[ble] interval request held: the central has yet to answer the one before");
+            }
+            (Op::UpdateParams(..), Ok(s)) => {
+                self.uart.write_str("[ble] interval request refused, status ");
+                self.uart.write_hex8(s);
+                self.uart.write_line("");
+            }
+            (Op::UpdateParams(..), Err(why)) => {
+                self.uart.write_str("[ble] interval request: ");
+                self.uart.write_line(why);
+            }
+            (Op::RequestSecurity(_), Ok(0)) => self.uart.write_line("[ble] link still unencrypted: asked the central to pair"),
+            (Op::RequestSecurity(_), Ok(s)) => {
+                self.uart.write_str("[ble] security request refused, status ");
+                self.uart.write_hex8(s);
+                self.uart.write_line("");
+            }
+            (Op::RequestSecurity(_), Err(why)) => {
+                self.uart.write_str("[ble] security request: ");
+                self.uart.write_line(why);
+            }
+            (Op::AllowRebond(_), _) => self.uart.write_line("[ble] the central lost its bond; allowing it to pair again"),
+            _ => {}
+        }
+    }
+
+    /// The core's word on a chip that is up: a start is a restart, a hold the radio's end (false).
+    async fn core_chip(&mut self) -> bool {
+        match self.shadow.chip_action() {
+            Some(Action::Start(id)) if self.shadow.state().chip.starting() == Some(id) => {
+                CORE_RESTARTS.fetch_add(1, Ordering::Relaxed);
+                self.uart.write_line("[ble] the core restarts the chip");
+                self.chip_gone();
+                self.bring_up().await;
+                self.recover().await
+            }
+            Some(Action::Hold) => {
+                self.uart.write_line("[ble] the core gave up on the chip");
+                false
+            }
+            _ => true,
+        }
+    }
+
+    /// Advertising on or off for a scan, as the core's goal.
+    fn want_discoverable(&mut self, on: bool) {
+        let g = self.shadow.goals();
+        self.shadow.set_goals(now_ms(), Goals { phone: PhoneGoal { discoverable: on, ..g.phone }, ..g });
+    }
+
+    /// The core's counters onto the `ble` line.
+    fn publish(&self) {
+        let c = self.shadow.counters();
+        for (slot, v) in [
+            (&CORE_ASKED, c.submitted),
+            (&CORE_REFUSED, c.refused),
+            (&CORE_FAILED, c.failed),
+            (&CORE_TIMED_OUT, c.timed_out),
+            (&CORE_REASKS, c.reasks),
+            (&CORE_DIVERGENCES, c.divergences),
+            (&CORE_BUSY_SPENT, c.busy_spent),
+        ] {
+            slot.store(v, Ordering::Relaxed);
+        }
+    }
+
     /// Every event waiting.
     async fn drain(&mut self) {
         self.chip.drain();
@@ -1514,8 +1741,7 @@ impl Link<'_> {
                     self.uart.write_line("; backing off to one read per 500 ms");
                 }
             }
-            // The driver's own reports: no decision here reads them.
-            Got::Event(_) => {}
+            Got::Event(e) => self.shadow.reported(now_ms(), e),
         }
     }
 
@@ -1667,6 +1893,12 @@ impl Link<'_> {
         self.uart.write_line(if reason.is_updater() { "); resetting it out of the updater" } else { "); resetting it" });
         RESTARTS.fetch_add(1, Ordering::Relaxed);
         LAST_RESTART.store(reason.into_inner(), Ordering::Relaxed);
+        self.chip_gone();
+        self.kept_restarting |= boot == Boot::KeptRestarting;
+    }
+
+    /// The chip is starting again: nothing of its link or the work it left survives.
+    fn chip_gone(&mut self) {
         set_state(STATE_STARTING);
         self.link_gone();
         clear_out(self.outbox.discard());
@@ -1679,7 +1911,6 @@ impl Link<'_> {
         self.passkey_for = None;
         self.rebond_for = None;
         self.recount_bonds = false;
-        self.kept_restarting |= boot == Boot::KeptRestarting;
     }
 
     /// `[ble] data length TX 251 octets in 2120 us, RX 27 octets in 328 us`.

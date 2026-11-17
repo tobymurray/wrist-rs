@@ -35,12 +35,12 @@ const fn when(power: Option<Power>, beside_central: Option<bool>, idle: Option<b
 }
 
 /// Every advertising interval offered beside a central link fits the menu's central links
-/// (PM0257 §4.3, guidelines 2b and 4b). On battery that is 1592 units, not the driver's 1636,
-/// which doesn't fit beside them (the driver has no central links).
+/// (PM0257 §4.3, guidelines 2b and 4b), so `BATTERY.advertise` is offered only without one.
 pub const MENU: Menu = Menu {
     advertising: &[
         Choice { params: adv(CABLE.advertise), when: when(Some(Power::Cable), Some(false), Some(false)), cost_ua: 150 },
         Choice { params: adv(792), when: when(Some(Power::Cable), None, None), cost_ua: 30 },
+        Choice { params: adv(BATTERY.advertise), when: when(Some(Power::Battery), Some(false), Some(false)), cost_ua: 14 },
         Choice { params: adv(1592), when: when(None, None, Some(false)), cost_ua: 15 },
         Choice { params: adv(3992), when: when(None, None, None), cost_ua: 6 },
     ],

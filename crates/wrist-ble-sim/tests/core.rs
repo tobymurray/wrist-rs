@@ -406,6 +406,7 @@ fn resynced(found: ConnHandle, encrypted: Option<bool>) -> (Harness, usize) {
     phone_up(&mut h, 1_000, old);
     h.at(1_500, Input::Radio(RadioEvent::Encryption { link: old, on: true }));
     let fits = LinkParams { interval: Duration::from_u16(120), latency: 4, timeout: Duration::from_u16(600) };
+    h.at(1_600, Input::Radio(RadioEvent::ParamsAnswered { link: old, accepted: true }));
     h.at(1_600, Input::Radio(RadioEvent::Params { link: old, result: Ok(fits) }));
     h.at(10_000, Input::Radio(RadioEvent::EventsLost));
     let before = h.ops.len();

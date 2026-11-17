@@ -189,7 +189,7 @@ impl Link<'_> {
         if status != BleStatus::COMMAND_DISALLOWED.into_inner() || STATE.load(Ordering::Relaxed) != STATE_ADVERTISING {
             return Ok(status);
         }
-        if self.submit(wrist_ble::Op::Advertise(None)).await.is_ok() {
+        if self.pause_advertising().await {
             STATE.store(STATE_IDLE, Ordering::Relaxed);
             self.scanner.paused_advertising = true;
             self.uart.write_line("[ble] advertising paused: the chip will not do both");
@@ -240,9 +240,23 @@ impl Link<'_> {
         }
     }
 
+    /// Advertising stopped for a scan, by the core where it decides; whether it stopped.
+    async fn pause_advertising(&mut self) -> bool {
+        if !self.drives() {
+            return self.submit(wrist_ble::Op::Advertise(None)).await.is_ok();
+        }
+        self.want_discoverable(false);
+        self.drive().await;
+        self.shadow.state().radio.advertising.is_none()
+    }
+
     fn resume_advertising(&mut self) {
         if core::mem::take(&mut self.scanner.paused_advertising) && STATE.load(Ordering::Relaxed) == STATE_IDLE {
-            self.readvertise = true;
+            if self.drives() {
+                self.want_discoverable(true);
+            } else {
+                self.readvertise = true;
+            }
         }
     }
 

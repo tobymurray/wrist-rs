@@ -216,6 +216,12 @@ class Judgements(unittest.TestCase):
                                'irq stuck after read 1 write 2, connect failures 3, unknown events 2')
         self.assertEqual(found, {'irq stuck after read': 1, 'irq stuck after write': 2, 'connect failures': 3})
 
+    def test_the_cores_ordinary_work_is_no_counter(self):
+        found = suite.counters('[ble] connected, policy core, core asked 12 refused 1 failed 0 timed out 0 reasks 2 '
+                               'divergences 0 busy restarts 0 restarts 0, shadow disagreements 0')
+        self.assertEqual(found, {'core refused': 1, 'core failed': 0, 'timed out': 0, 'core divergences': 0,
+                                 'busy restarts': 0, 'core restarts': 0, 'shadow disagreements': 0})
+
     def test_connections_that_failed_to_establish_are_counted(self):
         def record(opcode, packet):
             return struct.pack('>IIIIq', len(packet), len(packet), opcode, 0, 0) + packet

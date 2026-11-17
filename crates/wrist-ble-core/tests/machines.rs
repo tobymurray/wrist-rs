@@ -411,6 +411,22 @@ fn a_chip_that_keeps_resetting_itself_faults() {
     assert!(line(&state, secs(601)).contains("phone=fault(kept-resetting)"), "{}", line(&state, secs(601)));
 }
 
+/// The radio turned off and on again within the hour: the chip's resets before it are not counted.
+#[test]
+fn the_radio_turned_on_starts_the_budget_afresh() {
+    let mut c = ready_chip(t(0));
+    for i in 1..=chip::RESETS_PER_HOUR as u64 {
+        let (next, a) = c.step(CAPS, secs(i * 60), chip::Event::Reset(wrist_ble::ResetCause::Watchdog));
+        assert_eq!(a, Some(start(i + 1)));
+        c = next.step(CAPS, secs(i * 60 + 1), chip::Event::Ready(INFO)).0;
+    }
+    c = c.step(CAPS, secs(400), chip::Event::RadioOff).0;
+    c = c.step(CAPS, secs(500), chip::Event::RadioOn).0;
+    c = c.step(CAPS, secs(501), chip::Event::Ready(INFO)).0;
+    let (_, a) = c.step(CAPS, secs(600), chip::Event::Reset(wrist_ble::ResetCause::Watchdog));
+    assert!(matches!(a, Some(chip::Action::Start(_))), "{a:?}");
+}
+
 #[test]
 fn quick_retries_after_a_failed_establishment() {
     let c = ctx(&HR);

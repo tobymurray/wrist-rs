@@ -249,6 +249,12 @@ where
         true
     }
 
+    /// Whether the awaited reply has come: what a drain hands out from here came after it.
+    #[must_use]
+    pub fn replied(&self) -> bool {
+        self.reply.is_some()
+    }
+
     /// The reply, which ends the exchange.
     ///
     /// # Errors
