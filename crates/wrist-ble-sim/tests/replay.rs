@@ -497,3 +497,28 @@ fn a_failed_snapshot_of_the_drivers_is_none() {
     let r = replay(&with.replace(taken, &format!("{failed}\n{taken}")));
     assert_eq!(r.disagreements().len(), 2);    assert_eq!(replay(&with.replace(taken, &format!("{failed} 08"))).unknown_events, 1);
 }
+
+/// The chip's own report of lost events in the driver's lost read's place.
+fn chip_lost(capture: &str) -> String {
+    let lost = capture.lines().find(|l| kind(l) == Some("l")).unwrap();
+    capture.replace(lost, &format!("{} e 04FF0A02000100000000000000", lost.strip_suffix(" l").unwrap()))
+}
+
+fn snapshots(r: &Report) -> usize {
+    r.timeline.iter().filter(|e| e.who == Who::Core && e.what == "snapshot").count()
+}
+
+/// A driven core resyncs from the driver's snapshot whoever saw the events lost, the chip or the
+/// driver; a core the driver doesn't drive is answered by the shadow, once.
+#[test]
+fn a_driven_cores_snapshots_are_the_drivers_however_the_loss_was_seen() {
+    let driven = chip_lost(&fixture("bluez-lost-read.log"));
+    let r = replay(&driven);
+    assert_eq!((r.disagreements(), snapshots(&r)), (Vec::<String>::new(), 1), "{}", r.render(false));
+    let taken = driven.lines().find(|l| kind(l) == Some("s")).unwrap();
+    assert_eq!(snapshots(&replay(&driven.replace(taken, ""))), 0);
+    let legacy = driven.replace(" m 01", " m 00");
+    assert_ne!(legacy, driven);
+    let r = replay(&legacy);
+    assert_eq!((r.disagreements().len(), snapshots(&r)), (2, 1));
+}

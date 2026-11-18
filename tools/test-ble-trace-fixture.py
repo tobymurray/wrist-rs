@@ -60,6 +60,10 @@ class Scrub(unittest.TestCase):
         self.assertIsNone(fixture.scrub('1.000 [trace] 5 s 00010801'))
         self.assertIsNone(fixture.scrub('1.000 [trace] 5 s 0801080102'))
         self.assertIsNone(fixture.scrub('1.000 [trace] 5 s 0001080103'))
+        self.assertIsNone(fixture.scrub('1.000 [trace] 5 s 00000F0100'))
+        self.assertEqual(fixture.scrub('1.000 [trace] 5 m 01'), '1.000 [trace] 5 m 01')
+        self.assertEqual(fixture.scrub('1.000 [trace] 5 m 00'), '1.000 [trace] 5 m 00')
+        self.assertIsNone(fixture.scrub('1.000 [trace] 5 m 02'))
 
     def test_wall_clock_times_are_read_as_seconds_are(self):
         self.assertEqual(fixture.scrub('09:27:15.813 >> usb ble off'), '09:27:15.813 >> usb ble off')
