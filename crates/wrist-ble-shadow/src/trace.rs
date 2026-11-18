@@ -21,8 +21,8 @@ pub fn encode(s: &Snapshot, out: &mut [u8; SNAPSHOT_MAX]) -> usize {
     len
 }
 
-/// The snapshot `bytes` carry, taken at `at`; `None` if they are not one. Each peer's address is
-/// left out, as the core never reads it.
+/// The snapshot `bytes` carry, taken at `at`, with each peer's address zero; `None` if they
+/// are not one.
 #[must_use]
 pub fn decode(at: Instant, bytes: &[u8]) -> Option<Snapshot> {
     let (&flags, rest) = bytes.split_first()?;

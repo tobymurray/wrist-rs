@@ -1846,7 +1846,7 @@ impl Link<'_> {
         }
     }
 
-    /// The driver's lost read, which a driven core is told, traced so the replay tells its own.
+    /// The driver's lost read, for the core and, in drive mode, the trace.
     fn lost_read(&mut self) {
         #[cfg(feature = "ble-trace")]
         if self.drives() {
