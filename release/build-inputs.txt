@@ -24,7 +24,8 @@ apps/image-installer
 crates
 # Embassy's STM32 HAL and USB driver, with our patches.
 vendor
-# The root workspace, where the installer's wrist-flash builds: its profile and lock file.
+# The root workspace: the settings its crates inherit, and the profile and lock file the
+# installer's wrist-flash builds with.
 Cargo.toml
 Cargo.lock
 # The stable compiler and target, for the image, the loader and wrist-flash.

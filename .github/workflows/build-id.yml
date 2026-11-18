@@ -6,6 +6,7 @@ on:
       - apps/standalone-boot/**
       - apps/standalone-boot/.cargo/config.toml
       - crates/**
+      - Cargo.toml
       - vendor/**
       - release/build-inputs.txt
       - release/toolchain.json
