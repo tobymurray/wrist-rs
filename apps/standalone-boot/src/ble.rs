@@ -1253,7 +1253,10 @@ impl Link<'_> {
         set_state(STATE_STARTING);
         clear_prompt();
         #[cfg(feature = "ble-trace")]
-        trace::packet(trace::Dir::Reset, &[]);
+        {
+            trace::packet(trace::Dir::Reset, &[]);
+            trace::packet(trace::Dir::Mode, &[u8::from(self.drives())]);
+        }
         self.boot = None;
         CONN_HANDLE.store(0, Ordering::Relaxed);
         let addr = address_from_uid();
@@ -1659,6 +1662,8 @@ impl Link<'_> {
                         }
                         Err(_) => self.uart.write_line("[ble] resync: the chip gave no snapshot"),
                     }
+                    #[cfg(feature = "ble-trace")]
+                    trace::snapshot(r.as_ref().ok());
                     self.shadow.snapshotted(now_ms(), r);
                 }
             }
@@ -1817,7 +1822,7 @@ impl Link<'_> {
             self.withhold_connection = false;
             self.uart.write_line("[ble] probe: a connection withheld from the core, a lost read reported");
             if let Got::Packet { len, event } = got {
-                self.shadow.reported(now_ms(), RadioEvent::EventsLost);
+                self.lost_read();
                 return self.handle(&packet[..len], event);
             }
         }
@@ -1836,13 +1841,21 @@ impl Link<'_> {
                     self.uart.write_line("; backing off to one read per 500 ms");
                 }
             }
-            Got::Event(e) => {
-                if e == RadioEvent::EventsLost {
-                    self.uart.write_line("[ble] the driver lost events");
-                }
-                self.shadow.reported(now_ms(), e);
+            Got::Event(RadioEvent::EventsLost) => {
+                self.uart.write_line("[ble] the driver lost events");
+                self.lost_read();
             }
+            Got::Event(e) => self.shadow.reported(now_ms(), e),
         }
+    }
+
+    /// The driver's lost read, for the core and, in drive mode, the trace.
+    fn lost_read(&mut self) {
+        #[cfg(feature = "ble-trace")]
+        if self.drives() {
+            trace::packet(trace::Dir::Lost, &[]);
+        }
+        self.shadow.reported(now_ms(), RadioEvent::EventsLost);
     }
 
     /// One packet from the chip: capture a reply, act on an event.

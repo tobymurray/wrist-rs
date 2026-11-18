@@ -3,9 +3,9 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
-use wrist_ble::{Op, OpKind};
+use wrist_ble::{Instant, Op, OpKind};
 use wrist_ble_core::engine::Omitted;
-use wrist_ble_shadow::Excuse;
+use wrist_ble_shadow::{trace, Excuse};
 use wrist_ble_shadow::DriverOp;
 use wrist_ble_sim::replay::{replay, Report, Who};
 
@@ -120,6 +120,10 @@ fn a_core_that_acts_alone_is_a_disagreement() {
     assert!(!replay(&without_driver).disagreements().is_empty(), "{name}");
 }
 
+fn hex(h: &str) -> Vec<u8> {
+    (0..h.len() / 2).map(|i| u8::from_str_radix(&h[2 * i..2 * i + 2], 16).unwrap()).collect()
+}
+
 /// Kept lines only: what `tools/ble-trace-fixture.py` writes, so no fixture holds an address.
 #[test]
 fn traces_hold_only_what_the_scrub_keeps() {
@@ -134,9 +138,11 @@ fn traces_hold_only_what_the_scrub_keeps() {
             let f: Vec<&str> = text.split(' ').collect();
             assert_eq!(f[0], "[trace]", "{name}: {line}");
             match f[2] {
-                "r" => assert_eq!(f.len(), 3, "{name}: {line}"),
+                "r" | "l" => assert_eq!(f.len(), 3, "{name}: {line}"),
+                "m" => assert!(f.len() == 4 && matches!(f[3], "00" | "01"), "{name}: {line}"),
+                "s" => assert!(f.len() == 3 || trace::decode(Instant(0), &hex(f[3])).is_some(), "{name}: {line}"),
                 "c" | "e" => {
-                    let p: Vec<u8> = (0..f[3].len() / 2).map(|i| u8::from_str_radix(&f[3][2 * i..2 * i + 2], 16).unwrap()).collect();
+                    let p = hex(f[3]);
                     assert!(p.len() >= 3, "{name}: {line}");
                     if f[2] == "e" {
                         assert_eq!(p[0], 0x04, "{name}: {line}");
@@ -456,4 +462,82 @@ fn a_usb_update_answered_leaves_the_next_transfer() {
         lines.insert(1 + i, line);
     }
     assert_eq!(replay(&lines.join("\n")).disagreements(), Vec::<String>::new());
+}
+
+/// What a trace line is: `c`, `e`, `l`, `r` or `s`.
+fn kind(line: &str) -> Option<&str> {
+    let (_, text) = line.split_once(" [trace] ")?;
+    text.split_whitespace().nth(1)
+}
+
+/// The core told a lost read of the driver's on the watch (`ble probe lose link`, the connection
+/// withheld from it) resyncs from the driver's snapshot in the replay too; without them it never
+/// learns of the link.
+#[test]
+fn the_drivers_lost_read_and_snapshot_are_the_cores() {
+    let with = fixture("bluez-lost-read.log");
+    let r = replay(&with);
+    assert_eq!(r.disagreements(), Vec::<String>::new(), "{}", r.render(false));
+    assert_eq!(r.core_ops.iter().filter(|(_, op)| op.kind() == OpKind::UpdateParams).count(), 1);
+    let without: String = with.lines().filter(|l| !matches!(kind(l), Some("l" | "s"))).flat_map(|l| [l, "\n"]).collect();
+    assert_eq!(with.lines().count(), without.lines().count() + 2);
+    assert_eq!(replay(&without).disagreements().len(), 2);
+}
+
+/// A snapshot traced as failed leaves the core without the link, and one it did not ask for is
+/// not its; one the replay can't read is an event the core could not.
+#[test]
+fn a_failed_snapshot_of_the_drivers_is_none() {
+    let with = fixture("bluez-lost-read.log");
+    let taken = with.lines().find(|l| kind(l) == Some("s")).unwrap();
+    let failed = taken.rsplit_once(' ').unwrap().0;
+    let r = replay(&with.replace(taken, failed));
+    // and its retry is never answered.
+    assert_eq!((r.disagreements().len(), r.unknown_events, r.unanswered_snapshots), (3, 0, 1));
+    // The core asks again only after its retry, so a snapshot straight after is none of its.
+    let r = replay(&with.replace(taken, &format!("{failed}\n{taken}")));
+    assert_eq!((r.disagreements().len(), r.unasked_snapshots), (4, 1));    assert_eq!(replay(&with.replace(taken, &format!("{failed} 08"))).unknown_events, 1);
+}
+
+/// The chip's own report of lost events in the driver's lost read's place.
+fn chip_lost(capture: &str) -> String {
+    let lost = capture.lines().find(|l| kind(l) == Some("l")).unwrap();
+    capture.replace(lost, &format!("{} e 04FF0A02000100000000000000", lost.strip_suffix(" l").unwrap()))
+}
+
+fn snapshots(r: &Report) -> usize {
+    r.timeline.iter().filter(|e| e.who == Who::Core && e.what == "snapshot").count()
+}
+
+/// A driven core resyncs from the driver's snapshot whoever saw the events lost, the chip or the
+/// driver; a core the driver doesn't drive is answered by the shadow, once.
+#[test]
+fn a_driven_cores_snapshots_are_the_drivers_however_the_loss_was_seen() {
+    let driven = chip_lost(&fixture("bluez-lost-read.log"));
+    let r = replay(&driven);
+    assert_eq!((r.disagreements(), snapshots(&r)), (Vec::<String>::new(), 1), "{}", r.render(false));
+    let taken = driven.lines().find(|l| kind(l) == Some("s")).unwrap();
+    let r = replay(&driven.replace(taken, ""));
+    assert_eq!((snapshots(&r), r.unanswered_snapshots), (0, 1));
+    let fresh = fixture("bluez-lost-read.log");
+    let r = replay(&after_a_reset(&driven.replace(taken, ""), &[], &fresh, 5_000));
+    assert_eq!((r.resets, r.unanswered_snapshots), (1, 1));
+    // A legacy watch traces no snapshot of the driver's.
+    let legacy = driven.replace(" m 01", " m 00").replace(taken, "");
+    assert_ne!(legacy, driven);
+    let r = replay(&legacy);
+    assert_eq!((r.disagreements().len(), snapshots(&r)), (2, 1));
+}
+
+/// A capture or a watch reset that shows no start is taken as driven, as the watch boots.
+#[test]
+fn a_start_the_capture_missed_is_taken_as_driven() {
+    let driven = chip_lost(&fixture("bluez-lost-read.log"));
+    let unmarked: String = driven.lines().filter(|l| kind(l) != Some("m")).flat_map(|l| [l, "\n"]).collect();
+    assert_eq!(replay(&unmarked).disagreements(), Vec::<String>::new());
+    let ready = driven.lines().position(|l| l.ends_with(" e 04FF03010001")).unwrap();
+    let first: Vec<&str> = driven.lines().collect();
+    let then: Vec<&str> = first[ready..].to_vec();
+    let r = replay(&after_a_reset(&(first.join("\n") + "\n"), &[], &then.join("\n"), 5_000));
+    assert_eq!((r.resets, r.disagreements()), (1, Vec::<String>::new()), "{}", r.render(false));
 }

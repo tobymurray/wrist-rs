@@ -1,11 +1,11 @@
 //! The shadow, fed packets and commands as a driver would.
 
-use wrist_ble::{ChipInfo, CoreSpecificationVersion, Instant, LeConnRole, Op, OpKind, Snapshot};
+use wrist_ble::{AddrKind, BdAddr, ChipInfo, ConnHandle, CoreSpecificationVersion, Instant, LeConnRole, LinkStatus, Op, OpKind, PeerAddr, Snapshot, MAX_LINKS};
 use wrist_ble_core::goals::{Goals, PhoneGoal, Power};
 use wrist_ble_core::phone::{Phone, Security};
 use wrist_ble_core::State;
 use wrist_ble_shadow::verdict::Disagreement;
-use wrist_ble_shadow::{DriverOp, Observer, Shadow};
+use wrist_ble_shadow::{trace, DriverOp, Observer, Shadow};
 use wrist_ble_shadow::menu::interval_now_ask;
 
 #[derive(Default)]
@@ -487,4 +487,93 @@ fn a_console_ask_the_core_has_yet_to_make_is_owed() {
     s.advance(Instant(4_500));
     s.finish();
     assert!(s.observer.found.iter().any(|d| d.at == 3_500 && !d.core), "{:?}", s.observer.found);
+}
+
+/// The phone's link 0x0801 as the driver's snapshot holds it, not advertising.
+fn drivers_snapshot(at: u64) -> Snapshot {
+    let mut links = [None; MAX_LINKS];
+    links[0] = Some(LinkStatus { link: ConnHandle::new(0x0801), role: LeConnRole::Peripheral, peer: PeerAddr { kind: AddrKind::PUBLIC, addr: BdAddr::new([0; 6]) }, encrypted: Some(false) });
+    Snapshot { at: Instant(at), links, advertising: false, scanning: false, initiating: false, anchor: None }
+}
+
+/// A record's lost read of the driver's: the core resyncs from the driver's snapshot, not the
+/// shadow's, and so does every one after it until the watch resets.
+#[test]
+fn after_a_drivers_lost_read_the_snapshots_are_the_drivers() {
+    let mut s = up();
+    s.lost_read(Instant(200));
+    assert_eq!(s.observer.snapshots, []);
+    assert!(s.take_snapshot());
+    s.snapshotted(Instant(210), Ok(drivers_snapshot(210)));
+    assert_eq!(s.state().phone.link(), Some(ConnHandle::new(0x0801)));
+    assert_eq!(s.state().radio.advertising, None);
+    s.event(Instant(300), CUT);
+    assert_eq!(s.observer.snapshots.len(), 1);
+    assert!(s.take_snapshot());
+    s.restart(Instant(1_000));
+    s.set_goals(Instant(1_000), goals());
+    s.event(Instant(1_100), BOOTED);
+    s.event(Instant(1_200), CUT);
+    assert_eq!(s.observer.snapshots.len(), 2);
+    assert!(!s.snapshot_wanted());
+}
+
+/// A record's driver that drives the core answers its snapshot asks, a lost read or not; one
+/// that does not leaves them to the shadow.
+#[test]
+fn a_driven_record_takes_the_drivers_snapshots() {
+    let mut s = up();
+    s.driven(true);
+    s.event(Instant(200), CUT);
+    assert_eq!(s.observer.snapshots, []);
+    assert!(s.take_snapshot());
+    s.snapshotted(Instant(210), Ok(drivers_snapshot(210)));
+    assert_eq!(s.state().phone.link(), Some(ConnHandle::new(0x0801)));
+    s.driven(false);
+    s.event(Instant(300), CUT);
+    assert_eq!(s.observer.snapshots.len(), 2);
+    assert!(!s.snapshot_wanted());
+}
+
+#[test]
+fn every_snapshot_the_driver_can_take_is_carried() {
+    let mut s = drivers_snapshot(5);
+    let link = s.links[0].unwrap();
+    for (i, slot) in s.links.iter_mut().enumerate() {
+        let encrypted = [None, Some(false), Some(true)][i % 3];
+        let role = if i % 2 == 0 { LeConnRole::Central } else { LeConnRole::Peripheral };
+        *slot = Some(LinkStatus { link: ConnHandle::new(0x0EFF - u16::try_from(i).unwrap()), role, encrypted, ..link });
+    }
+    for flags in 0..8u8 {
+        (s.advertising, s.scanning, s.initiating) = (flags & 1 != 0, flags & 2 != 0, flags & 4 != 0);
+        let mut bytes = [0; trace::SNAPSHOT_MAX];
+        let len = trace::encode(&s, &mut bytes);
+        assert_eq!((len, bytes[0]), (trace::SNAPSHOT_MAX, flags));
+        assert_eq!(trace::decode(Instant(5), &bytes[..len]), Some(s));
+    }
+    assert_eq!(trace::decode(Instant(5), &[0, 0x00, 0x0F, 1, 0]), None);
+}
+
+#[test]
+fn a_snapshot_is_carried_in_the_trace_as_the_core_reads_it() {
+    let mut s = drivers_snapshot(5);
+    s.links[2] = Some(LinkStatus { link: ConnHandle::new(0x0802), role: LeConnRole::Central, encrypted: None, ..s.links[0].unwrap() });
+    s.links[3] = Some(LinkStatus { link: ConnHandle::new(0x0803), role: LeConnRole::Central, encrypted: Some(true), ..s.links[0].unwrap() });
+    s.scanning = true;
+    let mut bytes = [0; trace::SNAPSHOT_MAX];
+    let len = trace::encode(&s, &mut bytes);
+    assert_eq!(&bytes[..len], [0x02, 0x01, 0x08, 1, 0, 0x02, 0x08, 0, 2, 0x03, 0x08, 0, 1]);
+    let back = trace::decode(Instant(5), &bytes[..len]).unwrap();
+    let packed: Vec<_> = s.links.iter().flatten().copied().collect();
+    assert_eq!(back.links.iter().flatten().copied().collect::<Vec<_>>(), packed);
+    assert_eq!(Snapshot { links: back.links, ..s }, back);
+    for flags in [1, 4] {
+        assert_eq!(trace::decode(Instant(5), &[flags]).map(|n| (n.advertising, n.initiating)), Some((flags == 1, flags == 4)));
+    }
+    for bad in [&[][..], &[8], &[0, 1, 8, 1], &[0, 1, 8, 2, 0], &[0, 1, 8, 1, 3]] {
+        assert_eq!(trace::decode(Instant(5), bad), None, "{bad:?}");
+    }
+    let full = [0u8; 1 + 4 * (MAX_LINKS + 1)];
+    assert_eq!(trace::decode(Instant(5), &full), None);
+    assert!(trace::decode(Instant(5), &full[..trace::SNAPSHOT_MAX]).is_some());
 }

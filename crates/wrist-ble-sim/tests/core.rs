@@ -399,6 +399,31 @@ fn a_phone_link_found_by_resync_is_asked_for_its_parameters() {
     assert!(h.ops.iter().any(|op| matches!(op, Op::UpdateParams(l, _) if *l == new)), "{:?}", h.ops);
 }
 
+/// An ask on a link the watch is central of ends with that link's update, where the phone's
+/// waits for the central's answer: here the phone's link with its ask on air, which a resync finds
+/// is a central link. Another link's update leaves the ask on air.
+#[test]
+fn a_central_links_ask_ends_with_its_update() {
+    let mut h = Harness::new(Goals { radio_on: true, ..Goals::OFF });
+    let link = ConnHandle::new(0x801);
+    let other = ConnHandle::new(0x802);
+    phone_up(&mut h, 1_000, link);
+    h.at(1_500, Input::Radio(RadioEvent::Encryption { link, on: true }));
+    let asked = |h: &Harness| h.core.pending().is_some_and(|p| matches!(p.op, Op::UpdateParams(l, _) if l == link));
+    assert!(asked(&h), "{:?}", h.ops);
+    h.at(2_000, Input::Radio(RadioEvent::EventsLost));
+    let mut s = snapshot_with(link, Some(true));
+    s.links[0] = s.links[0].map(|l| wrist_ble::LinkStatus { role: LeConnRole::Central, ..l });
+    s.links[1] = s.links[0].map(|l| wrist_ble::LinkStatus { link: other, ..l });
+    h.at(2_000, Input::Snapshot(Ok(s)));
+    assert_eq!(h.core.state.phone.link(), None);
+    assert!(asked(&h));
+    h.at(2_100, Input::Radio(RadioEvent::Params { link: other, result: Ok(PHONE) }));
+    assert!(asked(&h));
+    h.at(2_200, Input::Radio(RadioEvent::Params { link, result: Ok(PHONE) }));
+    assert!(h.core.pending().is_none(), "{:?}", h.core.pending());
+}
+
 /// A phone link secured and fitting its ask, then found again by a resync as `found`.
 fn resynced(found: ConnHandle, encrypted: Option<bool>) -> (Harness, usize) {
     let mut h = Harness::new(Goals { radio_on: true, ..Goals::OFF });

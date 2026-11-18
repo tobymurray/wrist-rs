@@ -5,6 +5,7 @@
 //! ([`Mode::Shadow`]), or handed to the driver to carry out ([`Mode::Drive`]).
 
 pub mod menu;
+pub mod trace;
 pub mod verdict;
 
 use bluenrg2::opcode;
@@ -172,6 +173,9 @@ pub struct Shadow<O> {
     chip_action: Option<Action>,
     /// The core asked for a snapshot, for the driver to take in [`Mode::Drive`].
     snapshot_wanted: bool,
+    /// The snapshots the core asks for are the driver's: a record showed the driver driving
+    /// ([`Self::driven`]) or one of its lost reads ([`Self::lost_read`]).
+    driver_snapshots: bool,
     verdict: Verdict,
     pub observer: O,
 }
@@ -200,6 +204,7 @@ impl<O: Observer> Shadow<O> {
             issue: None,
             chip_action: None,
             snapshot_wanted: false,
+            driver_snapshots: false,
             verdict: Verdict::new(),
             observer,
         }
@@ -270,6 +275,22 @@ impl<O: Observer> Shadow<O> {
     pub fn submitted(&mut self, at: Instant, r: Result<OpId, Failure>) {
         self.advance(at);
         self.feed(Input::Submitted(r));
+    }
+
+    /// Whether the driver of a record drove the core from its last start, so that the snapshots
+    /// the core asks for are the driver's, taken as [`Self::snapshot_wanted`] and given by
+    /// [`Self::snapshotted`].
+    pub fn driven(&mut self, yes: bool) {
+        self.driver_snapshots = yes;
+    }
+
+    /// A lost read of the driver's that a record shows a driven core was told, in either mode, so
+    /// the driver drove it ([`Self::driven`]).
+    pub fn lost_read(&mut self, at: Instant) {
+        self.advance(at);
+        self.driver_snapshots = true;
+        self.observer.event(self.now, &RadioEvent::EventsLost);
+        self.feed(Input::Radio(RadioEvent::EventsLost));
     }
 
     /// What the driver itself reports, an operation's end or packets it dropped, taken in
@@ -413,6 +434,7 @@ impl<O: Observer> Shadow<O> {
         self.issue = None;
         self.chip_action = None;
         self.snapshot_wanted = false;
+        self.driver_snapshots = false;
     }
 
     /// A command the driver sent the chip.
@@ -553,7 +575,7 @@ impl<O: Observer> Shadow<O> {
             let input = match owed[top] {
                 Owed::Submitted(id) => Input::Submitted(Ok(id)),
                 Owed::Done(id) => Input::Radio(RadioEvent::Done(id, Ok(Outcome::Done))),
-                Owed::Snapshot if self.mode == Mode::Drive => {
+                Owed::Snapshot if self.mode == Mode::Drive || self.driver_snapshots => {
                     self.snapshot_wanted = true;
                     continue;
                 }

@@ -5,13 +5,13 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
-use wrist_ble::{Instant, Op, RadioEvent, Snapshot};
+use wrist_ble::{Fault, Instant, Op, RadioEvent, Snapshot};
 use wrist_ble_core::chip::Action;
 use wrist_ble_core::engine::Tell;
 use wrist_ble_core::goals::{Goals, PhoneGoal, Power};
 use wrist_ble_core::{status, State};
 use wrist_ble_shadow::verdict::{Act, Disagreement};
-use wrist_ble_shadow::{DriverOp, Excuse, Observer, Shadow};
+use wrist_ble_shadow::{trace, DriverOp, Excuse, Observer, Shadow};
 use wrist_bluenrg2::INFO;
 
 /// One line of the replay's timeline.
@@ -58,6 +58,10 @@ pub struct Report {
     pub excused: Vec<(u64, Excuse)>,
     /// Answers the core was owed that the shadow had no room for.
     pub lost: u32,
+    /// Snapshots of the driver's the core never asked for, and asks of the core's no snapshot
+    /// answered: the capture's mode not the one the replay took ([`Shadow::driven`]).
+    pub unasked_snapshots: u32,
+    pub unanswered_snapshots: u32,
 }
 
 impl Report {
@@ -100,6 +104,12 @@ impl Report {
         let mut out: Vec<String> = found.iter().map(ToString::to_string).collect();
         if self.unknown_events > 0 {
             out.push(format!("{} events the core could not read", self.unknown_events));
+        }
+        if self.unasked_snapshots > 0 {
+            out.push(format!("{} snapshots of the driver's the core never asked for", self.unasked_snapshots));
+        }
+        if self.unanswered_snapshots > 0 {
+            out.push(format!("{} snapshots the core asked for and the capture never gave", self.unanswered_snapshots));
         }
         if self.lost > 0 {
             out.push(format!("{} answers the core was owed and never given", self.lost));
@@ -251,10 +261,18 @@ impl Replay {
         }
     }
 
+    fn unanswered(&mut self) {
+        if self.shadow.snapshot_wanted() {
+            self.shadow.observer.report.unanswered_snapshots += 1;
+        }
+    }
+
     /// A new epoch from `at`: the core and its chip start again as at the start, with the goals
     /// the watch boots with.
     fn reset(&mut self, at: u64) {
+        self.unanswered();
         self.shadow.restart(Instant(at));
+        self.shadow.driven(true);
         self.base = None;
         self.last_ms = None;
         self.transfer = false;
@@ -361,6 +379,25 @@ impl Replay {
                 }
                 self.shadow.event(at, &bytes);
             }
+            // Whether the core drives from this start, the driver's lost read, and its snapshot
+            // (none when it failed), as a driven core was told them.
+            "m" => self.shadow.driven(bytes == [1]),
+            "l" => self.shadow.lost_read(at),
+            "s" => {
+                let snapshot = if bytes.is_empty() {
+                    Err(Fault::Silent)
+                } else if let Some(s) = trace::decode(at, &bytes) {
+                    Ok(s)
+                } else {
+                    self.shadow.observer.report.unknown_events += 1;
+                    return;
+                };
+                if self.shadow.take_snapshot() {
+                    self.shadow.snapshotted(at, snapshot);
+                } else {
+                    self.shadow.observer.report.unasked_snapshots += 1;
+                }
+            }
             _ => {}
         }
     }
@@ -390,6 +427,8 @@ fn usb_update(cmd: &str) -> Option<u32> {
 #[must_use]
 pub fn replay(capture: &str) -> Report {
     let mut r = Replay { shadow: Shadow::new(INFO, boot_goals(), Record::default()), base: Some(0), last_ms: None, transfer: false, usb_update: None };
+    // Driven as the watch boots (the firmware's `LEGACY`), until a start says otherwise.
+    r.shadow.driven(true);
     let mut started = false;
     let mut offset: Option<i64> = None;
     for line in capture.lines() {
@@ -430,6 +469,7 @@ pub fn replay(capture: &str) -> Report {
         }
         r.line(text);
     }
+    r.unanswered();
     r.shadow.finish();
     r.shadow.observer.report
 }
