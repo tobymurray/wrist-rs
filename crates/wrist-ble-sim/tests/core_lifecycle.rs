@@ -4,9 +4,9 @@ use core::mem::{discriminant, Discriminant};
 
 use common::*;
 use wrist_ble::Millis;
-use wrist_ble::core::peripheral::{Ctx, Event, Peripheral, Stage, GIVE_UP};
-use wrist_ble::core::plan::Conflict;
-use wrist_ble::core::status::{peer_state, PeerState, HIDE_AFTER};
+use wrist_ble::policy::peripheral::{Ctx, Event, Peripheral, Stage, GIVE_UP};
+use wrist_ble::policy::plan::Conflict;
+use wrist_ble::policy::status::{peer_state, PeerState, HIDE_AFTER};
 
 fn slow_searching() -> (Ctx<'static>, Peripheral, wrist_ble::Instant) {
     let c = Ctx { workout: true, ..ctx(&HR) };
@@ -109,10 +109,10 @@ fn going_live_restarts_the_backoff_and_the_rediscoveries() {
     let Stage::Backoff { until } = p.stage else { panic!("{p:?}") };
     assert!(until.since(t(61_000)) < Millis(2_000), "{p:?}");
     let p = p.step(&c, until, Event::Tick).step(&c, until, Event::LinkUp(sensor())).step(&c, until, Event::Discovered(false));
-    assert!(matches!(p.stage, Stage::Dropping { then: wrist_ble::core::peripheral::Then::Rediscover, .. }), "{p:?}");
+    assert!(matches!(p.stage, Stage::Dropping { then: wrist_ble::policy::peripheral::Then::Rediscover, .. }), "{p:?}");
 }
 
-static UNPACED: wrist_ble::core::profile::Profile = wrist_ble::core::profile::Profile { cadence: wrist_ble::core::profile::Cadence::Events, ..HR };
+static UNPACED: wrist_ble::policy::profile::Profile = wrist_ble::policy::profile::Profile { cadence: wrist_ble::policy::profile::Cadence::Events, ..HR };
 
 #[test]
 fn a_stale_drop_counts_towards_unstable() {
@@ -127,7 +127,7 @@ fn a_stale_drop_counts_towards_unstable() {
 #[test]
 fn a_reading_without_contact_is_not_shown_once_quiet() {
     let c = ctx(&HR);
-    let p = live(&c, t(0)).step(&c, t(1_000), Event::Reading(wrist_ble::core::profile::Reading { value: 70, contact: wrist_ble::core::profile::Contact::Lost }));
+    let p = live(&c, t(0)).step(&c, t(1_000), Event::Reading(wrist_ble::policy::profile::Reading { value: 70, contact: wrist_ble::policy::profile::Contact::Lost }));
     assert_eq!(peer_state(&p, &HR, t(7_000)), PeerState::Quiet { value: None, age: Millis(6_000) });
 }
 
@@ -178,6 +178,6 @@ fn the_slow_search_starts_at_once_from_a_backoff() {
     assert!(until > mark, "{p:?}");
     assert_eq!(p.deadline(&c, mark - Millis(1_000)), Some(mark));
     let p = p.step(&c, mark, Event::Tick);
-    assert_eq!(p.slow_until, Some(mark + wrist_ble::core::peripheral::SLOW_FOR));
+    assert_eq!(p.slow_until, Some(mark + wrist_ble::policy::peripheral::SLOW_FOR));
     assert_eq!(p.stage, Stage::Seeking { since: mark, quick: 0 });
 }

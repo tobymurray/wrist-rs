@@ -11,10 +11,10 @@ use wrist_ble::{
     AddrKind, BdAddr, ChipInfo, ConnHandle, ConnParams, Failure, FailureKind, Fault, Instant, LeConnRole, LinkStatus, Op, OpId, OpKind, Outcome, PeerAddr, RadioEvent, Snapshot,
     MAX_LINKS,
 };
-use wrist_ble::core::chip::Action;
-use wrist_ble::core::engine::{Core, Counters, Input, Omitted, Tell};
-use wrist_ble::core::goals::{Goals, Power};
-use wrist_ble::core::State;
+use wrist_ble::policy::chip::Action;
+use wrist_ble::policy::engine::{Core, Counters, Input, Omitted, Tell};
+use wrist_ble::policy::goals::{Goals, Power};
+use wrist_ble::policy::State;
 use crate::events::Translator;
 use crate::ops::refused;
 use crate::{Scheduler, CAPABILITIES};
@@ -324,7 +324,7 @@ impl<O: Observer> Shadow<O> {
 
     /// The core's operation in flight.
     #[must_use]
-    pub fn core_pending(&self) -> Option<&wrist_ble::core::plan::Pending> {
+    pub fn core_pending(&self) -> Option<&wrist_ble::policy::plan::Pending> {
         self.core.pending()
     }
 

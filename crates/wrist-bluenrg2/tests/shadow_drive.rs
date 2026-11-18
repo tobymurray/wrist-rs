@@ -5,9 +5,9 @@ use wrist_ble::{
     AddrKind, AdvParams, BdAddr, ChipInfo, ConnHandle, CoreSpecificationVersion, Fault, Instant, LeConnRole, LinkStatus, Op, OpId, Outcome, PeerAddr, RadioEvent,
     Slots, Snapshot, MAX_LINKS,
 };
-use wrist_ble::core::chip::Action;
-use wrist_ble::core::goals::{Goals, PhoneGoal, Power};
-use wrist_ble::core::phone::{Phone, Security, ASK_TO_PAIR_AFTER};
+use wrist_ble::policy::chip::Action;
+use wrist_ble::policy::goals::{Goals, PhoneGoal, Power};
+use wrist_ble::policy::phone::{Phone, Security, ASK_TO_PAIR_AFTER};
 use wrist_bluenrg2::shadow::verdict::{Act, Disagreement};
 use wrist_bluenrg2::shadow::{Excuse, Mode, Observer, Shadow};
 use wrist_bluenrg2::ops::refused;

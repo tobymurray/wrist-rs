@@ -1,14 +1,14 @@
 #![allow(dead_code)]
 
 use wrist_ble::{AddrKind, AdvParams, BdAddr, BluetoothUuid, Capabilities, ChipInfo, ConnHandle, CoreSpecificationVersion, Duration, Instant, Millis, PeerAddr};
-use wrist_ble::core::chip::{self, ChipMachine};
-use wrist_ble::core::goals::{Power, Want};
-use wrist_ble::core::peripheral::{Ctx, Event, Peripheral};
-use wrist_ble::core::phone::{self, Phone};
-use wrist_ble::core::plan::Verdict;
-use wrist_ble::core::profile::{Cadence, Contact, Kind, Profile, Reading, SecurityNeed, Silence};
-use wrist_ble::core::status::{status, PeerState};
-use wrist_ble::core::{Peer, State};
+use wrist_ble::policy::chip::{self, ChipMachine};
+use wrist_ble::policy::goals::{Power, Want};
+use wrist_ble::policy::peripheral::{Ctx, Event, Peripheral};
+use wrist_ble::policy::phone::{self, Phone};
+use wrist_ble::policy::plan::Verdict;
+use wrist_ble::policy::profile::{Cadence, Contact, Kind, Profile, Reading, SecurityNeed, Silence};
+use wrist_ble::policy::status::{status, PeerState};
+use wrist_ble::policy::{Peer, State};
 
 fn no_parse(_: &[u8]) -> Option<Reading> {
     None

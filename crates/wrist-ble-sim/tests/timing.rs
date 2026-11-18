@@ -2,8 +2,8 @@
 //! one policy, so changing it changes both.
 
 use wrist_ble::{AddrKind, BdAddr, ConnHandle, Duration, Instant, LeConnRole, LinkParams, Op, OpId, PeerAddr, RadioEvent};
-use wrist_ble::core::engine::{Core, Input};
-use wrist_ble::core::goals::{Goals, Power};
+use wrist_ble::policy::engine::{Core, Input};
+use wrist_ble::policy::goals::{Goals, Power};
 use wrist_bluenrg2::INFO;
 use wrist_bluenrg2::shadow::menu::MENU;
 use wrist_bluenrg2::{Scheduler, CAPABILITIES};

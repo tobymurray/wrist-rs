@@ -2,10 +2,10 @@
 //! showed it.
 
 use wrist_ble::{BluetoothUuid, Change, Instant, Millis, Op, ParamRange, ResetCause, SchedKind, Duration};
-use wrist_ble::core::engine::Tell;
-use wrist_ble::core::goals::{Goals, Power, Want};
-use wrist_ble::core::profile::{Cadence, Contact, Kind, Profile, Reading, SecurityNeed, Silence};
-use wrist_ble::core::status::{PeerState, PhoneStatus};
+use wrist_ble::policy::engine::Tell;
+use wrist_ble::policy::goals::{Goals, Power, Want};
+use wrist_ble::policy::profile::{Cadence, Contact, Kind, Profile, Reading, SecurityNeed, Silence};
+use wrist_ble::policy::status::{PeerState, PhoneStatus};
 use wrist_ble_sim::fake::Note;
 use wrist_ble_sim::peers::{Keys, Os, Phone, Sensor};
 use wrist_ble_sim::sim::{on, Sim};
@@ -142,7 +142,7 @@ fn everything_refused_ends_in_a_fault_started_once_an_hour() {
     assert!(!s.fake.ready());
     let attempts = submitted(&s, |op| matches!(op, Op::Advertise(_))).len();
     let choices = MENU.advertising.iter().filter(|c| c.when.matches(Power::Battery, false, false)).count();
-    assert_eq!(attempts, choices * (wrist_ble::core::chip::RESETS_PER_HOUR + 1));
+    assert_eq!(attempts, choices * (wrist_ble::policy::chip::RESETS_PER_HOUR + 1));
     let resets = s.core.counters.resets;
     for hour in 1..=3 {
         s.run_for(Millis::mins(60));
@@ -155,7 +155,7 @@ fn everything_refused_ends_in_a_fault_started_once_an_hour() {
 #[test]
 fn a_chip_that_keeps_resetting_ends_in_a_fault() {
     let mut s = Sim::started(7, on(Power::Battery));
-    for _ in 0..=wrist_ble::core::chip::RESETS_PER_HOUR {
+    for _ in 0..=wrist_ble::policy::chip::RESETS_PER_HOUR {
         s.fake.reset(ResetCause::Watchdog);
         s.run_for(Millis::mins(5));
     }
@@ -253,7 +253,7 @@ fn hangup_loop_gives_up() {
     s.run_for(Millis::mins(4));
     assert!(!matches!(strap_state(&s), PeerState::Stopped(_)), "{}", s.line());
     s.run_for(Millis::mins(2));
-    assert_eq!(strap_state(&s), PeerState::Stopped(wrist_ble::core::peripheral::StopReason::KeptDropping));
+    assert_eq!(strap_state(&s), PeerState::Stopped(wrist_ble::policy::peripheral::StopReason::KeptDropping));
 }
 
 #[test]

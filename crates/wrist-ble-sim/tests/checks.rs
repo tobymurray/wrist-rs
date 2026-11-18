@@ -1,12 +1,12 @@
 //! Each check fails when the truth is broken behind the core's back.
 
 use wrist_ble::{AdvParams, Duration, Instant, Millis, Op, OpId, ScanParams, Status};
-use wrist_ble::core::chip::Chip;
-use wrist_ble::core::engine::{Core, Input};
-use wrist_ble::core::goals::Power;
-use wrist_ble::core::invariants::{COMMANDS_PER_MINUTE, CONVERGE_AFTER, REACHABLE_GAP, REACHABLE_SHARE_PERCENT, REACHABLE_WINDOW, STATUS_WITHIN};
-use wrist_ble::core::phone::{self, Security, SETTLE};
-use wrist_ble::core::State;
+use wrist_ble::policy::chip::Chip;
+use wrist_ble::policy::engine::{Core, Input};
+use wrist_ble::policy::goals::Power;
+use wrist_ble::policy::invariants::{COMMANDS_PER_MINUTE, CONVERGE_AFTER, REACHABLE_GAP, REACHABLE_SHARE_PERCENT, REACHABLE_WINDOW, STATUS_WITHIN};
+use wrist_ble::policy::phone::{self, Security, SETTLE};
+use wrist_ble::policy::State;
 use wrist_ble_sim::checks::Checks;
 use wrist_ble_sim::fake::{Fake, Note};
 use wrist_bluenrg2::INFO;
@@ -401,7 +401,7 @@ fn twice(s: &Sim, t: Instant, wrong_for: Millis) -> Result<(), String> {
 #[test]
 fn connected_holds_while_the_link_is_encrypted() {
     let s = phone_up();
-    assert_eq!(s.status().phone, wrist_ble::core::status::PhoneStatus::Connected);
+    assert_eq!(s.status().phone, wrist_ble::policy::status::PhoneStatus::Connected);
     twice(&s, s.now, Millis::secs(5)).unwrap();
 }
 
@@ -428,7 +428,7 @@ fn securing() -> Sim {
         l.security = Security::Unsecured;
         l.since = now;
     }
-    assert_eq!(s.status().phone, wrist_ble::core::status::PhoneStatus::Securing);
+    assert_eq!(s.status().phone, wrist_ble::policy::status::PhoneStatus::Securing);
     s
 }
 
@@ -451,11 +451,11 @@ fn unreachable(b: &mut Bench, t: Instant) {
     b.s.core.state.radio.advertising = None;
     b.s.core.state.silent_since = t - REACHABLE_GAP - Millis::secs(1);
     b.c.disturbed(t);
-    assert!(matches!(status_at(&b.s, t), wrist_ble::core::status::PhoneStatus::Unreachable { .. }));
+    assert!(matches!(status_at(&b.s, t), wrist_ble::policy::status::PhoneStatus::Unreachable { .. }));
 }
 
-fn status_at(s: &Sim, t: Instant) -> wrist_ble::core::status::PhoneStatus {
-    wrist_ble::core::status::status(&s.core.state, t).phone
+fn status_at(s: &Sim, t: Instant) -> wrist_ble::policy::status::PhoneStatus {
+    wrist_ble::policy::status::status(&s.core.state, t).phone
 }
 
 #[test]

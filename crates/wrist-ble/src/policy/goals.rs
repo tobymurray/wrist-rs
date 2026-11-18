@@ -1,6 +1,6 @@
 use crate::{Millis, PeerAddr};
 
-use crate::core::profile::Profile;
+use crate::policy::profile::Profile;
 
 /// The most peripherals wanted at once.
 pub const MAX_PERIPHERALS: usize = 3;

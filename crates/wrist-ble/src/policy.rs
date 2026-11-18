@@ -13,11 +13,11 @@ pub mod status;
 
 use crate::{Activities, Instant};
 
-use crate::core::chip::ChipMachine;
-use crate::core::goals::{Want, MAX_PERIPHERALS};
-use crate::core::peripheral::Peripheral;
-use crate::core::phone::Phone;
-use crate::core::plan::{PlanHealth, Verdict};
+use crate::policy::chip::ChipMachine;
+use crate::policy::goals::{Want, MAX_PERIPHERALS};
+use crate::policy::peripheral::Peripheral;
+use crate::policy::phone::Phone;
+use crate::policy::plan::{PlanHealth, Verdict};
 
 /// Everything the core knows, which [`status::status`] describes.
 #[derive(Clone, Copy, Debug)]

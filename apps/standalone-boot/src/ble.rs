@@ -71,12 +71,12 @@ use bluenrg2::{
     event_code, io_capability, AddrKind, BdAddr, BootReason, Event, BleStatus,
     PairingReason, VendorEvent, ATT_HEADER_LEN,
 };
-use wrist_ble::core::chip::Action;
+use wrist_ble::policy::chip::Action;
 use wrist_ble::{
     AdvParams, Cccd, CharDecl, ConnHandle, ConnParams, DisconnectReason, Failure, FailureKind, Interval, LeConnRole, Micros, Op, OpKind, PairingEvent, PairingStep, Payload, RadioEvent, ServerTable,
     ServiceDecl, Slots, Timeout, ATT_MAX_MTU,
 };
-use wrist_ble::core::goals::{self, Goals, PhoneGoal};
+use wrist_ble::policy::goals::{self, Goals, PhoneGoal};
 use wrist_bluenrg2::shadow::verdict::Disagreement;
 use wrist_bluenrg2::shadow::{Mode, Observer, Shadow};
 use wrist_bluenrg2::commands;

@@ -5,11 +5,11 @@ use core::hash::{Hash, Hasher};
 
 use crate::{Activities, AdvParams, Capabilities, Change, ConnParams, Instant, Op, OpId, Schedule};
 
-use crate::core::chip::Chip;
-use crate::core::phone::Phone;
+use crate::policy::chip::Chip;
+use crate::policy::phone::Phone;
 
-use crate::core::goals::{Goals, Power, MAX_PERIPHERALS};
-use crate::core::State;
+use crate::policy::goals::{Goals, Power, MAX_PERIPHERALS};
+use crate::policy::State;
 
 /// What the planner decided for one goal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

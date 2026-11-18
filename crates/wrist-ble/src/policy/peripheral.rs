@@ -2,9 +2,9 @@
 
 use crate::{FailureKind, Status, Instant, ConnHandle, Millis, PeerAddr};
 
-use crate::core::goals::Power;
-use crate::core::plan::Conflict;
-use crate::core::profile::{Cadence, Profile, Reading, SecurityNeed, Silence};
+use crate::policy::goals::Power;
+use crate::policy::plan::Conflict;
+use crate::policy::profile::{Cadence, Profile, Reading, SecurityNeed, Silence};
 
 /// With no reading for this long the core stops looking, keyed on readings and not on the
 /// link's life, so a sensor still delivering most of its readings is kept.
@@ -263,7 +263,7 @@ impl Peripheral {
             Stage::Live { since, .. } => {
                 let heard = self.last.map_or(since, |(at, _)| at.max(since));
                 let stale = (p.silence == Silence::Fault).then_some(heard + p.stale);
-                let marks = [heard + fresh_for(p), heard + p.quiet, heard + crate::core::status::HIDE_AFTER].map(|m| m + Millis(1));
+                let marks = [heard + fresh_for(p), heard + p.quiet, heard + crate::policy::status::HIDE_AFTER].map(|m| m + Millis(1));
                 let trouble = self.trouble.iter().flatten().map(|&t| t + UNSTABLE_WINDOW);
                 let block = match (p.silence, p.cadence) {
                     (Silence::Fault, Cadence::Every(_)) => self.coverage.next_block(now),
@@ -399,12 +399,12 @@ impl Peripheral {
 }
 
 /// A reading older than this is never shown as current: twice the cadence, at most
-/// [`crate::core::status::CURRENT_FOR`].
+/// [`crate::policy::status::CURRENT_FOR`].
 #[must_use]
 pub fn fresh_for(p: &Profile) -> Millis {
     match p.cadence {
-        Cadence::Every(period) => Millis(period.0.saturating_mul(2)).min(crate::core::status::CURRENT_FOR),
-        Cadence::Events => crate::core::status::CURRENT_FOR,
+        Cadence::Every(period) => Millis(period.0.saturating_mul(2)).min(crate::policy::status::CURRENT_FOR),
+        Cadence::Events => crate::policy::status::CURRENT_FOR,
     }
 }
 

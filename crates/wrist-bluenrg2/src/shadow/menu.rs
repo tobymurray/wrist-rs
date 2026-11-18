@@ -4,8 +4,8 @@
 //! ([`crate::wake::ble::timing`]), so the two can't drift apart.
 
 use wrist_ble::{AdvParams, ConnParams, Duration};
-use wrist_ble::core::goals::Power;
-use wrist_ble::core::plan::{Choice, Menu, When};
+use wrist_ble::policy::goals::Power;
+use wrist_ble::policy::plan::{Choice, Menu, When};
 use crate::wake::ble::{self as wake, timing, Timing};
 
 const CABLE: Timing = timing(wake::Power::Cable, false);

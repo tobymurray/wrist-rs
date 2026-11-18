@@ -5,13 +5,13 @@ use crate::{
     LinkParams, Millis, Op, OpId, OpKind, RadioEvent, ResetCause, Schedule, Snapshot, Status,
 };
 
-use crate::core::chip::{self, Chip, StartId};
-use crate::core::goals::{Goals, Power, MAX_PERIPHERALS};
-use crate::core::invariants::REACHABLE_GAP;
-use crate::core::peripheral::{self, Ctx, Peripheral, Stage, StopReason, Then};
-use crate::core::phone::{self, Phone, Security, ASK_TO_PAIR_AFTER};
-use crate::core::plan::{fingerprint, Fingerprint, Menu, MenuPlanner, Pending, PlanHealth, PlanInput, Planner, Refused, Target, Verdict};
-use crate::core::{Peer, State};
+use crate::policy::chip::{self, Chip, StartId};
+use crate::policy::goals::{Goals, Power, MAX_PERIPHERALS};
+use crate::policy::invariants::REACHABLE_GAP;
+use crate::policy::peripheral::{self, Ctx, Peripheral, Stage, StopReason, Then};
+use crate::policy::phone::{self, Phone, Security, ASK_TO_PAIR_AFTER};
+use crate::policy::plan::{fingerprint, Fingerprint, Menu, MenuPlanner, Pending, PlanHealth, PlanInput, Planner, Refused, Target, Verdict};
+use crate::policy::{Peer, State};
 
 #[derive(Clone, Copy, Debug)]
 pub enum Input {
@@ -723,7 +723,7 @@ impl<'a> Core<'a> {
             out.snapshot = true;
         }
         self.plan(now);
-        if matches!(self.state.chip.state, Chip::Ready(_)) && self.target.phone == Verdict::Busy(crate::core::plan::Conflict::Refused) {
+        if matches!(self.state.chip.state, Chip::Ready(_)) && self.target.phone == Verdict::Busy(crate::policy::plan::Conflict::Refused) {
             self.chip(now, chip::Event::BaselineRefused, out);
             self.plan(now);
         }

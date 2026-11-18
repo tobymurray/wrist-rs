@@ -3,9 +3,9 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use wrist_ble::{Millis, Op};
-use wrist_ble::core::engine::Input;
-use wrist_ble::core::goals::{Goals, Power};
-use wrist_ble::core::phone::{Phone as PhoneState, ASK_TO_PAIR_AFTER};
+use wrist_ble::policy::engine::Input;
+use wrist_ble::policy::goals::{Goals, Power};
+use wrist_ble::policy::phone::{Phone as PhoneState, ASK_TO_PAIR_AFTER};
 use wrist_ble_sim::peers::{Keys, Os, Phone};
 use wrist_ble_sim::sim::{on, Sim};
 

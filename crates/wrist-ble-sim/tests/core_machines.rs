@@ -2,12 +2,12 @@ mod common;
 
 use common::*;
 use wrist_ble::{Activities, Admitted, Change, ConnParams, Duration, Exclusion, FailureKind, Micros, Millis, PairingStep, SchedKind, Schedule, Status};
-use wrist_ble::core::chip::{self, Chip, ChipMachine, FaultCause, StartId};
-use wrist_ble::core::goals::Power;
-use wrist_ble::core::peripheral::{self as per, Event, Peripheral, Stage, StopReason, Then, GIVE_UP};
-use wrist_ble::core::phone::{self, askable, Action, Phone, Security};
-use wrist_ble::core::plan::{fingerprint, Conflict, Refused, REFUSED_CAPACITY};
-use wrist_ble::core::status::PeerState;
+use wrist_ble::policy::chip::{self, Chip, ChipMachine, FaultCause, StartId};
+use wrist_ble::policy::goals::Power;
+use wrist_ble::policy::peripheral::{self as per, Event, Peripheral, Stage, StopReason, Then, GIVE_UP};
+use wrist_ble::policy::phone::{self, askable, Action, Phone, Security};
+use wrist_ble::policy::plan::{fingerprint, Conflict, Refused, REFUSED_CAPACITY};
+use wrist_ble::policy::status::PeerState;
 
 const NONE: Vec<Action> = Vec::new();
 
@@ -407,7 +407,7 @@ fn a_chip_that_keeps_resetting_itself_faults() {
     let (c, a) = c.step(CAPS, secs(600), chip::Event::Reset(wrist_ble::ResetCause::Lockup));
     assert_eq!(a, Some(chip::Action::Hold));
     assert_eq!(c.state, Chip::Fault { cause: FaultCause::KeptResetting, retry_at: secs(600) + chip::FAULT_RETRY });
-    let state = wrist_ble::core::State { chip: c, ..wrist_ble::core::State::OFF };
+    let state = wrist_ble::policy::State { chip: c, ..wrist_ble::policy::State::OFF };
     assert!(line(&state, secs(601)).contains("phone=fault(kept-resetting)"), "{}", line(&state, secs(601)));
 }
 
@@ -472,7 +472,7 @@ fn backoff_climbs_and_is_capped_on_battery() {
 
 #[test]
 fn backoff_repeats_its_last_step_on_a_cable() {
-    let c = wrist_ble::core::peripheral::Ctx { power: Power::Cable, ..ctx(&HR) };
+    let c = wrist_ble::policy::peripheral::Ctx { power: Power::Cable, ..ctx(&HR) };
     let mut p = Peripheral::default().step(&c, t(0), Event::Want);
     let last = per::BACKOFF[per::BACKOFF.len() - 1];
     let mut now = t(0);
@@ -565,7 +565,7 @@ fn an_idle_sensor_is_kept_while_subscribed() {
 
 #[test]
 fn pairing_failure_stops_with_its_reason() {
-    let c = wrist_ble::core::peripheral::Ctx { profile: &ENCRYPTED, ..ctx(&HR) };
+    let c = wrist_ble::policy::peripheral::Ctx { profile: &ENCRYPTED, ..ctx(&HR) };
     let p = Peripheral::default().step(&c, t(0), Event::Want).step(&c, t(100), Event::LinkUp(sensor()));
     assert!(matches!(p.stage, Stage::Linked { phase: per::Phase::Securing, .. }));
     let p = p.step(&c, t(200), Event::Secured(false));
@@ -575,8 +575,8 @@ fn pairing_failure_stops_with_its_reason() {
     assert!(matches!(p.step(&c, t(400), Event::Retry).stage, Stage::Seeking { .. }));
 }
 
-static ENCRYPTED: wrist_ble::core::profile::Profile =
-    wrist_ble::core::profile::Profile { security: wrist_ble::core::profile::SecurityNeed::Encrypted, ..HR };
+static ENCRYPTED: wrist_ble::policy::profile::Profile =
+    wrist_ble::policy::profile::Profile { security: wrist_ble::policy::profile::SecurityNeed::Encrypted, ..HR };
 
 #[test]
 fn radio_busy_resumes_when_the_conflict_ends() {
@@ -603,12 +603,12 @@ fn unwanted_drops_its_link_first() {
 
 #[test]
 fn slow_search_ends_with_the_workout() {
-    let c = wrist_ble::core::peripheral::Ctx { workout: true, ..ctx(&HR) };
+    let c = wrist_ble::policy::peripheral::Ctx { workout: true, ..ctx(&HR) };
     let p = Peripheral::default().step(&c, t(0), Event::Want);
     let at = t(u64::from(GIVE_UP.0) + 60_000);
     let p = run(p, &c, t(0), at);
     assert!(p.slow_until.is_some());
-    let done = wrist_ble::core::peripheral::Ctx { workout: false, ..c };
+    let done = wrist_ble::policy::peripheral::Ctx { workout: false, ..c };
     assert_eq!(p.step(&done, at, Event::Tick).stage, Stage::Stopped(StopReason::NotFound));
     let end = p.slow_until.unwrap();
     assert_eq!(run(p, &c, at, end).stage, Stage::Stopped(StopReason::NotFound));
@@ -701,7 +701,7 @@ fn a_refused_configuration_is_remembered_until_cleared() {
     assert!(r.insert(a));
     assert!(r.contains(a) && !r.contains(b));
     for i in 1..REFUSED_CAPACITY {
-        assert!(r.insert(wrist_ble::core::plan::Fingerprint(i as u64)));
+        assert!(r.insert(wrist_ble::policy::plan::Fingerprint(i as u64)));
     }
     assert!(r.insert(a));
     assert!(!r.insert(b));

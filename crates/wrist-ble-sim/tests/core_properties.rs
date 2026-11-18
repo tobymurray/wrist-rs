@@ -7,11 +7,11 @@ use core::mem::discriminant;
 use common::*;
 use proptest::prelude::*;
 use wrist_ble::{FailureKind, Instant, Millis, PairingStep, Status};
-use wrist_ble::core::peripheral::{fresh_for, Ctx, Event, Peripheral, Stage, StopReason, Then, GIVE_UP};
-use wrist_ble::core::phone::{self, Phone, Security};
-use wrist_ble::core::plan::Conflict;
-use wrist_ble::core::profile::{Contact, Profile, Reading};
-use wrist_ble::core::status::{peer_state, status, PeerState, PhoneStatus, HIDE_AFTER};
+use wrist_ble::policy::peripheral::{fresh_for, Ctx, Event, Peripheral, Stage, StopReason, Then, GIVE_UP};
+use wrist_ble::policy::phone::{self, Phone, Security};
+use wrist_ble::policy::plan::Conflict;
+use wrist_ble::policy::profile::{Contact, Profile, Reading};
+use wrist_ble::policy::status::{peer_state, status, PeerState, PhoneStatus, HIDE_AFTER};
 
 const SAMPLE: Millis = Millis(100);
 

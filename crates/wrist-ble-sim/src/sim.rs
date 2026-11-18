@@ -3,10 +3,10 @@
 use std::collections::VecDeque;
 
 use wrist_ble::{Fault, Instant, Millis, RadioEvent};
-use wrist_ble::core::chip::{Action, StartId};
-use wrist_ble::core::engine::{Core, Input, Outputs, Tell};
-use wrist_ble::core::goals::{Goals, Power};
-use wrist_ble::core::status::{status, Status};
+use wrist_ble::policy::chip::{Action, StartId};
+use wrist_ble::policy::engine::{Core, Input, Outputs, Tell};
+use wrist_ble::policy::goals::{Goals, Power};
+use wrist_ble::policy::status::{status, Status};
 use wrist_bluenrg2::{Scheduler, CAPABILITIES};
 
 use crate::checks::Checks;

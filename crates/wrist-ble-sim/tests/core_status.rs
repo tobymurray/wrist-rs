@@ -4,13 +4,13 @@ mod common;
 
 use common::*;
 use wrist_ble::{Status, Millis, PairingStep};
-use wrist_ble::core::chip;
-use wrist_ble::core::peripheral::{Event, Peripheral, StopReason, GIVE_UP};
-use wrist_ble::core::phone;
-use wrist_ble::core::plan::{Conflict, Verdict};
-use wrist_ble::core::profile::{Contact, Reading};
-use wrist_ble::core::status::{status, PeerState, PhoneStatus, RadioStatus, Unreachable};
-use wrist_ble::core::State;
+use wrist_ble::policy::chip;
+use wrist_ble::policy::peripheral::{Event, Peripheral, StopReason, GIVE_UP};
+use wrist_ble::policy::phone;
+use wrist_ble::policy::plan::{Conflict, Verdict};
+use wrist_ble::policy::profile::{Contact, Reading};
+use wrist_ble::policy::status::{status, PeerState, PhoneStatus, RadioStatus, Unreachable};
+use wrist_ble::policy::State;
 
 fn phone_token(state: &State, now: wrist_ble::Instant) -> String {
     let l = line(state, now);
@@ -304,7 +304,7 @@ fn peer_incompatible_after_every_rediscovery() {
 
 #[test]
 fn peer_slow_search_in_a_workout() {
-    let c = wrist_ble::core::peripheral::Ctx { workout: true, ..ctx(&HR) };
+    let c = wrist_ble::policy::peripheral::Ctx { workout: true, ..ctx(&HR) };
     let p = Peripheral::default().step(&c, t(0), Event::Want);
     let end = t(u64::from(GIVE_UP.0) + 120_000);
     let state = hr(run(p, &c, t(0), end));
@@ -318,9 +318,9 @@ fn the_whole_line() {
     let mut state = hr(live(&c, t(0)).step(&c, t(1_000), bpm(72)));
     phone_up(&mut state, t(0));
     state.phone = state.phone.step(t(500), phone::Event::Encryption(phone(), true)).0;
-    let rower = wrist_ble::core::profile::Profile { kind: wrist_ble::core::profile::Kind::Ftms(wrist_ble::core::profile::Machine::Rower), ..HR };
+    let rower = wrist_ble::policy::profile::Profile { kind: wrist_ble::policy::profile::Kind::Ftms(wrist_ble::policy::profile::Machine::Rower), ..HR };
     let rower: &'static _ = Box::leak(Box::new(rower));
     let lost = live(&c, t(0)).step(&c, t(500), Event::LinkDown(sensor(), Status::CONN_TIMEOUT));
-    state.peers[1] = Some(wrist_ble::core::Peer { want: wrist_ble::core::goals::Want { profile: rower, peer: peer(), priority: 1 }, machine: lost });
+    state.peers[1] = Some(wrist_ble::policy::Peer { want: wrist_ble::policy::goals::Want { profile: rower, peer: peer(), priority: 1 }, machine: lost });
     assert_eq!(line(&state, t(1_800)), "[ble] status phone=connected peers=hr:live(72bpm,0.8s) rower:reconnecting(1s) radio=ok plan=ok drift=0s");
 }

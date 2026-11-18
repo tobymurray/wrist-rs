@@ -1,9 +1,9 @@
 //! The shadow, fed packets and commands as a driver would.
 
 use wrist_ble::{AddrKind, BdAddr, ChipInfo, ConnHandle, CoreSpecificationVersion, Instant, LeConnRole, LinkStatus, Op, OpKind, PeerAddr, Snapshot, MAX_LINKS};
-use wrist_ble::core::goals::{Goals, PhoneGoal, Power};
-use wrist_ble::core::phone::{Phone, Security};
-use wrist_ble::core::State;
+use wrist_ble::policy::goals::{Goals, PhoneGoal, Power};
+use wrist_ble::policy::phone::{Phone, Security};
+use wrist_ble::policy::State;
 use wrist_bluenrg2::shadow::verdict::Disagreement;
 use wrist_bluenrg2::shadow::{trace, DriverOp, Observer, Shadow};
 use wrist_bluenrg2::shadow::menu::interval_now_ask;
@@ -312,7 +312,7 @@ fn the_core_takes_the_consoles_ask_where_the_drivers_console_does() {
     for min in 0..=3_300 {
         for max in 0..=3_300 {
             let ask = interval_now_ask(min, max);
-            assert_eq!(wrist_ble::core::phone::askable(&ask), wrist_bluenrg2::wake::ble::interval_now(min, max), "{min}-{max}");
+            assert_eq!(wrist_ble::policy::phone::askable(&ask), wrist_bluenrg2::wake::ble::interval_now(min, max), "{min}-{max}");
         }
     }
 }

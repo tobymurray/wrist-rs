@@ -3,10 +3,10 @@
 //! The boundary between the Bluetooth core and a chip driver, above GAP and GATT: the driver
 //! takes operations, reports events, and declares what the chip can do.
 
-pub mod core;
 mod event;
 mod gatt;
 mod op;
+pub mod policy;
 pub mod profiles;
 mod schedule;
 mod time;
@@ -23,7 +23,7 @@ pub use bt_hci;
 pub use bt_hci::param::{AddrKind, BdAddr, ConnHandle, CoreSpecificationVersion, DisconnectReason, Duration, LeConnRole, Status};
 pub use bt_hci::uuid::BluetoothUuid;
 
-use ::core::fmt;
+use core::fmt;
 
 /// The most links any driver reports; a chip's own limit is [`Capabilities::max_links`].
 pub const MAX_LINKS: usize = 8;

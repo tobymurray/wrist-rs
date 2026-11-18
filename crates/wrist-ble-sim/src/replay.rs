@@ -6,10 +6,10 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use wrist_ble::{Fault, Instant, Op, RadioEvent, Snapshot};
-use wrist_ble::core::chip::Action;
-use wrist_ble::core::engine::Tell;
-use wrist_ble::core::goals::{Goals, PhoneGoal, Power};
-use wrist_ble::core::{status, State};
+use wrist_ble::policy::chip::Action;
+use wrist_ble::policy::engine::Tell;
+use wrist_ble::policy::goals::{Goals, PhoneGoal, Power};
+use wrist_ble::policy::{status, State};
 use wrist_bluenrg2::shadow::verdict::{Act, Disagreement};
 use wrist_bluenrg2::shadow::{trace, DriverOp, Excuse, Observer, Shadow};
 use wrist_bluenrg2::INFO;

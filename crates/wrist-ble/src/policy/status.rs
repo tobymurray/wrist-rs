@@ -5,14 +5,14 @@ use core::fmt::{self, Write};
 
 use crate::{Instant, Millis};
 
-use crate::core::chip::{Chip, FaultCause};
-use crate::core::goals::MAX_PERIPHERALS;
-use crate::core::invariants::REACHABLE_GAP;
-use crate::core::peripheral::{fresh_for, Peripheral, Stage, StopReason, Then};
-use crate::core::phone::{Phone, Security, ASK_TO_PAIR_AFTER};
-use crate::core::plan::{Conflict, PlanHealth, Verdict};
-use crate::core::profile::{Contact, Kind, Profile, Silence};
-use crate::core::State;
+use crate::policy::chip::{Chip, FaultCause};
+use crate::policy::goals::MAX_PERIPHERALS;
+use crate::policy::invariants::REACHABLE_GAP;
+use crate::policy::peripheral::{fresh_for, Peripheral, Stage, StopReason, Then};
+use crate::policy::phone::{Phone, Security, ASK_TO_PAIR_AFTER};
+use crate::policy::plan::{Conflict, PlanHealth, Verdict};
+use crate::policy::profile::{Contact, Kind, Profile, Silence};
+use crate::policy::State;
 
 /// No reading older than this is shown as current.
 pub const CURRENT_FOR: Millis = Millis::secs(3);
