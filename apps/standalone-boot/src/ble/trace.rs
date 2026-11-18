@@ -1,6 +1,6 @@
 //! `ble-trace`: each packet to and from the BlueNRG-2 as `[trace] <ms> <c|e|r> <hex>` to the USB
-//! host, so it can replay the link through the core; with the driver's lost reads (`l`) and
-//! snapshots (`s`, empty when one failed) that a driven core is told.
+//! host, so it can replay the link through the core; with whether the core drives (`m`, at each
+//! reset) and the driver's lost reads (`l`) and snapshots (`s`, empty when one failed) it is told.
 
 use embassy_time::Instant;
 
@@ -13,6 +13,7 @@ pub(super) enum Dir {
     ToChip,
     FromChip,
     Reset,
+    Mode,
     Lost,
     Snapshot,
 }
@@ -33,6 +34,7 @@ pub(super) fn packet(dir: Dir, p: &[u8]) {
         Dir::ToChip => b" c ",
         Dir::FromChip => b" e ",
         Dir::Reset => b" r ",
+        Dir::Mode => b" m ",
         Dir::Lost => b" l ",
         Dir::Snapshot => b" s ",
     });

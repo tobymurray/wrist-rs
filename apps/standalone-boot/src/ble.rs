@@ -1253,7 +1253,10 @@ impl Link<'_> {
         set_state(STATE_STARTING);
         clear_prompt();
         #[cfg(feature = "ble-trace")]
-        trace::packet(trace::Dir::Reset, &[]);
+        {
+            trace::packet(trace::Dir::Reset, &[]);
+            trace::packet(trace::Dir::Mode, &[u8::from(self.drives())]);
+        }
         self.boot = None;
         CONN_HANDLE.store(0, Ordering::Relaxed);
         let addr = address_from_uid();

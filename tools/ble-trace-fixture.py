@@ -3,7 +3,8 @@
 
     tools/ble-trace-fixture.py capture.log > crates/wrist-ble-sim/fixtures/traces/name.log
 
-Kept: chip resets; the driver's lost reads and snapshots, which carry no address; the driver's commands that are one of the core's operations; the chip's
+Kept: chip resets; whether the core drives, and the driver's lost reads and snapshots, which
+carry no address; the driver's commands that are one of the core's operations; the chip's
 events but advertising reports, console writes and replies to other commands (one lists the
 bonded addresses), with a connection's peer and resolvable addresses zeroed and a reply cut after
 its status; the console commands the replay reads
@@ -71,7 +72,8 @@ def snapshot(packet):
     link's handle, role and encryption."""
     links = packet[1:]
     return (len(packet) >= 1 and packet[0] <= 0b111 and len(links) % 4 == 0 and len(links) <= 32
-            and all(links[i + 2] <= 1 and links[i + 3] <= 2 for i in range(0, len(links), 4)))
+            and all(int.from_bytes(links[i:i + 2], 'little') <= 0x0EFF and links[i + 2] <= 1
+                    and links[i + 3] <= 2 for i in range(0, len(links), 4)))
 
 
 def scrub(line):
@@ -105,6 +107,8 @@ def scrub(line):
         keep = packet is not None
     elif kind == 's':
         keep = snapshot(packet)
+    elif kind == 'm':
+        keep = packet in (b'\x00', b'\x01')
     else:
         keep = False
     if not keep:

@@ -139,6 +139,7 @@ fn traces_hold_only_what_the_scrub_keeps() {
             assert_eq!(f[0], "[trace]", "{name}: {line}");
             match f[2] {
                 "r" | "l" => assert_eq!(f.len(), 3, "{name}: {line}"),
+                "m" => assert!(f.len() == 4 && matches!(f[3], "00" | "01"), "{name}: {line}"),
                 "s" => assert!(f.len() == 3 || trace::decode(Instant(0), &hex(f[3])).is_some(), "{name}: {line}"),
                 "c" | "e" => {
                     let p = hex(f[3]);
@@ -483,8 +484,8 @@ fn the_drivers_lost_read_and_snapshot_are_the_cores() {
     assert_eq!(replay(&without).disagreements().len(), 2);
 }
 
-/// A snapshot traced as failed leaves the core without the link until the driver's next; one the
-/// replay can't read is an event the core could not.
+/// A snapshot traced as failed leaves the core without the link, and one it did not ask for is
+/// not its; one the replay can't read is an event the core could not.
 #[test]
 fn a_failed_snapshot_of_the_drivers_is_none() {
     let with = fixture("bluez-lost-read.log");
@@ -492,6 +493,7 @@ fn a_failed_snapshot_of_the_drivers_is_none() {
     let failed = taken.rsplit_once(' ').unwrap().0;
     let r = replay(&with.replace(taken, failed));
     assert_eq!((r.disagreements().len(), r.unknown_events), (2, 0));
+    // The core asks again only after its retry, so a snapshot straight after is none of its.
     let r = replay(&with.replace(taken, &format!("{failed}\n{taken}")));
-    assert_eq!(r.disagreements(), Vec::<String>::new());    assert_eq!(replay(&with.replace(taken, &format!("{failed} 08"))).unknown_events, 1);
+    assert_eq!(r.disagreements().len(), 2);    assert_eq!(replay(&with.replace(taken, &format!("{failed} 08"))).unknown_events, 1);
 }

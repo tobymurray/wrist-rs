@@ -518,6 +518,42 @@ fn after_a_drivers_lost_read_the_snapshots_are_the_drivers() {
     assert!(!s.snapshot_wanted());
 }
 
+/// A record's driver that drives the core answers its snapshot asks, a lost read or not; one
+/// that does not leaves them to the shadow.
+#[test]
+fn a_driven_record_takes_the_drivers_snapshots() {
+    let mut s = up();
+    s.driven(true);
+    s.event(Instant(200), CUT);
+    assert_eq!(s.observer.snapshots, []);
+    assert!(s.take_snapshot());
+    s.snapshotted(Instant(210), Ok(drivers_snapshot(210)));
+    assert_eq!(s.state().phone.link(), Some(ConnHandle::new(0x0801)));
+    s.driven(false);
+    s.event(Instant(300), CUT);
+    assert_eq!(s.observer.snapshots.len(), 2);
+    assert!(!s.snapshot_wanted());
+}
+
+#[test]
+fn every_snapshot_the_driver_can_take_is_carried() {
+    let mut s = drivers_snapshot(5);
+    let link = s.links[0].unwrap();
+    for (i, slot) in s.links.iter_mut().enumerate() {
+        let encrypted = [None, Some(false), Some(true)][i % 3];
+        let role = if i % 2 == 0 { LeConnRole::Central } else { LeConnRole::Peripheral };
+        *slot = Some(LinkStatus { link: ConnHandle::new(0x0EFF - u16::try_from(i).unwrap()), role, encrypted, ..link });
+    }
+    for flags in 0..8u8 {
+        (s.advertising, s.scanning, s.initiating) = (flags & 1 != 0, flags & 2 != 0, flags & 4 != 0);
+        let mut bytes = [0; trace::SNAPSHOT_MAX];
+        let len = trace::encode(&s, &mut bytes);
+        assert_eq!((len, bytes[0]), (trace::SNAPSHOT_MAX, flags));
+        assert_eq!(trace::decode(Instant(5), &bytes[..len]), Some(s));
+    }
+    assert_eq!(trace::decode(Instant(5), &[0, 0x00, 0x0F, 1, 0]), None);
+}
+
 #[test]
 fn a_snapshot_is_carried_in_the_trace_as_the_core_reads_it() {
     let mut s = drivers_snapshot(5);

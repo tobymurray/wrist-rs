@@ -361,8 +361,9 @@ impl Replay {
                 }
                 self.shadow.event(at, &bytes);
             }
-            // The driver's lost read, and its snapshot (none when it failed), as a driven core
-            // was told them.
+            // Whether the core drives from this start, the driver's lost read, and its snapshot
+            // (none when it failed), as a driven core was told them.
+            "m" => self.shadow.driven(bytes == [1]),
             "l" => self.shadow.lost_read(at),
             "s" => {
                 let snapshot = if bytes.is_empty() {
@@ -373,8 +374,9 @@ impl Replay {
                     self.shadow.observer.report.unknown_events += 1;
                     return;
                 };
-                self.shadow.take_snapshot();
-                self.shadow.snapshotted(at, snapshot);
+                if self.shadow.take_snapshot() {
+                    self.shadow.snapshotted(at, snapshot);
+                }
             }
             _ => {}
         }
