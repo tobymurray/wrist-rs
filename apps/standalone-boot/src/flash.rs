@@ -111,6 +111,22 @@ fn ecc_test(uart: Uart) {
     uart.write_line(if pass { "[flash] ecc-test passed" } else { "[flash] ecc-test FAILED" });
 }
 
+/// Copies bank 1's page `page` into `to`, a page long, with the NMI's catch armed for it: false
+/// if a read raised a double ECC error, after which the copy is not to be trusted.
+pub fn copy_bank1_page(page: u8, to: &mut [u8]) -> bool {
+    clear_ecc();
+    let caught = CAUGHT.load(Relaxed);
+    ARMED.store(arm(Area::Bank1, u32::from(page)), Relaxed);
+    fence();
+    // SAFETY: one page of memory-mapped flash, read only.
+    let from = unsafe { core::slice::from_raw_parts(bank1_page_address(page) as *const u8, PAGE_SIZE) };
+    to.copy_from_slice(from);
+    fence();
+    ARMED.store(0, Relaxed);
+    let double_here = ecc(eccr()).is_some_and(|e| e.double && e.area == Area::Bank1 && e.page() == u32::from(page));
+    CAUGHT.load(Relaxed) == caught && !double_here
+}
+
 pub fn command(args: &[u8], uart: Uart) {
     match args {
         b" survey" => crate::ask_report(crate::Report::FlashSurvey, uart),

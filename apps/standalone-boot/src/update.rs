@@ -194,9 +194,22 @@ pub fn abort(s: Session) {
 }
 
 async fn crc32_yielding(bytes: &[u8]) -> u32 {
+    crc32_padded_yielding(bytes, 0).await
+}
+
+/// The CRC-32 of `bytes` then `pad` erased bytes, 4 KiB between yields.
+async fn crc32_padded_yielding(bytes: &[u8], pad: usize) -> u32 {
     let mut crc = 0xFFFF_FFFF;
     for piece in bytes.chunks(4096) {
         crc = wrist_flash::plan::crc32_continue(crc, piece);
+        embassy_futures::yield_now().await;
+    }
+    static ERASED: [u8; 4096] = [0xFF; 4096];
+    let mut left = pad;
+    while left > 0 {
+        let n = left.min(ERASED.len());
+        crc = wrist_flash::plan::crc32_continue(crc, &ERASED[..n]);
+        left -= n;
         embassy_futures::yield_now().await;
     }
     !crc
@@ -447,26 +460,38 @@ async fn revert(flash: &'static FlashMutex) -> Result<(), &'static str> {
 }
 
 async fn revert_staged(flash: &'static FlashMutex) -> Result<(), &'static str> {
-    use wrist_flash::previous::{image_in, replaced, used_after, DFU_BASE, DFU_SIZE};
-    // Flash, read while nothing writes it: the write below comes from the copy in RAM.
-    let dfu = unsafe { core::slice::from_raw_parts(DFU_BASE as *const u8, DFU_SIZE) };
-    let active = unsafe {
-        core::slice::from_raw_parts(Target::Application.base() as *const u8, Target::Application.size() as usize)
-    };
-    let slot = replaced(dfu, active).map_err(wrist_flash::previous::Refusal::as_str)?;
+    use wrist_flash::layout::bank1::DFU;
+    use wrist_flash::plan::PAGE_SIZE;
+    use wrist_flash::previous::{at_running_len, image_in, replaced, used_after, Refusal};
+    let refuse = Refusal::as_str;
     let staging = unsafe { core::slice::from_raw_parts_mut(STAGING as *mut u8, STAGING_SIZE) };
+    let first = u8::try_from(DFU.start).unwrap_or(u8::MAX);
+    let pages = u8::try_from(DFU.end).unwrap_or(u8::MAX) - first;
+    // Flash, read a page between yields with the ECC catch armed, while nothing writes it:
+    // the write below comes from the copy in RAM.
+    if !crate::flash::copy_bank1_page(first, &mut staging[..PAGE_SIZE]) {
+        return Err(refuse(Refusal::Unreadable));
+    }
+    let active = unsafe { core::slice::from_raw_parts(Target::Application.base() as *const u8, PAGE_SIZE) };
+    replaced(&staging[..PAGE_SIZE], active).map_err(refuse)?;
     let mut used = 0;
-    for (i, piece) in slot.chunks(4096).enumerate() {
-        staging[i * 4096..i * 4096 + piece.len()].copy_from_slice(piece);
-        used = used_after(used, i * 4096, piece);
+    for n in 1..pages {
+        let at = usize::from(n - 1) * PAGE_SIZE;
+        let piece = &mut staging[at..at + PAGE_SIZE];
+        if !crate::flash::copy_bank1_page(first + n, piece) {
+            return Err(refuse(Refusal::Unreadable));
+        }
+        used = used_after(used, at, piece);
         embassy_futures::yield_now().await;
     }
-    let image = image_in(&staging[..slot.len()], used).map_err(wrist_flash::previous::Refusal::as_str)?;
-    let len = image.len();
-    let crc = crc32_yielding(image).await;
-    if crate::version::crc() == Some(crc) {
+    let image = image_in(&staging[..usize::from(pages - 1) * PAGE_SIZE], used).map_err(refuse)?;
+    let running = crate::version::image();
+    let (head, pad) = at_running_len(image, running.len());
+    if crate::version::crc() == Some(crc32_padded_yielding(head, pad).await) {
         return Err("the other slot holds this same image; nothing written");
     }
+    let len = image.len();
+    let crc = crc32_yielding(image).await;
     let uart = Uart::best_effort();
     uart.write_str("[update] reverting to the image this one replaced, ");
     uart.write_u32(u32::try_from(len).unwrap_or(u32::MAX));

@@ -33,7 +33,7 @@ static CRC: AtomicU32 = AtomicU32::new(0);
 static CRC_KNOWN: AtomicBool = AtomicBool::new(false);
 
 /// app.bin as the running slot holds it: the vector table to the end of `.data`'s load image.
-fn image() -> &'static [u8] {
+pub fn image() -> &'static [u8] {
     extern "C" {
         static __sidata: u32;
         static __sdata: u32;

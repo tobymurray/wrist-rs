@@ -101,17 +101,20 @@ async def transfer(client, con, path, chunk_pace, chunk_max=VALUE_LEN):
     # Writes with response: each chunk is acknowledged before the next, so the watch's event
     # queue is never outrun.
     for i in range(0, len(image), chunk):
+        since = len(con.lines)
         await client.write_gatt_char(RX, image[i:i + chunk], response=True)
         if chunk_pace:
             await asyncio.sleep(chunk_pace)
     print(f"-- sent in {time.time() - t0:.1f} s; waiting for the watch to verify and write", flush=True)
-    line = await con.wait_for(["[update] ok", "error", "mismatch", "abandoned"], 90)
+    # From before the last chunk's write: an answer can arrive before its response.
+    line = await con.wait_for(["[update] ok", "error", "mismatch", "abandoned"], 90, since)
     if line and " ok " in line:
         return True
     if line is None:
         # The ok line can be lost while the core stalls on flash; the loader's state is the truth.
+        since = len(con.lines)
         await send(client, "boot")
-        state = await con.wait_for(["[boot] state"], 5)
+        state = await con.wait_for(["[boot] state"], 5, since)
         if state and "swap" in state:
             print("-- the watch reports the swap marked; taking that as success", flush=True)
             return True

@@ -109,12 +109,11 @@ def main():
             ap.error('--revert sends no image and is for the application only')
         name = wrist_port.find_or_exit(args.port)
         s = wrist_port.settle(serial.Serial(name, 115200, timeout=0.5, write_timeout=5))
-        s.write(b"update revert\r\n")
         LOST = ("the port went away during the revert: plug it back in and run `boot` with tools/wrist-cmd.py; "
                 "`state swap` means `reset` puts the previous image back, `state boot` that nothing was marked")
-        hit, line = wait_for(s, ["[update] revert ok", "[update] revert:", "[update] error"], 60)
-        if hit != "[update] revert ok":
-            sys.exit("the watch did not revert" + (f": {line}" if line else ", or went quiet"))
+        why = revert(s)
+        if why:
+            sys.exit(why)
         return apply(s, args)
     if not args.image:
         ap.error('an image to send, or --revert')
@@ -155,10 +154,32 @@ def main():
             "to install at the next reset: plug it back in and run `boot` with tools/wrist-cmd.py; "
             "`state boot` means nothing was marked, so run this again, and `state swap` means `reset` installs it")
     hit, line = wait_for(s, [f"{tag} ok", f"{tag} error"], 180)
+    if hit is None and not args.loader and swap_marked(s):
+        hit = f"{tag} ok"
     if hit != f"{tag} ok":
         sys.exit("the watch reported an error, or went quiet")
     print(f"written and verified in {time.time() - t0:.1f} s")
     apply(s, args)
+
+
+def swap_marked(s):
+    """After the result line was lost, as it can be while flash is written: whether `boot`
+    reads `state swap`, which an update or revert accepted only from `state boot` marked."""
+    s.write(b"boot\r\n")
+    _, line = wait_for(s, ["[boot] state"], 5)
+    if line and "state swap" in line:
+        print("the watch reports the swap marked; taking that as success", flush=True)
+        return True
+    return False
+
+
+def revert(s):
+    """`update revert`: None once the watch has marked the image it replaced, else why not."""
+    s.write(b"update revert\r\n")
+    hit, line = wait_for(s, ["[update] revert ok", "[update] revert:", "[update] error"], 60)
+    if hit == "[update] revert ok" or hit is None and swap_marked(s):
+        return None
+    return "the watch did not revert" + (f": {line}" if line else ", or went quiet")
 
 
 def apply(s, args):

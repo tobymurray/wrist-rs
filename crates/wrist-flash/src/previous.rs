@@ -17,12 +17,12 @@ pub const ERASED: u8 = 0xFF;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refusal {
-    /// The slot's first page is not the running image's, as a swap leaves it.
+    /// No image a kept update replaced: the slot's first page is not the running image's, as a
+    /// swap leaves it, or what follows is not an image, as after the loader's revert of an
+    /// update that shared the first page, or an update cut short.
     NotReplaced,
-    /// Nothing but erased flash where the image would be.
-    Empty,
-    /// What is there does not start with an application's vector table.
-    NotAnImage,
+    /// A read of the slot raised a double ECC error, as a write cut short can leave.
+    Unreadable,
 }
 
 impl Refusal {
@@ -32,21 +32,21 @@ impl Refusal {
             Refusal::NotReplaced => {
                 "the other slot holds no image this one replaced (it does after an update is kept, not after a revert by the loader or an install from stock); nothing written"
             }
-            Refusal::Empty => "the other slot is empty; nothing written",
-            Refusal::NotAnImage => "the other slot's image has no application vector table; nothing written",
+            Refusal::Unreadable => "the other slot has a word flash cannot read (a write cut short); nothing written",
         }
     }
 }
 
-/// `dfu`, the whole DFU slot, past its first page: where the image the last swap replaced lies.
+/// Whether the DFU slot's first page, `dfu_first`, is the running image's, `active_first`, as
+/// a swap leaves it.
 ///
 /// # Errors
 /// [`Refusal::NotReplaced`].
-pub fn replaced<'a>(dfu: &'a [u8], active: &[u8]) -> Result<&'a [u8], Refusal> {
-    if dfu.len() != DFU_SIZE || dfu[..PAGE_SIZE] != active[..PAGE_SIZE] {
+pub fn replaced(dfu_first: &[u8], active_first: &[u8]) -> Result<(), Refusal> {
+    if dfu_first.len() != PAGE_SIZE || dfu_first != &active_first[..PAGE_SIZE] {
         return Err(Refusal::NotReplaced);
     }
-    Ok(&dfu[PAGE_SIZE..])
+    Ok(())
 }
 
 /// `used`, how far the slot's bytes that are not [`ERASED`] reach, once `piece`, `at` bytes in,
@@ -56,19 +56,27 @@ pub fn used_after(used: usize, at: usize, piece: &[u8]) -> usize {
     piece.iter().rposition(|&b| b != ERASED).map_or(used, |i| at + i + 1)
 }
 
-/// The image in `slot`, given how far its bytes that are not [`ERASED`] reach.
+/// The image in `slot`, the DFU slot past its first page, given how far its bytes that are not
+/// [`ERASED`] reach.
 ///
 /// # Errors
-/// The [`Refusal`] that says why the slot holds no image to go back to.
+/// [`Refusal::NotReplaced`] when it does not start with an application's vector table.
 pub fn image_in(slot: &[u8], used: usize) -> Result<&[u8], Refusal> {
     let image = &slot[..used];
-    if image.is_empty() {
-        return Err(Refusal::Empty);
-    }
     if !Target::Application.accepts(image) {
-        return Err(Refusal::NotAnImage);
+        return Err(Refusal::NotReplaced);
     }
     Ok(image)
+}
+
+/// The slot's image as long as the running one, `running` bytes, to compare their CRCs: its
+/// first `running` bytes, then how many erased bytes it lacks (an image that ends in them reads
+/// shorter). Past `running` is a stale tail, as the first update after an install from stock
+/// carries, and no part of the same build.
+#[must_use]
+pub fn at_running_len(image: &[u8], running: usize) -> (&[u8], usize) {
+    let n = image.len().min(running);
+    (&image[..n], running - n)
 }
 
 #[cfg(test)]
@@ -78,7 +86,11 @@ mod tests {
 
     /// As `update revert` reads the slot: a piece at a time.
     fn previous_image<'a>(dfu: &'a [u8], active: &[u8]) -> Result<&'a [u8], Refusal> {
-        let slot = replaced(dfu, active)?;
+        if dfu.len() != DFU_SIZE {
+            return Err(Refusal::NotReplaced);
+        }
+        replaced(&dfu[..PAGE_SIZE], active)?;
+        let slot = &dfu[PAGE_SIZE..];
         let used = slot.chunks(4096).enumerate().fold(0, |used, (i, piece)| used_after(used, i * 4096, piece));
         image_in(slot, used)
     }
@@ -206,6 +218,65 @@ mod tests {
     }
 
     #[test]
+    fn after_the_loader_reverts_an_update_that_shared_the_first_page_there_is_nothing_to_go_back_to() {
+        let (a, b) = (image(300_001, 1), image(310_000, 2));
+        let mut c = image(320_000, 3);
+        c[..PAGE_SIZE].copy_from_slice(&b[..PAGE_SIZE]);
+        let mut s = Slots::installed(&a);
+        s.write_update(&b);
+        s.swap();
+        s.write_update(&c);
+        s.swap();
+        s.revert();
+        assert!(s.runs(&b));
+        assert_eq!(s.previous(), Err(Refusal::NotReplaced));
+    }
+
+    /// CRC-32 of `bytes` then `pad` erased bytes, as `update revert` compares the build.
+    fn crc_padded(bytes: &[u8], pad: usize) -> u32 {
+        let crc = crate::plan::crc32_continue(0xFFFF_FFFF, bytes);
+        !crate::plan::crc32_continue(crc, &vec![ERASED; pad])
+    }
+
+    fn crc(bytes: &[u8]) -> u32 {
+        crc_padded(bytes, 0)
+    }
+
+    #[test]
+    fn the_first_update_after_an_install_from_stock_carries_a_stale_tail_the_build_check_sees_past() {
+        let a = image(300_000, 1);
+        let stock = image(ACTIVE_SIZE, 9);
+        let pages = a.len().div_ceil(PAGE_SIZE);
+        // The installer erases only the pages its image needs: stock's bytes stay after them.
+        let mut s = Slots::installed(&stock);
+        s.active[..pages * PAGE_SIZE].fill(ERASED);
+        s.active[..a.len()].copy_from_slice(&a);
+        s.write_update(&a);
+        s.swap();
+        let found = s.previous().unwrap();
+        assert!(found.len() > a.len());
+        let (head, pad) = at_running_len(found, a.len());
+        assert_eq!(crc_padded(head, pad), crc(&a));
+        let other = image(300_000, 2);
+        let (head, pad) = at_running_len(found, other.len());
+        assert_ne!(crc_padded(head, pad), crc(&other));
+    }
+
+    #[test]
+    fn a_running_image_that_ends_in_erased_bytes_is_still_the_same_build() {
+        let mut a = image(300_000, 1);
+        a.extend_from_slice(&[ERASED; 7]);
+        let b = image(250_000, 2);
+        let mut s = Slots::installed(&a);
+        s.write_update(&b);
+        s.swap();
+        let found = s.previous().unwrap();
+        let (head, pad) = at_running_len(found, a.len());
+        assert_eq!((head.len(), pad), (300_000, 7));
+        assert_eq!(crc_padded(head, pad), crc(&a));
+    }
+
+    #[test]
     fn a_full_size_image_is_found_whole() {
         let (a, b) = (image(ACTIVE_SIZE, 1), image(200_000, 2));
         let mut s = Slots::installed(&a);
@@ -232,9 +303,9 @@ mod tests {
         let b = image(250_000, 2);
         let mut s = Slots::installed(&b);
         s.dfu[..PAGE_SIZE].copy_from_slice(&s.active[..PAGE_SIZE]);
-        assert_eq!(s.previous(), Err(Refusal::Empty));
+        assert_eq!(s.previous(), Err(Refusal::NotReplaced));
         s.dfu[PAGE_SIZE..PAGE_SIZE + 4].copy_from_slice(&[0, 0, 0, 0]);
-        assert_eq!(s.previous(), Err(Refusal::NotAnImage));
+        assert_eq!(s.previous(), Err(Refusal::NotReplaced));
     }
 
     #[test]
