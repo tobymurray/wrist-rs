@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Host tests for wrist-ble.py's pairing answers; no watch needed."""
+import asyncio
 import importlib.util
 from pathlib import Path
 import unittest
@@ -93,6 +94,26 @@ class PairingAnswers(unittest.TestCase):
     def test_the_watch_can_be_told_nothing_and_the_host_can_stall_or_cancel(self):
         self.assertEqual(answers('never', 'none', 1, 1), (None, 'never'))
         self.assertEqual(answers('cancel', 'yes', 1, None), ('ble yes', 'cancel'))
+
+
+class Revert(unittest.TestCase):
+    """A watch that answers before the write's own response returns."""
+
+    def outcome(self, answer):
+        con = wrist_ble.Console(echo=lambda text: None)
+
+        class Client:
+            async def write_gatt_char(self, _uuid, data, response):
+                if data.startswith(b'update revert'):
+                    con.on_notify(None, (answer + '\n').encode())
+
+        return asyncio.run(asyncio.wait_for(wrist_ble.revert(Client(), con), 2))
+
+    def test_a_refusal_is_seen(self):
+        self.assertFalse(self.outcome('[update] revert: the other slot is empty; nothing written'))
+
+    def test_success_is_seen(self):
+        self.assertTrue(self.outcome('[update] revert ok 1 bytes, crc 0x0, swap marked; reset to apply'))
 
 
 if __name__ == '__main__':

@@ -374,14 +374,16 @@ async def main():
 
 async def revert(client, con):
     """`update revert`: the watch copies the image it replaced back into the other slot."""
+    since = len(con.lines)
     await send(client, "update revert")
-    line = await con.wait_for(["[update] revert ok", "[update] revert:", "[update] error"], 90)
+    line = await con.wait_for(["[update] revert ok", "[update] revert:", "[update] error"], 90, since)
     if line and "revert ok" in line:
         return True
     if line is None:
         # As after a transfer, the ok line can be lost while the core writes flash.
+        since = len(con.lines)
         await send(client, "boot")
-        state = await con.wait_for(["[boot] state"], 5)
+        state = await con.wait_for(["[boot] state"], 5, since)
         if state and "swap" in state:
             print("-- the watch reports the swap marked; taking that as success", flush=True)
             return True

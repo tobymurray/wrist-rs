@@ -10,6 +10,7 @@ pub const DFU_SIZE: usize = (bank1::DFU.end - bank1::DFU.start) as usize * PAGE_
 
 const ACTIVE_SIZE: usize = Target::Application.size() as usize;
 const _: () = assert!(DFU_SIZE == ACTIVE_SIZE + PAGE_SIZE);
+const _: () = assert!(DFU_BASE == Target::Application.base() + Target::Application.size());
 
 /// What flash reads as once erased.
 pub const ERASED: u8 = 0xFF;
@@ -37,20 +38,33 @@ impl Refusal {
     }
 }
 
-/// The replaced image in `dfu`, the whole DFU slot, up to its last byte that is not [`ERASED`].
+/// `dfu`, the whole DFU slot, past its first page: where the image the last swap replaced lies.
+///
+/// # Errors
+/// [`Refusal::NotReplaced`].
+pub fn replaced<'a>(dfu: &'a [u8], active: &[u8]) -> Result<&'a [u8], Refusal> {
+    if dfu.len() != DFU_SIZE || dfu[..PAGE_SIZE] != active[..PAGE_SIZE] {
+        return Err(Refusal::NotReplaced);
+    }
+    Ok(&dfu[PAGE_SIZE..])
+}
+
+/// `used`, how far the slot's bytes that are not [`ERASED`] reach, once `piece`, `at` bytes in,
+/// has been read, the pieces in order.
+#[must_use]
+pub fn used_after(used: usize, at: usize, piece: &[u8]) -> usize {
+    piece.iter().rposition(|&b| b != ERASED).map_or(used, |i| at + i + 1)
+}
+
+/// The image in `slot`, given how far its bytes that are not [`ERASED`] reach.
 ///
 /// # Errors
 /// The [`Refusal`] that says why the slot holds no image to go back to.
-pub fn previous_image<'a>(dfu: &'a [u8], active: &[u8]) -> Result<&'a [u8], Refusal> {
-    if dfu.len() != DFU_SIZE || active.len() < PAGE_SIZE || dfu[..PAGE_SIZE] != active[..PAGE_SIZE] {
-        return Err(Refusal::NotReplaced);
-    }
-    let candidate = &dfu[PAGE_SIZE..];
-    let len = candidate.iter().rposition(|&b| b != ERASED).map_or(0, |i| i + 1);
-    if len == 0 {
+pub fn image_in(slot: &[u8], used: usize) -> Result<&[u8], Refusal> {
+    let image = &slot[..used];
+    if image.is_empty() {
         return Err(Refusal::Empty);
     }
-    let image = &candidate[..len];
     if !Target::Application.accepts(image) {
         return Err(Refusal::NotAnImage);
     }
@@ -61,6 +75,13 @@ pub fn previous_image<'a>(dfu: &'a [u8], active: &[u8]) -> Result<&'a [u8], Refu
 mod tests {
     use super::*;
     use crate::vectors::SP_MAX;
+
+    /// As `update revert` reads the slot: a piece at a time.
+    fn previous_image<'a>(dfu: &'a [u8], active: &[u8]) -> Result<&'a [u8], Refusal> {
+        let slot = replaced(dfu, active)?;
+        let used = slot.chunks(4096).enumerate().fold(0, |used, (i, piece)| used_after(used, i * 4096, piece));
+        image_in(slot, used)
+    }
 
     /// The two slots, moved page by page as embassy-boot's `BootLoader::swap` and `revert`
     /// move them.

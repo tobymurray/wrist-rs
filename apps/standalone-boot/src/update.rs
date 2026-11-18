@@ -432,7 +432,13 @@ pub async fn revert_task(flash: &'static FlashMutex) -> ! {
     }
 }
 
+/// Set once the heartbeat has marked this image booted, or tried to; a mark before then would undo a revert.
+pub static KEPT: AtomicBool = AtomicBool::new(false);
+
 async fn revert(flash: &'static FlashMutex) -> Result<(), &'static str> {
+    if !KEPT.load(Ordering::Acquire) {
+        return Err("wait for [boot] marked booted, about 15 s after a start, then retry");
+    }
     app_update_allowed(flash)?;
     claim_staging()?;
     let result = revert_staged(flash).await;
@@ -441,20 +447,22 @@ async fn revert(flash: &'static FlashMutex) -> Result<(), &'static str> {
 }
 
 async fn revert_staged(flash: &'static FlashMutex) -> Result<(), &'static str> {
-    use wrist_flash::previous::{previous_image, DFU_BASE, DFU_SIZE};
+    use wrist_flash::previous::{image_in, replaced, used_after, DFU_BASE, DFU_SIZE};
     // Flash, read while nothing writes it: the write below comes from the copy in RAM.
     let dfu = unsafe { core::slice::from_raw_parts(DFU_BASE as *const u8, DFU_SIZE) };
     let active = unsafe {
         core::slice::from_raw_parts(Target::Application.base() as *const u8, Target::Application.size() as usize)
     };
-    let found = previous_image(dfu, active).map_err(wrist_flash::previous::Refusal::as_str)?;
-    let len = found.len();
+    let slot = replaced(dfu, active).map_err(wrist_flash::previous::Refusal::as_str)?;
     let staging = unsafe { core::slice::from_raw_parts_mut(STAGING as *mut u8, STAGING_SIZE) };
-    for (i, piece) in found.chunks(4096).enumerate() {
+    let mut used = 0;
+    for (i, piece) in slot.chunks(4096).enumerate() {
         staging[i * 4096..i * 4096 + piece.len()].copy_from_slice(piece);
+        used = used_after(used, i * 4096, piece);
         embassy_futures::yield_now().await;
     }
-    let image = &staging[..len];
+    let image = image_in(&staging[..slot.len()], used).map_err(wrist_flash::previous::Refusal::as_str)?;
+    let len = image.len();
     let crc = crc32_yielding(image).await;
     if crate::version::crc() == Some(crc) {
         return Err("the other slot holds this same image; nothing written");

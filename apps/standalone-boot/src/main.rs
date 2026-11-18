@@ -1254,6 +1254,7 @@ async fn heartbeat(flash: &'static update::FlashMutex) -> ! {
                         uart.write_line("[boot] could not mark booted: state partition write failed");
                     }
                 }
+                update::KEPT.store(true, core::sync::atomic::Ordering::Release);
             }
         }
         uart.write_str("[hb] ");
