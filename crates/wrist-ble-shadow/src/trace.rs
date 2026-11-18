@@ -30,7 +30,7 @@ pub fn decode(at: Instant, bytes: &[u8]) -> Option<Snapshot> {
         return None;
     }
     let mut links = [None; MAX_LINKS];
-    for (slot, l) in links.iter_mut().zip(rest.chunks_exact(4)) {
+    for (slot, l) in links.iter_mut().zip(rest.as_chunks::<4>().0) {
         let role = match l[2] {
             0 => LeConnRole::Central,
             1 => LeConnRole::Peripheral,

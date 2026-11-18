@@ -462,3 +462,36 @@ fn a_usb_update_answered_leaves_the_next_transfer() {
     }
     assert_eq!(replay(&lines.join("\n")).disagreements(), Vec::<String>::new());
 }
+
+/// What a trace line is: `c`, `e`, `l`, `r` or `s`.
+fn kind(line: &str) -> Option<&str> {
+    let (_, text) = line.split_once(" [trace] ")?;
+    text.split_whitespace().nth(1)
+}
+
+/// The core told a lost read of the driver's on the watch (`ble probe lose link`, the connection
+/// withheld from it) resyncs from the driver's snapshot in the replay too; without them it never
+/// learns of the link.
+#[test]
+fn the_drivers_lost_read_and_snapshot_are_the_cores() {
+    let with = fixture("bluez-lost-read.log");
+    let r = replay(&with);
+    assert_eq!(r.disagreements(), Vec::<String>::new(), "{}", r.render(false));
+    assert_eq!(r.core_ops.iter().filter(|(_, op)| op.kind() == OpKind::UpdateParams).count(), 1);
+    let without: String = with.lines().filter(|l| !matches!(kind(l), Some("l" | "s"))).flat_map(|l| [l, "\n"]).collect();
+    assert_eq!(with.lines().count(), without.lines().count() + 2);
+    assert_eq!(replay(&without).disagreements().len(), 2);
+}
+
+/// A snapshot traced as failed leaves the core without the link until the driver's next; one the
+/// replay can't read is an event the core could not.
+#[test]
+fn a_failed_snapshot_of_the_drivers_is_none() {
+    let with = fixture("bluez-lost-read.log");
+    let taken = with.lines().find(|l| kind(l) == Some("s")).unwrap();
+    let failed = taken.rsplit_once(' ').unwrap().0;
+    let r = replay(&with.replace(taken, failed));
+    assert_eq!((r.disagreements().len(), r.unknown_events), (2, 0));
+    let r = replay(&with.replace(taken, &format!("{failed}\n{taken}")));
+    assert_eq!(r.disagreements(), Vec::<String>::new());    assert_eq!(replay(&with.replace(taken, &format!("{failed} 08"))).unknown_events, 1);
+}
