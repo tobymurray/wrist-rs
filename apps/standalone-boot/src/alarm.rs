@@ -1,5 +1,5 @@
-//! The daily alarm's task, woken by RTC alarm A for each check `wrist_time::alarm` names, and the
-//! console's `alarm`.
+//! The daily alarm's task, woken by RTC alarm A for each check `wrist_logic::time::alarm` names,
+//! and the console's `alarm`.
 
 use core::cell::Cell;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU16, AtomicU32, Ordering};
@@ -11,8 +11,8 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Timer};
-use wrist_haptic::{Pattern, ALARM_FOR_MS};
-use wrist_time::alarm::{minute_of_day, parse_hhmm, Alarm, Found, DAY};
+use wrist_logic::haptic::{Pattern, ALARM_FOR_MS};
+use wrist_logic::time::alarm::{minute_of_day, parse_hhmm, Alarm, Found, DAY};
 
 use crate::rtc::{self, Civil};
 use crate::uart::Uart;

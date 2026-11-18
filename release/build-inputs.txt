@@ -19,12 +19,12 @@ apps/standalone-boot
 apps/wrist-loader
 # The installer's service, its GUI's shell and its CMake build, in the .uapp.
 apps/image-installer
-# The image links every crate here but wrist-installer-ui; the installer links wrist-flash
-# and wrist-installer-ui.
+# The workspace's crates, from which the image, the loader and the installer link theirs.
 crates
 # Embassy's STM32 HAL and USB driver, with our patches.
 vendor
-# The root workspace, where the installer's wrist-flash builds: its profile and lock file.
+# The root workspace: the settings its crates inherit, and the profile and lock file the
+# installer's wrist-flash builds with.
 Cargo.toml
 Cargo.lock
 # The stable compiler and target, for the image, the loader and wrist-flash.

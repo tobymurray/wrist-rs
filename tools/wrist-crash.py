@@ -26,7 +26,7 @@ def fnv1a(data):
 
 
 def as_recorded(build_id):
-    """A build ID as `Build::text` in crates/wrist-crash prints it."""
+    """A build ID as `Build::text` in crates/wrist-logic/src/crash.rs prints it."""
     if re.fullmatch(rf'[0-9a-fA-F]{{{BUILD_HASH_DIGITS}}}(-dirty)?', build_id):
         return build_id.lower()
     return f'#{fnv1a(build_id.encode()):08x}'

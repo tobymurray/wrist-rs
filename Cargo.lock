@@ -1486,27 +1486,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wrist-ble-core"
-version = "0.0.0"
-dependencies = [
- "proptest",
- "wrist-ble",
- "wrist-bluenrg2",
-]
-
-[[package]]
-name = "wrist-ble-shadow"
-version = "0.0.0"
-dependencies = [
- "bluenrg2 0.1.1",
- "proptest",
- "wrist-ble",
- "wrist-ble-core",
- "wrist-bluenrg2",
- "wrist-wake",
-]
-
-[[package]]
 name = "wrist-ble-sim"
 version = "0.0.0"
 dependencies = [
@@ -1514,10 +1493,7 @@ dependencies = [
  "proptest",
  "stateright",
  "wrist-ble",
- "wrist-ble-core",
- "wrist-ble-shadow",
  "wrist-bluenrg2",
- "wrist-wake",
 ]
 
 [[package]]
@@ -1530,7 +1506,6 @@ dependencies = [
  "embedded-hal-async",
  "proptest",
  "wrist-ble",
- "wrist-wake",
 ]
 
 [[package]]
@@ -1538,32 +1513,16 @@ name = "wrist-board"
 version = "0.0.0"
 
 [[package]]
-name = "wrist-crash"
-version = "0.0.0"
-
-[[package]]
-name = "wrist-eeprom"
-version = "0.0.0"
-dependencies = [
- "embedded-hal",
-]
-
-[[package]]
-name = "wrist-flash"
-version = "0.0.0"
-
-[[package]]
-name = "wrist-glass"
+name = "wrist-display"
 version = "0.0.0"
 dependencies = [
  "embedded-graphics",
  "incised-text",
  "inscribed-disc",
- "wrist-l10n",
 ]
 
 [[package]]
-name = "wrist-haptic"
+name = "wrist-flash"
 version = "0.0.0"
 
 [[package]]
@@ -1577,10 +1536,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wrist-l10n"
-version = "0.0.0"
-
-[[package]]
 name = "wrist-l10n-gen"
 version = "0.0.0"
 dependencies = [
@@ -1588,47 +1543,15 @@ dependencies = [
  "icu",
  "serde",
  "toml",
- "wrist-l10n",
+ "wrist-display",
  "writeable",
 ]
 
 [[package]]
-name = "wrist-pages"
-version = "0.0.0"
-
-[[package]]
-name = "wrist-panel"
-version = "0.0.0"
-
-[[package]]
-name = "wrist-power"
-version = "0.0.0"
-
-[[package]]
-name = "wrist-profiles"
-version = "0.0.0"
-
-[[package]]
-name = "wrist-store"
+name = "wrist-logic"
 version = "0.0.0"
 dependencies = [
- "wrist-flash",
-]
-
-[[package]]
-name = "wrist-time"
-version = "0.0.0"
-
-[[package]]
-name = "wrist-vcom"
-version = "0.0.0"
-
-[[package]]
-name = "wrist-wake"
-version = "0.0.0"
-dependencies = [
- "bluenrg2 0.1.1",
- "wrist-ble",
+ "embedded-hal",
 ]
 
 [[package]]

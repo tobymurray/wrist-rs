@@ -13,7 +13,7 @@ use wrist_bluenrg2::bonds::PAIRING;
 use wrist_bluenrg2::driver::{Got, Unanswered};
 use wrist_bluenrg2::start::{Setup, Start, Starting, Step};
 use wrist_bluenrg2::transport::MAX_READ;
-use wrist_wake::ble::server::{device_information, services, RX, TX};
+use wrist_bluenrg2::wake::ble::server::{device_information, services, RX, TX};
 
 static DIS: [CharDecl; 3] = device_information(b"c629fcd8e8e0");
 static SERVICES: [ServiceDecl; 2] = services(&DIS);

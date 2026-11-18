@@ -6,9 +6,9 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 
 use embassy_time::{Duration, Instant, Timer};
 use wrist_board::pins;
-use wrist_panel::dma::cycles;
-use wrist_panel::{timing, Clock, Pace, GCK_EDGES, LAST_LINE_EDGE};
-use wrist_vcom::{Mode, Rate};
+use wrist_display::panel::dma::cycles;
+use wrist_display::panel::{timing, Clock, Pace, GCK_EDGES, LAST_LINE_EDGE};
+use wrist_display::vcom::{Mode, Rate};
 
 use crate::uart::Uart;
 
@@ -34,10 +34,10 @@ const VA: (u32, u32) = gpio(pins::LCD_XFRP);
 const AF_LPTIM1_CH1: u32 = 1;
 const AF_LPTIM3_CH1: u32 = 14;
 
-pub const WIDTH: u32 = wrist_glass::WIDTH;
-pub const HEIGHT: u32 = wrist_glass::HEIGHT;
-const LINES: usize = wrist_panel::LINES;
-const PAIRS: usize = wrist_panel::PAIRS;
+pub const WIDTH: u32 = wrist_display::glass::WIDTH;
+pub const HEIGHT: u32 = wrist_display::glass::HEIGHT;
+const LINES: usize = wrist_display::panel::LINES;
+const PAIRS: usize = wrist_display::panel::PAIRS;
 /// Kept lines fast-forwarded between yields.
 const FAST_RUN: u32 = 32;
 const INTB_HIGH: Duration = Duration::from_millis(timing::INTB_HIGH_MS as u64);
@@ -70,7 +70,7 @@ pub fn set_vcom_mode(mode: Mode) {
 }
 
 fn vcom_period() -> u32 {
-    match wrist_vcom::rate(Mode::from_u8(VCOM_MODE.load(Ordering::Relaxed)), light_on()) {
+    match wrist_display::vcom::rate(Mode::from_u8(VCOM_MODE.load(Ordering::Relaxed)), light_on()) {
         Rate::Low => PERIOD_LOW,
         Rate::High => PERIOD_HIGH,
     }
@@ -221,14 +221,14 @@ fn put_data(word: u32) {
 /// Screen column `x`'s port E words, LSB plane then MSB: its pairs top first, then a black pair
 /// for the last `BCK` labels, which latch too (`HARDWARE.md`).
 fn line_words(fb: Option<&[u8]>, x: usize) -> [[u32; PAIRS + 1]; 2] {
-    let mut words = [[wrist_panel::BLACK; PAIRS + 1]; 2];
+    let mut words = [[wrist_display::panel::BLACK; PAIRS + 1]; 2];
     let w = WIDTH as usize;
     if let Some(fb) = fb.filter(|fb| x < w && fb.len() == w * HEIGHT as usize) {
         let [lsb, msb] = &mut words;
         for ((rows, lsb), msb) in fb.chunks_exact(2 * w).zip(lsb.iter_mut()).zip(msb.iter_mut()) {
             let (odd, even) = (rows[x], rows[w + x]);
-            *lsb = wrist_panel::word(odd, even, 0);
-            *msb = wrist_panel::word(odd, even, 1);
+            *lsb = wrist_display::panel::word(odd, even, 0);
+            *msb = wrist_display::panel::word(odd, even, 1);
         }
     }
     words
@@ -292,8 +292,8 @@ impl Lcd {
             set((base, pin), false);
             configure_output(base, pin);
         }
-        put_data(wrist_panel::BLACK);
-        for pin in (0..16).filter(|pin| wrist_panel::DATA_MASK & (1 << pin) != 0) {
+        put_data(wrist_display::panel::BLACK);
+        for pin in (0..16).filter(|pin| wrist_display::panel::DATA_MASK & (1 << pin) != 0) {
             configure_output(GPIOE_BASE, pin);
         }
         crate::panel_dma::init();
@@ -332,7 +332,7 @@ impl Lcd {
         pace.wait(cycles(timing::GSP_SETUP));
         let mut gck = false;
         let mut written = 0;
-        let mut words = [[wrist_panel::BLACK; PAIRS + 1]; 2];
+        let mut words = [[wrist_display::panel::BLACK; PAIRS + 1]; 2];
         let mut fast = 0;
         for edge in 1..=GCK_EDGES {
             gck = !gck;

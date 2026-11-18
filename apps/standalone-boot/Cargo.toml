@@ -25,27 +25,16 @@ embassy-boot-stm32 = "0.8.0"
 wrist-flash = { path = "../../crates/wrist-flash" }
 bluenrg2 = { version = "0.1.1", optional = true }
 wrist-ble = { path = "../../crates/wrist-ble", optional = true }
-wrist-ble-core = { path = "../../crates/wrist-ble-core", optional = true }
-wrist-ble-shadow = { path = "../../crates/wrist-ble-shadow", optional = true }
 wrist-bluenrg2 = { path = "../../crates/wrist-bluenrg2", optional = true }
-wrist-wake = { path = "../../crates/wrist-wake", optional = true }
 wrist-board = { path = "../../crates/wrist-board" }
-wrist-glass = { path = "../../crates/wrist-glass" }
-wrist-haptic = { path = "../../crates/wrist-haptic" }
-wrist-pages = { path = "../../crates/wrist-pages" }
-wrist-time = { path = "../../crates/wrist-time" }
-wrist-crash = { path = "../../crates/wrist-crash" }
-wrist-eeprom = { path = "../../crates/wrist-eeprom" }
-wrist-power = { path = "../../crates/wrist-power" }
-wrist-vcom = { path = "../../crates/wrist-vcom" }
-wrist-panel = { path = "../../crates/wrist-panel" }
+wrist-display = { path = "../../crates/wrist-display" }
+wrist-logic = { path = "../../crates/wrist-logic" }
 
 [features]
 # embassy-usb's own log of the link, printed by `usblog`.
 usb-log = ["dep:log", "embassy-usb/log"]
-# The console and application updates over Bluetooth, for a bonded central (ble.rs). The radio
-# stays in reset until `ble on`.
-ble = ["dep:bluenrg2", "dep:wrist-ble", "dep:wrist-ble-core", "dep:wrist-ble-shadow", "dep:wrist-bluenrg2", "dep:wrist-wake"]
+# The console and application updates over Bluetooth, for a bonded central (ble.rs).
+ble = ["dep:bluenrg2", "dep:wrist-ble", "dep:wrist-bluenrg2"]
 # `ble probe`: the BlueNRG-2's firmware, updater and anchor period on the console.
 ble-probe = ["ble"]
 # Every packet to and from the BlueNRG-2 on the console, for replaying through the core on a host.
@@ -86,13 +75,9 @@ embassy-usb-synopsys-otg = { git = "https://github.com/embassy-rs/embassy", rev 
 embassy-usb = { git = "https://github.com/embassy-rs/embassy", rev = "cf9beb7173159ce1b60dadb9be11583c20c7949a" }
 
 # What draws the face is built for speed rather than size.
-[profile.release.package.wrist-glass]
+[profile.release.package.wrist-display]
 opt-level = 3
 [profile.release.package.incised-text]
 opt-level = 3
 [profile.release.package.inscribed-disc]
-opt-level = 3
-[profile.release.package.wrist-panel]
-opt-level = 3
-[profile.release.package.wrist-l10n]
 opt-level = 3

@@ -18,10 +18,10 @@ pub(super) enum Dir {
     Snapshot,
 }
 
-/// The driver's snapshot as [`wrist_ble_shadow::trace`] carries it; `None` when it failed.
+/// The driver's snapshot as [`wrist_bluenrg2::shadow::trace`] carries it; `None` when it failed.
 pub(super) fn snapshot(s: Option<&wrist_ble::Snapshot>) {
-    let mut bytes = [0; wrist_ble_shadow::trace::SNAPSHOT_MAX];
-    let len = s.map_or(0, |s| wrist_ble_shadow::trace::encode(s, &mut bytes));
+    let mut bytes = [0; wrist_bluenrg2::shadow::trace::SNAPSHOT_MAX];
+    let len = s.map_or(0, |s| wrist_bluenrg2::shadow::trace::encode(s, &mut bytes));
     packet(Dir::Snapshot, &bytes[..len]);
 }
 

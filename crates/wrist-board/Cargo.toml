@@ -1,10 +1,10 @@
 [package]
 name = "wrist-board"
 version = "0.0.0"
-edition = "2021"
-license = "AGPL-3.0-or-later"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
 description = "Pin and I2C address assignments for the UNAcore board"
-publish = false
 
-[lints.clippy]
-pedantic = { level = "warn", priority = -1 }
+[lints]
+workspace = true

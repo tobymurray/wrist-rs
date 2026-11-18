@@ -50,10 +50,10 @@ const SRC_NONE: u8 = 0;
 const SRC_LSE: u8 = 1;
 const SRC_LSI: u8 = 2;
 
-pub use wrist_time::alarm::Alarm;
-use wrist_time::backup::{self, Flags};
-pub use wrist_time::zone::{Change, Zone};
-pub use wrist_time::{civil_of_seconds, parse_civil, seconds_of, Civil};
+pub use wrist_logic::time::alarm::Alarm;
+use wrist_logic::time::backup::{self, Flags};
+pub use wrist_logic::time::zone::{Change, Zone};
+pub use wrist_logic::time::{civil_of_seconds, parse_civil, seconds_of, Civil};
 
 const CYCLES_PER_MS: u32 = crate::busy::CORE_MHZ * 1_000;
 // Over four times the SiT1532's t_start, 450 ms at most (its datasheet).

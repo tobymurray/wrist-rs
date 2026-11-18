@@ -9,8 +9,8 @@ use embassy_stm32::mode::Mode;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_time::Instant;
-use wrist_eeprom::info::{judge, Record, Verdict, RECORD_BYTES};
-use wrist_eeprom::Eeprom;
+use wrist_logic::eeprom::info::{judge, Record, Verdict, RECORD_BYTES};
+use wrist_logic::eeprom::Eeprom;
 
 use crate::uart::Uart;
 

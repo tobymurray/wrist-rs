@@ -5,11 +5,11 @@ use wrist_ble::{
     AddrKind, BdAddr, ConnHandle, Duration, Failure, FailureKind, Instant, LeConnRole, LinkParams, Op, OpId, Outcome, PeerAddr,
     RadioEvent, Snapshot, Status, MAX_LINKS,
 };
-use wrist_ble_core::engine::{Core, Input, Outputs, ASKS_PER_WANT, BUSY_BUDGET};
-use wrist_ble_core::goals::{Goals, PhoneGoal, Power};
-use wrist_ble_core::phone::SETTLE;
+use wrist_ble::policy::engine::{Core, Input, Outputs, ASKS_PER_WANT, BUSY_BUDGET};
+use wrist_ble::policy::goals::{Goals, PhoneGoal, Power};
+use wrist_ble::policy::phone::SETTLE;
 use wrist_bluenrg2::INFO;
-use wrist_ble_shadow::menu::{interval_now_ask, MENU};
+use wrist_bluenrg2::shadow::menu::{interval_now_ask, MENU};
 use wrist_bluenrg2::{Scheduler, CAPABILITIES};
 
 fn link() -> ConnHandle {
@@ -155,7 +155,7 @@ fn asked_on_battery() -> Bench {
 #[test]
 fn a_missing_key_is_told() {
     use wrist_ble::{PairingEvent, PairingStep};
-    use wrist_ble_core::engine::Tell;
+    use wrist_ble::policy::engine::Tell;
     for (step, tell) in [(PairingStep::LocalKeyMissing, Tell::OldKey(link())), (PairingStep::PeerKeyMissing, Tell::BondLost(link()))] {
         let mut b = Bench::new(battery());
         b.phone_up(1_000);
@@ -169,7 +169,7 @@ fn a_missing_key_is_told() {
 #[test]
 fn an_ask_is_left_out_by_the_cores_rules() {
     use wrist_ble::{ConnParams, PairingEvent, PairingStep};
-    use wrist_ble_core::engine::Omitted;
+    use wrist_ble::policy::engine::Omitted;
     let fits = ConnParams { interval_min: OPENED.interval, interval_max: OPENED.interval, latency: OPENED.latency, timeout: OPENED.timeout, ce_len: Duration::from_u16(0) };
     let other = ConnParams { latency: OPENED.latency + 1, ..fits };
     let mut b = Bench::new(battery());
@@ -453,7 +453,7 @@ fn a_chip_that_stays_busy_is_restarted() {
             }
             let next = b.core.step(b.now, Input::Tick).next.expect("a wake");
             let out = b.at(next.0, Input::Tick);
-            if matches!(out.chip, Some(wrist_ble_core::chip::Action::Start(_))) {
+            if matches!(out.chip, Some(wrist_ble::policy::chip::Action::Start(_))) {
                 restarted = Some(b.now);
             }
         }
@@ -506,13 +506,13 @@ fn a_chip_that_stays_busy_is_restarted_under_the_phones_link() {
     let mut restarted = 0;
     for i in 1..u16::from(BUSY_BUDGET) {
         // A new want each time (the console's ask), so each is asked at once and refused busy.
-        let now = wrist_ble_shadow::menu::interval_now_ask(8 + i, 8 + i);
+        let now = wrist_bluenrg2::shadow::menu::interval_now_ask(8 + i, 8 + i);
         let t = 2_000 + u64::from(i) * 40_000;
         let out = b.at(t, Input::IntervalNow(now));
         let out = if out.op.is_some() { out } else { b.at(t + 33_000, Input::Tick) };
         assert!(matches!(out.op, Some(Op::UpdateParams(..))), "{i}: {out:?}");
         let out = b.refuse(FailureKind::Busy);
-        restarted += usize::from(matches!(out.chip, Some(wrist_ble_core::chip::Action::Start(_))));
+        restarted += usize::from(matches!(out.chip, Some(wrist_ble::policy::chip::Action::Start(_))));
     }
     assert_eq!(restarted, 1, "{:?}", b.core.counters);
     assert_eq!(b.core.counters.busy_spent, 1);
@@ -549,7 +549,7 @@ fn a_restarted_chip_has_the_whole_busy_budget() {
     }
     assert_eq!(b.core.counters.busy_spent, 0);
     let out = b.at(b.now.0 + 1, Input::Radio(RadioEvent::ChipReset(wrist_ble::ResetCause::Watchdog)));
-    let Some(wrist_ble_core::chip::Action::Start(start)) = out.chip else { panic!("{out:?}") };
+    let Some(wrist_ble::policy::chip::Action::Start(start)) = out.chip else { panic!("{out:?}") };
     b.at(b.now.0 + 1, Input::Started(start, Ok(INFO)));
     let id = b.accept();
     b.at(b.now.0 + 1, Input::Radio(RadioEvent::Done(id, Ok(Outcome::Done))));

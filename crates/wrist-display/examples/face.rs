@@ -1,0 +1,94 @@
+//! A page as the firmware draws it, as raw ABGR2222 bytes, to compare with `page dump`:
+//!
+//!     cargo run -p wrist-display --example face -- 09:11 2026-10-23 100 face.raw
+//!     cargo run -p wrist-display --example face -- 09:11 2026-10-23 100 07:00 face.raw
+//!     cargo run -p wrist-display --example face -- battery 100 4405 usb battery.raw
+//!     cargo run -p wrist-display --example face -- about 0.1.0 5784ec72019b about.raw
+//!     cargo run -p wrist-display --example face -- bluetooth secure compare:042517 2 bt.raw
+//!     cargo run -p wrist-display --example face -- bluetooth discoverable - old-key bt.raw
+//!     cargo run -p wrist-display --example face -- stress churn 7 stress.raw
+//!
+//! `-` for any reading draws it unset.
+
+use wrist_display::glass::pages::{
+    compose, compose_about, compose_battery, compose_bluetooth, render, About, Battery, Bluetooth, Clock, Date, Prompt, Radio, Status, EN_GB,
+    FACES,
+};
+use wrist_display::glass::stress::{compose_stress, Stress};
+use wrist_display::glass::{HEIGHT, WIDTH};
+
+fn arg(s: &str) -> Option<&str> {
+    (s != "-").then_some(s)
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let stress = matches!(args.first().map(String::as_str), Some("stress"));
+    let (glass, short) = match args.as_slice() {
+        [page, kind, step, _] if page == "stress" => compose_stress(
+            Stress::parse(kind).expect("glyphs, churn, edge, full or pages"),
+            step.parse().expect("a step"),
+            FACES,
+        ),
+        [page, soc, mv, input, _] if page == "battery" => compose_battery(
+            &Battery {
+                soc_pct: arg(soc).map(|s| s.parse().expect("a percentage")),
+                cell_mv: arg(mv).map(|s| s.parse().expect("millivolts")),
+                external: arg(input).map(|s| s == "usb"),
+            },
+            &EN_GB,
+            FACES,
+        ),
+        [page, version, build, _] if page == "about" => compose_about(&About { version, build, crc: None }, &EN_GB, FACES),
+        [page, radio, prompt, bonded, _] if page == "bluetooth" => {
+            let radio = match radio.as_str() {
+                "off" => Radio::Off,
+                "starting" => Radio::Starting,
+                "on" => Radio::On,
+                "discoverable" => Radio::Discoverable,
+                "connected" => Radio::Connected,
+                "secure" => Radio::Secure,
+                "failed" => Radio::Failed,
+                _ => panic!("off, starting, on, discoverable, connected, secure or failed"),
+            };
+            let prompt = arg(prompt).map(|p| match p.split_once(':') {
+                Some(("compare", v)) => Prompt::Compare(v.parse().expect("six digits")),
+                Some(("passkey", v)) => Prompt::Passkey(v.parse().expect("six digits")),
+                _ => panic!("compare:NNNNNN or passkey:NNNNNN"),
+            });
+            let old_key = bonded == "old-key";
+            let bonded = arg(bonded).filter(|_| !old_key).map(|n| n.parse().expect("a count"));
+            compose_bluetooth(&Bluetooth { radio, prompt, bonded, old_key }, &EN_GB, FACES)
+        }
+        [time, date, soc, _] | [time, date, soc, _, _] => {
+            let nums = |s: &str, sep| -> Vec<u16> { s.split(sep).map(|n| n.parse().expect("a number")).collect() };
+            let byte = |n: u16| u8::try_from(n).expect("a field under 256");
+            let clock = arg(time).map(|t| {
+                let t = nums(t, ':');
+                Clock { h: byte(t[0]), m: byte(t[1]), s: 0 }
+            });
+            let date = arg(date).map(|d| {
+                let d = nums(d, '-');
+                Date { year: d[0], month: byte(d[1]), day: byte(d[2]) }
+            });
+            let soc_pct = arg(soc).map(|s| s.parse().expect("a percentage"));
+            let old_key = args.len() == 5 && args[3] == "old-key";
+            let alarm = args.get(3).filter(|_| args.len() == 5 && !old_key).and_then(|a| arg(a)).map(|t| {
+                let t = nums(t, ':');
+                Clock { h: byte(t[0]), m: byte(t[1]), s: 0 }
+            });
+            compose(&Status { clock, date, soc_pct, alarm, ringing: false, missed: false, old_key }, &EN_GB, FACES)
+        }
+        _ => {
+            eprintln!("usage: face HH:MM YYYY-MM-DD PERCENT [ALARM-HH:MM|old-key] OUT.raw");
+            eprintln!("       face battery PERCENT MV usb|cell OUT.raw");
+            eprintln!("       face about VERSION BUILD OUT.raw   ('-' for unset)");
+            eprintln!("       face stress KIND STEP OUT.raw");
+            std::process::exit(2);
+        }
+    };
+    assert!(stress || short == 0, "a line did not fit");
+    let mut fb = vec![0u8; (WIDTH * HEIGHT) as usize];
+    assert!(render(&mut fb, &glass));
+    std::fs::write(args.last().expect("an output path"), fb).expect("write the frame");
+}

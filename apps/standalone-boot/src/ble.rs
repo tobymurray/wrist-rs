@@ -12,14 +12,12 @@
 //! exists, so an encrypted link is a bonded central's. The console's RX characteristic asks
 //! the stack for an authenticated, encrypted link, and the watch checks too: nothing written
 //! over a link that is not encrypted is acted on, and the console's output is mirrored only to
-//! an encrypted link. The loader is never accepted over the air. The watch asks nothing of a
-//! central at connect, and asks it to pair only once it has left the link unencrypted for a
-//! while (`wrist_wake::ble::PairAsk`).
+//! an encrypted link. The loader is never accepted over the air. When a central is asked to
+//! pair is `wrist_bluenrg2::wake::ble::PairAsk`.
 //!
-//! Power. On a cable the radio is as responsive as the link allows; on battery it
-//! advertises about once a second and asks for a slow, latent link, fast only while a
-//! transfer lasts (`wrist_wake::ble::timing`). The loop has no tick: it waits for the chip's
-//! IRQ, a request, a signal, a power change or its earliest deadline (`wrist_wake::ble::due`).
+//! Power. The radio's timing on a cable and on battery is `wrist_bluenrg2::wake::ble::timing`.
+//! The loop has no tick: it waits for the chip's IRQ, a request, a signal, a power change or its
+//! earliest deadline (`wrist_bluenrg2::wake::ble::due`).
 //!
 //! Pins: SPI1 `SCK` PG2, `MISO` PG3, `MOSI` PB5; `CS` PA15 as a GPIO; `BLE_RST_L` PA8
 //! (active low); `BLE_BOOT_SPI_IRQ` PA9, the chip's `DIO7`, which is both the transport's
@@ -28,17 +26,17 @@
 //!
 //! The SPI handshake is `wrist_bluenrg2::transport`.
 //!
-//! Restarts. The chip sends that event after any reset, and one the driver's start did not ask
-//! for means it restarted by itself (`wrist_wake::ble::restart`): the link and everything on it
-//! is dropped, no command goes to it, and it is reset through its pin and brought up again, which
-//! also leaves its updater. More than three in an hour and it is held in reset.
+//! Restarts. A boot the driver's start did not ask for is the chip restarting by itself
+//! (`wrist_bluenrg2::wake::ble::restart`): the link and everything on it is dropped, no command
+//! goes to it, and it is reset through its pin and brought up again.
 //!
 //! Address. A static random address from the MCU's unique id
 //! (`wrist_bluenrg2::bonds::static_random_address`), so bonds survive updates.
 //!
-//! Decisions. The Bluetooth core (`wrist_ble_shadow`, `Mode::Drive`) makes the policy decisions and
-//! this driver carries them out, or under `ble policy legacy` this driver makes them beside the core
-//! as a shadow; where the two differ is a `[ble] shadow:` line, counted on the `ble` line.
+//! Decisions. The Bluetooth core (`wrist_bluenrg2::shadow`, `Mode::Drive`) makes the policy
+//! decisions and this driver carries them out, or under `ble policy legacy` this driver makes them
+//! beside the core as a shadow; where the two differ is a `[ble] shadow:` line, counted on the
+//! `ble` line.
 
 #[cfg(feature = "ble-probe")]
 mod probe;
@@ -71,22 +69,22 @@ use bluenrg2::{
     event_code, io_capability, AddrKind, BdAddr, BootReason, Event, BleStatus,
     PairingReason, VendorEvent, ATT_HEADER_LEN,
 };
-use wrist_ble_core::chip::Action;
+use wrist_ble::policy::chip::Action;
 use wrist_ble::{
     AdvParams, Cccd, CharDecl, ConnHandle, ConnParams, DisconnectReason, Failure, FailureKind, Interval, LeConnRole, Micros, Op, OpKind, PairingEvent, PairingStep, Payload, RadioEvent, ServerTable,
     ServiceDecl, Slots, Timeout, ATT_MAX_MTU,
 };
-use wrist_ble_core::goals::{self, Goals, PhoneGoal};
-use wrist_ble_shadow::verdict::Disagreement;
-use wrist_ble_shadow::{Mode, Observer, Shadow};
+use wrist_ble::policy::goals::{self, Goals, PhoneGoal};
+use wrist_bluenrg2::shadow::verdict::Disagreement;
+use wrist_bluenrg2::shadow::{Mode, Observer, Shadow};
 use wrist_bluenrg2::commands;
 use wrist_bluenrg2::driver::{self, Driver, Got, Reply, Unanswered};
 use wrist_bluenrg2::snapshot::{Snap, Snapping};
 use wrist_bluenrg2::start::{Setup, Start, Starting, Step};
 use wrist_bluenrg2::transport::{self, Counts};
-use wrist_pages::{OldKey, Pairing, Prompt};
-use wrist_wake::ble::restart::{Boot, Restarts};
-use wrist_wake::ble::{server, timing, ConsoleOver, HeldAsk, IntervalAsk, Lines, Outbox, PairAsk, Power, Radio, Scan, Sink, Timing};
+use wrist_logic::pages::{OldKey, Pairing, Prompt};
+use wrist_bluenrg2::wake::ble::restart::{Boot, Restarts};
+use wrist_bluenrg2::wake::ble::{server, timing, ConsoleOver, HeldAsk, IntervalAsk, Lines, Outbox, PairAsk, Power, Radio, Scan, Sink, Timing};
 
 use crate::console::Target;
 use crate::uart::Uart;
@@ -410,7 +408,7 @@ pub fn command(args: &[u8], uart: Uart) {
             let text = core::str::from_utf8(&rest[12..]).unwrap_or("");
             let mut units = text.split_whitespace().map(|w| w.parse::<u16>().ok());
             match (units.next(), units.next()) {
-                (Some(Some(min)), Some(Some(max))) if wrist_wake::ble::interval_now(min, max) => {
+                (Some(Some(min)), Some(Some(max))) if wrist_bluenrg2::wake::ble::interval_now(min, max) => {
                     Request::IntervalNow(min, max)
                 }
                 _ => return uart.write_line("[ble] usage: ble interval now <min> <max> (1.25 ms units, 6 to 1999)"),
@@ -540,8 +538,8 @@ fn write_policy(uart: Uart) {
 }
 
 /// What the Bluetooth page shows.
-pub fn page() -> wrist_glass::pages::Bluetooth {
-    use wrist_glass::pages::{Bluetooth, Prompt as Digits, Radio as Shown};
+pub fn page() -> wrist_display::glass::pages::Bluetooth {
+    use wrist_display::glass::pages::{Bluetooth, Prompt as Digits, Radio as Shown};
     let radio = match Radio::from_u8(STATE.load(Ordering::Relaxed)) {
         Radio::Off => Shown::Off,
         Radio::Starting => Shown::Starting,
@@ -574,7 +572,7 @@ fn old_key(f: impl FnOnce(&mut OldKey<bluenrg2::Address>)) {
         before != key.central().is_some()
     });
     if changed {
-        crate::redraw(wrist_pages::Page::Face);
+        crate::redraw(wrist_logic::pages::Page::Face);
         redraw();
     }
 }
@@ -940,10 +938,10 @@ impl Link<'_> {
         }
     }
 
-    /// When the loop must next run by time (`wrist_wake::ble::due`); `None` when only an
+    /// When the loop must next run by time (`wrist_bluenrg2::wake::ble::due`); `None` when only an
     /// event can give it work.
     fn due(&self) -> Option<Instant> {
-        use wrist_wake::ble::{Console, State, Transfer};
+        use wrist_bluenrg2::wake::ble::{Console, State, Transfer};
         let tick = |i: Instant| i.as_ticks();
         let one = Duration::from_ticks(1);
         let state = State {
@@ -973,7 +971,7 @@ impl Link<'_> {
         // The first tick at which `now_ms` reaches it.
         let shadow = self.shadow.next().map(|at| (at.0 * embassy_time::TICK_HZ).div_ceil(1000));
         let ops = self.chip.due().filter(|_| self.drives());
-        wrist_wake::earliest([wrist_wake::ble::due(&state), shadow, ops]).map(Instant::from_ticks)
+        wrist_bluenrg2::wake::earliest([wrist_bluenrg2::wake::ble::due(&state), shadow, ops]).map(Instant::from_ticks)
     }
 
     async fn request(&mut self, req: Request) {
@@ -1134,7 +1132,7 @@ impl Link<'_> {
             self.ask_to_pair().await;
         }
         if let Some((min, max)) = self.request_interval.take_if(|_| self.interval_ask.open()) {
-            self.ask_connection(min, max, wrist_wake::ble::NOW_LATENCY, wrist_wake::ble::NOW_TIMEOUT).await;
+            self.ask_connection(min, max, wrist_bluenrg2::wake::ble::NOW_LATENCY, wrist_bluenrg2::wake::ble::NOW_TIMEOUT).await;
         }
         if let Some(params) = self.held_ask.take(Instant::now().as_ticks()) {
             self.ask(params).await;
@@ -2145,7 +2143,7 @@ fn set_encrypted(on: bool) {
 
 /// The page redrawn, if up, for a change it shows.
 fn redraw() {
-    crate::redraw(wrist_pages::Page::Bluetooth);
+    crate::redraw(wrist_logic::pages::Page::Bluetooth);
 }
 
 fn write_address(uart: Uart, a: bluenrg2::Address) {

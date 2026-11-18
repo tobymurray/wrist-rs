@@ -6,7 +6,7 @@
     tools/wrist-frame.py --raw frame.raw [...] out.png      # 240 x 240 ABGR2222 bytes
 
 --compare takes a raw frame, such as the host's render of the same face
-(`cargo run -p wrist-glass --example face`), and counts the pixels that differ.
+(`cargo run -p wrist-display --example face`), and counts the pixels that differ.
 """
 import argparse
 import struct

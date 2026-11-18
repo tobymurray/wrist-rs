@@ -48,12 +48,12 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::channel::Channel;
 use embassy_sync::signal::Signal;
-use wrist_glass::pages;
-use wrist_glass::scene::Scene;
-use wrist_glass::text::Glass;
+use wrist_display::glass::pages;
+use wrist_display::glass::scene::Scene;
+use wrist_display::glass::text::Glass;
 use wrist_flash::vectors::{HANDOFF_POP, SRAM_END, SRAM_START};
 use wrist_board::{light, pins};
-use wrist_pages::{Action, Button, Nav, Page, Pairing, Press};
+use wrist_logic::pages::{Action, Button, Nav, Page, Pairing, Press};
 
 use crate::mmio::{
     enable_clock, gpio, modify32, read32, write32, DBGMCU_IDCODE, FLASH_ACR, FLASH_OPTR, GPIOC_BASE, GPIO_BSRR, GPIO_IDR, GPIO_MODER, GPIO_OSPEEDR,
@@ -494,7 +494,7 @@ fn spawn<S>(spawner: embassy_executor::Spawner, name: &'static str, token: embas
     spawner.spawn(token);
 }
 
-const _: () = assert!(lcd::WIDTH as usize == wrist_panel::LINES && lcd::HEIGHT as usize == wrist_panel::PIXELS);
+const _: () = assert!(lcd::WIDTH as usize == wrist_display::panel::LINES && lcd::HEIGHT as usize == wrist_display::panel::PIXELS);
 static FRAMEBUFFER: ConstStaticCell<[u8; (lcd::WIDTH * lcd::HEIGHT) as usize]> =
     ConstStaticCell::new([0u8; (lcd::WIDTH * lcd::HEIGHT) as usize]);
 /// The scene on the glass and the one being drawn, by turns.
@@ -875,7 +875,7 @@ fn on_press(uart: Uart, press: Press, injected: bool, light_until: &mut Option<I
     }
     let (moved, page, action) = NAV.lock(|n| {
         let mut nav = n.get();
-        let action = wrist_pages::action(nav.page(), press, pairing());
+        let action = wrist_logic::pages::action(nav.page(), press, pairing());
         let moved = nav.press(press, now_ms());
         n.set(nav);
         (moved, nav.page(), action)
@@ -907,7 +907,7 @@ async fn display(mut pwr_int: ExtiInput<'static, Async>) -> ! {
     let mut n: u32 = 0;
     let mut next_reading = Instant::now();
     let mut soc_pct = None;
-    let mut shown = wrist_power::ShownCharge::new();
+    let mut shown = wrist_logic::power::ShownCharge::new();
     let mut cell_mv = None;
     let mut last_minute = None;
     let mut shown_page = Page::Face;
@@ -938,7 +938,7 @@ async fn display(mut pwr_int: ExtiInput<'static, Async>) -> ! {
         }
         // Before the frame, so digits drawn in it still get their wake.
         let pairing_ends = pairing_ends();
-        if let Some(held) = wrist_pages::held(pairing(), alarm::ringing()) {
+        if let Some(held) = wrist_logic::pages::held(pairing(), alarm::ringing()) {
             show_page(held);
         }
         let page = nav_now().0;
@@ -1041,7 +1041,7 @@ fn act(action: Action) {
 /// The page, or the stress screen the console put in its place.
 fn compose_page(page: Page, soc_pct: Option<u8>, cell_mv: Option<u32>) -> (Glass, pages::Short) {
     if let Some((kind, step, _)) = glass::stress() {
-        return wrist_glass::stress::compose_stress(kind, step, pages::FACES);
+        return wrist_display::glass::stress::compose_stress(kind, step, pages::FACES);
     }
     let locale = &pages::EN_GB;
     match page {
@@ -1103,7 +1103,7 @@ async fn show(
     let changed = scene.changed_columns(before);
     cost.changed.add(c);
     embassy_futures::yield_now().await;
-    for columns in wrist_glass::text::strips(&changed, STRIP) {
+    for columns in wrist_display::glass::text::strips(&changed, STRIP) {
         let t = Instant::now();
         let c = busy::cycles();
         pages::repaint(fb, scene, before, columns, composed.switch());
@@ -1149,11 +1149,11 @@ async fn read_power(
     uart: Uart,
     bus: &mut pmic::AsyncBus,
     n: u32,
-    shown: &mut wrist_power::ShownCharge,
+    shown: &mut wrist_logic::power::ShownCharge,
 ) -> (Option<u8>, Option<u32>) {
     let s = pmic::snapshot(bus, n.is_multiple_of(6)).await;
     pmic::restore_gauge(bus, s.gauge_status).await;
-    if s.full && !s.gauge_status.is_some_and(wrist_power::gauge_reset) {
+    if s.full && !s.gauge_status.is_some_and(wrist_logic::power::gauge_reset) {
         pmic::keep_gauge_settled(&mut uart.lines(), bus, &s).await;
     }
     if s.full {
@@ -1167,7 +1167,7 @@ async fn read_power(
     pmic::write_summary(&mut uart.lines(), &s);
     power::note_reading(&s);
     let gauge = s.soc_raw.map(pmic::soc_percent);
-    let pct = shown.reading(gauge, power::external_input(), s.chg_status2.map(wrist_power::charge_done));
+    let pct = shown.reading(gauge, power::external_input(), s.chg_status2.map(wrist_logic::power::charge_done));
     if let (Some(p), Some(g)) = (pct, gauge) {
         if p != g {
             let mut l = uart.lines();

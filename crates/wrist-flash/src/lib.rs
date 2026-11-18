@@ -1,10 +1,12 @@
 #![cfg_attr(not(test), no_std)]
 
-//! The installer app's C interface: stage an image, put it over the kernel, reset into it.
+//! The installer app's C interface, which stages an image, puts it over the kernel and resets into
+//! it, and the glyph store's arithmetic ([`store`]).
 
 pub mod commit;
 pub mod layout;
 pub mod plan;
+pub mod store;
 pub mod survey;
 pub mod vectors;
 

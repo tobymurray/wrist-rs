@@ -1,12 +1,12 @@
-//! The panel's bus from TIM3, TIM1 and GPDMA1 channels 12 and 13, as `wrist_panel::dma` lays it
-//! out, with TIM4 counting `BCK`'s rising edges and TIM2 `BSP`'s pulses.
+//! The panel's bus from TIM3, TIM1 and GPDMA1 channels 12 and 13, as `wrist_display::panel::dma`
+//! lays it out, with TIM4 counting `BCK`'s rising edges and TIM2 `BSP`'s pulses.
 
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use embassy_stm32::rcc::{StopMode, WakeGuard};
 use embassy_time::{Duration, Instant, Timer};
-use wrist_panel::dma::{self, Builder, Bus, Frame, Memory};
-use wrist_panel::{timing, GCK_EDGES, LINES};
+use wrist_display::panel::dma::{self, Builder, Bus, Frame, Memory};
+use wrist_display::panel::{timing, GCK_EDGES, LINES};
 
 use crate::busy::CORE_MHZ;
 use crate::lcd::{Cost, BCK, BSP, GEN, INTB};
@@ -118,7 +118,7 @@ const _: () = {
         mask |= 1 << data[i].number;
         i += 1;
     }
-    assert!(wrist_panel::DATA_MASK == mask);
+    assert!(wrist_display::panel::DATA_MASK == mask);
 };
 
 /// SRAM5's first pages, outside `memory.x`'s RAM.

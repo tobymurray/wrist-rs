@@ -1,13 +1,13 @@
-//! The core, on the simulator's menu, asks for the driver's timing (`wrist_wake::ble::timing`):
-//! one policy, so changing it changes both.
+//! The core, on the simulator's menu, asks for the driver's timing
+//! (`wrist_bluenrg2::wake::ble::timing`): one policy, so changing it changes both.
 
 use wrist_ble::{AddrKind, BdAddr, ConnHandle, Duration, Instant, LeConnRole, LinkParams, Op, OpId, PeerAddr, RadioEvent};
-use wrist_ble_core::engine::{Core, Input};
-use wrist_ble_core::goals::{Goals, Power};
+use wrist_ble::policy::engine::{Core, Input};
+use wrist_ble::policy::goals::{Goals, Power};
 use wrist_bluenrg2::INFO;
-use wrist_ble_shadow::menu::MENU;
+use wrist_bluenrg2::shadow::menu::MENU;
 use wrist_bluenrg2::{Scheduler, CAPABILITIES};
-use wrist_wake::ble::{self as wake, timing};
+use wrist_bluenrg2::wake::ble::{self as wake, timing};
 
 const CASES: [(Power, wake::Power, bool); 4] = [
     (Power::Cable, wake::Power::Cable, false),

@@ -598,7 +598,7 @@ pub fn command(cmd: &[u8], flash: &'static FlashMutex) {
 /// ones. A long press is past a short one; nothing here can stand in for a hold.
 fn press(args: &[u8], uart: Uart) {
     let mut words = core::str::from_utf8(args).unwrap_or("").split_whitespace();
-    let button = words.next().and_then(wrist_pages::Button::parse);
+    let button = words.next().and_then(wrist_logic::pages::Button::parse);
     let long = match words.next() {
         None => Some(false),
         Some("long") => Some(true),
@@ -606,7 +606,7 @@ fn press(args: &[u8], uart: Uart) {
     };
     match (button, long, words.next()) {
         (Some(button), Some(long), None) => {
-            if !crate::inject_press(wrist_pages::Press { button, long }) {
+            if !crate::inject_press(wrist_logic::pages::Press { button, long }) {
                 uart.write_line("[button] not injected: the queue is full");
             }
         }

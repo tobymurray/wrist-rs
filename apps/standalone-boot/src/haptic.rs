@@ -11,8 +11,8 @@ use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::mutex::MutexGuard;
 use embassy_sync::signal::Signal;
 use embassy_time::{with_timeout, Duration, Instant, Timer};
-pub use wrist_haptic::Pattern;
-use wrist_haptic::{reg, Ending, Pulse, Status, BRING_UP};
+pub use wrist_logic::haptic::Pattern;
+use wrist_logic::haptic::{reg, Ending, Pulse, Status, BRING_UP};
 
 use crate::mmio::{gpio, read32, write32, GPIOF_BASE, GPIO_BSRR, GPIO_IDR, GPIO_MODER};
 use crate::pmic::AsyncBus;
@@ -206,7 +206,7 @@ async fn bring_up() -> Result<(), Fault> {
     Timer::after_millis(STARTUP_MS).await;
     let id = read(reg::CHIP_ID, "chip ID").await?;
     record(|r| r.id = Some(id));
-    if !wrist_haptic::is_drv2625(id) {
+    if !wrist_logic::haptic::is_drv2625(id) {
         return Err(Fault { step: "chip ID", why: "not a DRV2625" });
     }
     for &(reg, value) in &BRING_UP {
@@ -341,7 +341,7 @@ async fn play(pattern: Pattern) {
         let r = RECORD.lock(Cell::get);
         if let Some(v) = r.vbat {
             uart.write_str(", VDD ");
-            uart.write_u32(wrist_haptic::vbat_mv(v));
+            uart.write_u32(wrist_logic::haptic::vbat_mv(v));
             uart.write_str(" mV");
         }
         if let Some(s) = r.status {
@@ -390,8 +390,8 @@ async fn probe() {
         Some(id) => {
             uart.write_str("CHIP_ID ");
             uart.write_hex8(id);
-            uart.write_str(if wrist_haptic::is_drv2625(id) { " (DRV2625 rev " } else { " (NOT a DRV2625, rev " });
-            uart.write_u32(u32::from(wrist_haptic::revision(id)));
+            uart.write_str(if wrist_logic::haptic::is_drv2625(id) { " (DRV2625 rev " } else { " (NOT a DRV2625, rev " });
+            uart.write_u32(u32::from(wrist_logic::haptic::revision(id)));
             uart.write_str(")");
         }
         None => uart.write_str("CHIP_ID --"),
@@ -490,7 +490,7 @@ fn write_summary(uart: Uart) {
     lines.write_str(", failed ");
     lines.write_u32(FAILED.load(Ordering::Relaxed));
     lines.write_str("; full scale ");
-    lines.write_u32(wrist_haptic::od_clamp_mv(wrist_haptic::od_clamp_code(wrist_haptic::RATED_MV)));
+    lines.write_u32(wrist_logic::haptic::od_clamp_mv(wrist_logic::haptic::od_clamp_code(wrist_logic::haptic::RATED_MV)));
     lines.write_str(" mV, ERM open loop; last bring-up at ");
     lines.write_u32(r.at_s);
     lines.write_line(" s");

@@ -47,8 +47,8 @@ def plan_pages(root=ROOT):
 
 def page_cycle(features, root=ROOT):
     """The pages Down steps through from the face, by console name, as the image picks them
-    (`PAGES` in standalone-boot's main.rs): wrist-pages' `ALL` with `ble`, else `WITHOUT_BLUETOOTH`."""
-    pages = (root / 'crates/wrist-pages/src/lib.rs').read_text().split('impl Page {', 1)[1]
+    (`PAGES` in standalone-boot's main.rs): wrist-logic's `Page::ALL` with `ble`, else `WITHOUT_BLUETOOTH`."""
+    pages = (root / 'crates/wrist-logic/src/pages.rs').read_text().split('impl Page {', 1)[1]
     which = 'ALL' if 'ble' in features else 'WITHOUT_BLUETOOTH'
     listed = re.search(rf'pub const {which}: \[Self; \d+\] = \[([^\]]*)\];', pages)[1]
     return [name.lower() for name in re.findall(r'Self::(\w+)', listed)]

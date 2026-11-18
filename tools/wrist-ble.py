@@ -42,7 +42,7 @@ from wrist_port import RX, AirConsole as Console, air_send as send
 
 DEFAULT_MTU = 23
 ATT_HEADER = 3
-# The console characteristics' value size, CONSOLE_VALUE_LEN in wrist-wake's server table.
+# The console characteristics' value size, CONSOLE_VALUE_LEN in wrist-bluenrg2's server table.
 VALUE_LEN = 244
 
 

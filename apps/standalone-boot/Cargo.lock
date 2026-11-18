@@ -939,21 +939,11 @@ dependencies = [
  "log",
  "static_cell",
  "wrist-ble",
- "wrist-ble-core",
- "wrist-ble-shadow",
  "wrist-bluenrg2",
  "wrist-board",
- "wrist-crash",
- "wrist-eeprom",
+ "wrist-display",
  "wrist-flash",
- "wrist-glass",
- "wrist-haptic",
- "wrist-pages",
- "wrist-panel",
- "wrist-power",
- "wrist-time",
- "wrist-vcom",
- "wrist-wake",
+ "wrist-logic",
 ]
 
 [[package]]
@@ -1170,24 +1160,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wrist-ble-core"
-version = "0.0.0"
-dependencies = [
- "wrist-ble",
-]
-
-[[package]]
-name = "wrist-ble-shadow"
-version = "0.0.0"
-dependencies = [
- "bluenrg2",
- "wrist-ble",
- "wrist-ble-core",
- "wrist-bluenrg2",
- "wrist-wake",
-]
-
-[[package]]
 name = "wrist-bluenrg2"
 version = "0.0.0"
 dependencies = [
@@ -1203,14 +1175,12 @@ name = "wrist-board"
 version = "0.0.0"
 
 [[package]]
-name = "wrist-crash"
-version = "0.0.0"
-
-[[package]]
-name = "wrist-eeprom"
+name = "wrist-display"
 version = "0.0.0"
 dependencies = [
- "embedded-hal 1.0.0",
+ "embedded-graphics",
+ "incised-text",
+ "inscribed-disc",
 ]
 
 [[package]]
@@ -1218,49 +1188,10 @@ name = "wrist-flash"
 version = "0.0.0"
 
 [[package]]
-name = "wrist-glass"
+name = "wrist-logic"
 version = "0.0.0"
 dependencies = [
- "embedded-graphics",
- "incised-text",
- "inscribed-disc",
- "wrist-l10n",
-]
-
-[[package]]
-name = "wrist-haptic"
-version = "0.0.0"
-
-[[package]]
-name = "wrist-l10n"
-version = "0.0.0"
-
-[[package]]
-name = "wrist-pages"
-version = "0.0.0"
-
-[[package]]
-name = "wrist-panel"
-version = "0.0.0"
-
-[[package]]
-name = "wrist-power"
-version = "0.0.0"
-
-[[package]]
-name = "wrist-time"
-version = "0.0.0"
-
-[[package]]
-name = "wrist-vcom"
-version = "0.0.0"
-
-[[package]]
-name = "wrist-wake"
-version = "0.0.0"
-dependencies = [
- "bluenrg2",
- "wrist-ble",
+ "embedded-hal 1.0.0",
 ]
 
 [[package]]

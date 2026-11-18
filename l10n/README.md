@@ -1,6 +1,6 @@
 # The watch's words
 
-Everything the face's pages show in words is a message here: `crates/wrist-glass` takes
+Everything the face's pages show in words is a message here: `wrist_display::glass` takes
 words only as messages. The installer's screens are outside it.
 
 | File | What |
@@ -10,7 +10,7 @@ words only as messages. The installer's screens are outside it.
 
 `cargo run -p wrist-l10n-gen` compiles these, with CLDR's weekday and month names, date and
 time patterns from [ICU4X](https://github.com/unicode-org/icu4x), into
-`crates/wrist-l10n/src/generated.rs`, which is checked in. `cargo test --workspace` fails
+`crates/wrist-display/src/l10n/generated.rs`, which is checked in. `cargo test --workspace` fails
 while that file is stale, or when a built-in locale's dates, times or plurals differ from
 ICU4X's.
 
@@ -48,7 +48,7 @@ translation has every message and uses only the English message's variables.
 1. Add it to `en.ftl` with a note.
 2. `cargo run -p wrist-l10n-gen`, then draw it with `Msg::YourMessage { .. }`.
 3. Use only characters that every line it can appear on draws, in both typefaces (`Faces` in
-   `crates/wrist-glass/src/pages.rs`): a test fails on any other, in a message or in a
+   `crates/wrist-display/src/glass/pages.rs`): a test fails on any other, in a message or in a
    locale's CLDR names, and another on any value too wide for its line.
 4. Never build a sentence from pieces in code: make the whole sentence one message with
    placeholders, so a translation can reorder it.

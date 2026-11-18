@@ -7,10 +7,10 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Instant, Timer};
-use wrist_glass::dump::{self, MAX_ROW_CODE, MAX_ROW_HEX};
-use wrist_glass::pages::{Clock, Date, Status};
-use wrist_glass::stress::Stress;
-use wrist_glass::text::Glass;
+use wrist_display::glass::dump::{self, MAX_ROW_CODE, MAX_ROW_HEX};
+use wrist_display::glass::pages::{Clock, Date, Status};
+use wrist_display::glass::stress::Stress;
+use wrist_display::glass::text::Glass;
 
 use crate::uart::{Lines, Uart};
 
@@ -145,7 +145,7 @@ pub fn command(args: &[u8], uart: Uart) {
             _ => uart.write_line("[glass] usage: page lag [1-3600 seconds; default 60]"),
         },
         "vcom" => crate::lcd::write_vcom_status(uart),
-        v if v.starts_with("vcom ") => match wrist_vcom::Mode::parse(v[5..].trim()) {
+        v if v.starts_with("vcom ") => match wrist_display::vcom::Mode::parse(v[5..].trim()) {
             Some(mode) => {
                 crate::lcd::set_vcom_mode(mode);
                 uart.write_str("[lcd] vcom mode ");
@@ -299,7 +299,7 @@ fn put(line: &mut [u8], n: &mut usize, s: &[u8]) {
 
 fn put_u32(line: &mut [u8], n: &mut usize, v: u32) {
     let mut buf = [0u8; 11];
-    put(line, n, wrist_glass::text::fmt_u32(&mut buf, v).as_bytes());
+    put(line, n, wrist_display::glass::text::fmt_u32(&mut buf, v).as_bytes());
 }
 
 fn hex32(v: u32) -> [u8; 8] {

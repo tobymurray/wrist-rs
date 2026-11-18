@@ -4,15 +4,15 @@ use wrist_ble::{
     AddrKind, BdAddr, BluetoothUuid, ConnHandle, Duration, Instant, LeConnRole, LinkParams, Millis, Op, OpId, PairingEvent, PairingStep,
     PeerAddr, RadioEvent, Status,
 };
-use wrist_ble_core::engine::{Core, Input, Outputs};
-use wrist_ble_core::goals::{Goals, Power, Want};
-use wrist_ble_core::peripheral::{Stage, StopReason, GIVE_UP};
-use wrist_ble_core::phone::{ASK_TO_PAIR_AFTER, NUMERIC_DEADLINE};
-use wrist_ble_core::profile::{Cadence, Contact, Kind, Profile, Reading, SecurityNeed, Silence};
-use wrist_ble_core::status::{status, PeerState, PhoneStatus};
+use wrist_ble::policy::engine::{Core, Input, Outputs};
+use wrist_ble::policy::goals::{Goals, Power, Want};
+use wrist_ble::policy::peripheral::{Stage, StopReason, GIVE_UP};
+use wrist_ble::policy::phone::{ASK_TO_PAIR_AFTER, NUMERIC_DEADLINE};
+use wrist_ble::policy::profile::{Cadence, Contact, Kind, Profile, Reading, SecurityNeed, Silence};
+use wrist_ble::policy::status::{status, PeerState, PhoneStatus};
 use wrist_bluenrg2::INFO;
 use wrist_bluenrg2::{Scheduler, CAPABILITIES};
-use wrist_ble_shadow::menu::MENU;
+use wrist_bluenrg2::shadow::menu::MENU;
 
 fn hr(data: &[u8]) -> Option<Reading> {
     data.get(1).map(|&v| Reading { value: u16::from(v), contact: Contact::Detected })
@@ -179,7 +179,7 @@ fn a_peers_parameter_request_is_refused_and_said_so() {
     let link = ConnHandle::new(0x803);
     let range = wrist_ble::ParamRange { interval_min: Duration::from_u16(80), interval_max: Duration::from_u16(160), latency: 0, timeout: Duration::from_u16(600) };
     let out = h.at(100, Input::Radio(RadioEvent::PeerParamRequest { link, range }));
-    assert_eq!(out.tell[0], Some(wrist_ble_core::engine::Tell::RefusedPeerRequest(link)));
+    assert_eq!(out.tell[0], Some(wrist_ble::policy::engine::Tell::RefusedPeerRequest(link)));
     assert_eq!(h.ops.last(), Some(&Op::AnswerParamRequest(link, false)));
     assert_eq!(h.core.counters.refused_peer_requests, 1);
 }
@@ -188,15 +188,15 @@ fn a_peers_parameter_request_is_refused_and_said_so() {
 fn a_chip_that_never_comes_up_is_reset_within_its_budget() {
     let mut core = Core::new(&CAPABILITIES, &Scheduler, &MENU);
     let out = core.step(Instant(0), Input::Goals(Goals { radio_on: true, power: Power::Cable, ..Goals::OFF }));
-    assert!(matches!(out.chip, Some(wrist_ble_core::chip::Action::Start(_))), "{out:?}");
+    assert!(matches!(out.chip, Some(wrist_ble::policy::chip::Action::Start(_))), "{out:?}");
     let next = out.next.unwrap();
     let out = core.step(next, Input::Tick);
-    assert!(matches!(out.chip, Some(wrist_ble_core::chip::Action::Start(_))), "{out:?}");
+    assert!(matches!(out.chip, Some(wrist_ble::policy::chip::Action::Start(_))), "{out:?}");
 }
 
 #[test]
 fn a_chip_that_never_comes_up_is_started_once_an_hour_after_its_fault() {
-    use wrist_ble_core::chip::{Action, FAULT_RETRY, RESETS_PER_HOUR};
+    use wrist_ble::policy::chip::{Action, FAULT_RETRY, RESETS_PER_HOUR};
     let start_within = CAPABILITIES.start_within;
     let mut core = Core::new(&CAPABILITIES, &Scheduler, &MENU);
     let mut now = Instant(0);
@@ -221,9 +221,9 @@ fn a_chip_that_never_comes_up_is_started_once_an_hour_after_its_fault() {
 fn events_lost_while_the_chip_starts_reset_it_at_once() {
     let mut core = Core::new(&CAPABILITIES, &Scheduler, &MENU);
     let out = core.step(Instant(0), Input::Goals(Goals { radio_on: true, power: Power::Cable, ..Goals::OFF }));
-    assert!(matches!(out.chip, Some(wrist_ble_core::chip::Action::Start(_))), "{out:?}");
+    assert!(matches!(out.chip, Some(wrist_ble::policy::chip::Action::Start(_))), "{out:?}");
     let out = core.step(Instant(100), Input::Radio(RadioEvent::EventsLost));
-    assert!(matches!(out.chip, Some(wrist_ble_core::chip::Action::Start(_))), "{out:?}");
+    assert!(matches!(out.chip, Some(wrist_ble::policy::chip::Action::Start(_))), "{out:?}");
 }
 
 fn done(id: u16) -> Input {
@@ -315,7 +315,7 @@ fn a_link_or_a_snapshot_settles_the_stop_for_unrecorded_advertising() {
 
 #[test]
 fn a_refused_stop_after_a_snapshot_finds_the_recorded_advertising_is_a_divergence() {
-    let hidden = Goals { radio_on: true, phone: wrist_ble_core::goals::PhoneGoal { discoverable: false, pairing_open: false }, ..Goals::OFF };
+    let hidden = Goals { radio_on: true, phone: wrist_ble::policy::goals::PhoneGoal { discoverable: false, pairing_open: false }, ..Goals::OFF };
     let mut core = Core::new(&CAPABILITIES, &Scheduler, &MENU);
     core.step(Instant(0), Input::Goals(Goals { radio_on: true, ..Goals::OFF }));
     core.step(Instant(0), started(&core));
@@ -334,7 +334,7 @@ fn a_refused_stop_after_a_snapshot_finds_the_recorded_advertising_is_a_divergenc
 
 #[test]
 fn advertising_a_snapshot_finds_unrecorded_is_stopped() {
-    let goals = Goals { radio_on: true, phone: wrist_ble_core::goals::PhoneGoal { discoverable: false, pairing_open: false }, ..Goals::OFF };
+    let goals = Goals { radio_on: true, phone: wrist_ble::policy::goals::PhoneGoal { discoverable: false, pairing_open: false }, ..Goals::OFF };
     let mut core = Core::new(&CAPABILITIES, &Scheduler, &MENU);
     core.step(Instant(0), Input::Goals(goals));
     assert_eq!(core.step(Instant(0), started(&core)).op, None);
@@ -524,21 +524,21 @@ fn a_refusal_the_plan_cannot_avoid_sends_the_chip_to_its_baseline() {
     core.step(Instant(0), started(&core));
     core.step(Instant(0), Input::Submitted(Ok(OpId(1))));
     core.step(Instant(1), done(1));
-    let hidden = Goals { radio_on: true, phone: wrist_ble_core::goals::PhoneGoal { discoverable: false, pairing_open: false }, ..Goals::OFF };
+    let hidden = Goals { radio_on: true, phone: wrist_ble::policy::goals::PhoneGoal { discoverable: false, pairing_open: false }, ..Goals::OFF };
     let out = core.step(Instant(1_000), Input::Goals(hidden));
     assert_eq!(out.op, Some(Op::Advertise(None)));
     let refused = wrist_ble::Failure { kind: wrist_ble::FailureKind::ModeExclusion, native: 0x0C };
     let out = core.step(Instant(1_000), Input::Submitted(Err(refused)));
     assert_eq!(out.op, Some(Op::Advertise(None)));
     let out = core.step(Instant(1_000), Input::Submitted(Err(refused)));
-    assert!(matches!((out.op, out.chip), (None, Some(wrist_ble_core::chip::Action::Start(_)))), "{out:?}");
+    assert!(matches!((out.op, out.chip), (None, Some(wrist_ble::policy::chip::Action::Start(_)))), "{out:?}");
 }
 
 #[test]
 fn a_refusal_the_retry_gets_past_is_not_held_against_a_later_one() {
     let mut core = Core::new(&CAPABILITIES, &Scheduler, &MENU);
     let shown = Goals { radio_on: true, ..Goals::OFF };
-    let hidden = Goals { radio_on: true, phone: wrist_ble_core::goals::PhoneGoal { discoverable: false, pairing_open: false }, ..Goals::OFF };
+    let hidden = Goals { radio_on: true, phone: wrist_ble::policy::goals::PhoneGoal { discoverable: false, pairing_open: false }, ..Goals::OFF };
     let refused = wrist_ble::Failure { kind: wrist_ble::FailureKind::ModeExclusion, native: 0x0C };
     core.step(Instant(0), Input::Goals(shown));
     core.step(Instant(0), started(&core));
@@ -581,7 +581,7 @@ fn a_chip_starting_again_unasked_is_a_reset_that_takes_the_link() {
     let link = ConnHandle::new(0x801);
     phone_up(&mut h, 1_000, link);
     let out = h.at(2_000, Input::Radio(RadioEvent::Ready(INFO)));
-    assert!(matches!(out.chip, Some(wrist_ble_core::chip::Action::Start(_))), "{out:?}");
+    assert!(matches!(out.chip, Some(wrist_ble::policy::chip::Action::Start(_))), "{out:?}");
     assert_eq!(h.core.state.phone.link(), None);
     assert_eq!(h.core.counters.resets, 1);
     h.ops.clear();
@@ -591,10 +591,10 @@ fn a_chip_starting_again_unasked_is_a_reset_that_takes_the_link() {
 }
 
 /// Each start's answer names it, so an answer to a start the deadline replaced is not taken for
-/// the new one's, and the new one's answer then is no restart (F75).
+/// the new one's, and the new one's answer then is no restart.
 #[test]
 fn a_late_answer_for_an_earlier_start_is_not_this_ones() {
-    use wrist_ble_core::chip::{Action, Chip};
+    use wrist_ble::policy::chip::{Action, Chip};
     let mut core = Core::new(&CAPABILITIES, &Scheduler, &MENU);
     let Some(Action::Start(first)) = core.step(Instant(0), Input::Goals(Goals { radio_on: true, ..Goals::OFF })).chip else { panic!() };
     let late = Instant(0) + CAPABILITIES.start_within;
@@ -608,10 +608,10 @@ fn a_late_answer_for_an_earlier_start_is_not_this_ones() {
 }
 
 /// The chip's own ready event is a boot nobody asked for: during a start it answers nothing, so a
-/// driver that passed its boot's event before the answer does not loop resets (F75).
+/// driver that passed its boot's event before the answer does not loop resets.
 #[test]
 fn the_chips_ready_during_a_start_answers_nothing() {
-    use wrist_ble_core::chip::Chip;
+    use wrist_ble::policy::chip::Chip;
     let mut core = Core::new(&CAPABILITIES, &Scheduler, &MENU);
     core.step(Instant(0), Input::Goals(Goals { radio_on: true, ..Goals::OFF }));
     for i in 0..10 {
@@ -626,13 +626,13 @@ fn the_chips_ready_during_a_start_answers_nothing() {
     assert_eq!(core.counters.resets, 0);
 }
 
-/// A start that missed its deadline restarts the chip as surely as a reset does (F77).
+/// A start that missed its deadline restarts the chip as surely as a reset does.
 #[test]
 fn a_start_past_its_deadline_counts_as_a_reset() {
     let mut core = Core::new(&CAPABILITIES, &Scheduler, &MENU);
     let out = core.step(Instant(0), Input::Goals(Goals { radio_on: true, ..Goals::OFF }));
     let out = core.step(out.next.unwrap(), Input::Tick);
-    assert!(matches!(out.chip, Some(wrist_ble_core::chip::Action::Start(_))), "{out:?}");
+    assert!(matches!(out.chip, Some(wrist_ble::policy::chip::Action::Start(_))), "{out:?}");
     assert_eq!(core.counters.resets, 1);
 }
 
@@ -648,7 +648,7 @@ fn a_centrals_acceptance_ends_the_request_though_nothing_changes() {
     h.at(1_800, done(asked));
     // Nothing is left pending: the console's own ask goes out at once.
     assert!(h.core.pending().is_none());
-    let now = wrist_ble_shadow::menu::interval_now_ask(6, 6);
+    let now = wrist_bluenrg2::shadow::menu::interval_now_ask(6, 6);
     h.at(2_000, Input::IntervalNow(now));
     let asks = h.ops.iter().filter(|op| matches!(op, Op::UpdateParams(l, _) if *l == link)).count();
     assert_eq!(asks, 2, "{:?}", h.ops);
@@ -689,7 +689,7 @@ fn a_snapshot_taken_after_the_events_it_holds_agrees_with_them() {
 /// wait starts again after one that worked or with the radio.
 #[test]
 fn a_failed_snapshot_is_asked_for_again() {
-    use wrist_ble_core::engine::SNAPSHOT_RETRY;
+    use wrist_ble::policy::engine::SNAPSHOT_RETRY;
     let retry = u64::from(SNAPSHOT_RETRY.0);
     let mut h = Harness::new(Goals { radio_on: true, ..Goals::OFF });
     assert!(h.at(10_000, Input::Radio(RadioEvent::EventsLost)).snapshot);

@@ -1,11 +1,13 @@
 #![no_std]
 
-//! The boundary between the Bluetooth core and a chip driver, above GAP and GATT: the driver
-//! takes operations, reports events, and declares what the chip can do.
+//! Bluetooth without a radio: the boundary a chip driver implements above GAP and GATT, the core
+//! that decides over it ([`policy`]), and sensor profiles as bytes ([`profiles`]).
 
 mod event;
 mod gatt;
 mod op;
+pub mod policy;
+pub mod profiles;
 mod schedule;
 mod time;
 
@@ -20,6 +22,8 @@ pub use time::{Instant, Micros, Millis};
 pub use bt_hci;
 pub use bt_hci::param::{AddrKind, BdAddr, ConnHandle, CoreSpecificationVersion, DisconnectReason, Duration, LeConnRole, Status};
 pub use bt_hci::uuid::BluetoothUuid;
+
+use core::fmt;
 
 /// The most links any driver reports; a chip's own limit is [`Capabilities::max_links`].
 pub const MAX_LINKS: usize = 8;
@@ -67,8 +71,8 @@ impl<const N: usize> PartialEq for Bytes<N> {
 
 impl<const N: usize> Eq for Bytes<N> {}
 
-impl<const N: usize> core::fmt::Debug for Bytes<N> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl<const N: usize> fmt::Debug for Bytes<N> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.as_slice().fmt(f)
     }
 }

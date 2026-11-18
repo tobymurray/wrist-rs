@@ -4,9 +4,9 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use wrist_ble::{Instant, Op, OpKind};
-use wrist_ble_core::engine::Omitted;
-use wrist_ble_shadow::{trace, Excuse};
-use wrist_ble_shadow::DriverOp;
+use wrist_ble::policy::engine::Omitted;
+use wrist_bluenrg2::shadow::{trace, Excuse};
+use wrist_bluenrg2::shadow::DriverOp;
 use wrist_ble_sim::replay::{replay, Report, Who};
 
 fn traces() -> Vec<(String, String)> {
