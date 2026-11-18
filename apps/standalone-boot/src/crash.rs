@@ -1,10 +1,10 @@
 //! The retained failure record (`HARDWARE.md`, "Retained failure record").
 use crate::{mmio::{read32, write32}, uart::Uart};
-use wrist_crash::{Build, Decoded, Kind, Record};
+use wrist_logic::crash::{Build, Decoded, Kind, Record};
 const ADDRS: [u32; 6] = wrist_flash::vectors::FAILURE_RECORD;
-const _: () = assert!(wrist_glass::pages::ID_CHARS == wrist_crash::BUILD_HASH_DIGITS);
-fn read() -> Decoded { wrist_crash::decode(ADDRS.map(|a| unsafe { read32(a) })) }
-fn write(words: wrist_crash::Words) {
+const _: () = assert!(wrist_display::glass::pages::ID_CHARS == wrist_logic::crash::BUILD_HASH_DIGITS);
+fn read() -> Decoded { wrist_logic::crash::decode(ADDRS.map(|a| unsafe { read32(a) })) }
+fn write(words: wrist_logic::crash::Words) {
     // The tag last.
     for i in [0, 1, 2, 3, 5, 4] { unsafe { write32(ADDRS[i], words[i]) } }
     cortex_m::asm::dsb();
@@ -14,10 +14,10 @@ fn store(kind: Kind) {
         kind,
         build: Build::from_id(crate::version::BUILD_ID),
         uptime_s: u32::try_from(embassy_time::Instant::now().as_secs()).unwrap_or(u32::MAX),
-        count: wrist_crash::next_count(read()),
+        count: wrist_logic::crash::next_count(read()),
     }.encode());
 }
-pub fn panic(file: &str, line: u32) { store(Kind::Panic { line, file_fnv1a: wrist_crash::fnv1a(file.as_bytes()) }); }
+pub fn panic(file: &str, line: u32) { store(Kind::Panic { line, file_fnv1a: wrist_logic::crash::fnv1a(file.as_bytes()) }); }
 pub fn fault(status: u32, pc: u32) { store(Kind::Fault { cfsr_low20: status & 0xF_FFFF, pc }); }
 pub fn clear() { write([0; 6]); }
 pub fn report(uart: Uart) {
@@ -39,7 +39,7 @@ pub fn report(uart: Uart) {
     let Decoded::Record(r) = record else {
         return uart.write_line(" (an older image's record: no build, uptime or count)");
     };
-    uart.write_str(" build="); uart.write_str(r.build.text(&mut [0; wrist_crash::TEXT_LEN]));
+    uart.write_str(" build="); uart.write_str(r.build.text(&mut [0; wrist_logic::crash::TEXT_LEN]));
     uart.write_str(" uptime_s="); uart.write_u32(r.uptime_s);
     uart.write_str(" count="); uart.write_u32(u32::from(r.count));
     uart.write_line(if r.build == Build::from_id(crate::version::BUILD_ID) { "" } else { " (not the running build)" });

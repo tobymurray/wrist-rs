@@ -6,7 +6,7 @@ use wrist_ble::{
 };
 use wrist_bluenrg2::events::Translator;
 use wrist_bluenrg2::gatt::Handles;
-use wrist_wake::ble::server::{device_information, services, RX, TX};
+use wrist_bluenrg2::wake::ble::server::{device_information, services, RX, TX};
 
 const INFO: ChipInfo = ChipInfo {
     hci_version: CoreSpecificationVersion::VERSION_5_2,

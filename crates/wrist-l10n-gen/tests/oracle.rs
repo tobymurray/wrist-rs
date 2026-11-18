@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 use icu::calendar::{Date, Gregorian};
 use icu::datetime::{fieldsets, FixedCalendarDateTimeFormatter, NoCalendarFormatter};
 use icu::plurals::{PluralCategory, PluralRules};
-use wrist_l10n::{Clock, Plural, Sink, BUILT_IN};
+use wrist_display::l10n::{Clock, Plural, Sink, BUILT_IN};
 
 #[derive(Default)]
 struct Text(String);
@@ -41,7 +41,7 @@ fn dates_match_icu4x() {
                     let Ok(icu_date) = Date::try_new_gregorian(i32::from(year), month, day) else { continue };
                     let want = f.format(&icu_date).to_string();
                     let mut got = Text::default();
-                    l.date(&mut got, wrist_l10n::Date { year, month, day }).unwrap();
+                    l.date(&mut got, wrist_display::l10n::Date { year, month, day }).unwrap();
                     assert_eq!(got.0, want, "{} {year}-{month}-{day}", l.tag);
                     days += 1;
                 }

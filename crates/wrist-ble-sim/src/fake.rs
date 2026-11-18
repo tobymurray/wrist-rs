@@ -18,7 +18,7 @@ use crate::peers::{Keys, Os, Phone, Sensor};
 use crate::rng::Rng;
 
 /// The console's TX in the watch's table, which a phone subscribes to.
-pub const CONSOLE: ServerAttr = wrist_wake::ble::server::TX;
+pub const CONSOLE: ServerAttr = wrist_bluenrg2::wake::ble::server::TX;
 
 /// The link-layer payloads the chip reports on each link, as a host's capture shows them.
 const DATA_LENGTH: (u16, u16) = (27, 251);

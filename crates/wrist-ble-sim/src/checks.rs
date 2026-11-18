@@ -4,13 +4,13 @@ use std::collections::VecDeque;
 use std::mem::{discriminant, Discriminant};
 
 use wrist_ble::{Instant, Millis, Op, OpKind, Status};
-use wrist_ble_core::chip::Chip;
-use wrist_ble_core::engine::Core;
-use wrist_ble_core::invariants::{COMMANDS_PER_MINUTE, CONVERGE_AFTER, REACHABLE_GAP, REACHABLE_SHARE_PERCENT, REACHABLE_WINDOW, STATUS_WITHIN};
-use wrist_ble_core::phone::SETTLE;
-use wrist_ble_core::plan::PlanHealth;
-use wrist_ble_core::status::{status, PhoneStatus};
-use wrist_ble_core::State;
+use wrist_ble::core::chip::Chip;
+use wrist_ble::core::engine::Core;
+use wrist_ble::core::invariants::{COMMANDS_PER_MINUTE, CONVERGE_AFTER, REACHABLE_GAP, REACHABLE_SHARE_PERCENT, REACHABLE_WINDOW, STATUS_WITHIN};
+use wrist_ble::core::phone::SETTLE;
+use wrist_ble::core::plan::PlanHealth;
+use wrist_ble::core::status::{status, PhoneStatus};
+use wrist_ble::core::State;
 
 use crate::fake::{Fake, Note};
 

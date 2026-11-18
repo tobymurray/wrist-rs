@@ -1,13 +1,44 @@
 [workspace]
 resolver = "2"
-members = ["crates/wrist-bluenrg2", "crates/bluenrg2", "crates/wrist-ble", "crates/wrist-ble-core", "crates/wrist-ble-shadow", "crates/wrist-ble-sim", "crates/wrist-board", "crates/wrist-crash", "crates/wrist-eeprom", "crates/wrist-flash", "crates/wrist-glass", "crates/wrist-haptic", "crates/wrist-l10n", "crates/wrist-l10n-gen", "crates/wrist-pages", "crates/wrist-panel", "crates/wrist-store", "crates/wrist-time", "crates/wrist-power", "crates/wrist-profiles", "crates/wrist-vcom", "crates/wrist-wake", "crates/wrist-installer-ui"]
+members = [
+    "crates/bluenrg2",
+    "crates/wrist-ble",
+    "crates/wrist-ble-sim",
+    "crates/wrist-bluenrg2",
+    "crates/wrist-board",
+    "crates/wrist-display",
+    "crates/wrist-flash",
+    "crates/wrist-installer-ui",
+    "crates/wrist-l10n-gen",
+    "crates/wrist-logic",
+]
+
+[workspace.package]
+edition = "2021"
+license = "AGPL-3.0-or-later"
+publish = false
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+
+[workspace.dependencies]
+bluenrg2 = "0.1.1"
+bt-hci = { version = "0.11.0", default-features = false }
+embedded-graphics = { version = "0.8", default-features = false }
+embedded-hal = "1.0.0"
+embedded-hal-async = "1.0.0"
+incised-text = { version = "0.2.1", default-features = false, features = ["abgr2222", "atkinson"] }
+inscribed-disc = { version = "0.2.1", default-features = false, features = ["embedded-graphics", "abgr2222"] }
+proptest = { version = "1.11.0", default-features = false, features = ["std"] }
+wrist-ble = { path = "crates/wrist-ble" }
+wrist-bluenrg2 = { path = "crates/wrist-bluenrg2" }
+wrist-display = { path = "crates/wrist-display" }
 
 [profile.release]
 opt-level = "s"
 lto = true
 panic = "abort"
 
-# This repository's bluenrg2. Uncomment inscribed-disc to build against a watch-apps checkout beside
-# this repository.
+# Uncomment inscribed-disc to build against a watch-apps checkout beside this repository.
 [patch.crates-io]
 # inscribed-disc = { path = "../watch-apps/InscribedDisc" }

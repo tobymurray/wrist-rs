@@ -1,22 +1,19 @@
 [package]
 name = "wrist-ble-sim"
 version = "0.0.0"
-edition = "2021"
-license = "AGPL-3.0-or-later"
-publish = false
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
 description = "A fake BlueNRG-2 and the peers around it, on virtual time, for testing the Bluetooth core on the host"
 
 [dependencies]
-bluenrg2 = "0.1.1"
-wrist-bluenrg2 = { path = "../wrist-bluenrg2" }
-wrist-ble = { path = "../wrist-ble" }
-wrist-ble-core = { path = "../wrist-ble-core" }
-wrist-ble-shadow = { path = "../wrist-ble-shadow" }
-wrist-wake = { path = "../wrist-wake" }
+bluenrg2.workspace = true
+wrist-bluenrg2.workspace = true
+wrist-ble.workspace = true
 
 [dev-dependencies]
-proptest = { version = "1.11.0", default-features = false, features = ["std"] }
+proptest.workspace = true
 stateright = "0.31.0"
 
-[lints.clippy]
-pedantic = { level = "warn", priority = -1 }
+[lints]
+workspace = true

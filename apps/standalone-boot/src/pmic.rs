@@ -8,8 +8,8 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::mutex::Mutex as AsyncMutex;
 
-use wrist_power::max17262::{self, HIB_CFG};
-use wrist_power::{pca9420, Unit, GAUGE_RESTORE, GAUGE_SETTLE};
+use wrist_logic::power::max17262::{self, HIB_CFG};
+use wrist_logic::power::{pca9420, Unit, GAUGE_RESTORE, GAUGE_SETTLE};
 
 use crate::uart::Lines;
 
@@ -296,7 +296,7 @@ pub fn write_summary(uart: &mut Lines, s: &Snapshot) {
     hex_or_dashes(uart, s.chg_status2);
     uart.write_str("  gauge ");
     uart.write_str(match s.status2 {
-        Some(st) if wrist_power::hibernating(st) => "hibernating",
+        Some(st) if wrist_logic::power::hibernating(st) => "hibernating",
         Some(_) => "active",
         None => "--",
     });
@@ -344,7 +344,7 @@ pub fn write_report(uart: &mut Lines, s: &Snapshot) {
         uart.write_str("  ON long press ");
         uart.write_u32(4 * (1 + u32::from(c3 & 3)));
         uart.write_str(" s, mode ");
-        uart.write_u32(u32::from(wrist_power::i2c_mode(c3)));
+        uart.write_u32(u32::from(wrist_logic::power::i2c_mode(c3)));
         uart.write_line("");
     }
     if let Some(r) = s.reg_status {
@@ -420,7 +420,7 @@ pub fn write_gauge(uart: &mut Lines, s: &Snapshot) {
     match reg(max17262::FSTAT) {
         Some(f) => {
             let mut none = true;
-            for name in wrist_power::fstat_flags(f) {
+            for name in wrist_logic::power::fstat_flags(f) {
                 uart.write_str(" ");
                 uart.write_str(name);
                 none = false;
@@ -432,24 +432,24 @@ pub fn write_gauge(uart: &mut Lines, s: &Snapshot) {
         None => uart.write_str(" --"),
     }
     uart.write_str("  Status2 FullDet ");
-    uart.write_str(yes_no(s.status2.map(wrist_power::full_detected)));
+    uart.write_str(yes_no(s.status2.map(wrist_logic::power::full_detected)));
     uart.write_str(" Hib ");
-    uart.write_str(yes_no(s.status2.map(wrist_power::hibernating)));
+    uart.write_str(yes_no(s.status2.map(wrist_logic::power::hibernating)));
     if let Some(l) = reg(max17262::LEARN_CFG) {
         uart.write_str("  learn stage ");
-        uart.write_u32(u32::from(wrist_power::learn_stage(l)));
+        uart.write_u32(u32::from(wrist_logic::power::learn_stage(l)));
     }
     if let Some(m) = reg(max17262::MISC_CFG) {
         uart.write_str("  FUS ");
-        uart.write_u32(u32::from(wrist_power::full_update_slope(m)));
+        uart.write_u32(u32::from(wrist_logic::power::full_update_slope(m)));
         uart.write_str(" MR ");
-        uart.write_u32(u32::from(wrist_power::mixing_rate(m)));
+        uart.write_u32(u32::from(wrist_logic::power::mixing_rate(m)));
     }
     uart.write_line("");
     uart.write_str("[gauge]  end of charge: VFSOC > FullSOCThr, Current and AvgCurrent in the IChgTerm band: ");
     match (reg(max17262::VFSOC), reg(max17262::FULL_SOC_THR), reg(max17262::ICHG_TERM), s.current_raw, s.avg_current_raw) {
         (Some(vf), Some(thr), Some(term), Some(i), Some(avg)) => {
-            for (sep, met) in ["", ", ", ", "].into_iter().zip(wrist_power::end_of_charge(vf, thr, term, i, avg)) {
+            for (sep, met) in ["", ", ", ", "].into_iter().zip(wrist_logic::power::end_of_charge(vf, thr, term, i, avg)) {
                 uart.write_str(sep);
                 uart.write_str(yes_no(Some(met)));
             }
@@ -521,7 +521,7 @@ static GAUGE_RESTORED: Mutex<CriticalSectionRawMutex, Cell<Option<Result<bool, &
 struct BlockingGauge<'a>(&'a mut AsyncBus);
 
 /// Blocking: only before the first awaited transfer.
-impl wrist_power::GaugeBus for BlockingGauge<'_> {
+impl wrist_logic::power::GaugeBus for BlockingGauge<'_> {
     fn read(&mut self, reg: u8) -> impl core::future::Future<Output = Option<u16>> {
         let mut b = [0u8; 2];
         core::future::ready(self.0.blocking_write_read(MAX17262, &[reg], &mut b).ok().map(|()| u16::from_le_bytes(b)))
@@ -538,7 +538,7 @@ impl wrist_power::GaugeBus for BlockingGauge<'_> {
 
 struct Gauge<'a>(&'a mut AsyncBus);
 
-impl wrist_power::GaugeBus for Gauge<'_> {
+impl wrist_logic::power::GaugeBus for Gauge<'_> {
     async fn read(&mut self, reg: u8) -> Option<u16> {
         let mut b = [0u8; 2];
         self.0.write_read(MAX17262, &[reg], &mut b).await.ok().map(|()| u16::from_le_bytes(b))
@@ -553,22 +553,22 @@ impl wrist_power::GaugeBus for Gauge<'_> {
 }
 
 /// At boot, after [`read_gauge_config_blocking`]: the gauge configured again if it has been
-/// reset, or else [`wrist_power::GAUGE_SETTLE`] if it needs it.
+/// reset, or else [`wrist_logic::power::GAUGE_SETTLE`] if it needs it.
 pub fn restore_gauge_blocking(bus: &mut AsyncBus) -> Result<bool, &'static str> {
     let outcome = match GAUGE_AT_BOOT.lock(Cell::get) {
         [None, ..] => Err("Status unread"),
         [Some(status), design_cap, _, v_empty, _]
-            if wrist_power::gauge_reset(status)
-                || matches!((design_cap, v_empty), (Some(d), Some(v)) if wrist_power::gauge_model_differs(d, v)) =>
+            if wrist_logic::power::gauge_reset(status)
+                || matches!((design_cap, v_empty), (Some(d), Some(v)) if wrist_logic::power::gauge_model_differs(d, v)) =>
         {
-            embassy_futures::block_on(wrist_power::configure_gauge(&mut BlockingGauge(bus), &GAUGE_RESTORE)).map(|()| true)
+            embassy_futures::block_on(wrist_logic::power::configure_gauge(&mut BlockingGauge(bus), &GAUGE_RESTORE)).map(|()| true)
         }
         [_, _, ichg_term, ..] => {
             let mut b = [0u8; 2];
             let hib_cfg = bus.blocking_write_read(MAX17262, &[HIB_CFG], &mut b).ok().map(|()| u16::from_le_bytes(b));
             match (hib_cfg, ichg_term) {
-                (Some(h), Some(t)) if !wrist_power::gauge_unsettled(h, t) => Ok(false),
-                _ => embassy_futures::block_on(wrist_power::configure_gauge(&mut BlockingGauge(bus), &GAUGE_SETTLE))
+                (Some(h), Some(t)) if !wrist_logic::power::gauge_unsettled(h, t) => Ok(false),
+                _ => embassy_futures::block_on(wrist_logic::power::configure_gauge(&mut BlockingGauge(bus), &GAUGE_SETTLE))
                     .map(|()| false),
             }
         }
@@ -580,8 +580,8 @@ pub fn restore_gauge_blocking(bus: &mut AsyncBus) -> Result<bool, &'static str> 
 /// With each reading: a gauge reset while the MCU ran on USB, or one boot could not read.
 pub async fn restore_gauge(bus: &mut AsyncBus, status: Option<u16>) {
     let Some(status) = status else { return };
-    let outcome = if wrist_power::gauge_reset(status) {
-        wrist_power::configure_gauge(&mut Gauge(bus), &GAUGE_RESTORE).await.map(|()| true)
+    let outcome = if wrist_logic::power::gauge_reset(status) {
+        wrist_logic::power::configure_gauge(&mut Gauge(bus), &GAUGE_RESTORE).await.map(|()| true)
     } else if matches!(GAUGE_RESTORED.lock(Cell::get), Some(Err(_))) {
         Ok(false)
     } else {
@@ -590,14 +590,14 @@ pub async fn restore_gauge(bus: &mut AsyncBus, status: Option<u16>) {
     GAUGE_RESTORED.lock(|r| r.set(Some(outcome)));
 }
 
-/// With a full reading: [`wrist_power::GAUGE_SETTLE`] again if something, the stock firmware or
+/// With a full reading: [`wrist_logic::power::GAUGE_SETTLE`] again if something, the stock firmware or
 /// an older image, set `HibCfg` or `IChgTerm` otherwise.
 pub async fn keep_gauge_settled(uart: &mut Lines, bus: &mut AsyncBus, s: &Snapshot) {
     let (Some(hib_cfg), Some(ichg_term)) = (s.hib_cfg, s.gauge(max17262::ICHG_TERM)) else { return };
-    if !wrist_power::gauge_unsettled(hib_cfg, ichg_term) {
+    if !wrist_logic::power::gauge_unsettled(hib_cfg, ichg_term) {
         return;
     }
-    let ok = wrist_power::configure_gauge(&mut Gauge(bus), &GAUGE_SETTLE).await.is_ok();
+    let ok = wrist_logic::power::configure_gauge(&mut Gauge(bus), &GAUGE_SETTLE).await.is_ok();
     for (label, v) in [("[gauge] HibCfg ", hib_cfg), (" IChgTerm ", ichg_term)] {
         uart.write_str(label);
         let [hi, lo] = v.to_be_bytes();
@@ -617,7 +617,7 @@ static MODES: Mutex<CriticalSectionRawMutex, Cell<Option<Modes>>> = Mutex::new(C
 
 pub fn read_modes_blocking(bus: &mut AsyncBus) {
     let mut regs = [0u8; 16];
-    let read = bus.blocking_write_read(PCA9420, &[wrist_power::MODECFG_BASE], &mut regs).ok().map(|()| regs);
+    let read = bus.blocking_write_read(PCA9420, &[wrist_logic::power::MODECFG_BASE], &mut regs).ok().map(|()| regs);
     MODES.lock(|m| m.set(read));
 }
 
@@ -627,11 +627,11 @@ pub fn write_rails(uart: &mut Lines, top_cntl3: Option<u8>) {
         return uart.write_line("  MODECFG: no answer at boot");
     };
     for (mode, r) in regs.as_chunks::<4>().0.iter().enumerate() {
-        let rails = wrist_power::Rails::decode(*r);
+        let rails = wrist_logic::power::Rails::decode(*r);
         let mode = u8::try_from(mode).unwrap_or(0);
         uart.write_str("  mode ");
         uart.write_u32(u32::from(mode));
-        uart.write_str(if top_cntl3.map(wrist_power::i2c_mode) == Some(mode) { "*" } else { " " });
+        uart.write_str(if top_cntl3.map(wrist_logic::power::i2c_mode) == Some(mode) { "*" } else { " " });
         for b in r {
             uart.write_str(" ");
             uart.write_hex8(*b);

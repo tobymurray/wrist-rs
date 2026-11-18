@@ -89,8 +89,8 @@ cargo clippy --release
 ```
 
 `python3 tools/test-release.py`, which needs `pyelftools`, tests the release recipe, and
-`cargo test -p wrist-glass --features preview` renders the face to PNGs under
-`target/tmp/wrist-glass/`. `cargo run -p wrist-installer-ui --features preview --example
+`cargo test -p wrist-display --features preview` renders the face to PNGs under
+`target/tmp/wrist-display/`. `cargo run -p wrist-installer-ui --features preview --example
 screens -- release/images` redraws the installer's screens that the install guide shows.
 
 After editing [`l10n/`](l10n), `cargo run -p wrist-l10n-gen` regenerates the messages
@@ -127,7 +127,7 @@ render, pass the example what the watch was showing (it prints its usage for the
 ```sh
 .venv/bin/python tools/wrist-cmd.py "press select"
 .venv/bin/python tools/wrist-frame.py face.png --raw-out face.raw
-cargo run -p wrist-glass --example face -- 09:11 2026-10-23 100 host.raw
+cargo run -p wrist-display --example face -- 09:11 2026-10-23 100 host.raw
 .venv/bin/python tools/wrist-frame.py --raw face.raw --compare host.raw face.png
 ```
 

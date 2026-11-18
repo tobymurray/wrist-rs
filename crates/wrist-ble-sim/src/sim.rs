@@ -3,15 +3,15 @@
 use std::collections::VecDeque;
 
 use wrist_ble::{Fault, Instant, Millis, RadioEvent};
-use wrist_ble_core::chip::{Action, StartId};
-use wrist_ble_core::engine::{Core, Input, Outputs, Tell};
-use wrist_ble_core::goals::{Goals, Power};
-use wrist_ble_core::status::{status, Status};
+use wrist_ble::core::chip::{Action, StartId};
+use wrist_ble::core::engine::{Core, Input, Outputs, Tell};
+use wrist_ble::core::goals::{Goals, Power};
+use wrist_ble::core::status::{status, Status};
 use wrist_bluenrg2::{Scheduler, CAPABILITIES};
 
 use crate::checks::Checks;
 use crate::fake::Fake;
-use wrist_ble_shadow::menu::MENU;
+use wrist_bluenrg2::shadow::menu::MENU;
 
 /// Steps at one instant beyond which the core is spinning.
 const SPIN: u32 = 200;

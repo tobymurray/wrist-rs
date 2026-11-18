@@ -1,10 +1,10 @@
 [package]
 name = "wrist-l10n-gen"
 version = "0.0.0"
-edition = "2021"
-license = "AGPL-3.0-or-later"
-description = "Compiles l10n/ and CLDR's data into wrist-l10n's generated module, and checks it"
-publish = false
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Compiles l10n/ and CLDR's data into wrist-display's generated l10n module, and checks it"
 
 [dependencies]
 fluent-syntax = "0.12"
@@ -14,7 +14,7 @@ toml = "1.1"
 writeable = "0.6"
 
 [dev-dependencies]
-wrist-l10n = { path = "../wrist-l10n" }
+wrist-display.workspace = true
 
-[lints.clippy]
-pedantic = { level = "warn", priority = -1 }
+[lints]
+workspace = true

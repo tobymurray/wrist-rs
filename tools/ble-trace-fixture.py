@@ -16,7 +16,7 @@ import argparse
 import re
 import sys
 
-# The driver's commands the replay reads as operations (wrist-ble-shadow's lib.rs, driver_op).
+# The driver's commands the replay reads as operations (wrist-bluenrg2's shadow.rs, driver_op).
 OPS = {0xFC83, 0xFC81, 0xFD81, 0xFC8D, 0xFC95, 0xFCA5, 0xFC88, 0xFC93, 0xFC97, 0xFC9D}
 GOALS = re.compile(r'^ble (on|off|yes|no|disconnect|profile (auto|cable|battery))$')
 DECIMAL = re.compile(r'^\+?[0-9]+$')
@@ -68,7 +68,7 @@ def usb_update(cmd):
 
 
 def snapshot(packet):
-    """Whether `packet` is a snapshot as wrist-ble-shadow's trace.rs carries it: flags, then each
+    """Whether `packet` is a snapshot as wrist-bluenrg2's shadow/trace.rs carries it: flags, then each
     link's handle, role and encryption."""
     links = packet[1:]
     return (len(packet) >= 1 and packet[0] <= 0b111 and len(links) % 4 == 0 and len(links) <= 32

@@ -1,0 +1,13 @@
+[package]
+name = "wrist-logic"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The retained failure record, module EEPROM, haptic patterns, page navigation, power figures and calendar arithmetic, host-tested"
+
+[dependencies]
+embedded-hal.workspace = true
+
+[lints]
+workspace = true

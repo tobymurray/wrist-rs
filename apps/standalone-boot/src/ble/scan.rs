@@ -5,7 +5,7 @@ use core::sync::atomic::Ordering;
 use embassy_time::{Duration, Instant};
 use bluenrg2::opcode::{ACI_GAP_START_GENERAL_DISCOVERY_PROC, ACI_GAP_TERMINATE_GAP_PROC};
 use bluenrg2::{filter_duplicates, gap_proc, AddrKind, Address, BleStatus, LeAdvEventKind, Uuid};
-use wrist_wake::ble::{scan, Scan};
+use wrist_bluenrg2::wake::ble::{scan, Scan};
 
 use super::{power, write_address, Link, Request, STATE, STATE_ADVERTISING, STATE_IDLE};
 use crate::uart::Uart;

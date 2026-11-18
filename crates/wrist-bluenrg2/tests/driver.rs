@@ -301,7 +301,7 @@ fn the_server_is_the_one_served_until_the_chip_boots() {
     let (c, mut d) = driver(128);
     assert_eq!(d.server(), None);
     let mut h = Handles::default();
-    let tx = wrist_wake::ble::server::CONSOLE.chars[1];
+    let tx = wrist_bluenrg2::wake::ble::server::CONSOLE.chars[1];
     assert!(h.push(0x0013, 0x0016, &tx));
     d.serve(h);
     assert_eq!(d.server(), Some(&h));

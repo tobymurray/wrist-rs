@@ -2,13 +2,13 @@
 
 use stateright::{Checker, Model, Property};
 use wrist_ble::{AddrKind, BdAddr, BluetoothUuid, ConnHandle, FailureKind, Instant, Millis, PairingStep, PeerAddr, ResetCause, Status};
-use wrist_ble_core::chip::{self, Chip, ChipMachine, RESETS_PER_HOUR, RETRY_PROVEN};
-use wrist_ble_core::goals::Power;
-use wrist_ble_core::peripheral::{self, Ctx, Event as E, Peripheral, Stage, GIVE_UP};
-use wrist_ble_core::phone::{self, Phone, Security};
-use wrist_ble_core::plan::Conflict;
-use wrist_ble_core::profile::{Cadence, Contact, Kind, Profile, Reading, SecurityNeed, Silence};
-use wrist_ble_core::status::{peer_state, PeerState};
+use wrist_ble::core::chip::{self, Chip, ChipMachine, RESETS_PER_HOUR, RETRY_PROVEN};
+use wrist_ble::core::goals::Power;
+use wrist_ble::core::peripheral::{self, Ctx, Event as E, Peripheral, Stage, GIVE_UP};
+use wrist_ble::core::phone::{self, Phone, Security};
+use wrist_ble::core::plan::Conflict;
+use wrist_ble::core::profile::{Cadence, Contact, Kind, Profile, Reading, SecurityNeed, Silence};
+use wrist_ble::core::status::{peer_state, PeerState};
 use wrist_bluenrg2::INFO;
 use wrist_bluenrg2::CAPABILITIES;
 
@@ -189,7 +189,7 @@ impl Model for Peripherals {
             Property::sometimes("stopped", |_, s: &PeerModel| matches!(s.machine.stage, Stage::Stopped(_))),
             Property::always("ends: Live or Stopped by the horizon", |m: &Peripherals, s: &PeerModel| s.now < m.horizon() || s.ended),
             Property::always("a current reading is fresh", |_, s: &PeerModel| match peer_state(&s.machine, &HR, s.now) {
-                PeerState::Live { age, current: true, .. } | PeerState::Unstable { age, current: true, .. } => age <= wrist_ble_core::status::CURRENT_FOR,
+                PeerState::Live { age, current: true, .. } | PeerState::Unstable { age, current: true, .. } => age <= wrist_ble::core::status::CURRENT_FOR,
                 _ => true,
             }),
             Property::always("a peripheral never heard is let go at its give-up", |m: &Peripherals, s: &PeerModel| {

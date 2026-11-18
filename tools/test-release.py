@@ -266,7 +266,7 @@ class Packaging(unittest.TestCase):
     def test_the_tools_carry_the_images_console_service(self):
         rust = lambda path, name: re.search(rf'const {name}: [^=]+= ([^;]+);', (r.ROOT/path).read_text())[1]
         ble = 'apps/standalone-boot/src/ble.rs'
-        server = (r.ROOT/'crates/wrist-wake/src/ble/server.rs').read_text()
+        server = (r.ROOT/'crates/wrist-bluenrg2/src/wake/ble/server.rs').read_text()
         base = [int(b, 16) for b in re.findall(r'0x([0-9A-F]{2})', re.search(r'let mut b = \[([^\]]+)\];', server)[1])]
         # The console's service, then RX and TX, in the order the table declares them.
         _, *chars = re.findall(r'uuid: nus\((0x[0-9A-F]{2})\)', server)
@@ -280,34 +280,34 @@ class Packaging(unittest.TestCase):
         largest = int(rust('crates/wrist-ble/src/lib.rs', 'ATT_MAX_MTU'))
         self.assertEqual((tool_constant('wrist-ble.py', 'DEFAULT_MTU'), tool_constant('wrist-ble.py', 'ATT_HEADER')), (default, header))
         self.assertEqual(tool_constant('wrist-ble.py', 'VALUE_LEN'), largest - header)
-        self.assertEqual(rust('crates/wrist-wake/src/ble/server.rs', 'CONSOLE_VALUE_LEN'), f'ATT_MAX_MTU - {header}')
+        self.assertEqual(rust('crates/wrist-bluenrg2/src/wake/ble/server.rs', 'CONSOLE_VALUE_LEN'), f'ATT_MAX_MTU - {header}')
         self.assertEqual(rust('crates/wrist-bluenrg2/src/gatt.rs', 'MAX_VALUE'), f'ATT_MAX_MTU - {header}')
         self.assertEqual(rust(ble, 'DEFAULT_MTU'), 'bluenrg2::ATT_DEFAULT_MTU')
         self.assertIn(f'pub type Payload = Bytes<{{ ATT_MAX_MTU - {header} }}>;', (r.ROOT/'crates/wrist-ble/src/lib.rs').read_text())
 
-    def test_a_build_id_has_the_digits_wrist_crash_packs(self):
-        crash = (r.ROOT/'crates/wrist-crash/src/lib.rs').read_text()
+    def test_a_build_id_has_the_digits_the_crash_record_packs(self):
+        crash = (r.ROOT/'crates/wrist-logic/src/crash.rs').read_text()
         digits = int(re.search(r'pub const BUILD_HASH_DIGITS: usize = (\d+);', crash)[1])
         self.assertEqual(r.firmware_build.BUILD_HASH_DIGITS, digits)
         self.assertEqual(tool_constant('wrist-crash.py', 'BUILD_HASH_DIGITS'), digits)
         self.assertIn(f'hash.get(..{digits})?', (r.ROOT/'apps/standalone-boot/build.rs').read_text())
 
     def test_wrist_frame_reads_the_face_s_dump(self):
-        glass = (r.ROOT/'crates/wrist-glass/src/lib.rs').read_text()
+        glass = (r.ROOT/'crates/wrist-display/src/glass.rs').read_text()
         for name, tool in [('WIDTH', 'W'), ('HEIGHT', 'H')]:
             self.assertEqual(tool_constant('wrist-frame.py', tool), int(re.search(rf'pub const {name}: u32 = (\d+);', glass)[1]), name)
         dump = (r.ROOT/'apps/standalone-boot/src/glass.rs').read_text()
         self.assertIn(f'" {tool_constant("wrist-frame.py", "FORMAT")} frame "', dump)
 
-    def test_wrist_crash_py_hashes_as_wrist_crash(self):
-        crash = (r.ROOT/'crates/wrist-crash/src/lib.rs').read_text()
+    def test_wrist_crash_py_hashes_as_the_crash_record(self):
+        crash = (r.ROOT/'crates/wrist-logic/src/crash.rs').read_text()
         for name in ['FNV_OFFSET', 'FNV_PRIME']:
             value = int(re.search(rf'pub const {name}: u32 = 0x([0-9A-F_]+);', crash)[1].replace('_', ''), 16)
             self.assertEqual(tool_constant('wrist-crash.py', name), value, name)
         spec = importlib.util.spec_from_file_location('wrist_crash', r.ROOT/'tools/wrist-crash.py')
         tool = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(tool)
-        pinned = re.search(r'fnv1a\(b"src/main.rs"\), 0x([0-9A-F_]+)\)', (r.ROOT/'crates/wrist-crash/tests/record.rs').read_text())[1]
+        pinned = re.search(r'fnv1a\(b"src/main.rs"\), 0x([0-9A-F_]+)\)', (r.ROOT/'crates/wrist-logic/tests/crash_record.rs').read_text())[1]
         self.assertEqual(tool.fnv1a(b'src/main.rs'), int(pinned.replace('_', ''), 16))
 
 
@@ -325,7 +325,7 @@ class BuildId(unittest.TestCase):
         self.d = Path(self.tmp.name)
         files = {'release/build-inputs.txt': (r.ROOT/'release/build-inputs.txt').read_text(),
                  'apps/standalone-boot/src/main.rs': 'fn main() {}\n', 'apps/wrist-loader/LAYOUT.md': 'map\n',
-                 'crates/wrist-glass/src/lib.rs': '\n', 'crates/wrist-glass/tests/face.rs': '\n',
+                 'crates/wrist-display/src/glass.rs': '\n', 'crates/wrist-display/tests/face.rs': '\n',
                  'rust-toolchain.toml': '[toolchain]\n', 'release/gate.json': '{}\n', 'release/GATE.md': 'gate\n',
                  'README.md': 'readme\n', 'site/index.html': '<p>\n', '.github/workflows/firmware.yml': 'on: push\n',
                  'tools/release-build.py': '\n', 'tools/firmware_build.py': '\n'}
@@ -350,7 +350,7 @@ class BuildId(unittest.TestCase):
         base = r.firmware_build.build_id(self.d)
         self.assertRegex(base, r'^[0-9a-f]{12}$')
         for when, name in enumerate(['release/gate.json', 'release/GATE.md', 'README.md', 'site/index.html',
-                                     'apps/wrist-loader/LAYOUT.md', 'crates/wrist-glass/tests/face.rs',
+                                     'apps/wrist-loader/LAYOUT.md', 'crates/wrist-display/tests/face.rs',
                                      '.github/workflows/firmware.yml', 'tools/release-build.py'], 2000):
             self.commit(name, 'changed\n', when)
             self.assertEqual(r.firmware_build.build_id(self.d), base, name)
@@ -358,7 +358,7 @@ class BuildId(unittest.TestCase):
 
     def test_inputs_change_it(self):
         seen = {r.firmware_build.build_id(self.d)}
-        for when, name in enumerate(['apps/standalone-boot/src/main.rs', 'crates/wrist-glass/src/lib.rs',
+        for when, name in enumerate(['apps/standalone-boot/src/main.rs', 'crates/wrist-display/src/glass.rs',
                                      'rust-toolchain.toml', 'tools/firmware_build.py'], 2000):
             self.commit(name, 'changed\n', when)
             seen.add(r.firmware_build.build_id(self.d))
@@ -371,9 +371,9 @@ class BuildId(unittest.TestCase):
         (self.d/'site/new.html').write_text('\n')
         self.assertEqual(r.firmware_build.build_id(self.d), base)
         seen = {base}
-        (self.d/'crates/wrist-glass/src/new.rs').write_text('\n')
+        (self.d/'crates/wrist-display/src/new.rs').write_text('\n')
         seen.add(r.firmware_build.build_id(self.d))
-        (self.d/'crates/wrist-glass/src/new.rs').unlink()
+        (self.d/'crates/wrist-display/src/new.rs').unlink()
         main = self.d/'apps/standalone-boot/src/main.rs'
         main.write_text('fn main() { loop {} }\n')
         seen.add(r.firmware_build.build_id(self.d))

@@ -7,7 +7,7 @@ use std::path::Path;
 use wrist_ble::{AdvParams, CharDecl, ConnHandle, ConnParams, DisconnectReason, Interval, LeConnRole, Op, Payload, ServerAttr, ServiceDecl, Slots, Timeout};
 use wrist_bluenrg2::commands::{command, MAX_PARAMS};
 use wrist_bluenrg2::gatt::Handles;
-use wrist_wake::ble::server::{device_information, services, TX};
+use wrist_bluenrg2::wake::ble::server::{device_information, services, TX};
 
 const NAME: &[u8] = b"UNA";
 

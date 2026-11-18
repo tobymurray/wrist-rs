@@ -3,9 +3,9 @@
 
 use proptest::prelude::*;
 use wrist_ble::{Change, Millis, ResetCause, SchedKind};
-use wrist_ble_core::chip::{Chip, FaultCause};
-use wrist_ble_core::engine::Input;
-use wrist_ble_core::goals::{Goals, Power};
+use wrist_ble::core::chip::{Chip, FaultCause};
+use wrist_ble::core::engine::Input;
+use wrist_ble::core::goals::{Goals, Power};
 use wrist_ble_sim::peers::{Keys, Os, Phone};
 use wrist_ble_sim::sim::{on, Sim};
 
@@ -69,7 +69,7 @@ fn run(s: &mut Sim, script: &[(u32, Act)]) {
             Act::Vanish => s.fake.phone_vanishes(0),
             Act::Power(p) => s.power(p),
             Act::Transfer(t) => s.goals(Goals { transfer: t, ..g }),
-            Act::Discoverable(d) => s.goals(Goals { phone: wrist_ble_core::goals::PhoneGoal { discoverable: d, ..g.phone }, ..g }),
+            Act::Discoverable(d) => s.goals(Goals { phone: wrist_ble::core::goals::PhoneGoal { discoverable: d, ..g.phone }, ..g }),
             Act::Radio(r) => s.goals(Goals { radio_on: r, ..g }),
             Act::Reset => s.fake.reset(ResetCause::Crash),
             Act::Reboot(cause) => s.fake.reboot(cause),

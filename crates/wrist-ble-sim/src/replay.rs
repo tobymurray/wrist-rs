@@ -1,17 +1,17 @@
 //! A capture of the watch's own driver (`ble-trace`) replayed through the core: the core sees the
 //! chip's real events, its operations are taken as the driver's, and its choices and status are
-//! set beside what the driver did ([`wrist_ble_shadow`]).
+//! set beside what the driver did ([`wrist_bluenrg2::shadow`]).
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use wrist_ble::{Fault, Instant, Op, RadioEvent, Snapshot};
-use wrist_ble_core::chip::Action;
-use wrist_ble_core::engine::Tell;
-use wrist_ble_core::goals::{Goals, PhoneGoal, Power};
-use wrist_ble_core::{status, State};
-use wrist_ble_shadow::verdict::{Act, Disagreement};
-use wrist_ble_shadow::{trace, DriverOp, Excuse, Observer, Shadow};
+use wrist_ble::core::chip::Action;
+use wrist_ble::core::engine::Tell;
+use wrist_ble::core::goals::{Goals, PhoneGoal, Power};
+use wrist_ble::core::{status, State};
+use wrist_bluenrg2::shadow::verdict::{Act, Disagreement};
+use wrist_bluenrg2::shadow::{trace, DriverOp, Excuse, Observer, Shadow};
 use wrist_bluenrg2::INFO;
 
 /// One line of the replay's timeline.
@@ -96,7 +96,7 @@ impl Report {
         s
     }
 
-    /// Where the core and the driver acted differently ([`wrist_ble_shadow::verdict`]).
+    /// Where the core and the driver acted differently ([`wrist_bluenrg2::shadow::verdict`]).
     #[must_use]
     pub fn disagreements(&self) -> Vec<String> {
         let mut found = self.found.clone();
@@ -300,7 +300,7 @@ impl Replay {
                 c if c.starts_with("ble interval now ") => {
                     let mut units = c[17..].split_whitespace().map(|w| w.parse::<u16>().ok());
                     if let (Some(Some(min)), Some(Some(max))) = (units.next(), units.next()) {
-                        if wrist_wake::ble::interval_now(min, max) {
+                        if wrist_bluenrg2::wake::ble::interval_now(min, max) {
                             self.shadow.interval_now(now, min, max);
                         }
                     }

@@ -1,4 +1,4 @@
-test_package = ["bluenrg2", "wrist-ble", "wrist-ble-core", "wrist-ble-shadow", "wrist-bluenrg2", "wrist-ble-sim"]
+test_package = ["bluenrg2", "wrist-ble", "wrist-bluenrg2", "wrist-ble-sim"]
 # The slow stateright models are left out; the core's other tests and the simulator's judge
 # its mutants.
 additional_cargo_test_args = ["--", "--skip", "every_peripheral", "--skip", "the_phone_machine", "--skip", "the_chip_is_reset"]

@@ -12,9 +12,11 @@ pub mod events;
 pub mod gatt;
 pub mod ops;
 pub mod probe;
+pub mod shadow;
 pub mod snapshot;
 pub mod start;
 pub mod transport;
+pub mod wake;
 
 use wrist_ble::{
     Activities, AdvParams, Admitted, Anchor, Capabilities, CentralSlot, Change, ChipInfo, ConnParams, CoreSpecificationVersion, Duration, Exclusion,

@@ -26,7 +26,7 @@ Q = SMPS pinout.
 | SWD can also route through the USB-C connector, only with `R27`–`R30` fitted (marked NOPOP) | CONFIRMED |
 | `DEBUG_TX` is on PC4 | CONFIRMED on the schematic itself, not only the ECN 4 note: sheet 2 draws `DEBUG_TX` on `PC4` at ball **M3** (ST's package database puts PC4 at M3), with test point **TP35** directly on the net and an off-sheet port to sheet 6. Nothing sits between the ball and TP35. |
 | Stock's backup registers: `BKP0R` to `BKP2R` whether the time is set, the time zone and the DST offset, each a 16-bit value over the magic `0x32F2` (`Rtc::set`, `Rtc::setTimeZone`, `Rtc::setDstOffset`); `BKP3R` the power-off flag, 1 before the PMIC cuts power so a long press powers on (`Power::hPowerOff`); `BKP4R` unused; `BKP5R` the DRV2625's auto-calibration, `BEMF_GAIN`, `A_CAL_COMP` and `A_CAL_BEMF` from the low byte up, so `0x00A60602` is gain 2, compensation `0x06` and back-EMF `0xA6` (`Vibro::saveConfig`); `BKP6R` to `BKP10R` the GPS reference fix, its UTC second, latitude, longitude and altitude, then the UTC second again as its check (`Aiding::onAidingRefLocationSave`); `BKP11R` and `BKP12R` the watch's altitude and its CRC32 (`RtcAltitudeStorage::set`); `BKP13R` to `BKP22R` the magnetometer's hard- and soft-iron calibration and `BKP23R` its CRC32 (`MagCalibrationStoreRtc::save`). Nothing touches `BKP24R` to `BKP31R` | CONFIRMED by source: [UNAWatch/una-kernel-public](https://github.com/UNAWatch/una-kernel-public), the map in `Software/App/UnaWatch-CubeIDE/Core/Inc/main.h` ("RTC backup registers", `BKP4R` commented out) and the functions named. Its `Rtc::writeBackupReg` writes only `BKP3R` and up; the RTC driver keeps `BKP0R` to `BKP2R` itself. The bootloader that clears `BKP3R` is not published |
-| Backup registers across a system reset: `TAMP_BKP3R` is **zeroed on every reset** before this image runs (the vendor bootloader, presumably, taking stock's power-off flag), and `BKP0R`, `BKP1R`, `BKP2R`, `BKP4R`, `BKP6R` to `BKP10R` and `BKP31R` survive. The image keeps out of stock's registers, and reads but never writes `BKP5R`: `BKP4R` the daily alarm, tag `AL`, then bit 13 while a missed alarm waits for a press, bit 12 while the day's ring is spent, bit 11 while it is on, and the local minute of the day in bits 0 to 10, bits 14 and 15 zero (`07:00` on reads `0x414C09A4`; [`crates/wrist-time/src/alarm.rs`](crates/wrist-time/src/alarm.rs)); `BKP24R` the zone, tag `TZ` and minutes east of UTC; `BKP25R` to `BKP28R` the zone's next two changes, tags `T1` and `T2` with the new offset, then the UTC second each takes effect ([`crates/wrist-time/src/zone.rs`](crates/wrist-time/src/zone.rs)); `BKP29R` tag `WR`, bit 0 while the radio should be on (`ble` builds) and bits 4 and 5 who last set the calendar, 1 the host and 2 GPS; `BKP31R` the local time last set, seconds since 1970. `BKP30R` is free. It reads and writes no other register ([`crates/wrist-time/src/backup.rs`](crates/wrist-time/src/backup.rs)). All are lost with the backup domain on a PMIC hard reset | **MEASURED**: markers written, reset, read back. `BKP16R` as the radio's record survived a reset and an update's reset (2026-10-24). `BKP4R` as the alarm's record survived two resets with its ring spent, so neither rang it again (install 223). this map's `BKP4R`, `BKP24R` to `BKP29R` and `BKP31R` survived a reset, an update's reset and a reset through the bootloader's USB mode, read back through the console (2026-11-13); `BKP30R` untested |
+| Backup registers across a system reset: `TAMP_BKP3R` is **zeroed on every reset** before this image runs (the vendor bootloader, presumably, taking stock's power-off flag), and `BKP0R`, `BKP1R`, `BKP2R`, `BKP4R`, `BKP6R` to `BKP10R` and `BKP31R` survive. The image keeps out of stock's registers, and reads but never writes `BKP5R`: `BKP4R` the daily alarm, tag `AL`, then bit 13 while a missed alarm waits for a press, bit 12 while the day's ring is spent, bit 11 while it is on, and the local minute of the day in bits 0 to 10, bits 14 and 15 zero (`07:00` on reads `0x414C09A4`; [`crates/wrist-logic/src/time/alarm.rs`](crates/wrist-logic/src/time/alarm.rs)); `BKP24R` the zone, tag `TZ` and minutes east of UTC; `BKP25R` to `BKP28R` the zone's next two changes, tags `T1` and `T2` with the new offset, then the UTC second each takes effect ([`crates/wrist-logic/src/time/zone.rs`](crates/wrist-logic/src/time/zone.rs)); `BKP29R` tag `WR`, bit 0 while the radio should be on (`ble` builds) and bits 4 and 5 who last set the calendar, 1 the host and 2 GPS; `BKP31R` the local time last set, seconds since 1970. `BKP30R` is free. It reads and writes no other register ([`crates/wrist-logic/src/time/backup.rs`](crates/wrist-logic/src/time/backup.rs)). All are lost with the backup domain on a PMIC hard reset | **MEASURED**: markers written, reset, read back. `BKP16R` as the radio's record survived a reset and an update's reset (2026-10-24). `BKP4R` as the alarm's record survived two resets with its ring spent, so neither rang it again (install 223). this map's `BKP4R`, `BKP24R` to `BKP29R` and `BKP31R` survived a reset, an update's reset and a reset through the bootloader's USB mode, read back through the console (2026-11-13); `BKP30R` untested |
 | I2C1 is embassy's async DMA driver: **a blocking call on it after async transfers have run put every later read a byte out** (PMIC and gauge garbage) until a reset | **MEASURED**. Blocking calls are used only at boot, before the first async transfer. The mechanism is not pinned down |
 | **`DEBUG_TX` reaches the UNA Dev Tool 2.0 only while the MCU drives `DAM_DETECT` (PB15) high** — the tap is *not* firmware-independent | CONFIRMED (sheet 6). The only route from `DEBUG_TX` to the outside is `R40` (200 Ω) → `U22` NX20P0407 SBU switch → USB-C `SBU1` (`J6`). `U22`'s `SBUEN` is the net `DEBUG_EN`, which header `J11` (the "debug-enable jumper") connects to `DAM_DETECT`; `DAM_DETECT` is MCU pin **PB15** (ball K12, ECN 7: "Connected DAM_DETECT to U1.K12") and nothing else. NX20P0407 datasheet Rev 1.3, pin table and Table 4: `SBUEN` is active high with a **460 kΩ internal pull-down**, and the SBU switch is OFF while it is low. The vendor kernel detects Debug Accessory Mode and drives PB15; a standalone image that leaves PB15 at its reset state (input, floating) has its UART physically disconnected from the connector, at every baud. **A standalone image must set PB15 high before its first byte.** `U22` is also powered from `3V3_USB` (`U23`, enabled by `5V0_USB`), so the path only exists with VBUS present — which is the real reason the watch must be powered through the tool. The tool is a T-shaped PCB the watch clips onto at J1; `U1` is an **FTDI FT231X** (`0403:6015`) that enumerates as `/dev/ttyUSB0` and takes the watch's `DEBUG_TX` at **1.8 V logic** into its RX. It taps the pin rather than riding a kernel-side USB channel, so a standalone image's output *can* reach it with no kernel running — **but only through `U22`, and only if the image itself drives PB15 high** (above). Four conditions all have to hold: PB15 high; the **debug-enable jumper** is fitted (pads by the battery, T3 screws to get in); the watch is powered **through the dev tool, not a data cable** (a data cable forces charge mode, where apps do not run); and the host baud matches. |
 | **The dev tool is monitor-only — no SWD, and no RX path to the watch** | CONFIRMED for the data path; **one caveat from sheet 6**: `U22`'s second channel joins USB-C `SBU2` to `RST_L` through `R39`. ECN 9 (Rev 3.2, BOM only) made `R39` NOPOP, but the Rev 3.1 core module these notes were taken on has **`R39` fitted (200 Ω)** — so whenever `DAM_DETECT` is high and the tool is attached, the tool's SBU2 line sits on the MCU's `NRST`. Whether the tool ever drives it is UNKNOWN (no tool schematic). Same source otherwise. It cannot program or dump flash, so it does not substitute for a debug probe; recovery stays the bootloader long-press rollback. No RX also means an image that only transmits, and never waits on input, loses nothing. |
@@ -111,7 +111,7 @@ Part: onsemi N24S64B, 8 KB array. Checked against its datasheet (rev. 3, June 20
   Page (`0x0000`), a **16-byte read-only unique ID** (`0x0200`) and the Device
   Configuration Register (`0x0600`). A2:A0 default to 0 and can be reprogrammed.
 - The same `0x58` header also writes the page lock, the write-protect bit and A2:A0, so
-  [`crates/wrist-eeprom`](crates/wrist-eeprom) only ever sends the two address bytes of a read.
+  [`wrist_logic::eeprom`](crates/wrist-logic/src/eeprom.rs) only ever sends the two address bytes of a read.
 - So 0x50 and 0x58 answer on all four module buses because a module with an EEPROM sits
   on each. CONFIRMED against the datasheet.
 
@@ -133,7 +133,7 @@ per-unit and are not recorded here.
   (byte 68) empty on all three.
 - **The display module carries an older format.** The kernel image has no parser for it
   (no `view_` string), so its `MODULE_INFO` presumably reports `view` as a read error.
-  A firmware that identifies modules has to accept both. [`crates/wrist-eeprom`](crates/wrist-eeprom) reads it as
+  A firmware that identifies modules has to accept both. [`wrist_logic::eeprom`](crates/wrist-logic/src/eeprom.rs) reads it as
   `<slot>_<name>-<revision>` (`view`, `LS012`, `1_3`), a shape inferred from this one label
   and parsed strictly: anything looser is "unrecognised", which refuses nothing.
 - **The fitted revisions are older than the published schematics** for the radios: BLE
@@ -242,7 +242,7 @@ image writes only the gate lines under glyphs that changed and fast-forwards the
 no leftover pixels or garbled columns. **MEASURED**: `cortex_m::asm::delay` takes three
 cycles an iteration on this core, so the driver's nominal 1 µs `BCK` half-periods were about
 3.2 µs and a full frame took 395 ms. The driver now paces every wait on the cycle counter
-from the edge before it, never shorter than [`wrist-panel`](crates/wrist-panel)'s minimums:
+from the edge before it, never shorter than [`wrist_display::panel`](crates/wrist-display/src/panel.rs)'s minimums:
 data held 300 ns after a `BCK` edge and set up 300 ns before the next (Table 6-3-3: 200 ns),
 which comes to about 1.1 µs a half-period with the loop's own cycles, 216 of the 240 lines in
 87 ms of which 81 ms is the CPU's, and a minute's 40 lines in 16 ms of CPU inside the 31 ms
@@ -258,7 +258,7 @@ bottom of the screen and one beyond row 0 at the top. **Do not shift the picture
 even that out**: the bezel's printed ticks at 12, 3 and 9 o'clock, measured against a
 ruler pattern drawn on the panel, put the case's centre within
 0.4 px (rows) and 0.8 px (columns) of the centre of the addressed 240 × 240 array, inside
-the photo's own uncertainty. The circle drawn by `wrist-glass` is centred on the case; the
+the photo's own uncertainty. The circle drawn by `wrist_display::glass` is centred on the case; the
 extra pixels are simply more panel under the glass on one side, and they stay black.
 
 ## The Bluetooth module (BlueNRG-2)
@@ -312,7 +312,7 @@ the link1 module `BLUENRG2` rev 1.3, from Linux (BlueZ 5.87) unless a row says o
 Sheet 4 ("Vibration Motor Driver and ERM Motor"), the Rev 3.2 BOM and TI's DRV2625 datasheet
 (SLOS879C, revised June 2025). The image
 ([`apps/standalone-boot/src/haptic.rs`](apps/standalone-boot/src/haptic.rs), registers in
-[`crates/wrist-haptic`](crates/wrist-haptic)) relies on these; first run on the watch
+[`wrist_logic::haptic`](crates/wrist-logic/src/haptic.rs)) relies on these; first run on the watch
 2026-10-31, on USB. An earlier driver, since removed, measured the same part on 2026-10-16.
 
 | Claim | Status |
@@ -543,7 +543,7 @@ Nothing tells the MCU about VBUS directly. The image reads two chips on I2C1: th
 `CHG_STATUS_1` (0x19) bits 7:6, the charger's input state, and the STUSB4500's
 `PORT_STATUS_1` (0x0E) bit 0, `ATTACH`. **MEASURED**: on battery the PMIC read
 `00` and the PD read failed; after reconnection they read `C0` and `41`. So a failed PD read
-alone means neither USB nor battery; `wrist_power::external_power` decides from the PMIC's
+alone means neither USB nor battery; `wrist_logic::power::external_power` decides from the PMIC's
 status and treats an attached PD source as external power, and its missing-read combinations
 are host-tested.
 
@@ -560,7 +560,7 @@ unplug and the plug, and `samples` by one a minute.
 ## Retained failure record
 
 Six SRAM words keep the last panic or fault across a software reset
-([`crates/wrist-crash`](crates/wrist-crash)). `0x2026FFF8` and `0x2026FFFC` hold a tagged panic line and file
+([`wrist_logic::crash`](crates/wrist-logic/src/crash.rs)). `0x2026FFF8` and `0x2026FFFC` hold a tagged panic line and file
 hash, or a fault's `CFSR` and `PC`, above the loader's RCC mailbox (`MAILBOX_MAGIC`/`MAILBOX_BDCR` in
 [`wrist_flash::vectors`](crates/wrist-flash/src/vectors.rs)).
 `0x2026FFE0` to `0x2026FFEC` hold the build ID, the uptime in seconds, the count of records

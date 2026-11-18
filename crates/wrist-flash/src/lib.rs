@@ -5,6 +5,7 @@
 pub mod commit;
 pub mod layout;
 pub mod plan;
+pub mod store;
 pub mod survey;
 pub mod vectors;
 

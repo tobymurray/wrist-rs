@@ -6,7 +6,7 @@ use core::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::watch::{Receiver, Watch};
-use wrist_power::{BatteryRun, StopInput};
+use wrist_logic::power::{BatteryRun, StopInput};
 use embassy_time::{Duration, Instant};
 
 use crate::mmio::{gpio, read32, write32, GPIO_BSRR, GPIO_IDR, PWR_CR1, PWR_CR1_ULPMEN};
@@ -129,11 +129,11 @@ impl Sampler {
             .map(|()| port[0] & PD_ATTACH != 0);
         let mut status = [0];
         let charger = bus
-            .write_read(wrist_board::i2c::PCA9420_PMIC, &[wrist_power::pca9420::CHG_STATUS_1], &mut status)
+            .write_read(wrist_board::i2c::PCA9420_PMIC, &[wrist_logic::power::pca9420::CHG_STATUS_1], &mut status)
             .await
             .ok()
             .map(|()| status[0]);
-        let usb = wrist_power::external_power(attached, charger);
+        let usb = wrist_logic::power::external_power(attached, charger);
         self.line_was_low = line_low();
         let now = Instant::now().as_millis();
         let host = crate::console::host_active();
@@ -169,8 +169,8 @@ pub fn note_reading(s: &pmic::Snapshot) {
                 now,
                 s.avg_current_raw.map(pmic::current_ua),
                 s.soc_raw.map(|raw| u16::try_from(pmic::soc_tenths(raw)).unwrap_or(1000)),
-                s.tte_raw.and_then(wrist_power::tte_seconds),
-                s.status2.map(wrist_power::hibernating),
+                s.tte_raw.and_then(wrist_logic::power::tte_seconds),
+                s.status2.map(wrist_logic::power::hibernating),
             );
         }
     });

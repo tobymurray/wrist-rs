@@ -1,13 +1,13 @@
 [package]
 name = "wrist-ble"
 version = "0.0.0"
-edition = "2021"
-license = "AGPL-3.0-or-later"
-publish = false
-description = "The Bluetooth radio boundary: the trait a chip driver implements, the operations and events it carries, and the limits and scheduling model it declares. no_std, no allocation"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Bluetooth without a radio: the boundary a chip driver implements, the subsystem's decisions over it, and the GATT profiles as bytes. no_std, no allocation"
 
 [dependencies]
-bt-hci = { version = "0.11.0", default-features = false }
+bt-hci.workspace = true
 
-[lints.clippy]
-pedantic = { level = "warn", priority = -1 }
+[lints]
+workspace = true
