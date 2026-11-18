@@ -1,11 +1,4 @@
 //! What the chip's `ACI_BLUE_INITIALIZED` means to the driver, and what it does about it.
-//!
-//! The BlueNRG-2 sends that event after every reset: the one the driver's start asked for through
-//! the chip's reset pin, and any it was not asked for (a watchdog, lockup or brownout reset, a
-//! crash, or its updater's command, `0xFC20` on firmware 2353). Unasked, the chip has lost its
-//! links and its configuration, and in its updater it answers no normal command. Linux check 8
-//! (install 252) left the driver `connected` to a chip in its updater, silent until the image
-//! was reinstalled.
 
 use bluenrg2::BootReason;
 

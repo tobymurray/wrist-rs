@@ -52,8 +52,7 @@ Local patches that upstream now has, in the revision above:
   the handler is no longer cleared unseen.
 - **LPTIM counter snapshot** ([#7408](https://github.com/embassy-rs/embassy/pull/7408)):
   `now()` samples the pending overflow on both sides of the counter read and retries if it
-  changed, so an overflow between the reads no longer puts the time a period ahead. It
-  replaces `wrist_time::counter::extend`.
+  changed, so an overflow between the reads no longer puts the time a period ahead.
 - **`DIEROK` between `DIER` writes**
   ([#7417](https://github.com/embassy-rs/embassy/pull/7417)), refined above.
 - **`embassy-usb-synopsys-otg` reinitialization**
