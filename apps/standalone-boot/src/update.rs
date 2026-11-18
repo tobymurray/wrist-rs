@@ -419,8 +419,7 @@ fn write_and_mark(flash: &'static FlashMutex, image: &[u8], crc: u32) -> Result<
 /// `update revert`, asked for on the console and run by [`revert_task`].
 pub static REVERT: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
-/// Puts back the image the last kept update replaced, as an update of its own: the next reset
-/// swaps it in, and it has to keep itself as any update does, or the loader brings this one back.
+/// Puts back the image the last kept update replaced, as an update of its own.
 #[embassy_executor::task]
 pub async fn revert_task(flash: &'static FlashMutex) -> ! {
     loop {

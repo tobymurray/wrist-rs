@@ -1,11 +1,5 @@
-//! `update revert`: the image the last kept update replaced, found in the DFU slot.
-//!
-//! embassy-boot's swap moves each active page into the DFU page after it, so once an update
-//! has swapped in, the DFU slot holds the image it replaced one page in. Its first page is
-//! never a swap's destination: it keeps the first page of the update, the image now running.
-//! After a revert by the loader the slot holds the rejected image from its start, and after an
-//! install from stock whatever was there before; in neither case is its first page the running
-//! image's, so that page is the test that the slot holds a replaced image at all.
+//! `update revert`: the image the last kept update replaced, which embassy-boot's swap
+//! (`BootLoader::swap`) leaves in the DFU slot one page in.
 
 use crate::layout::bank1;
 use crate::plan::{BANK1_BASE, PAGE_SIZE, PAGE_SIZE_U32};
@@ -17,12 +11,12 @@ pub const DFU_SIZE: usize = (bank1::DFU.end - bank1::DFU.start) as usize * PAGE_
 const ACTIVE_SIZE: usize = Target::Application.size() as usize;
 const _: () = assert!(DFU_SIZE == ACTIVE_SIZE + PAGE_SIZE);
 
-/// What flash reads as once erased; the DFU slot is erased before every update is written.
+/// What flash reads as once erased.
 pub const ERASED: u8 = 0xFF;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refusal {
-    /// The slot's first page is not the running image's.
+    /// The slot's first page is not the running image's, as a swap leaves it.
     NotReplaced,
     /// Nothing but erased flash where the image would be.
     Empty,
@@ -43,10 +37,7 @@ impl Refusal {
     }
 }
 
-/// The replaced image in `dfu`, the whole DFU slot, given `active`, the active slot: its bytes
-/// up to the last one that is not [`ERASED`]. Writing just those to an erased DFU slot leaves it
-/// as writing the whole page run would, so the swap brings back exactly the image replaced, and
-/// for an app.bin that does not end in erased bytes they are that file.
+/// The replaced image in `dfu`, the whole DFU slot, up to its last byte that is not [`ERASED`].
 ///
 /// # Errors
 /// The [`Refusal`] that says why the slot holds no image to go back to.
@@ -71,8 +62,8 @@ mod tests {
     use super::*;
     use crate::vectors::SP_MAX;
 
-    /// The two slots, moved page by page as embassy-boot 0.7.0's `BootLoader::swap` and
-    /// `revert` move them (`boot_loader.rs`), and written as the application's updater writes.
+    /// The two slots, moved page by page as embassy-boot's `BootLoader::swap` and `revert`
+    /// move them.
     struct Slots {
         active: Vec<u8>,
         dfu: Vec<u8>,

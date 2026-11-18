@@ -40,10 +40,9 @@ pub mod bank2 {
     pub const SELF_TEST: u16 = 46;
     /// Unused; a lost bank select here would break the image, never UNA's code.
     pub const RESERVE: Range<u16> = 48..116;
-    /// Settings, written only once the running image has kept itself, and never while an
-    /// update is received or waits to swap. The DFU slot opposite then holds only what
-    /// `update revert` reads (`previous`): a write that lost its bank select there spoils that
-    /// image, which the loader's revert answers when it fails to keep itself.
+    /// Settings, written only once the running image has kept itself and never while an update
+    /// is received or waits to swap, so a lost bank select spoils at most what `update revert`
+    /// reads.
     pub const SETTINGS: Range<u16> = 116..128;
     /// The installer's staged image, written under stock, opposite the running stock kernel;
     /// a stale copy stays after an install.
