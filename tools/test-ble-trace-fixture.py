@@ -53,6 +53,14 @@ class Scrub(unittest.TestCase):
         self.assertIsNone(fixture.scrub('1.000 [trace] 5 e 040F040001030C'))
         self.assertIsNone(fixture.scrub('1.000 [trace] 5 e 040E0401'))
 
+    def test_the_drivers_lost_reads_and_snapshots_are_kept(self):
+        self.assertEqual(fixture.scrub('1.000 [trace] 5 l'), '1.000 [trace] 5 l')
+        self.assertEqual(fixture.scrub('1.000 [trace] 5 s'), '1.000 [trace] 5 s')
+        self.assertEqual(fixture.scrub('1.000 [trace] 5 s 0001080102'), '1.000 [trace] 5 s 0001080102')
+        self.assertIsNone(fixture.scrub('1.000 [trace] 5 s 00010801'))
+        self.assertIsNone(fixture.scrub('1.000 [trace] 5 s 0801080102'))
+        self.assertIsNone(fixture.scrub('1.000 [trace] 5 s 0001080103'))
+
     def test_wall_clock_times_are_read_as_seconds_are(self):
         self.assertEqual(fixture.scrub('09:27:15.813 >> usb ble off'), '09:27:15.813 >> usb ble off')
         self.assertEqual(fixture.scrub('09:27:15.870 [trace] 946160 r'), '09:27:15.870 [trace] 946160 r')

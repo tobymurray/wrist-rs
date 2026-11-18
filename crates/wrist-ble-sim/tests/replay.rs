@@ -3,9 +3,9 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
-use wrist_ble::{Op, OpKind};
+use wrist_ble::{Instant, Op, OpKind};
 use wrist_ble_core::engine::Omitted;
-use wrist_ble_shadow::Excuse;
+use wrist_ble_shadow::{trace, Excuse};
 use wrist_ble_shadow::DriverOp;
 use wrist_ble_sim::replay::{replay, Report, Who};
 
@@ -120,6 +120,10 @@ fn a_core_that_acts_alone_is_a_disagreement() {
     assert!(!replay(&without_driver).disagreements().is_empty(), "{name}");
 }
 
+fn hex(h: &str) -> Vec<u8> {
+    (0..h.len() / 2).map(|i| u8::from_str_radix(&h[2 * i..2 * i + 2], 16).unwrap()).collect()
+}
+
 /// Kept lines only: what `tools/ble-trace-fixture.py` writes, so no fixture holds an address.
 #[test]
 fn traces_hold_only_what_the_scrub_keeps() {
@@ -134,9 +138,10 @@ fn traces_hold_only_what_the_scrub_keeps() {
             let f: Vec<&str> = text.split(' ').collect();
             assert_eq!(f[0], "[trace]", "{name}: {line}");
             match f[2] {
-                "r" => assert_eq!(f.len(), 3, "{name}: {line}"),
+                "r" | "l" => assert_eq!(f.len(), 3, "{name}: {line}"),
+                "s" => assert!(f.len() == 3 || trace::decode(Instant(0), &hex(f[3])).is_some(), "{name}: {line}"),
                 "c" | "e" => {
-                    let p: Vec<u8> = (0..f[3].len() / 2).map(|i| u8::from_str_radix(&f[3][2 * i..2 * i + 2], 16).unwrap()).collect();
+                    let p = hex(f[3]);
                     assert!(p.len() >= 3, "{name}: {line}");
                     if f[2] == "e" {
                         assert_eq!(p[0], 0x04, "{name}: {line}");

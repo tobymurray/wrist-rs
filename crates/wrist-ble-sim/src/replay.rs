@@ -5,13 +5,13 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
-use wrist_ble::{Instant, Op, RadioEvent, Snapshot};
+use wrist_ble::{Fault, Instant, Op, RadioEvent, Snapshot};
 use wrist_ble_core::chip::Action;
 use wrist_ble_core::engine::Tell;
 use wrist_ble_core::goals::{Goals, PhoneGoal, Power};
 use wrist_ble_core::{status, State};
 use wrist_ble_shadow::verdict::{Act, Disagreement};
-use wrist_ble_shadow::{DriverOp, Excuse, Observer, Shadow};
+use wrist_ble_shadow::{trace, DriverOp, Excuse, Observer, Shadow};
 use wrist_bluenrg2::INFO;
 
 /// One line of the replay's timeline.
@@ -360,6 +360,21 @@ impl Replay {
                     return;
                 }
                 self.shadow.event(at, &bytes);
+            }
+            // The driver's lost read, and its snapshot (none when it failed), as a driven core
+            // was told them.
+            "l" => self.shadow.lost_read(at),
+            "s" => {
+                let snapshot = if bytes.is_empty() {
+                    Err(Fault::Silent)
+                } else if let Some(s) = trace::decode(at, &bytes) {
+                    Ok(s)
+                } else {
+                    self.shadow.observer.report.unknown_events += 1;
+                    return;
+                };
+                self.shadow.take_snapshot();
+                self.shadow.snapshotted(at, snapshot);
             }
             _ => {}
         }

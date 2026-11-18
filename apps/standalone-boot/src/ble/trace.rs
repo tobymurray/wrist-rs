@@ -1,5 +1,6 @@
 //! `ble-trace`: each packet to and from the BlueNRG-2 as `[trace] <ms> <c|e|r> <hex>` to the USB
-//! host, so it can replay the link through the core.
+//! host, so it can replay the link through the core; with the driver's lost reads (`l`) and
+//! snapshots (`s`, empty when one failed) that a driven core is told.
 
 use embassy_time::Instant;
 
@@ -12,6 +13,15 @@ pub(super) enum Dir {
     ToChip,
     FromChip,
     Reset,
+    Lost,
+    Snapshot,
+}
+
+/// The driver's snapshot as [`wrist_ble_shadow::trace`] carries it; `None` when it failed.
+pub(super) fn snapshot(s: Option<&wrist_ble::Snapshot>) {
+    let mut bytes = [0; wrist_ble_shadow::trace::SNAPSHOT_MAX];
+    let len = s.map_or(0, |s| wrist_ble_shadow::trace::encode(s, &mut bytes));
+    packet(Dir::Snapshot, &bytes[..len]);
 }
 
 /// USB only: mirrored over the air, each line would make the packets that trace the next.
@@ -23,6 +33,8 @@ pub(super) fn packet(dir: Dir, p: &[u8]) {
         Dir::ToChip => b" c ",
         Dir::FromChip => b" e ",
         Dir::Reset => b" r ",
+        Dir::Lost => b" l ",
+        Dir::Snapshot => b" s ",
     });
     for &b in &p[..p.len().min(KEPT)] {
         line.push(&[HEX[usize::from(b >> 4)], HEX[usize::from(b & 0xF)]]);
