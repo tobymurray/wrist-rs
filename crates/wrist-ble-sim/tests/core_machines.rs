@@ -1,7 +1,7 @@
 mod common;
 
 use common::*;
-use wrist_ble::{Activities, Admitted, Change, ConnParams, Duration, Exclusion, FailureKind, Micros, Millis, PairingStep, SchedKind, Schedule, Status};
+use wrist_ble::{Activities, Admitted, Change, ConnHandle, ConnParams, Duration, Exclusion, FailureKind, Instant, Micros, Millis, PairingStep, SchedKind, Schedule, Status};
 use wrist_ble::policy::chip::{self, Chip, ChipMachine, FaultCause, StartId};
 use wrist_ble::policy::goals::Power;
 use wrist_ble::policy::peripheral::{self as per, Event, Peripheral, Stage, StopReason, Then, GIVE_UP};
@@ -781,4 +781,386 @@ fn phone_link_remade_after_a_failed_pairing_tells_a_later_lost_bond_only_if_it_f
     assert_eq!(a, [Action::TellBondLost(phone())]);
     let (_, a) = actions(failed, 20_000, phone::Event::Encryption(phone(), true));
     assert!(!a.contains(&Action::TellBondLost(phone())), "re-bonded: {a:?}");
+}
+
+/// A stopped peripheral keeps its own reason when the radio turns busy, and a link being dropped
+/// is still dropped.
+#[test]
+fn a_stop_or_a_drop_outlasts_a_busy_radio() {
+    let c = ctx(&HR);
+    let stopped = run(Peripheral::default().step(&c, t(0), Event::Want), &c, t(0), t(20 * 60_000));
+    assert_eq!(stopped.stage, Stage::Stopped(StopReason::NotFound));
+    for e in [Event::Busy(Conflict::Transfer), Event::Free, Event::Tick] {
+        assert_eq!(stopped.step(&c, t(20 * 60_000), e), stopped, "{e:?}");
+    }
+    let dropping = live(&c, t(0)).step(&c, t(50), Event::Unwant);
+    assert_eq!(dropping.step(&c, t(100), Event::Busy(Conflict::Transfer)), dropping);
+}
+
+#[test]
+fn another_links_loss_is_not_this_peripherals() {
+    let c = ctx(&HR);
+    let other = ConnHandle::new(2);
+    let linked = Peripheral::default().step(&c, t(0), Event::Want).step(&c, t(100), Event::LinkUp(sensor()));
+    let dropping = live(&c, t(0)).step(&c, t(50), Event::Unwant);
+    for p in [linked, live(&c, t(0)), dropping] {
+        for reason in [Status::CONN_FAILED_SYNCHRONIZATION_TIMEOUT, Status::CONN_TIMEOUT] {
+            assert_eq!(p.step(&c, t(200), Event::LinkDown(other, reason)), p, "{:?}", p.stage);
+        }
+    }
+}
+
+/// A link that drops as it is set up gets the quick retries, then the backoff, like a connection
+/// that fails to be established.
+#[test]
+fn a_link_that_keeps_dropping_as_it_is_set_up_backs_off_after_its_quick_retries() {
+    let c = ctx(&HR);
+    let mut p = Peripheral::default().step(&c, t(0), Event::Want);
+    for n in 1..=per::QUICK_RETRIES {
+        p = p.step(&c, t(100), Event::LinkUp(sensor())).step(&c, t(100), Event::LinkDown(sensor(), Status::CONN_FAILED_SYNCHRONIZATION_TIMEOUT));
+        assert_eq!(p.stage, Stage::Seeking { since: t(100), quick: n });
+    }
+    p = p.step(&c, t(200), Event::LinkUp(sensor())).step(&c, t(200), Event::LinkDown(sensor(), Status::CONN_FAILED_SYNCHRONIZATION_TIMEOUT));
+    assert!(matches!(p.stage, Stage::Backoff { .. }), "{p:?}");
+}
+
+/// A reading that comes as the strap turns quiet ends no quiet spell: the status still showed it
+/// live.
+#[test]
+fn a_gap_of_just_the_quiet_time_is_not_a_quiet_spell() {
+    let c = ctx(&HR);
+    let quiet = HR.quiet.0;
+    for (gap, unstable) in [(quiet, false), (quiet + 1, true)] {
+        let mut p = live(&c, t(0)).step(&c, t(1_000), bpm(70));
+        let mut now = 1_000;
+        for _ in 0..per::UNSTABLE_EVENTS {
+            now += u64::from(gap);
+            p = p.step(&c, t(now), bpm(70));
+        }
+        assert_eq!(p.unstable(&HR, t(now), false), unstable, "gaps of {gap} ms");
+    }
+}
+
+#[test]
+fn the_deadline_of_an_attempt_is_the_end_of_its_window() {
+    for power in [Power::Battery, Power::Cable] {
+        let c = per::Ctx { power, ..ctx(&HR) };
+        let p = Peripheral::default().step(&c, t(1_000), Event::Want);
+        assert_eq!(p.deadline(&c, t(1_000)), Some(t(1_000) + per::attempt_window(power)));
+    }
+}
+
+/// Ticks before an attempt's window or a wait ends change nothing.
+#[test]
+fn an_early_tick_leaves_an_attempt_or_a_wait_alone() {
+    let c = ctx(&HR);
+    let seeking = Peripheral::default().step(&c, t(10_000), Event::Want);
+    let end = t(10_000) + per::attempt_window(Power::Battery);
+    assert_eq!(seeking.step(&c, end - Millis(1), Event::Tick), seeking);
+    let backoff = seeking.step(&c, end, Event::Tick);
+    let Stage::Backoff { until } = backoff.stage else { panic!("{backoff:?}") };
+    assert_eq!(backoff.step(&c, until - Millis(1), Event::Tick), backoff);
+    assert!(matches!(backoff.step(&c, until, Event::Tick).stage, Stage::Seeking { .. }));
+}
+
+/// A drop counts towards unstable for the window and no longer, and the deadline names the
+/// moment it ages out.
+#[test]
+fn a_drop_ages_out_of_the_window_when_the_deadline_says() {
+    let c = ctx(&HR);
+    let relink = |p: Peripheral, at: Instant| {
+        [Event::LinkDown(sensor(), Status::CONN_TIMEOUT), Event::LinkUp(sensor()), Event::Discovered(true), Event::Subscribed(true)]
+            .into_iter()
+            .fold(p, |p, e| p.step(&c, at, e))
+    };
+    let mut p = live(&c, t(0));
+    let first = t(10_500);
+    let mut now = 0;
+    while now < 200_000 {
+        now += 1_000;
+        if now == 11_000 {
+            p = relink(p, first);
+        }
+        if now == 21_000 {
+            p = relink(p, t(20_500));
+        }
+        p = p.step(&c, t(now), bpm(70));
+        if t(now) + Millis(1_000) > first + per::UNSTABLE_WINDOW {
+            break;
+        }
+    }
+    let aged = first + per::UNSTABLE_WINDOW;
+    assert!(p.unstable(&HR, aged - Millis(1), false));
+    assert!(!p.unstable(&HR, aged, false));
+    assert_eq!(p.deadline(&c, t(now)), Some(aged));
+}
+
+/// A drop at the clock's first instant counts like any other.
+#[test]
+fn a_drop_at_the_first_instant_counts() {
+    let c = ctx(&HR);
+    let p = [Event::LinkDown(sensor(), Status::CONN_TIMEOUT), Event::LinkUp(sensor()), Event::Discovered(true), Event::Subscribed(true)]
+        .into_iter()
+        .fold(live(&c, t(0)), |p, e| p.step(&c, t(0), e));
+    let p = p.step(&c, t(1_000), Event::LinkDown(sensor(), Status::CONN_TIMEOUT));
+    assert!(p.unstable(&HR, t(1_000), false));
+}
+
+/// A peripheral retried long after it was chosen gets the whole give-up time again.
+#[test]
+fn a_retry_restarts_the_give_up_clock() {
+    let c = ctx(&HR);
+    let p = run(Peripheral::default().step(&c, t(0), Event::Want), &c, t(0), t(20 * 60_000));
+    assert_eq!(p.stage, Stage::Stopped(StopReason::NotFound));
+    let retried = t(20 * 60_000);
+    let p = p.step(&c, retried, Event::Retry);
+    assert_eq!(p.heard_at, retried);
+    let p = run(p, &c, retried, retried + GIVE_UP - Millis(1));
+    assert!(!matches!(p.stage, Stage::Stopped(_)), "{p:?}");
+    assert_eq!(run(p, &c, retried, retried + GIVE_UP).stage, Stage::Stopped(StopReason::NotFound));
+}
+
+/// In a workout, a window every [`per::SLOW_EVERY`].
+#[test]
+fn the_slow_search_looks_once_a_minute() {
+    let c = per::Ctx { workout: true, ..ctx(&HR) };
+    let p = run(Peripheral::default().step(&c, t(0), Event::Want), &c, t(0), t(u64::from(GIVE_UP.0) + 30_000));
+    assert!(p.slow_until.is_some());
+    let mut starts = Vec::new();
+    let mut p = p;
+    let mut now = t(u64::from(GIVE_UP.0) + 30_000);
+    for _ in 0..100 {
+        if starts.len() == 3 {
+            break;
+        }
+        let due = p.deadline(&c, now).unwrap();
+        p = p.step(&c, due, Event::Tick);
+        now = due;
+        if let Stage::Seeking { since, .. } = p.stage {
+            if since == now {
+                starts.push(since);
+            }
+        }
+    }
+    assert_eq!(starts.len(), 3, "{starts:?}");
+    assert_eq!(starts[1].since(starts[0]), per::SLOW_EVERY);
+    assert_eq!(starts[2].since(starts[1]), per::SLOW_EVERY);
+}
+
+/// The backoff's jitter, a quarter of the step at most, differs from peer to peer and from step to
+/// step.
+#[test]
+fn the_backoff_jitter_spreads_peers_and_steps() {
+    let base = per::BACKOFF[0];
+    let jitter = |addr: [u8; 6], steps: usize| {
+        let c = per::Ctx { peer: wrist_ble::PeerAddr { addr: wrist_ble::BdAddr::new(addr), ..peer() }, ..ctx(&HR) };
+        let mut p = Peripheral::default().step(&c, t(0), Event::Want);
+        let mut now = t(0);
+        for _ in 0..steps {
+            p = p.step(&c, now, Event::ConnectFailed(FailureKind::Timeout));
+            let Stage::Backoff { until } = p.stage else { panic!("{p:?}") };
+            now = until;
+            p = p.step(&c, now, Event::Tick);
+        }
+        p = p.step(&c, now, Event::ConnectFailed(FailureKind::Timeout));
+        let Stage::Backoff { until } = p.stage else { panic!("{p:?}") };
+        Millis(until.since(now).0 - per::BACKOFF[steps].0)
+    };
+    let mut seen = std::collections::BTreeSet::new();
+    for byte in 0..6 {
+        for v in [0x10u8, 0x11, 0x80, 0xFE] {
+            let mut addr = [1, 2, 3, 4, 5, 6];
+            addr[byte] = v;
+            let j = jitter(addr, 0);
+            assert!(j.0 <= base.0 / 4, "{j:?}");
+            seen.insert(j);
+        }
+    }
+    assert!(seen.len() >= 20, "{} distinct of 24: {seen:?}", seen.len());
+    let steps: std::collections::BTreeSet<_> = (0..4).map(|s| jitter([1, 2, 3, 4, 5, 6], s).0 * 1_000 / per::BACKOFF[s].0).collect();
+    assert!(steps.len() >= 3, "{steps:?}");
+}
+
+#[test]
+fn phone_ignores_another_links_events() {
+    let p = up(0);
+    for e in [
+        phone::Event::Resynced(sensor(), None),
+        phone::Event::Resynced(sensor(), Some(true)),
+        phone::Event::Pairing(sensor(), PairingStep::Numeric(1)),
+        phone::Event::Pairing(sensor(), PairingStep::Failed),
+        phone::Event::BondLost(sensor()),
+        phone::Event::ParamsChanged(sensor()),
+    ] {
+        assert_eq!(actions(p, 100, e), (p, NONE), "{e:?}");
+    }
+}
+
+/// A link whose security a resync could not tell, then found unencrypted, is held and asked to
+/// pair once the time a bonded central takes to encrypt is up.
+#[test]
+fn phone_link_of_unknown_security_found_unencrypted_is_asked_to_pair_in_time() {
+    let (p, _) = actions(up(0), 20_000, phone::Event::Resynced(phone(), None));
+    assert_eq!(p.deadline(), None);
+    let (p, _) = actions(p, 30_000, phone::Event::Encryption(phone(), false));
+    assert!(!p.may_ask_params(t(30_000)));
+    assert_eq!(p.deadline(), Some(t(30_000) + phone::ASK_TO_PAIR_AFTER));
+    assert_eq!(actions(p, 34_999, phone::Event::Tick).1, NONE);
+}
+
+/// A pairing the central begins on an unsecured link has until its outcome's deadline; on a
+/// secure link a late step sets none.
+#[test]
+fn phone_pairing_the_central_began_waits_for_its_outcome() {
+    for step in [PairingStep::PasskeyWanted, PairingStep::Complete] {
+        let (p, _) = actions(up(0), 1_000, phone::Event::Pairing(phone(), step));
+        assert_eq!(p.deadline(), Some(t(1_000) + phone::SECURITY_REQUEST_OUTCOME), "{step:?}");
+        let (secure, _) = actions(up(0), 500, phone::Event::Encryption(phone(), true));
+        let (p, _) = actions(secure, 1_000, phone::Event::Pairing(phone(), step));
+        assert_eq!(p.deadline(), None, "{step:?}");
+    }
+}
+
+#[test]
+fn chip_in_fault_starts_when_the_user_asks() {
+    let mut c = ready_chip(t(0));
+    let mut now = 0;
+    for _ in 0..=chip::RESETS_PER_HOUR {
+        now += 1_000;
+        c = c.step(CAPS, t(now), chip::Event::Reset(wrist_ble::ResetCause::Watchdog)).0;
+        c = c.step(CAPS, t(now), chip::Event::Ready(INFO)).0;
+    }
+    assert!(matches!(c.state, Chip::Fault { .. }), "{c:?}");
+    let (c, a) = c.step(CAPS, t(now + 1_000), chip::Event::Retry);
+    assert!(matches!(a, Some(chip::Action::Start(_))), "{a:?}");
+    assert_eq!(c.state, Chip::Starting { since: t(now + 1_000) });
+}
+
+/// What a scan replaces is left out of its fingerprint, as an advertising change's is.
+#[test]
+fn a_refused_scan_is_the_same_from_any_scan() {
+    let scan = |ms: u16| wrist_ble::ScanParams { interval: Duration::from_u16(ms), window: Duration::from_u16(ms), active: false, duration: Millis::secs(5) };
+    let change = Change::Scan(Some(scan(160)));
+    let from = |s| fingerprint(&Activities { scanning: s, ..Activities::IDLE }, &change);
+    assert_eq!(from(None), from(Some(scan(80))));
+    assert_ne!(from(None), fingerprint(&Activities::IDLE, &Change::Scan(Some(scan(80)))));
+}
+
+/// Advertising one interval step apart is two configurations, refused or not apart.
+#[test]
+fn neighbouring_intervals_have_their_own_fingerprints() {
+    let at = |units: u16| {
+        let p = wrist_ble::AdvParams { interval_min: Duration::from_u16(units), interval_max: Duration::from_u16(units), connectable: true };
+        fingerprint(&Activities::IDLE, &Change::Advertise(Some(p)))
+    };
+    let all: std::collections::BTreeSet<_> = (1_584..1_600).map(|u| at(u).0).collect();
+    assert_eq!(all.len(), 16);
+}
+
+static BESIDE: [wrist_ble::policy::plan::Choice<wrist_ble::AdvParams>; 2] = [
+    wrist_ble::policy::plan::Choice { params: ADV_995, when: wrist_ble::policy::plan::When { power: None, beside_central: Some(false), idle: None }, cost_ua: 10 },
+    wrist_ble::policy::plan::Choice {
+        params: wrist_ble::AdvParams { interval_min: Duration::from_u16(3_992), interval_max: Duration::from_u16(3_992), connectable: true },
+        when: wrist_ble::policy::plan::When { power: None, beside_central: None, idle: None },
+        cost_ua: 5,
+    },
+];
+
+static ADVERTISING: wrist_ble::policy::plan::Menu = wrist_ble::policy::plan::Menu { advertising: &BESIDE, connecting: &[], live: &[], phone: &[] };
+
+fn plan(state: &wrist_ble::policy::State, goals: &wrist_ble::policy::goals::Goals) -> wrist_ble::policy::plan::Target {
+    use wrist_ble::policy::plan::{MenuPlanner, PlanInput, Planner};
+    MenuPlanner.plan(&PlanInput { goals, state, caps: CAPS, schedule: &Careless, menu: &ADVERTISING, refused: &Refused::EMPTY, now: t(0) })
+}
+
+/// Beside a central link the planner leaves out the options for advertising alone.
+#[test]
+fn the_planner_advertises_beside_a_central_with_the_options_for_it() {
+    let goals = wrist_ble::policy::goals::Goals { radio_on: true, ..wrist_ble::policy::goals::Goals::OFF };
+    let mut state = ready(t(0));
+    assert_eq!(plan(&state, &goals).activities.advertising, Some(ADV_995));
+    state.radio.central[0] = Some(SLOT);
+    assert_eq!(plan(&state, &goals).activities.advertising, Some(BESIDE[1].params));
+}
+
+/// Until the chip is up the plan is what runs, so nothing drifts from it.
+#[test]
+fn the_planner_plans_nothing_until_the_chip_is_up() {
+    use wrist_ble::policy::plan::Verdict;
+    let goals = wrist_ble::policy::goals::Goals { radio_on: true, ..wrist_ble::policy::goals::Goals::OFF };
+    let state = wrist_ble::policy::State { chip: ChipMachine::OFF.step(CAPS, t(0), chip::Event::RadioOn).0, ..ready(t(0)) };
+    let target = plan(&state, &goals);
+    assert_eq!((target.activities, target.phone), (state.radio, Verdict::NotWanted));
+}
+
+/// Coverage is judged on the whole blocks of the last [`per::UNSTABLE_WINDOW`], each counted once
+/// and none counted twice: a strap delivering 95% of its readings is never thin, one delivering
+/// 85% always is.
+#[test]
+fn coverage_counts_every_block_of_the_window_once() {
+    let c = ctx(&HR);
+    for (missed, thin) in [(&[0][..], false), (&[0, 7, 13][..], true)] {
+        let mut p = live(&c, t(0));
+        for s in 1..=400u64 {
+            if !missed.contains(&(s % 20)) {
+                p = p.step(&c, secs(s), bpm(70));
+            }
+            for ms in [0, 500] {
+                if s >= 40 {
+                    assert_eq!(p.unstable(&HR, t(s * 1_000 + ms), false), thin, "missing {missed:?}, at {s}.{ms} s");
+                }
+            }
+        }
+    }
+}
+
+/// Exactly [`per::COVERAGE_PERCENT`] is enough; the judging starts at three whole blocks.
+#[test]
+fn coverage_is_judged_from_three_blocks_at_ninety_percent() {
+    let c = ctx(&HR);
+    let delivering = |every_block: u64| {
+        let mut p = live(&c, t(0));
+        for s in 1..40u64 {
+            if s % 10 != 0 && s % 10 <= every_block {
+                p = p.step(&c, secs(s), bpm(70));
+            }
+        }
+        p
+    };
+    // Nine of ten each block: exactly 90%.
+    assert!(!delivering(9).unstable(&HR, t(30_500), false));
+    // Eight of ten: thin from the third whole block, not before.
+    let thin = delivering(8);
+    assert!(!thin.unstable(&HR, t(29_500), false));
+    assert!(thin.unstable(&HR, t(30_500), false));
+}
+
+/// The block under way never stands in for the oldest block of the window.
+#[test]
+fn coverage_never_counts_the_block_under_way() {
+    let c = ctx(&HR);
+    let mut p = live(&c, t(0));
+    // Nothing in the first block, nine of ten in each after: 85% of the window by its last block.
+    for s in 11..190u64 {
+        if s % 10 != 0 {
+            p = p.step(&c, secs(s), bpm(70));
+        }
+    }
+    assert!(p.unstable(&HR, t(189_500), false));
+}
+
+/// A strap that turns thin after a good spell is judged on its recent blocks.
+#[test]
+fn coverage_follows_the_window_past_a_good_spell() {
+    let c = ctx(&HR);
+    let mut p = live(&c, t(0));
+    for s in 1..=600u64 {
+        if s < 400 || s % 2 == 0 {
+            p = p.step(&c, secs(s), bpm(70));
+        }
+        if s == 399 {
+            assert!(!p.unstable(&HR, secs(s), false));
+        }
+    }
+    assert!(p.unstable(&HR, t(600_500), false));
 }

@@ -6,6 +6,7 @@ use common::*;
 use wrist_ble::Millis;
 use wrist_ble::policy::peripheral::{Ctx, Event, Peripheral, Stage, GIVE_UP};
 use wrist_ble::policy::plan::Conflict;
+use wrist_ble::policy::profile::Profile;
 use wrist_ble::policy::status::{peer_state, PeerState, HIDE_AFTER};
 
 fn slow_searching() -> (Ctx<'static>, Peripheral, wrist_ble::Instant) {
@@ -180,4 +181,21 @@ fn the_slow_search_starts_at_once_from_a_backoff() {
     let p = p.step(&c, mark, Event::Tick);
     assert_eq!(p.slow_until, Some(mark + wrist_ble::policy::peripheral::SLOW_FOR));
     assert_eq!(p.stage, Stage::Seeking { since: mark, quick: 0 });
+}
+
+/// A strap given longer than [`HIDE_AFTER`] before it is dropped: its reading is hidden first.
+static PATIENT: Profile = Profile { stale: Millis::secs(60), ..HR };
+
+#[test]
+fn the_deadline_announces_a_reading_hidden_by_its_age() {
+    let c = ctx(&PATIENT);
+    let p = live(&c, t(0)).step(&c, secs(1), bpm(70));
+    let hidden = secs(1) + HIDE_AFTER + Millis(1);
+    let shown = |now| match peer_state(&p, &PATIENT, now) {
+        PeerState::Quiet { value, .. } | PeerState::Unstable { value, .. } => value,
+        s => panic!("{s:?}"),
+    };
+    assert_eq!(shown(hidden - Millis(1)), Some(70));
+    assert_eq!(shown(hidden), None);
+    assert_eq!(p.deadline(&c, secs(30)), Some(hidden));
 }

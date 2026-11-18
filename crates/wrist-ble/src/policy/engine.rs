@@ -295,29 +295,19 @@ impl<'a> Core<'a> {
             self.forget_radio(now);
         }
         for i in 0..MAX_PERIPHERALS {
-            let same = match (self.state.peers[i], g.peripherals[i]) {
-                (Some(p), Some(w)) => p.want.peer == w.peer && core::ptr::eq(p.want.profile, w.profile),
-                (None, None) => true,
-                _ => false,
-            };
-            if same {
-                if let (Some(p), Some(w)) = (self.state.peers[i].as_mut(), g.peripherals[i]) {
-                    p.want = w;
-                }
-                continue;
+            match (self.state.peers[i].as_mut(), g.peripherals[i]) {
+                (Some(p), Some(w)) if p.want.peer == w.peer && core::ptr::eq(p.want.profile, w.profile) => p.want = w,
+                (Some(_), _) => self.peer_step(now, i, peripheral::Event::Unwant),
+                (None, _) => self.fill(now, i),
             }
-            if let Some(p) = self.state.peers[i] {
-                self.peer_step(now, i, peripheral::Event::Unwant);
-                if !matches!(p.machine.stage, Stage::Linked { .. } | Stage::Live { .. } | Stage::Dropping { .. }) {
-                    self.state.peers[i] = None;
-                }
-            }
-            if self.state.peers[i].is_none() {
-                if let Some(w) = g.peripherals[i] {
-                    self.state.peers[i] = Some(Peer { want: w, machine: Peripheral::default() });
-                    self.peer_step(now, i, peripheral::Event::Want);
-                }
-            }
+        }
+    }
+
+    /// The slot given to the peripheral the goals want there, if any.
+    fn fill(&mut self, now: Instant, i: usize) {
+        if let Some(w) = self.goals.peripherals[i] {
+            self.state.peers[i] = Some(Peer { want: w, machine: Peripheral::default() });
+            self.peer_step(now, i, peripheral::Event::Want);
         }
     }
 
@@ -636,12 +626,15 @@ impl<'a> Core<'a> {
         };
         self.snapshot_retry = None;
         self.snapshot_failures = 0;
-        let mut mismatch = false;
+        // The phone's link may have been ended and made again on its handle behind the lost
+        // events, which a snapshot cannot show: what was known of its parameters, and the console's
+        // ask of it, are let go, so the link is judged afresh by its next update or the menu's ask.
+        self.forget_phone_params();
+        self.console = None;
         let found = s.links.iter().flatten().find(|l| l.role == LeConnRole::Peripheral);
         let phone = found.map(|l| l.link);
-        if phone != self.state.phone.link() {
-            mismatch = true;
-            self.forget_phone_params();
+        let mut mismatch = phone != self.state.phone.link();
+        if mismatch {
             if let Some(l) = self.state.phone.link() {
                 self.state.phone = self.state.phone.step(now, phone::Event::LinkDown(l)).0;
                 self.state.silent_since = now;
@@ -650,13 +643,6 @@ impl<'a> Core<'a> {
                 self.end_pending(|op| op.kind() == OpKind::Advertise);
                 self.state.phone = self.state.phone.step(now, phone::Event::LinkUp(l)).0;
             }
-        }
-        if !mismatch && phone.is_some() {
-            // The same handle may have been ended and made again behind the lost events, which a
-            // snapshot cannot show: what was known of its parameters, and the console's ask of it,
-            // are let go, so the link is judged afresh by its next update or the menu's ask.
-            self.forget_phone_params();
-            self.console = None;
         }
         if let Some(l) = found {
             self.state.phone = self.state.phone.step(now, phone::Event::Resynced(l.link, l.encrypted)).0;
@@ -702,8 +688,10 @@ impl<'a> Core<'a> {
         let Some(p) = self.state.peers[i].as_mut() else { return };
         let ctx = Ctx { profile: p.want.profile, peer: p.want.peer, power: goals.power, workout: goals.workout };
         p.machine = p.machine.step(&ctx, now, e);
-        if p.machine.stage == Stage::Off && goals.peripherals[i].is_none() {
+        // Off once let go, with its link down: the slot is the goals' again.
+        if p.machine.stage == Stage::Off {
             self.state.peers[i] = None;
+            self.fill(now, i);
         }
     }
 
@@ -885,7 +873,7 @@ impl<'a> Core<'a> {
         let Phone::Up(l) = self.state.phone else { return None };
         let asked = self.phone_asked_at?;
         let want = self.phone_asked?;
-        (self.phone_held && l.params_at > asked && !self.phone_fits(&want) && self.phone_asks < ASKS_PER_WANT).then_some(l.params_at + phone::SETTLE)
+        (self.phone_held && l.params_at >= asked && !self.phone_fits(&want) && self.phone_asks < ASKS_PER_WANT).then_some(l.params_at + phone::SETTLE)
     }
 
     fn deadline(&self, now: Instant) -> Option<Instant> {
