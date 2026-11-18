@@ -255,6 +255,7 @@ impl Replay {
     /// the watch boots with.
     fn reset(&mut self, at: u64) {
         self.shadow.restart(Instant(at));
+        self.shadow.driven(true);
         self.base = None;
         self.last_ms = None;
         self.transfer = false;
@@ -407,6 +408,8 @@ fn usb_update(cmd: &str) -> Option<u32> {
 #[must_use]
 pub fn replay(capture: &str) -> Report {
     let mut r = Replay { shadow: Shadow::new(INFO, boot_goals(), Record::default()), base: Some(0), last_ms: None, transfer: false, usb_update: None };
+    // The core drives from the watch's boot until a start says otherwise.
+    r.shadow.driven(true);
     let mut started = false;
     let mut offset: Option<i64> = None;
     for line in capture.lines() {

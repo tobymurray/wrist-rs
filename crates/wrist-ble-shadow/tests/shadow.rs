@@ -496,11 +496,12 @@ fn drivers_snapshot(at: u64) -> Snapshot {
     Snapshot { at: Instant(at), links, advertising: false, scanning: false, initiating: false, anchor: None }
 }
 
-/// A record's lost read of the driver's: the core resyncs from the driver's snapshot, not the
-/// shadow's, and so does every one after it until the watch resets.
+/// A driven record's lost read of the driver's: the core resyncs from the driver's snapshot, not
+/// the shadow's, and so does every one after it until the watch resets.
 #[test]
 fn after_a_drivers_lost_read_the_snapshots_are_the_drivers() {
     let mut s = up();
+    s.driven(true);
     s.lost_read(Instant(200));
     assert_eq!(s.observer.snapshots, []);
     assert!(s.take_snapshot());

@@ -61,6 +61,7 @@ class Scrub(unittest.TestCase):
         self.assertIsNone(fixture.scrub('1.000 [trace] 5 s 0801080102'))
         self.assertIsNone(fixture.scrub('1.000 [trace] 5 s 0001080103'))
         self.assertIsNone(fixture.scrub('1.000 [trace] 5 s 00000F0100'))
+        self.assertEqual(fixture.scrub('1.000 [trace] 5 s 00FF0E0100'), '1.000 [trace] 5 s 00FF0E0100')
         self.assertEqual(fixture.scrub('1.000 [trace] 5 m 01'), '1.000 [trace] 5 m 01')
         self.assertEqual(fixture.scrub('1.000 [trace] 5 m 00'), '1.000 [trace] 5 m 00')
         self.assertIsNone(fixture.scrub('1.000 [trace] 5 m 02'))

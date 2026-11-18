@@ -522,3 +522,16 @@ fn a_driven_cores_snapshots_are_the_drivers_however_the_loss_was_seen() {
     let r = replay(&legacy);
     assert_eq!((r.disagreements().len(), snapshots(&r)), (2, 1));
 }
+
+/// A capture or a watch reset that shows no start is taken as driven, as the watch boots.
+#[test]
+fn a_start_the_capture_missed_is_taken_as_driven() {
+    let driven = chip_lost(&fixture("bluez-lost-read.log"));
+    let unmarked: String = driven.lines().filter(|l| kind(l) != Some("m")).flat_map(|l| [l, "\n"]).collect();
+    assert_eq!(replay(&unmarked).disagreements(), Vec::<String>::new());
+    let ready = driven.lines().position(|l| l.ends_with(" e 04FF03010001")).unwrap();
+    let first: Vec<&str> = driven.lines().collect();
+    let then: Vec<&str> = first[ready..].to_vec();
+    let r = replay(&after_a_reset(&(first.join("\n") + "\n"), &[], &then.join("\n"), 5_000));
+    assert_eq!((r.resets, r.disagreements()), (1, Vec::<String>::new()), "{}", r.render(false));
+}

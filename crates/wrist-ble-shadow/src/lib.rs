@@ -173,8 +173,7 @@ pub struct Shadow<O> {
     chip_action: Option<Action>,
     /// The core asked for a snapshot, for the driver to take in [`Mode::Drive`].
     snapshot_wanted: bool,
-    /// The snapshots the core asks for are the driver's: a record showed the driver driving
-    /// ([`Self::driven`]) or one of its lost reads ([`Self::lost_read`]).
+    /// The snapshots the core asks for are the driver's ([`Self::driven`]).
     driver_snapshots: bool,
     verdict: Verdict,
     pub observer: O,
@@ -284,11 +283,9 @@ impl<O: Observer> Shadow<O> {
         self.driver_snapshots = yes;
     }
 
-    /// A lost read of the driver's that a record shows a driven core was told, in either mode, so
-    /// the driver drove it ([`Self::driven`]).
+    /// A lost read of the driver's that a record shows a driven core was told, in either mode.
     pub fn lost_read(&mut self, at: Instant) {
         self.advance(at);
-        self.driver_snapshots = true;
         self.observer.event(self.now, &RadioEvent::EventsLost);
         self.feed(Input::Radio(RadioEvent::EventsLost));
     }
