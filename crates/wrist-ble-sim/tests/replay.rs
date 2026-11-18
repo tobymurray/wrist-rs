@@ -492,10 +492,11 @@ fn a_failed_snapshot_of_the_drivers_is_none() {
     let taken = with.lines().find(|l| kind(l) == Some("s")).unwrap();
     let failed = taken.rsplit_once(' ').unwrap().0;
     let r = replay(&with.replace(taken, failed));
-    assert_eq!((r.disagreements().len(), r.unknown_events), (2, 0));
+    // and its retry, a second later, is never answered.
+    assert_eq!((r.disagreements().len(), r.unknown_events, r.unanswered_snapshots), (3, 0, 1));
     // The core asks again only after its retry, so a snapshot straight after is none of its.
     let r = replay(&with.replace(taken, &format!("{failed}\n{taken}")));
-    assert_eq!(r.disagreements().len(), 2);    assert_eq!(replay(&with.replace(taken, &format!("{failed} 08"))).unknown_events, 1);
+    assert_eq!((r.disagreements().len(), r.unasked_snapshots), (4, 1));    assert_eq!(replay(&with.replace(taken, &format!("{failed} 08"))).unknown_events, 1);
 }
 
 /// The chip's own report of lost events in the driver's lost read's place.
@@ -516,8 +517,13 @@ fn a_driven_cores_snapshots_are_the_drivers_however_the_loss_was_seen() {
     let r = replay(&driven);
     assert_eq!((r.disagreements(), snapshots(&r)), (Vec::<String>::new(), 1), "{}", r.render(false));
     let taken = driven.lines().find(|l| kind(l) == Some("s")).unwrap();
-    assert_eq!(snapshots(&replay(&driven.replace(taken, ""))), 0);
-    let legacy = driven.replace(" m 01", " m 00");
+    let r = replay(&driven.replace(taken, ""));
+    assert_eq!((snapshots(&r), r.unanswered_snapshots), (0, 1));
+    let fresh = fixture("bluez-lost-read.log");
+    let r = replay(&after_a_reset(&driven.replace(taken, ""), &[], &fresh, 5_000));
+    assert_eq!((r.resets, r.unanswered_snapshots), (1, 1));
+    // A legacy watch traces no snapshot of the driver's.
+    let legacy = driven.replace(" m 01", " m 00").replace(taken, "");
     assert_ne!(legacy, driven);
     let r = replay(&legacy);
     assert_eq!((r.disagreements().len(), snapshots(&r)), (2, 1));

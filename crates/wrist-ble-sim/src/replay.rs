@@ -58,6 +58,10 @@ pub struct Report {
     pub excused: Vec<(u64, Excuse)>,
     /// Answers the core was owed that the shadow had no room for.
     pub lost: u32,
+    /// Snapshots of the driver's the core never asked for, and asks of the core's no snapshot
+    /// answered: the capture's mode not the one the replay took ([`Shadow::driven`]).
+    pub unasked_snapshots: u32,
+    pub unanswered_snapshots: u32,
 }
 
 impl Report {
@@ -100,6 +104,12 @@ impl Report {
         let mut out: Vec<String> = found.iter().map(ToString::to_string).collect();
         if self.unknown_events > 0 {
             out.push(format!("{} events the core could not read", self.unknown_events));
+        }
+        if self.unasked_snapshots > 0 {
+            out.push(format!("{} snapshots of the driver's the core never asked for", self.unasked_snapshots));
+        }
+        if self.unanswered_snapshots > 0 {
+            out.push(format!("{} snapshots the core asked for and the capture never gave", self.unanswered_snapshots));
         }
         if self.lost > 0 {
             out.push(format!("{} answers the core was owed and never given", self.lost));
@@ -251,9 +261,16 @@ impl Replay {
         }
     }
 
+    fn unanswered(&mut self) {
+        if self.shadow.snapshot_wanted() {
+            self.shadow.observer.report.unanswered_snapshots += 1;
+        }
+    }
+
     /// A new epoch from `at`: the core and its chip start again as at the start, with the goals
     /// the watch boots with.
     fn reset(&mut self, at: u64) {
+        self.unanswered();
         self.shadow.restart(Instant(at));
         self.shadow.driven(true);
         self.base = None;
@@ -377,6 +394,8 @@ impl Replay {
                 };
                 if self.shadow.take_snapshot() {
                     self.shadow.snapshotted(at, snapshot);
+                } else {
+                    self.shadow.observer.report.unasked_snapshots += 1;
                 }
             }
             _ => {}
@@ -450,6 +469,7 @@ pub fn replay(capture: &str) -> Report {
         }
         r.line(text);
     }
+    r.unanswered();
     r.shadow.finish();
     r.shadow.observer.report
 }
