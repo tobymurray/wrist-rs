@@ -427,7 +427,7 @@ fn usb_update(cmd: &str) -> Option<u32> {
 #[must_use]
 pub fn replay(capture: &str) -> Report {
     let mut r = Replay { shadow: Shadow::new(INFO, boot_goals(), Record::default()), base: Some(0), last_ms: None, transfer: false, usb_update: None };
-    // The core drives from the watch's boot until a start says otherwise.
+    // Driven as the watch boots (the firmware's `LEGACY`), until a start says otherwise.
     r.shadow.driven(true);
     let mut started = false;
     let mut offset: Option<i64> = None;

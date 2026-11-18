@@ -492,7 +492,7 @@ fn a_failed_snapshot_of_the_drivers_is_none() {
     let taken = with.lines().find(|l| kind(l) == Some("s")).unwrap();
     let failed = taken.rsplit_once(' ').unwrap().0;
     let r = replay(&with.replace(taken, failed));
-    // and its retry, a second later, is never answered.
+    // and its retry is never answered.
     assert_eq!((r.disagreements().len(), r.unknown_events, r.unanswered_snapshots), (3, 0, 1));
     // The core asks again only after its retry, so a snapshot straight after is none of its.
     let r = replay(&with.replace(taken, &format!("{failed}\n{taken}")));
