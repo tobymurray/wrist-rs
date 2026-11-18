@@ -1,14 +1,4 @@
 //! Which page is on the glass, and where each press moves it.
-//!
-//! Pure state: the image hands it presses (from the buttons or the console's `press`) and the
-//! time, and draws [`Nav::page`]. From the face, Down and Up step through the image's pages; on
-//! another page they keep stepping, Back returns to the face, and after [`TIMEOUT_MS`] without a
-//! press the face comes back by itself. Select and long presses move nothing; [`action`] says what
-//! a press does beyond moving.
-//!
-//! Lighting the face is the image's, for every short press on every page, as before pages.
-//! Holds are not presses: any button held 3 s resets into the bootloader, and Select held
-//! 16 s cycles every rail. Nothing here sees them.
 
 /// A button, by what the case calls it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

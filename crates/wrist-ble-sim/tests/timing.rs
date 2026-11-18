@@ -1,5 +1,5 @@
-//! The core, on the simulator's menu, asks for the driver's timing (`wrist_bluenrg2::wake::ble::timing`):
-//! one policy, so changing it changes both.
+//! The core, on the simulator's menu, asks for the driver's timing
+//! (`wrist_bluenrg2::wake::ble::timing`): one policy, so changing it changes both.
 
 use wrist_ble::{AddrKind, BdAddr, ConnHandle, Duration, Instant, LeConnRole, LinkParams, Op, OpId, PeerAddr, RadioEvent};
 use wrist_ble::policy::engine::{Core, Input};

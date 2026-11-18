@@ -1,5 +1,5 @@
-//! Compiles `l10n/` into `crates/wrist-display/src/l10n/generated.rs`: the messages from Fluent, and
-//! each locale's names, patterns and plural rule from CLDR through ICU4X.
+//! Compiles `l10n/` into `crates/wrist-display/src/l10n/generated.rs`: the messages from Fluent,
+//! and each locale's names, patterns and plural rule from CLDR through ICU4X.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;

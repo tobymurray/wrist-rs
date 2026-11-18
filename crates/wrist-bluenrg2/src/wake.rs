@@ -1,8 +1,4 @@
 //! When a task that waits for events next has work of its own to do by time.
-//!
-//! A loop sleeps until the next thing that is due or until something signals it, never for
-//! a fixed polling period. The rules for what is due live here, where the host can test
-//! them; the image supplies the state and the clock (any monotonic tick).
 
 /// The earliest of some deadlines; `None` if there are none.
 #[must_use]

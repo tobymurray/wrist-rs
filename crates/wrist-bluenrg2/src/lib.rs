@@ -1,8 +1,8 @@
 #![no_std]
 
 //! The BlueNRG-2 as the Bluetooth core sees it: what it can do, the link-layer scheduler ST
-//! documents in PM0257 Rev 4 §4, the codes it refuses with, and the SPI handshake its packets
-//! travel by.
+//! documents in PM0257 Rev 4 §4, the codes it refuses with, the SPI handshake its packets
+//! travel by, the BLE task's decisions ([`wake`]), and the core run beside the driver ([`shadow`]).
 
 pub mod bonds;
 pub mod commands;

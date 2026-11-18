@@ -590,8 +590,8 @@ pub async fn restore_gauge(bus: &mut AsyncBus, status: Option<u16>) {
     GAUGE_RESTORED.lock(|r| r.set(Some(outcome)));
 }
 
-/// With a full reading: [`wrist_logic::power::GAUGE_SETTLE`] again if something, the stock firmware or
-/// an older image, set `HibCfg` or `IChgTerm` otherwise.
+/// With a full reading: [`wrist_logic::power::GAUGE_SETTLE`] again if something, the stock
+/// firmware or an older image, set `HibCfg` or `IChgTerm` otherwise.
 pub async fn keep_gauge_settled(uart: &mut Lines, bus: &mut AsyncBus, s: &Snapshot) {
     let (Some(hib_cfg), Some(ichg_term)) = (s.hib_cfg, s.gauge(max17262::ICHG_TERM)) else { return };
     if !wrist_logic::power::gauge_unsettled(hib_cfg, ichg_term) {

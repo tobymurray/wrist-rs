@@ -33,8 +33,7 @@ wrist-logic = { path = "../../crates/wrist-logic" }
 [features]
 # embassy-usb's own log of the link, printed by `usblog`.
 usb-log = ["dep:log", "embassy-usb/log"]
-# The console and application updates over Bluetooth, for a bonded central (ble.rs). The radio
-# stays in reset until `ble on`.
+# The console and application updates over Bluetooth, for a bonded central (ble.rs).
 ble = ["dep:bluenrg2", "dep:wrist-ble", "dep:wrist-bluenrg2"]
 # `ble probe`: the BlueNRG-2's firmware, updater and anchor period on the console.
 ble-probe = ["ble"]

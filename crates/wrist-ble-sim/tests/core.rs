@@ -591,7 +591,7 @@ fn a_chip_starting_again_unasked_is_a_reset_that_takes_the_link() {
 }
 
 /// Each start's answer names it, so an answer to a start the deadline replaced is not taken for
-/// the new one's, and the new one's answer then is no restart (F75).
+/// the new one's, and the new one's answer then is no restart.
 #[test]
 fn a_late_answer_for_an_earlier_start_is_not_this_ones() {
     use wrist_ble::policy::chip::{Action, Chip};
@@ -608,7 +608,7 @@ fn a_late_answer_for_an_earlier_start_is_not_this_ones() {
 }
 
 /// The chip's own ready event is a boot nobody asked for: during a start it answers nothing, so a
-/// driver that passed its boot's event before the answer does not loop resets (F75).
+/// driver that passed its boot's event before the answer does not loop resets.
 #[test]
 fn the_chips_ready_during_a_start_answers_nothing() {
     use wrist_ble::policy::chip::Chip;
@@ -626,7 +626,7 @@ fn the_chips_ready_during_a_start_answers_nothing() {
     assert_eq!(core.counters.resets, 0);
 }
 
-/// A start that missed its deadline restarts the chip as surely as a reset does (F77).
+/// A start that missed its deadline restarts the chip as surely as a reset does.
 #[test]
 fn a_start_past_its_deadline_counts_as_a_reset() {
     let mut core = Core::new(&CAPABILITIES, &Scheduler, &MENU);

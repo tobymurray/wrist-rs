@@ -12,14 +12,12 @@
 //! exists, so an encrypted link is a bonded central's. The console's RX characteristic asks
 //! the stack for an authenticated, encrypted link, and the watch checks too: nothing written
 //! over a link that is not encrypted is acted on, and the console's output is mirrored only to
-//! an encrypted link. The loader is never accepted over the air. The watch asks nothing of a
-//! central at connect, and asks it to pair only once it has left the link unencrypted for a
-//! while (`wrist_bluenrg2::wake::ble::PairAsk`).
+//! an encrypted link. The loader is never accepted over the air. When a central is asked to
+//! pair is `wrist_bluenrg2::wake::ble::PairAsk`.
 //!
-//! Power. On a cable the radio is as responsive as the link allows; on battery it
-//! advertises about once a second and asks for a slow, latent link, fast only while a
-//! transfer lasts (`wrist_bluenrg2::wake::ble::timing`). The loop has no tick: it waits for the chip's
-//! IRQ, a request, a signal, a power change or its earliest deadline (`wrist_bluenrg2::wake::ble::due`).
+//! Power. The radio's timing on a cable and on battery is `wrist_bluenrg2::wake::ble::timing`.
+//! The loop has no tick: it waits for the chip's IRQ, a request, a signal, a power change or its
+//! earliest deadline (`wrist_bluenrg2::wake::ble::due`).
 //!
 //! Pins: SPI1 `SCK` PG2, `MISO` PG3, `MOSI` PB5; `CS` PA15 as a GPIO; `BLE_RST_L` PA8
 //! (active low); `BLE_BOOT_SPI_IRQ` PA9, the chip's `DIO7`, which is both the transport's
@@ -28,17 +26,17 @@
 //!
 //! The SPI handshake is `wrist_bluenrg2::transport`.
 //!
-//! Restarts. The chip sends that event after any reset, and one the driver's start did not ask
-//! for means it restarted by itself (`wrist_bluenrg2::wake::ble::restart`): the link and everything on it
-//! is dropped, no command goes to it, and it is reset through its pin and brought up again, which
-//! also leaves its updater. More than three in an hour and it is held in reset.
+//! Restarts. A boot the driver's start did not ask for is the chip restarting by itself
+//! (`wrist_bluenrg2::wake::ble::restart`): the link and everything on it is dropped, no command
+//! goes to it, and it is reset through its pin and brought up again.
 //!
 //! Address. A static random address from the MCU's unique id
 //! (`wrist_bluenrg2::bonds::static_random_address`), so bonds survive updates.
 //!
-//! Decisions. The Bluetooth core (`wrist_bluenrg2::shadow`, `Mode::Drive`) makes the policy decisions and
-//! this driver carries them out, or under `ble policy legacy` this driver makes them beside the core
-//! as a shadow; where the two differ is a `[ble] shadow:` line, counted on the `ble` line.
+//! Decisions. The Bluetooth core (`wrist_bluenrg2::shadow`, `Mode::Drive`) makes the policy
+//! decisions and this driver carries them out, or under `ble policy legacy` this driver makes them
+//! beside the core as a shadow; where the two differ is a `[ble] shadow:` line, counted on the
+//! `ble` line.
 
 #[cfg(feature = "ble-probe")]
 mod probe;

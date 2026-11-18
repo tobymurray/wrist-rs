@@ -1,4 +1,5 @@
-//! `cargo run -p wrist-l10n-gen`: regenerate `crates/wrist-display/src/l10n/generated.rs` from `l10n/`.
+//! `cargo run -p wrist-l10n-gen`: regenerate `crates/wrist-display/src/l10n/generated.rs` from
+//! `l10n/`.
 
 use std::path::Path;
 use std::process::ExitCode;

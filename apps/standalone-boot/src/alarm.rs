@@ -1,5 +1,5 @@
-//! The daily alarm's task, woken by RTC alarm A for each check `wrist_logic::time::alarm` names, and the
-//! console's `alarm`.
+//! The daily alarm's task, woken by RTC alarm A for each check `wrist_logic::time::alarm` names,
+//! and the console's `alarm`.
 
 use core::cell::Cell;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU16, AtomicU32, Ordering};

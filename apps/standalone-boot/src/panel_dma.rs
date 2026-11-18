@@ -1,5 +1,5 @@
-//! The panel's bus from TIM3, TIM1 and GPDMA1 channels 12 and 13, as `wrist_display::panel::dma` lays it
-//! out, with TIM4 counting `BCK`'s rising edges and TIM2 `BSP`'s pulses.
+//! The panel's bus from TIM3, TIM1 and GPDMA1 channels 12 and 13, as `wrist_display::panel::dma`
+//! lays it out, with TIM4 counting `BCK`'s rising edges and TIM2 `BSP`'s pulses.
 
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 

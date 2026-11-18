@@ -1,7 +1,7 @@
 #![no_std]
 
-//! The boundary between the Bluetooth core and a chip driver, above GAP and GATT: the driver
-//! takes operations, reports events, and declares what the chip can do.
+//! Bluetooth without a radio: the boundary a chip driver implements above GAP and GATT, the core
+//! that decides over it ([`policy`]), and sensor profiles as bytes ([`profiles`]).
 
 mod event;
 mod gatt;
