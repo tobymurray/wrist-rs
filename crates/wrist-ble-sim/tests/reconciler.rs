@@ -345,10 +345,10 @@ fn asks_refused_at_submit_are_bounded() {
     assert_eq!(asked, usize::from(ASKS_PER_WANT));
 }
 
-/// A phone that took the ask and then moved off it by its own update is asked
+/// A phone whose own update moves a link that fitted the want off it is asked
 /// again once it has settled, and at most [`ASKS_PER_WANT`] times for one want.
 #[test]
-fn a_phone_that_undoes_the_ask_is_asked_again_within_the_budget() {
+fn a_phone_that_moves_off_a_fitting_link_is_asked_again_within_the_budget() {
     let mut b = asked_on_battery();
     b.accept();
     let mut at = 1_500;

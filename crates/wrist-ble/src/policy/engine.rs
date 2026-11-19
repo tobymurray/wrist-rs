@@ -931,7 +931,7 @@ const GRACE: Millis = Millis(1_000);
 pub const SNAPSHOT_RETRY: Millis = Millis(1_000);
 
 /// Asks of the phone for one want on one link: the first, and two re-asks after the phone's own
-/// updates undid it.
+/// updates moved a link that fitted it off it.
 pub const ASKS_PER_WANT: u8 = 3;
 
 /// Busy refusals, and commands the chip did not take, before it is restarted.
