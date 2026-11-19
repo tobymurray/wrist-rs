@@ -104,6 +104,8 @@ pub struct Counters {
     pub reasks: u32,
     /// Times the chip said busy until [`BUSY_BUDGET`] ran out, and was restarted.
     pub busy_spent: u32,
+    /// Operations the queue had no room for, or gave up to an answer.
+    pub dropped: u32,
 }
 
 /// Waits before an operation kind that failed is tried again: 1 s, doubling to 32 s.
@@ -119,8 +121,9 @@ fn kind_index(k: OpKind) -> usize {
     k as usize
 }
 
-/// Ops the machines asked for, issued in order as the radio frees up.
-const QUEUE: usize = 4;
+/// Ops the machines asked for, issued in order as the radio frees up: room for a parameter answer
+/// on every link, the phone's rebond and numeric answers, and its security request.
+const QUEUE: usize = MAX_PERIPHERALS + 4;
 
 #[allow(clippy::struct_excessive_bools, reason = "each is one thing the core keeps between steps")]
 pub struct Core<'a> {
@@ -376,9 +379,19 @@ impl<'a> Core<'a> {
         }
     }
 
+    /// An answer the chip waits on takes the place of a queued request when the queue is full.
     fn enqueue(&mut self, op: Op) {
-        if let Some(slot) = self.queue.iter_mut().find(|s| s.is_none()) {
-            *slot = Some(op);
+        if self.queue.contains(&Some(op)) {
+            return;
+        }
+        let free = self.queue.iter().position(Option::is_none);
+        let slot = free.or_else(|| self.queue.iter().rposition(|q| answers(op.kind()) && q.is_some_and(|q| !answers(q.kind()))));
+        match slot {
+            Some(i) => {
+                self.counters.dropped += u32::from(free.is_none());
+                self.queue[i] = Some(op);
+            }
+            None => self.counters.dropped += 1,
         }
     }
 
