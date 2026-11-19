@@ -261,6 +261,7 @@ static CORE_TIMED_OUT: AtomicU32 = AtomicU32::new(0);
 static CORE_REASKS: AtomicU32 = AtomicU32::new(0);
 static CORE_DIVERGENCES: AtomicU32 = AtomicU32::new(0);
 static CORE_BUSY_SPENT: AtomicU32 = AtomicU32::new(0);
+static CORE_DROPPED: AtomicU32 = AtomicU32::new(0);
 /// Chip restarts the core asked for while the chip was up, this boot.
 static CORE_RESTARTS: AtomicU32 = AtomicU32::new(0);
 
@@ -495,6 +496,7 @@ pub fn write_status(uart: Uart) {
         n(" reasks ", &CORE_REASKS);
         n(" divergences ", &CORE_DIVERGENCES);
         n(" busy restarts ", &CORE_BUSY_SPENT);
+        n(" dropped ", &CORE_DROPPED);
         n(" restarts ", &CORE_RESTARTS);
     }
     n(", shadow disagreements ", &SHADOW);
@@ -1794,6 +1796,7 @@ impl Link<'_> {
             (&CORE_REASKS, c.reasks),
             (&CORE_DIVERGENCES, c.divergences),
             (&CORE_BUSY_SPENT, c.busy_spent),
+            (&CORE_DROPPED, c.dropped),
         ] {
             slot.store(v, Ordering::Relaxed);
         }
