@@ -7,7 +7,7 @@ use bluenrg2::opcode::{ACI_GAP_START_GENERAL_DISCOVERY_PROC, ACI_GAP_TERMINATE_G
 use bluenrg2::{filter_duplicates, gap_proc, AddrKind, Address, BleStatus, LeAdvEventKind, Uuid};
 use wrist_bluenrg2::wake::ble::{scan, Scan};
 
-use super::{power, write_address, Link, Request, STATE, STATE_ADVERTISING, STATE_IDLE};
+use super::{power, write_address, Link, Request, STATE, STATE_ADVERTISING};
 use crate::uart::Uart;
 
 const SCAN_DEFAULT_S: u8 = 10;
@@ -96,8 +96,6 @@ pub(super) struct Scanner {
     /// The advertisers this scan has printed (address, a scan response), oldest replaced.
     seen: [Option<(Address, bool)>; SCAN_SEEN],
     seen_next: usize,
-    /// Advertising was stopped so the chip could scan; it resumes after.
-    paused_advertising: bool,
 }
 
 impl Scanner {
@@ -108,12 +106,6 @@ impl Scanner {
 
     pub(super) fn until(&self) -> Option<Instant> {
         self.scan.map(|(until, ..)| until)
-    }
-
-    /// Advertising was refused: whether a scan is the reason, in which case it resumes when the scan ends.
-    pub(super) fn advertising_refused(&mut self) -> bool {
-        self.paused_advertising |= self.scan.is_some();
-        self.scan.is_some()
     }
 
     /// LE Advertising Report while a scan runs: one line per advertiser, up to [`SCAN_LINES`].
@@ -190,8 +182,6 @@ impl Link<'_> {
             return Ok(status);
         }
         if self.pause_advertising().await {
-            STATE.store(STATE_IDLE, Ordering::Relaxed);
-            self.scanner.paused_advertising = true;
             self.uart.write_line("[ble] advertising paused: the chip will not do both");
         }
         Ok(self.command(opcode, params).await?.status)
@@ -240,11 +230,8 @@ impl Link<'_> {
         }
     }
 
-    /// Advertising stopped for a scan, by the core where it decides; whether it stopped.
+    /// Advertising stopped for a scan, by the core; whether it stopped.
     async fn pause_advertising(&mut self) -> bool {
-        if !self.drives() {
-            return self.submit(wrist_ble::Op::Advertise(None)).await.is_ok();
-        }
         self.want_discoverable(false);
         self.drive().await;
         self.shadow.state().radio.advertising.is_none()
@@ -252,14 +239,8 @@ impl Link<'_> {
 
     fn resume_advertising(&mut self) {
         // The core's goal is the pause, lifted whatever ended the scan.
-        if self.drives() {
-            if !self.shadow.goals().phone.discoverable {
-                self.want_discoverable(true);
-            }
-            return;
-        }
-        if core::mem::take(&mut self.scanner.paused_advertising) && STATE.load(Ordering::Relaxed) == STATE_IDLE {
-            self.readvertise = true;
+        if !self.shadow.goals().phone.discoverable {
+            self.want_discoverable(true);
         }
     }
 

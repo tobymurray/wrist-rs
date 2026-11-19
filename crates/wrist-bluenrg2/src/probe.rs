@@ -57,6 +57,7 @@ impl fmt::Display for Line<'_> {
             Probe::Anchor(Beside::Advertising { interval }) => {
                 write!(f, "anchor beside=advertising adv_interval_us={}", u64::from(interval) * SLOT_US)?;
             }
+            Probe::Anchor(Beside::Link { interval: 0, .. }) => f.write_str("anchor beside=link conn_interval=unknown")?,
             Probe::Anchor(Beside::Link { interval, latency }) => {
                 write!(f, "anchor beside=link conn_interval_us={} latency={latency}", u64::from(interval) * CONN_UNIT_US)?;
             }

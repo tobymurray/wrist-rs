@@ -6,10 +6,12 @@ pub fn earliest<I: IntoIterator<Item = Option<u64>>>(deadlines: I) -> Option<u64
     deadlines.into_iter().flatten().min()
 }
 
-/// The BLE task (`apps/standalone-boot/src/ble.rs`): its deadlines, timing and decisions.
+/// The BLE task (`apps/standalone-boot/src/ble.rs`): its deadlines and timing.
 pub mod ble {
     pub mod restart;
     pub mod server;
+
+    use wrist_ble::policy::{self, chip::Chip};
 
     use super::earliest;
 
@@ -37,23 +39,18 @@ pub mod ble {
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub struct State {
         pub now: u64,
-        /// Work an event or request left for the loop (the interval request, a finished
-        /// transfer, a passkey, a rebond, a re-advertise): do it on the next pass.
+        /// Work an event or request left for the loop: do it on the next pass.
         pub work: bool,
-        /// A numeric comparison is answered from the console (which signals) or rejected
-        /// at this tick.
+        /// A numeric comparison's digits stop at this tick, unless the console answers first
+        /// (which signals).
         pub confirm_by: Option<u64>,
         pub transfer: Transfer,
         /// `None` with no central subscribed to the console over an encrypted link.
         pub console: Option<Console>,
         /// A transfer that has gone quiet is abandoned at this tick.
         pub abandon_at: Option<u64>,
-        /// An unencrypted central is asked to pair at this tick ([`PairAsk`]).
-        pub ask_at: Option<u64>,
         /// A scan ends at this tick.
         pub scan_end: Option<u64>,
-        /// An ask the chip refused busy goes at this tick ([`HeldAsk`]).
-        pub held_until: Option<u64>,
     }
 
     /// When the loop must next run by time; `None` means only the chip's IRQ, a request or
@@ -63,176 +60,7 @@ pub mod ble {
         let now = s.now;
         let quiet = s.transfer == Transfer::Started;
         let console = s.console.and_then(|c| (c.pending && !quiet).then_some(c.next_at.max(now)));
-        earliest([s.work.then_some(now), s.confirm_by, console, s.abandon_at, s.ask_at, s.scan_end, s.held_until])
-    }
-
-    /// How long a link stays unencrypted before the watch asks its central to pair: well past a
-    /// bonded central's own encryption start (HARDWARE.md).
-    pub const ASK_TO_PAIR_AFTER_MS: u64 = 5_000;
-
-    /// Asking a central that has left its link unencrypted to pair: once a link, never at
-    /// connect, and not once the link is encrypted or a pairing has begun.
-    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-    pub struct PairAsk {
-        at: Option<u64>,
-    }
-
-    impl PairAsk {
-        /// A central connected at `now`, on a clock of `ticks_per_second`.
-        pub fn connected(&mut self, now: u64, ticks_per_second: u64) {
-            self.at = Some(now + ASK_TO_PAIR_AFTER_MS * ticks_per_second / 1_000);
-        }
-
-        /// Encrypted, a pairing begun or over, or disconnected: nothing to ask on this link.
-        pub fn settled(&mut self) {
-            self.at = None;
-        }
-
-        #[must_use]
-        pub fn due(&self) -> Option<u64> {
-            self.at
-        }
-
-        /// True once, when the time has come.
-        pub fn take(&mut self, now: u64) -> bool {
-            let due = self.at.is_some_and(|at| now >= at);
-            if due {
-                self.at = None;
-            }
-            due
-        }
-    }
-
-    /// The watch asks its central for connection parameters only once the link is encrypted or its
-    /// pairing has failed; at connect the ask ended a bonded macOS central's link (HARDWARE.md).
-    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-    pub enum IntervalAsk {
-        #[default]
-        NoLink,
-        Held,
-        Open,
-    }
-
-    impl IntervalAsk {
-        pub fn connected(&mut self) {
-            *self = Self::Held;
-        }
-
-        /// Also how an unanswered security request ends, 30 s on (HARDWARE.md).
-        pub fn pairing_failed(&mut self) {
-            if *self == Self::Held {
-                *self = Self::Open;
-            }
-        }
-
-        pub fn encrypted(&mut self) {
-            *self = Self::Open;
-        }
-
-        pub fn disconnected(&mut self) {
-            *self = Self::NoLink;
-        }
-
-        /// Once it may, it may for the rest of the link.
-        #[must_use]
-        pub fn open(&self) -> bool {
-            *self == Self::Open
-        }
-    }
-
-    /// An interval ask the chip refused busy, since the one before it still waits for the
-    /// central's answer: asked again once that answer comes, or at the core's deadline for an ask
-    /// without one. A later ask replaces it.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub struct HeldAsk<T> {
-        held: Option<(T, u64)>,
-        due: bool,
-    }
-
-    impl<T> Default for HeldAsk<T> {
-        fn default() -> Self {
-            Self { held: None, due: false }
-        }
-    }
-
-    impl<T: Copy> HeldAsk<T> {
-        /// The chip's answer to `ask`: held until the tick `held_until` if refused busy, and the
-        /// central's answer to the one on air meanwhile lets it go at once.
-        pub fn answered(&mut self, ask: T, held_until: Option<u64>) {
-            *self = Self { held: held_until.map(|until| (ask, until)), due: held_until.is_some() && self.due };
-        }
-
-        /// The central answered the ask on air: the held one may go.
-        pub fn central_answered(&mut self) {
-            self.due = true;
-        }
-
-        /// The held ask, once it may go at `now`.
-        pub fn take(&mut self, now: u64) -> Option<T> {
-            let due = core::mem::take(&mut self.due);
-            let (ask, until) = self.held?;
-            if !due && now < until {
-                return None;
-            }
-            self.held = None;
-            Some(ask)
-        }
-
-        /// Whether the central's answer lets the held ask go on the next pass.
-        #[must_use]
-        pub fn due(&self) -> bool {
-            self.due
-        }
-
-        /// When the held ask goes without the central's answer.
-        #[must_use]
-        pub fn until(&self) -> Option<u64> {
-            self.held.map(|(_, until)| until)
-        }
-
-        /// The link is gone, and the ask with it.
-        pub fn clear(&mut self) {
-            *self = Self::default();
-        }
-    }
-
-    /// `ble interval now` holds over the menu's ask until the menu's timing changes from the one
-    /// last applied, not the one asked for since.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub struct ConsoleOver<T> {
-        applied: Option<T>,
-        over: Option<T>,
-    }
-
-    impl<T> Default for ConsoleOver<T> {
-        fn default() -> Self {
-            Self { applied: None, over: None }
-        }
-    }
-
-    impl<T: Copy + PartialEq> ConsoleOver<T> {
-        pub fn asked(&mut self) {
-            self.over = self.applied;
-        }
-
-        /// The menu's timing applied; whether a held console ask ended with it.
-        pub fn retime(&mut self, want: T) -> bool {
-            self.applied = Some(want);
-            let ended = self.over.is_some_and(|t| t != want);
-            if ended {
-                self.over = None;
-            }
-            ended
-        }
-
-        #[must_use]
-        pub fn holds(&self) -> bool {
-            self.over.is_some()
-        }
-
-        pub fn clear(&mut self) {
-            self.over = None;
-        }
+        earliest([s.work.then_some(now), s.confirm_by, console, s.abandon_at, s.scan_end])
     }
 
     /// Where the watch's power comes from, as the radio sees it.
@@ -285,7 +113,7 @@ pub mod ble {
         6 <= min && min <= max && max <= 3_200 && supervised(max, NOW_LATENCY, NOW_TIMEOUT)
     }
 
-    /// Where the radio is, as `ble` reports it.
+    /// Where the radio is, as `ble` and the page report it.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     #[repr(u8)]
     pub enum Radio {
@@ -310,10 +138,17 @@ pub mod ble {
             }
         }
 
-        /// After a start, whether it failed: it never reached advertising.
+        /// The radio as the core's record has it, while it is on.
         #[must_use]
-        pub const fn start_failed(self) -> bool {
-            matches!(self, Self::Starting | Self::Failed)
+        pub fn of(state: &policy::State) -> Self {
+            match state.chip.state {
+                Chip::Off => Self::Off,
+                Chip::Starting { .. } => Self::Starting,
+                Chip::Fault { .. } => Self::Failed,
+                Chip::Ready(_) if state.phone.link().is_some() => Self::Connected,
+                Chip::Ready(_) if state.radio.advertising.is_some() => Self::Advertising,
+                Chip::Ready(_) => Self::Idle,
+            }
         }
     }
 

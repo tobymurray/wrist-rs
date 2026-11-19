@@ -211,15 +211,43 @@ class Judgements(unittest.TestCase):
             asyncio.run(suite.soak(s, usb, None, 'b', a))
         self.assertTrue(s.checks[1]['passed'], s.checks[1]['what'])
 
+    def soak_refusals(self, held):
+        status = '[ble] connected, timing cable, events 9, core asked {} refused {} failed 0 timed out 0 reasks 0'
+        answers = iter([[status.format(5, 3)], [status.format(6, 4)]])
+
+        class Soak(Usb):
+            async def ask(self, text, pattern, timeout=3):
+                if text == 'ble':
+                    self.lines['ble'] = next(answers)
+                return await super().ask(text, pattern, timeout)
+
+            def since(self, mark):
+                return [(0, '[ble] interval request held: the central has yet to answer the one before')] * held
+
+            def send(self, text):
+                pass
+
+        s = suite.Scenario('soak', '')
+        with mock.patch('sys.stdout', io.StringIO()):
+            asyncio.run(suite.soak(s, Soak({'uptime': ['[usb] uptime 5 s']}), None, 'b',
+                                   argparse.Namespace(soak_minutes=0, hold=0, gap=0)))
+        return s.checks[1]['passed']
+
+    def test_a_refusal_no_held_ask_explains_moves_the_counters(self):
+        self.assertFalse(self.soak_refusals(held=0))
+
+    def test_an_ask_held_for_the_central_is_no_counter(self):
+        self.assertTrue(self.soak_refusals(held=1))
+
     def test_a_field_of_two_counters_names_both(self):
         found = suite.counters('[ble] connected, encrypted, interval 30.00 ms latency 0, bonded 2, events 40, '
                                'irq stuck after read 1 write 2, connect failures 3, unknown events 2')
         self.assertEqual(found, {'irq stuck after read': 1, 'irq stuck after write': 2, 'connect failures': 3})
 
     def test_the_cores_ordinary_work_is_no_counter(self):
-        found = suite.counters('[ble] connected, policy core, core asked 12 refused 1 failed 0 timed out 0 reasks 2 '
+        found = suite.counters('[ble] connected, core asked 12 refused 1 failed 0 timed out 0 reasks 2 '
                                'divergences 0 busy restarts 0 dropped 0 restarts 0, shadow disagreements 0')
-        self.assertEqual(found, {'core refused': 1, 'core failed': 0, 'timed out': 0, 'core divergences': 0,
+        self.assertEqual(found, {'core failed': 0, 'timed out': 0, 'core divergences': 0,
                                  'busy restarts': 0, 'core dropped': 0, 'core restarts': 0, 'shadow disagreements': 0})
 
     def test_connections_that_failed_to_establish_are_counted(self):

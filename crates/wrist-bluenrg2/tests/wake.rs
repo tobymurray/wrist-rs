@@ -13,9 +13,7 @@ fn idle() -> State {
         transfer: Transfer::None,
         console: None,
         abandon_at: None,
-        ask_at: None,
         scan_end: None,
-        held_until: None,
     }
 }
 
@@ -110,12 +108,8 @@ fn interval_now_keeps_to_its_supervision_timeout() {
 }
 
 #[test]
-fn a_start_that_never_advertised_failed() {
+fn the_radio_survives_its_atomic() {
     use wrist_bluenrg2::wake::ble::Radio;
-    assert!(Radio::Starting.start_failed() && Radio::Failed.start_failed());
-    for up in [Radio::Idle, Radio::Advertising, Radio::Connected] {
-        assert!(!up.start_failed(), "{up:?}");
-    }
     for r in [Radio::Off, Radio::Starting, Radio::Idle, Radio::Advertising, Radio::Connected, Radio::Failed] {
         assert_eq!(Radio::from_u8(r as u8), r);
     }
@@ -151,33 +145,6 @@ fn any_other_refusal_loses_the_chunk_and_a_detach_drops_the_held_one() {
     out.sent(chunk, n, 0x64).unwrap();
     out.discard();
     assert_eq!(out.next(8, |_| 0).1, 0);
-}
-
-#[test]
-fn nothing_is_asked_of_a_central_at_connect() {
-    use wrist_bluenrg2::wake::ble::{PairAsk, ASK_TO_PAIR_AFTER_MS};
-    let mut ask = PairAsk::default();
-    ask.connected(NOW, 1_000);
-    assert!(!ask.take(NOW), "a request at connect crossed a bonded central's encryption");
-    assert!(!ask.take(NOW + 1_999));
-    assert_eq!(ask.due(), Some(NOW + ASK_TO_PAIR_AFTER_MS));
-    assert_eq!(due(&State { ask_at: ask.due(), ..idle() }), Some(NOW + ASK_TO_PAIR_AFTER_MS));
-    assert!(ask.take(NOW + ASK_TO_PAIR_AFTER_MS));
-    assert!(!ask.take(NOW + ASK_TO_PAIR_AFTER_MS + 1), "once a link");
-    assert_eq!(ask.due(), None);
-}
-
-#[test]
-fn an_encrypted_or_pairing_link_is_never_asked() {
-    use wrist_bluenrg2::wake::ble::{PairAsk, ASK_TO_PAIR_AFTER_MS};
-    let mut ask = PairAsk::default();
-    ask.connected(NOW, 32_768);
-    ask.settled();
-    assert_eq!(ask.due(), None);
-    assert!(!ask.take(NOW + ASK_TO_PAIR_AFTER_MS * 33));
-    // The next link starts afresh, on the image's own tick.
-    ask.connected(NOW, 32_768);
-    assert_eq!(ask.due(), Some(NOW + ASK_TO_PAIR_AFTER_MS * 32_768 / 1_000));
 }
 
 /// embassy-sync's `Pipe` as the mirror uses it: a write fills only the contiguous span up
@@ -372,12 +339,6 @@ fn a_scan_wakes_the_loop_when_it_ends() {
 }
 
 #[test]
-fn a_held_ask_wakes_the_loop_at_its_deadline() {
-    let s = State { held_until: Some(NOW + 30_000), scan_end: Some(NOW + 40_000), ..idle() };
-    assert_eq!(due(&s), Some(NOW + 30_000));
-}
-
-#[test]
 fn scanning_listens_less_on_battery() {
     for power in [Power::Cable, Power::Battery] {
         let s = scan(power);
@@ -393,115 +354,3 @@ fn scanning_listens_less_on_battery() {
         assert!(scan * 10 >= adv * 9 && scan * 10 <= adv * 11, "{power:?}");
     }
 }
-
-#[test]
-fn the_interval_waits_for_encryption() {
-    use wrist_bluenrg2::wake::ble::IntervalAsk;
-    let mut ask = IntervalAsk::default();
-    ask.connected();
-    assert!(!ask.open(), "beside Service Changed, a request at connect ended a bonded central's link");
-    ask.encrypted();
-    assert!(ask.open(), "and for the rest of the link, as a power change asks again");
-    ask.disconnected();
-    assert!(!ask.open());
-}
-
-#[test]
-fn a_central_that_ignores_the_security_request_is_asked_once_the_chip_fails_it() {
-    use wrist_bluenrg2::wake::ble::IntervalAsk;
-    let mut ask = IntervalAsk::default();
-    ask.connected();
-    assert!(!ask.open());
-    ask.pairing_failed();
-    assert!(ask.open());
-}
-
-#[test]
-fn a_failed_pairing_with_no_link_or_on_an_encrypted_one_arms_nothing() {
-    use wrist_bluenrg2::wake::ble::IntervalAsk;
-    let mut ask = IntervalAsk::default();
-    ask.pairing_failed();
-    assert_eq!(ask, IntervalAsk::NoLink);
-    ask.connected();
-    ask.encrypted();
-    ask.pairing_failed();
-    assert_eq!(ask, IntervalAsk::Open);
-}
-
-/// A timing changed after the last retime but before the console's ask still ends the ask at the
-/// next retime, so the menu asks it.
-#[test]
-fn the_consoles_ask_holds_over_the_timing_last_applied() {
-    use wrist_bluenrg2::wake::ble::ConsoleOver;
-    let mut over = ConsoleOver::default();
-    over.asked();
-    assert!(!over.holds(), "nothing applied yet");
-    assert!(!over.retime(1));
-    over.asked();
-    assert!(over.holds());
-    assert!(!over.retime(1), "the same timing");
-    assert!(over.holds());
-    assert!(over.retime(2), "the timing changed before the ask was taken");
-    assert!(!over.holds());
-    over.asked();
-    over.clear();
-    assert!(!over.holds(), "the link is gone");
-}
-
-/// `ble interval now` three times running: the chip takes the first and refuses the other two
-/// busy until the central answers it (HARDWARE.md); the last goes then.
-#[test]
-fn an_ask_refused_busy_goes_once_the_central_answers_and_the_latest_wins() {
-    use wrist_bluenrg2::wake::ble::HeldAsk;
-    let mut held = HeldAsk::default();
-    held.answered(1, None);
-    held.answered(2, Some(UNTIL));
-    held.answered(3, Some(UNTIL));
-    assert_eq!((held.due(), held.take(NOW)), (false, None), "not before the central's answer");
-    held.central_answered();
-    assert!(held.due());
-    assert_eq!(held.take(NOW), Some(3));
-    assert_eq!((held.due(), held.take(NOW), held.until()), (false, None, None), "once");
-    held.central_answered();
-    assert_eq!(held.take(NOW), None, "an answer with nothing held asks nothing");
-}
-
-#[test]
-fn a_held_ask_goes_with_a_later_ask_taken_or_the_link() {
-    use wrist_bluenrg2::wake::ble::HeldAsk;
-    let mut held = HeldAsk::default();
-    held.answered(2, Some(UNTIL));
-    held.answered(3, None);
-    held.central_answered();
-    assert_eq!((held.take(UNTIL), held.until()), (None, None), "the later one was taken");
-    held.answered(4, Some(UNTIL));
-    held.central_answered();
-    held.clear();
-    assert_eq!((held.due(), held.take(UNTIL)), (false, None));
-}
-
-/// The central's answer read in the same exchange as the chip's busy refusal of the next ask.
-#[test]
-fn an_answer_read_while_the_chip_refuses_the_next_ask_lets_that_ask_go() {
-    use wrist_bluenrg2::wake::ble::HeldAsk;
-    let mut held = HeldAsk::default();
-    held.answered(1, None);
-    held.central_answered();
-    held.answered(2, Some(UNTIL));
-    assert!(held.due());
-    assert_eq!(held.take(NOW), Some(2));
-}
-
-/// With no answer from the central the held ask goes at the core's deadline, as the core's does.
-#[test]
-fn a_held_ask_with_no_answer_goes_at_its_deadline() {
-    use wrist_bluenrg2::wake::ble::HeldAsk;
-    let mut held = HeldAsk::default();
-    held.answered(2, Some(UNTIL));
-    assert_eq!((held.until(), held.take(UNTIL - 1)), (Some(UNTIL), None));
-    assert_eq!(held.take(UNTIL), Some(2));
-    assert_eq!(held.take(UNTIL + 1), None);
-}
-
-/// When a held ask goes without an answer.
-const UNTIL: u64 = NOW + 30_000;

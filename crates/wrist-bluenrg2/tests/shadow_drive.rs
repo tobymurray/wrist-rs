@@ -388,3 +388,62 @@ fn a_refusal_during_the_drivers_scan_ends_with_it() {
         assert_eq!(interval(s.issue()), Some(160), "by the chip {by_the_chip}");
     }
 }
+
+#[test]
+fn the_radio_shown_is_the_cores_record() {
+    use wrist_bluenrg2::wake::ble::Radio;
+    let mut s = Shadow::new(CHIP, Goals::OFF, Log::default());
+    assert!(s.set_mode(Mode::Drive));
+    assert_eq!(Radio::of(s.state()), Radio::Off);
+    s.set_goals(Instant(0), goals());
+    assert_eq!(Radio::of(s.state()), Radio::Starting);
+    s.event(Instant(100), BOOTED);
+    assert_eq!(Radio::of(s.state()), Radio::Idle);
+    carry_out(&mut s, 100, Ok(OpId(1)));
+    assert_eq!(Radio::of(s.state()), Radio::Advertising);
+    // A scan's pause: the core's own stop.
+    s.set_goals(Instant(200), Goals { phone: PhoneGoal { discoverable: false, pairing_open: true }, ..goals() });
+    assert_eq!(carry_out(&mut s, 200, Ok(OpId(2))), Op::Advertise(None));
+    assert_eq!(Radio::of(s.state()), Radio::Idle);
+    s.set_goals(Instant(300), goals());
+    carry_out(&mut s, 300, Ok(OpId(3)));
+    s.event(Instant(1_000), PHONE);
+    assert_eq!(Radio::of(s.state()), Radio::Connected);
+}
+
+#[test]
+fn the_phones_parameters_are_its_links_alone() {
+    let mut s = asked();
+    let interval = |s: &Shadow<Log>| s.phone_params().map(|p| (p.interval.as_u16(), p.latency));
+    assert_eq!(interval(&s), Some((0x24, 0)));
+    // A central link, 0x0802, and its update to 100 ms, latency 4.
+    let central = [&[0x04, 0x3E, 0x13, 0x01, 0x00, 0x02, 0x08, 0x00, 0x00][..], &[1, 2, 3, 4, 5, 6, 0x50, 0x00, 0x00, 0x00, 0xF4, 0x01, 0x00]].concat();
+    s.event(Instant(2_000), &central);
+    s.event(Instant(2_100), &[0x04, 0x3E, 0x0A, 0x03, 0x00, 0x02, 0x08, 0x50, 0x00, 0x04, 0x00, 0xF4, 0x01]);
+    assert_eq!(interval(&s), Some((0x24, 0)), "another link's update");
+    s.event(Instant(2_200), &[0x04, 0x3E, 0x0A, 0x03, 0x00, 0x01, 0x08, 0x18, 0x00, 0x00, 0x00, 0xF4, 0x01]);
+    assert_eq!(interval(&s), Some((0x18, 0)));
+    s.event(Instant(3_000), &[0x04, 0x05, 0x04, 0x00, 0x01, 0x08, 0x13]);
+    assert_eq!(interval(&s), None, "the next link's are its own");
+}
+
+/// The chip's own restarts and the core's spend one budget, the core's: within it each is started
+/// again, past it the chip is held and the radio shown failed.
+#[test]
+fn a_chip_that_keeps_restarting_is_held_by_the_cores_budget() {
+    use wrist_ble::policy::chip::RESETS_PER_HOUR;
+    use wrist_bluenrg2::wake::ble::Radio;
+    const WATCHDOG: &[u8] = &[0x04, 0xFF, 0x03, 0x01, 0x00, 0x05];
+    let mut s = driving();
+    let mut at = 1_000;
+    for _ in 0..RESETS_PER_HOUR {
+        s.event(Instant(at), WATCHDOG);
+        assert!(matches!(s.chip_action(), Some(Action::Start(_))), "restarted within the budget");
+        s.event(Instant(at + 100), BOOTED);
+        assert_eq!(Radio::of(s.state()), Radio::Idle);
+        at += 60_000;
+    }
+    s.event(Instant(at), WATCHDOG);
+    assert_eq!(s.chip_action(), Some(Action::Hold));
+    assert_eq!(Radio::of(s.state()), Radio::Failed);
+}

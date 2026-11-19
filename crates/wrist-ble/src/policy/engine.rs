@@ -859,6 +859,12 @@ impl<'a> Core<'a> {
         (self.console.is_some_and(|(_, w)| same(w)) && ((self.phone_asked.is_some_and(same) && self.phone_asks > 0) || on_air)).then_some(Omitted::Asked)
     }
 
+    /// The phone link's parameters, as its connection or its last update gave them.
+    #[must_use]
+    pub fn phone_params(&self) -> Option<LinkParams> {
+        self.phone_params
+    }
+
     /// The parameters wanted of the phone link: the console's ask, else the menu's.
     #[must_use]
     pub fn phone_want(&self) -> Option<ConnParams> {
