@@ -1,6 +1,8 @@
 //! The BLE loop's deadlines: idle costs no wake, and everything it does by time has one.
 
 use wrist_bluenrg2::wake::ble::{due, scan, timing, Console, Power, State, Transfer};
+use wrist_bluenrg2::driver::Unanswered;
+use wrist_bluenrg2::wake::ble::{Outbox, LOST, RESENDS};
 use wrist_bluenrg2::wake::earliest;
 
 const NOW: u64 = 1_000;
@@ -115,36 +117,176 @@ fn the_radio_survives_its_atomic() {
     }
 }
 
+/// `text` as the next chunk, of at most `most` bytes, after anything held or owed.
+fn next_with(out: &mut Outbox<8>, most: usize, text: &[u8]) -> Vec<u8> {
+    out.next(most, |b| {
+        let n = text.len().min(b.len());
+        b[..n].copy_from_slice(&text[..n]);
+        n
+    })
+    .to_vec()
+}
+
+const BUFFERS: Result<u8, Unanswered> = Ok(0x64);
+const SENT: Result<u8, Unanswered> = Ok(0);
+
 #[test]
 fn a_chunk_refused_for_want_of_buffers_goes_again_first() {
-    use wrist_bluenrg2::wake::ble::Outbox;
     let mut out = Outbox::<8>::default();
-    let (chunk, n) = out.next(4, |b| {
-        b.copy_from_slice(b"pong");
-        4
-    });
-    assert_eq!(out.sent(chunk, n, 0x64), Ok(()));
-    assert!(out.holding());
-    let (again, m) = out.next(4, |_| panic!("the held chunk goes first"));
-    assert_eq!(&again[..m], b"pong");
-    assert_eq!(out.sent(again, m, 0), Ok(()));
-    assert!(!out.holding());
-    assert_eq!(out.next(4, |_| 0).1, 0);
+    assert_eq!(next_with(&mut out, 4, b"pong"), b"pong");
+    for _ in 0..=RESENDS + 1 {
+        assert!(!out.sent(BUFFERS));
+        assert!(out.pending());
+        assert_eq!(out.next(4, |_| panic!("the held chunk goes first")), b"pong");
+    }
+    assert!(!out.sent(SENT));
+    assert!(!out.pending());
+    assert_eq!(out.next(4, |_| 0), b"");
 }
 
 #[test]
-fn any_other_refusal_loses_the_chunk_and_a_detach_drops_the_held_one() {
-    use wrist_bluenrg2::wake::ble::Outbox;
-    let mut out = Outbox::<8>::default();
-    let (chunk, n) = out.next(8, |b| {
-        b[..2].copy_from_slice(b"ok");
-        2
+fn a_definite_refusal_sends_the_chunk_again() {
+    let refusals = [Ok(0x0C), Ok(0x41), Ok(0x46), Ok(0x47), Err(Unanswered::NotTaken), Err(Unanswered::Restarted), Err(Unanswered::TooLong)];
+    for refused in refusals {
+        let mut out = Outbox::<8>::default();
+        assert_eq!(next_with(&mut out, 8, b"ok\r\n"), b"ok\r\n");
+        assert!(!out.sent(refused), "{refused:?}");
+        assert!(out.pending());
+        assert_eq!(out.next(8, |_| panic!("the refused chunk goes first")), b"ok\r\n");
+        assert!(!out.sent(SENT));
+        assert!(!out.pending());
+    }
+}
+
+#[test]
+fn a_chunk_refused_past_its_resends_is_marked_lost() {
+    let mut out = Outbox::<64>::default();
+    out.next(64, |b| {
+        b[..6].copy_from_slice(b"[hb] 1");
+        6
     });
-    assert_eq!(out.sent(chunk, n, 0x41), Err(0x41));
-    assert!(!out.holding());
-    out.sent(chunk, n, 0x64).unwrap();
-    out.discard();
-    assert_eq!(out.next(8, |_| 0).1, 0);
+    for _ in 0..RESENDS {
+        assert!(!out.sent(Ok(0x46)));
+        // Want of buffers is not counted against it.
+        out.next(64, |_| panic!("held"));
+        assert!(!out.sent(BUFFERS));
+        out.next(64, |_| panic!("held"));
+    }
+    assert!(out.sent(Ok(0x46)));
+    assert!(out.pending());
+    // It never went, so the central is not inside a line.
+    let got = out.next(64, |b| {
+        b[..4].copy_from_slice(b"x\r\n_");
+        4
+    });
+    assert_eq!(got, [&LOST[2..], b"x\r\n_"].concat());
+}
+
+/// A chunk of at most `most` from the pipe, answered `answer`; what the central has, if it
+/// went.
+fn notify<const N: usize>(out: &mut Outbox<8>, ring: &mut Ring<N>, most: usize, answer: Result<u8, Unanswered>) -> Vec<u8> {
+    let chunk = out
+        .next(most, |b| {
+            let r = ring.read(b.len());
+            b[..r.len()].copy_from_slice(&r);
+            r.len()
+        })
+        .to_vec();
+    let lost = out.sent(answer);
+    assert_eq!(lost, answer == Err(Unanswered::NoReply));
+    chunk
+}
+
+/// What the central reads as the outbox empties the pipe.
+fn drain<const N: usize>(out: &mut Outbox<8>, ring: &mut Ring<N>) -> Vec<u8> {
+    let mut central = Vec::new();
+    while out.pending() || ring.len() > 0 {
+        central.extend(notify(out, ring, 8, SENT));
+    }
+    central
+}
+
+#[test]
+fn a_chunk_that_may_have_gone_is_followed_by_a_line_saying_so() {
+    let mut ring = Ring::<64>::new();
+    let mut lines = wrist_bluenrg2::wake::ble::Lines::<64>::default();
+    let mut out = Outbox::<8>::default();
+    assert_eq!(heartbeat(&mut lines, &mut ring, 97), 0);
+    let mut central = notify(&mut out, &mut ring, 8, SENT);
+    // No reply: " uptime " may or may not have reached it.
+    notify(&mut out, &mut ring, 8, Err(Unanswered::NoReply));
+    assert!(out.pending());
+    central.extend(drain(&mut out, &mut ring));
+    assert_eq!(central, [&b"[hb] 97 "[..], LOST, b"194 s\r\n"].concat());
+}
+
+#[test]
+fn a_whole_line_that_may_have_gone_gets_the_marker_and_no_blank_line() {
+    let mut ring = Ring::<64>::new();
+    let mut lines = wrist_bluenrg2::wake::ble::Lines::<64>::default();
+    let mut out = Outbox::<8>::default();
+    assert_eq!(lines.feed(b"[hb] 1\r\nnext\r\n", &mut ring), 0);
+    notify(&mut out, &mut ring, 8, Err(Unanswered::NoReply));
+    assert_eq!(drain(&mut out, &mut ring), [&LOST[2..], b"next\r\n"].concat());
+}
+
+#[test]
+fn a_clear_while_a_chunk_is_in_flight_counts_that_chunk() {
+    // Whether the central had the chunk across a detach and re-attach.
+    for (answer, lead) in [(SENT, true), (Err(Unanswered::NoReply), true), (BUFFERS, false), (Ok(0x46), false)] {
+        let mut ring = Ring::<64>::new();
+        let mut lines = wrist_bluenrg2::wake::ble::Lines::<64>::default();
+        let mut out = Outbox::<8>::default();
+        assert_eq!(lines.feed(b"ab\r\n[hb] 2 uptime\r\n", &mut ring), 0);
+        let mut central = notify(&mut out, &mut ring, 4, SENT);
+        let chunk = out.next(4, |b| {
+            let r = ring.read(b.len());
+            b[..r.len()].copy_from_slice(&r);
+            r.len()
+        });
+        assert_eq!(chunk, b"[hb]");
+        out.clear();
+        ring.clear();
+        lines.clear();
+        assert_eq!(lines.feed(b"[ble] console attached\r\n", &mut ring), 0);
+        assert!(!out.sent(answer), "{answer:?}");
+        assert_eq!(out.pending(), lead, "{answer:?}: the stale chunk is not held");
+        if answer == SENT {
+            central.extend(b"[hb]");
+        }
+        central.extend(drain(&mut out, &mut ring));
+        let expected: &[u8] = match (answer == SENT, lead) {
+            (true, _) => b"ab\r\n[hb]\r\n[ble] console attached\r\n",
+            (false, true) => b"ab\r\n\r\n[ble] console attached\r\n",
+            (false, false) => b"ab\r\n[ble] console attached\r\n",
+        };
+        assert_eq!(central, expected, "{answer:?}");
+    }
+}
+
+#[test]
+fn a_whole_line_in_flight_at_a_clear_needs_no_new_line() {
+    let mut out = Outbox::<8>::default();
+    assert_eq!(next_with(&mut out, 8, b"[hb] 1\r\n"), b"[hb] 1\r\n");
+    out.clear();
+    assert!(!out.sent(SENT));
+    assert!(!out.pending());
+    assert_eq!(next_with(&mut out, 8, b"x"), b"x");
+}
+
+#[test]
+fn an_answer_with_nothing_in_flight_changes_nothing() {
+    let mut out = Outbox::<8>::default();
+    assert_eq!(out.next(8, |_| 0), b"");
+    assert!(!out.sent(Err(Unanswered::NoReply)));
+    assert!(!out.sent(Ok(0x46)));
+    assert!(!out.pending());
+    // A link's outbox replaced while a chunk was in flight.
+    let mut out = Outbox::<8>::default();
+    assert_eq!(next_with(&mut out, 8, b"[hb]"), b"[hb]");
+    out = Outbox::default();
+    assert!(!out.sent(BUFFERS));
+    assert!(!out.pending());
 }
 
 /// embassy-sync's `Pipe` as the mirror uses it: a write fills only the contiguous span up
@@ -263,7 +405,7 @@ fn a_detach_forgets_the_line_in_hand() {
     let mut ring = Ring::<64>::new();
     let mut lines = wrist_bluenrg2::wake::ble::Lines::<64>::default();
     assert_eq!(lines.feed(b"[hb] 3", &mut ring), 0);
-    lines.clear(false);
+    lines.clear();
     assert_eq!(lines.feed(b"[ble] console attached\r\n", &mut ring), 0);
     assert_eq!(ring.read(64), b"[ble] console attached\r\n");
 }
@@ -283,32 +425,19 @@ fn a_line_whose_only_refused_piece_is_its_end_is_not_counted_lost() {
     assert_eq!(lines.feed(b"\r\n", &mut ring), 1);
 }
 
-/// One console notification of at most `most` bytes from the pipe, as the image sends it;
-/// what the central received.
-fn notify<const N: usize>(out: &mut wrist_bluenrg2::wake::ble::Outbox<8>, ring: &mut Ring<N>, most: usize, status: u8) -> Vec<u8> {
-    let (chunk, n) = out.next(most, |b| {
-        let r = ring.read(b.len());
-        b[..r.len()].copy_from_slice(&r);
-        r.len()
-    });
-    out.sent(chunk, n, status).unwrap();
-    if status == 0 { chunk[..n].to_vec() } else { Vec::new() }
-}
-
 #[test]
 fn a_line_half_sent_when_the_pipe_is_cleared_ends_before_the_next() {
     let mut ring = Ring::<64>::new();
     let mut lines = wrist_bluenrg2::wake::ble::Lines::<64>::default();
-    let mut out = wrist_bluenrg2::wake::ble::Outbox::<8>::default();
+    let mut out = Outbox::<8>::default();
     assert_eq!(heartbeat(&mut lines, &mut ring, 97), 0);
-    let mut central = notify(&mut out, &mut ring, 8, 0);
+    let mut central = notify(&mut out, &mut ring, 8, SENT);
     // An update finishes: what was queued is stale.
     ring.clear();
-    lines.clear(out.discard());
+    lines.clear();
+    out.clear();
     assert_eq!(lines.feed(b"[update] ok\r\n", &mut ring), 0);
-    while ring.len() > 0 {
-        central.extend(notify(&mut out, &mut ring, 8, 0));
-    }
+    central.extend(drain(&mut out, &mut ring));
     assert_eq!(central, b"[hb] 97 \r\n[update] ok\r\n");
 }
 
@@ -316,17 +445,16 @@ fn a_line_half_sent_when_the_pipe_is_cleared_ends_before_the_next() {
 fn a_held_chunk_is_dropped_at_a_clear_and_a_whole_line_gets_no_blank_one() {
     let mut ring = Ring::<64>::new();
     let mut lines = wrist_bluenrg2::wake::ble::Lines::<64>::default();
-    let mut out = wrist_bluenrg2::wake::ble::Outbox::<8>::default();
+    let mut out = Outbox::<8>::default();
     assert_eq!(lines.feed(b"[hb] 1\r\nabcdefghij\r\n", &mut ring), 0);
-    let mut central = notify(&mut out, &mut ring, 8, 0);
+    let mut central = notify(&mut out, &mut ring, 8, SENT);
     // Refused for want of buffers, held, and never sent.
-    assert_eq!(notify(&mut out, &mut ring, 8, bluenrg2::BleStatus::INSUFFICIENT_RESOURCES.into_inner()), b"");
+    notify(&mut out, &mut ring, 8, BUFFERS);
     ring.clear();
-    lines.clear(out.discard());
+    lines.clear();
+    out.clear();
     assert_eq!(lines.feed(b"[update] ok\r\n", &mut ring), 0);
-    while out.holding() || ring.len() > 0 {
-        central.extend(notify(&mut out, &mut ring, 8, 0));
-    }
+    central.extend(drain(&mut out, &mut ring));
     assert_eq!(central, b"[hb] 1\r\n[update] ok\r\n");
 }
 

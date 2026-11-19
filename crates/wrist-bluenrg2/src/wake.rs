@@ -14,6 +14,7 @@ pub mod ble {
     use wrist_ble::policy::{self, chip::Chip};
 
     use super::earliest;
+    use crate::driver::Unanswered;
 
     /// A firmware image arriving over the console's RX characteristic.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -188,10 +189,9 @@ pub mod ble {
             Self { buf: [0; N], len: 0, partial: false, dropping: false, open: false }
         }
 
-        /// Forgets the line in hand, as when the sink is emptied; `cut`: what the sink
-        /// already passed on ends inside a line, so the next one starts on a new line.
-        pub fn clear(&mut self, cut: bool) {
-            *self = Self { open: cut, ..Self::new() };
+        /// Forgets the line in hand, as when the sink is emptied.
+        pub fn clear(&mut self) {
+            *self = Self::new();
         }
 
         /// Takes console output; how many lines it lost for want of room.
@@ -250,58 +250,113 @@ pub mod ble {
         }
     }
 
-    /// Console output to a subscribed central; a chunk refused for want of TX buffers goes again first.
+    /// What the central's console shows where output may be missing.
+    pub const LOST: &[u8] = b"\r\n[ble] console: output lost here\r\n";
+
+    /// Times a chunk refused for anything but want of TX buffers goes again before it counts
+    /// as lost.
+    pub const RESENDS: u8 = 3;
+
+    #[derive(Clone, Copy)]
+    enum Chunk {
+        Idle,
+        /// Sent and unanswered; `cleared` once what was queued is discarded meanwhile.
+        InFlight { cleared: bool, refusals: u8 },
+        Held { refusals: u8 },
+    }
+
+    /// Console output to a subscribed central, a chunk at a time; one that may have gone, or
+    /// that the chip kept refusing, is followed by [`LOST`].
     pub struct Outbox<const N: usize> {
-        held: Option<([u8; N], usize)>,
-        /// The last chunk sent ended inside a line.
+        chunk: [u8; N],
+        len: usize,
+        state: Chunk,
+        /// What the central has may end inside a line.
         cut: bool,
+        /// Goes before the next output.
+        owed: &'static [u8],
     }
 
     impl<const N: usize> Default for Outbox<N> {
         fn default() -> Self {
-            Self { held: None, cut: false }
+            Self { chunk: [0; N], len: 0, state: Chunk::Idle, cut: false, owed: b"" }
         }
     }
 
     impl<const N: usize> Outbox<N> {
+        /// A chunk to send again, or bytes owed.
         #[must_use]
-        pub fn holding(&self) -> bool {
-            self.held.is_some()
+        pub fn pending(&self) -> bool {
+            matches!(self.state, Chunk::Held { .. }) || !self.owed.is_empty()
         }
 
-        /// Drops the held chunk, which the central never had, as when what was queued is
-        /// discarded; whether the central was left inside a line.
-        pub fn discard(&mut self) -> bool {
-            self.held = None;
-            self.cut
-        }
-
-        /// The held chunk, else up to `most` bytes from `read`.
-        pub fn next(&mut self, most: usize, read: impl FnOnce(&mut [u8]) -> usize) -> ([u8; N], usize) {
-            self.held.take().unwrap_or_else(|| {
-                let mut chunk = [0u8; N];
-                let n = read(&mut chunk[..most.min(N)]);
-                (chunk, n)
-            })
-        }
-
-        /// The chip's status for a chunk from [`Outbox::next`]; `Err` with it when the chunk
-        /// is lost.
-        ///
-        /// # Errors
-        /// The status, for any refusal but `INSUFFICIENT_RESOURCES`.
-        pub fn sent(&mut self, chunk: [u8; N], n: usize, status: u8) -> Result<(), u8> {
-            match bluenrg2::BleStatus::new(status) {
-                bluenrg2::BleStatus::SUCCESS => {
-                    self.cut = chunk[..n].last() != Some(&b'\n');
-                    Ok(())
-                }
-                bluenrg2::BleStatus::INSUFFICIENT_RESOURCES => {
-                    self.held = Some((chunk, n));
-                    Ok(())
-                }
-                _ => Err(status),
+        /// What was queued is gone, a held chunk with it, and what follows starts on a new
+        /// line; a chunk in flight counts when it is answered.
+        pub fn clear(&mut self) {
+            if let Chunk::InFlight { refusals, .. } = self.state {
+                self.state = Chunk::InFlight { cleared: true, refusals };
+            } else {
+                self.state = Chunk::Idle;
             }
+            self.owe_line_end();
+        }
+
+        fn owe_line_end(&mut self) {
+            self.owed = if self.cut { &LOST[..2] } else { b"" };
+        }
+
+        fn owe_loss(&mut self) {
+            self.owed = if self.cut { LOST } else { &LOST[2..] };
+        }
+
+        /// The held chunk, else what is owed and then `read`'s bytes, `most` in all; empty when
+        /// there is nothing to send.
+        pub fn next(&mut self, most: usize, read: impl FnOnce(&mut [u8]) -> usize) -> &[u8] {
+            let refusals = if let Chunk::Held { refusals } = self.state {
+                refusals
+            } else {
+                let most = most.min(N);
+                let owed = self.owed.len().min(most);
+                self.chunk[..owed].copy_from_slice(&self.owed[..owed]);
+                self.owed = &self.owed[owed..];
+                self.len = owed + read(&mut self.chunk[owed..most]);
+                0
+            };
+            self.state = if self.len == 0 { Chunk::Idle } else { Chunk::InFlight { cleared: false, refusals } };
+            &self.chunk[..self.len]
+        }
+
+        /// `answer`: the chip's status for the chunk from [`Outbox::next`], or why there was
+        /// none; whether the chunk was lost.
+        pub fn sent(&mut self, answer: Result<u8, Unanswered>) -> bool {
+            let Chunk::InFlight { cleared, refusals } = self.state else {
+                return false;
+            };
+            self.state = Chunk::Idle;
+            let inside = self.chunk[..self.len].last() != Some(&b'\n');
+            let status = answer.map(bluenrg2::BleStatus::new);
+            let went = status == Ok(bluenrg2::BleStatus::SUCCESS);
+            let unknown = answer == Err(Unanswered::NoReply);
+            if cleared || unknown {
+                self.cut |= (went || unknown) && inside;
+                if cleared {
+                    self.owe_line_end();
+                    return false;
+                }
+                self.owe_loss();
+                return true;
+            }
+            if went {
+                self.cut = inside;
+                return false;
+            }
+            let refusals = refusals + u8::from(status != Ok(bluenrg2::BleStatus::INSUFFICIENT_RESOURCES));
+            if refusals > RESENDS {
+                self.owe_loss();
+                return true;
+            }
+            self.state = Chunk::Held { refusals };
+            false
         }
     }
 

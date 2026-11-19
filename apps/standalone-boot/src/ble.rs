@@ -286,12 +286,12 @@ impl Sink for OutSink {
     }
 }
 
-/// Empties [`OUT`] and forgets the line in hand; `cut`: the central was left inside a line.
-fn clear_out(cut: bool) {
+/// Empties [`OUT`] and forgets the line in hand.
+fn clear_out() {
     LINES.lock(|lines| {
         OUT.clear();
         if let Ok(mut l) = lines.try_borrow_mut() {
-            l.clear(cut);
+            l.clear();
         }
     });
 }
@@ -912,7 +912,7 @@ impl Link<'_> {
                 Some(_) => Transfer::Claimed,
             },
             console: (self.chip.server().is_some() && MIRROR.load(Ordering::Relaxed))
-                .then(|| Console { pending: !OUT.is_empty() || self.outbox.holding(), next_at: tick(self.console_at) }),
+                .then(|| Console { pending: !OUT.is_empty() || self.outbox.pending(), next_at: tick(self.console_at) }),
             abandon_at: self.transfer.as_ref().map(|_| tick(self.last_data + TRANSFER_IDLE + one)),
             scan_end: self.scanner.until().map(tick),
         };
@@ -1016,7 +1016,8 @@ impl Link<'_> {
             self.finish_transfer = false;
             if let Some(session) = self.transfer.take() {
                 // What queued while the mirror waited is stale; the result line must find room.
-                clear_out(self.outbox.discard());
+                self.outbox.clear();
+                clear_out();
                 if let Err(why) = crate::update::finish_app(self.flash, session).await {
                     self.uart.write_str("[update] error: ");
                     self.uart.write_line(why);
@@ -1188,20 +1189,21 @@ impl Link<'_> {
             return;
         }
         let most = (self.mtu.saturating_sub(ATT_HEADER_LEN)).clamp(DEFAULT_VALUE_LEN, server::CONSOLE_VALUE_LEN);
-        let (chunk, n) = self.outbox.next(most, |buf| OUT.try_read(buf).unwrap_or(0));
-        if n == 0 {
+        let chunk = self.outbox.next(most, |buf| OUT.try_read(buf).unwrap_or(0));
+        if chunk.is_empty() {
             return;
         }
         let link = ConnHandle::new(CONN_HANDLE.load(Ordering::Relaxed));
-        let notify = Payload::new(&chunk[..n]).map(|value| Op::Notify(link, server::TX, value));
-        // 0xFF, as for no reply, if it could not be built.
-        let status = match notify.and_then(|op| commands::command(&op, DEVICE_NAME, |_| None, self.chip.server())) {
-            Some(c) => self.command(c.opcode, c.params()).await.map_or(0xFF, |r| r.status),
-            None => 0xFF,
+        let notify = Payload::new(chunk)
+            .map(|value| Op::Notify(link, server::TX, value))
+            .and_then(|op| commands::command(&op, DEVICE_NAME, |_| None, self.chip.server()));
+        let answer = match notify {
+            Some(c) => self.exchange(c.opcode, c.params()).await.map(|r| r.status),
+            None => Err(Unanswered::TooLong),
         };
         self.console_at = Instant::now() + CONSOLE_PACE;
-        if self.outbox.sent(chunk, n, status).is_err() {
-            self.uart.write_line("[ble] a console notification was refused");
+        if self.outbox.sent(answer) {
+            self.uart.write_line("[ble] a console notification was lost");
         }
     }
 
@@ -1209,7 +1211,8 @@ impl Link<'_> {
     fn set_mirror(&mut self) {
         let on = self.subscribed && ENCRYPTED.load(Ordering::Relaxed);
         if on != MIRROR.swap(on, Ordering::Relaxed) {
-            clear_out(self.outbox.discard());
+            self.outbox.clear();
+            clear_out();
             self.uart.write_line(if on {
                 "[ble] console attached over the air; 'help' lists commands"
             } else {
@@ -1832,7 +1835,7 @@ impl Link<'_> {
     /// The chip is starting again: nothing of its link or the work it left survives.
     fn chip_gone(&mut self) {
         self.link_gone();
-        clear_out(self.outbox.discard());
+        clear_out();
         self.outbox = Outbox::default();
         self.mtu = DEFAULT_MTU;
         self.finish_transfer = false;
