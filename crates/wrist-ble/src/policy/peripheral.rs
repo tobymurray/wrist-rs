@@ -55,6 +55,8 @@ pub const COVERAGE_BLOCK: Millis = Millis::secs(10);
 
 const BLOCKS_U32: u32 = UNSTABLE_WINDOW.0 / COVERAGE_BLOCK.0;
 const BLOCKS: usize = BLOCKS_U32 as usize;
+/// The judged blocks, and the one under way.
+const SLOTS: usize = BLOCKS + 1;
 
 /// Coverage is not judged on fewer whole blocks than this.
 const COVERAGE_MIN_BLOCKS: u32 = 3;
@@ -289,7 +291,7 @@ impl Peripheral {
     }
 
     fn fresh(&mut self, now: Instant) {
-        *self = Self { chosen_at: now, heard_at: now, attempts: 0, ..Self::default() };
+        *self = Self { chosen_at: now, heard_at: now, ..Self::default() };
         self.seek(now, 0);
     }
 
@@ -424,7 +426,7 @@ fn jitter(peer: PeerAddr, step: u8, base: Millis) -> Millis {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 struct Coverage {
     start: Option<Instant>,
-    counts: [u8; BLOCKS],
+    counts: [u8; SLOTS],
     newest: u32,
 }
 
@@ -442,14 +444,12 @@ impl Coverage {
     fn record(&mut self, now: Instant) {
         let Some(start) = self.start else { return };
         let b = Self::block(start, now);
-        if b > self.newest {
-            let from = (self.newest + 1).max(b.saturating_sub(BLOCKS_U32 - 1));
-            for i in from..=b {
-                self.counts[i as usize % BLOCKS] = 0;
-            }
-            self.newest = b;
+        // The blocks since the newest reading's, this one's included, start empty.
+        for i in (self.newest + 1).max(b.saturating_sub(BLOCKS_U32))..=b {
+            self.counts[i as usize % SLOTS] = 0;
         }
-        let c = &mut self.counts[b as usize % BLOCKS];
+        self.newest = b;
+        let c = &mut self.counts[b as usize % SLOTS];
         *c = c.saturating_add(1);
     }
 
@@ -465,10 +465,8 @@ impl Coverage {
         if blocks < COVERAGE_MIN_BLOCKS || period.0 == 0 {
             return false;
         }
-        let got: u32 = (first..current)
-            .filter(|&i| i <= self.newest && self.newest - i < BLOCKS_U32)
-            .map(|i| u32::from(self.counts[i as usize % BLOCKS]))
-            .sum();
+        // A block past the newest reading had none, whatever its slot holds from a lap before.
+        let got: u32 = (first..current).filter(|&i| i <= self.newest).map(|i| u32::from(self.counts[i as usize % SLOTS])).sum();
         let expected = blocks * (COVERAGE_BLOCK.0 / period.0);
         got * 100 < expected * COVERAGE_PERCENT
     }

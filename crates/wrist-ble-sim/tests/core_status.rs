@@ -324,3 +324,42 @@ fn the_whole_line() {
     state.peers[1] = Some(wrist_ble::policy::Peer { want: wrist_ble::policy::goals::Want { profile: rower, peer: peer(), priority: 1 }, machine: lost });
     assert_eq!(line(&state, t(1_800)), "[ble] status phone=connected peers=hr:live(72bpm,0.8s) rower:reconnecting(1s) radio=ok plan=ok drift=0s");
 }
+
+#[test]
+fn phone_securing_turns_unsecured_just_past_the_ask_to_pair_time() {
+    let mut state = ready(t(0));
+    phone_up(&mut state, t(1_000));
+    let edge = t(1_000) + phone::ASK_TO_PAIR_AFTER;
+    assert_eq!(status(&state, edge).phone, PhoneStatus::Securing);
+    assert_eq!(status(&state, edge + Millis(1)).phone, PhoneStatus::Unsecured { since: Millis(5_001) });
+}
+
+/// Advertising no phone can connect to is a gap like any other.
+#[test]
+fn phone_unreachable_while_advertising_unconnectably() {
+    let mut state = ready(t(0));
+    state.radio.advertising = Some(wrist_ble::AdvParams { connectable: false, ..ADV_995 });
+    assert_eq!(phone_token(&state, t(2_000)), "discoverable");
+    assert_eq!(phone_token(&state, t(4_000)), "unreachable(not-converged,4s)");
+}
+
+/// A reading exactly the quiet time old is still live.
+#[test]
+fn peer_quiet_just_past_the_quiet_time() {
+    let c = ctx(&HR);
+    let state = hr(live(&c, t(0)).step(&c, t(1_000), bpm(72)));
+    let edge = t(1_000) + HR.quiet;
+    assert!(matches!(peer_state(&state, edge), PeerState::Live { value: 72, current: false, .. }), "{:?}", peer_state(&state, edge));
+    assert!(matches!(peer_state(&state, edge + Millis(1)), PeerState::Quiet { value: Some(72), .. }));
+}
+
+#[test]
+fn peers_of_one_kind_are_numbered_from_the_second() {
+    let c = ctx(&HR);
+    let mut state = hr(live(&c, t(0)).step(&c, t(1_000), bpm(72)));
+    let csc = wrist_ble::policy::goals::Want { profile: &CSC, peer: peer(), priority: 1 };
+    state.peers[1] = Some(wrist_ble::policy::Peer { want: csc, machine: Peripheral::default() });
+    let second = wrist_ble::policy::goals::Want { profile: &HR, peer: peer(), priority: 2 };
+    state.peers[2] = Some(wrist_ble::policy::Peer { want: second, machine: Peripheral::default() });
+    assert_eq!(peer_token(&state, t(1_800)), "hr:live(72bpm,0.8s) csc:off hr#2:off");
+}

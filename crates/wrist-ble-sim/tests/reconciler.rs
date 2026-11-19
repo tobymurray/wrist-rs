@@ -700,3 +700,202 @@ fn the_consoles_ask_ends_with_a_resync() {
         assert_eq!(b.core.phone_want(), Some(MENU.phone[0].params), "found encrypted: {encrypted}");
     }
 }
+
+fn pending(b: &Bench) -> Option<Op> {
+    b.core.pending().map(|p| p.op)
+}
+
+/// A central's link ends a connection on air, and nothing else.
+#[test]
+fn a_central_link_ends_only_a_connection() {
+    let mut b = asked_on_battery();
+    b.accept();
+    let strap = PeerAddr { kind: AddrKind::PUBLIC, addr: BdAddr::new([1, 2, 3, 4, 5, 6]) };
+    b.at(1_400, Input::Radio(RadioEvent::LinkUp { link: ConnHandle::new(0x802), role: LeConnRole::Central, peer: strap, params: Some(OPENED) }));
+    assert!(matches!(pending(&b), Some(Op::UpdateParams(..))), "{:?}", pending(&b));
+}
+
+/// The link's security events end its security request, and leave its parameter ask on air.
+#[test]
+fn security_events_end_the_security_request_alone() {
+    use wrist_ble::{PairingEvent, PairingStep};
+    let mut b = asked_on_battery();
+    b.accept();
+    b.at(1_400, Input::Radio(RadioEvent::Encryption { link: link(), on: true }));
+    b.at(1_500, Input::Radio(RadioEvent::Pairing(PairingEvent { link: link(), step: PairingStep::Complete })));
+    assert!(matches!(pending(&b), Some(Op::UpdateParams(..))), "{:?}", pending(&b));
+    for end in [RadioEvent::Encryption { link: link(), on: true }, RadioEvent::Pairing(PairingEvent { link: link(), step: PairingStep::Complete })] {
+        let mut b = Bench::new(battery());
+        b.phone_up(1_000);
+        assert_eq!(b.at(6_000, Input::Tick).op, Some(Op::RequestSecurity(link())));
+        b.accept();
+        assert_eq!(pending(&b), Some(Op::RequestSecurity(link())));
+        b.at(6_500, Input::Radio(end));
+        assert_eq!(pending(&b), None, "{end:?}");
+    }
+}
+
+/// A security request waits behind its own link's parameter ask.
+#[test]
+fn a_security_request_waits_for_its_links_ask() {
+    let mut b = asked_on_battery();
+    let id = b.accept();
+    let mut links = [None; MAX_LINKS];
+    links[0] = Some(wrist_ble::LinkStatus { link: link(), role: LeConnRole::Peripheral, peer: phone(), encrypted: Some(false) });
+    let s = Snapshot { at: Instant(2_000), links, advertising: false, scanning: false, initiating: false, anchor: None };
+    b.at(2_000, Input::Snapshot(Ok(s)));
+    assert_eq!(b.at(7_000, Input::Tick).op, None);
+    assert!(matches!(pending(&b), Some(Op::UpdateParams(..))));
+    let out = b.at(7_100, Input::Radio(RadioEvent::Done(id, Ok(Outcome::Done))));
+    assert_eq!(out.op, Some(Op::RequestSecurity(link())), "{out:?}");
+}
+
+#[test]
+fn link_losses_and_unknown_events_are_counted() {
+    let mut b = Bench::new(battery());
+    b.phone_up(1_000);
+    b.at(2_000, Input::Radio(RadioEvent::LinkDown { link: link(), reason: Status::CONN_TERMINATED_DUE_TO_MIC_FAILURE }));
+    let c = b.core.counters;
+    assert_eq!((c.mic_failures, c.instant_passed), (1, 0));
+    b.phone_up(3_000);
+    b.at(4_000, Input::Radio(RadioEvent::LinkDown { link: link(), reason: Status::INSTANT_PASSED }));
+    let c = b.core.counters;
+    assert_eq!((c.mic_failures, c.instant_passed), (1, 1));
+    b.at(5_000, Input::Radio(RadioEvent::Unknown { raw_code: 0x0C99 }));
+    assert_eq!(b.core.counters.unknown_events, 1);
+}
+
+#[test]
+fn failed_operations_are_counted_and_their_timeouts_apart() {
+    let mut b = asked_on_battery();
+    let id = b.accept();
+    b.at(1_400, Input::Radio(RadioEvent::Done(id, Err(Failure { kind: FailureKind::Timeout, native: 0 }))));
+    let c = b.core.counters;
+    assert_eq!((c.failed, c.timed_out), (1, 1));
+    let mut b = Bench::new(battery());
+    assert_eq!(b.at(1_000, Input::Goals(stop_advertising())).op, Some(Op::Advertise(None)));
+    let id = b.accept();
+    b.at(1_100, Input::Radio(RadioEvent::Done(id, Err(Failure { kind: FailureKind::NoResources, native: 0x07 }))));
+    let c = b.core.counters;
+    assert_eq!((c.failed, c.timed_out, c.submitted), (1, 0, 2));
+}
+
+/// An operation past its deadline has a grace for the driver to report it, then the core ends it.
+#[test]
+fn an_operation_past_its_deadline_is_ended_after_its_grace() {
+    let mut b = asked_on_battery();
+    b.accept();
+    let deadline = b.core.pending().unwrap().deadline;
+    b.at(deadline.0 + 999, Input::Tick);
+    assert!(pending(&b).is_some());
+    assert_eq!(b.core.counters.timed_out, 0);
+    b.at(deadline.0 + 1_000, Input::Tick);
+    assert_eq!(pending(&b), None);
+    assert_eq!(b.core.counters.timed_out, 1);
+}
+
+/// A snapshot puts right the record it disagrees with, and counts a disagreement on advertising.
+#[test]
+fn a_snapshot_puts_the_record_right_and_counts_it() {
+    let scan = wrist_ble::ScanParams { interval: Duration::from_u16(160), window: Duration::from_u16(160), active: false, duration: wrist_ble::Millis::secs(5) };
+    let snapshot = |scanning| Snapshot { at: Instant(0), links: [None; MAX_LINKS], advertising: true, scanning, initiating: false, anchor: None };
+    let mut b = Bench::new(battery());
+    b.core.state.radio.scanning = Some(scan);
+    b.at(1_000, Input::Snapshot(Ok(snapshot(true))));
+    assert_eq!((b.core.state.radio.scanning, b.core.counters.audit_mismatches), (Some(scan), 0));
+    b.at(2_000, Input::Snapshot(Ok(snapshot(false))));
+    assert_eq!(b.core.state.radio.scanning, None);
+    let before = b.core.counters.audit_mismatches;
+    b.at(3_000, Input::Snapshot(Ok(Snapshot { advertising: false, ..snapshot(false) })));
+    assert_eq!(b.core.counters.audit_mismatches, before + 1);
+}
+
+/// The drift is timed from when the radio left the plan, and ends when it is back.
+#[test]
+fn drift_runs_while_the_radio_is_off_the_plan() {
+    let mut b = Bench::new(battery());
+    assert_eq!(b.core.state.drift_since, None);
+    assert_eq!(b.at(2_000, Input::Goals(stop_advertising())).op, Some(Op::Advertise(None)));
+    let id = b.accept();
+    assert_eq!(wrist_ble::policy::status::status(&b.core.state, Instant(5_000)).drift, wrist_ble::Millis::secs(3));
+    b.at(5_000, Input::Radio(RadioEvent::Done(id, Ok(Outcome::Done))));
+    assert_eq!(b.core.state.drift_since, None);
+}
+
+/// After a tick, the core's next wake is later than now: a wake at or before it would spin.
+fn tick(b: &mut Bench, ms: u64) -> Outputs {
+    let out = b.at(ms, Input::Tick);
+    assert!(out.next.is_none_or(|t| t > b.now), "a wake at {:?} named at {:?}", out.next, b.now);
+    out
+}
+
+/// The core wakes when a busy ask may go again, and asks then.
+#[test]
+fn the_core_wakes_when_a_busy_ask_may_go_again() {
+    let mut b = asked_on_battery();
+    b.refuse(FailureKind::Busy);
+    let due = Instant(1_300) + (CAPABILITIES.op_deadline)(wrist_ble::OpKind::UpdateParams);
+    assert_eq!(tick(&mut b, 1_400).next, Some(due));
+    assert_eq!(tick(&mut b, due.0 - 1).op, None);
+    assert!(matches!(tick(&mut b, due.0).op, Some(Op::UpdateParams(l, _)) if l == link()));
+}
+
+/// The core wakes when a phone that moved off the ask has settled, and asks then.
+#[test]
+fn the_core_wakes_when_the_phone_has_settled_off_the_ask() {
+    let mut b = asked_on_battery();
+    b.accept();
+    b.granted(1_500, BATTERY);
+    b.params(3_000, OWN);
+    let due = Instant(3_000) + SETTLE;
+    assert_eq!(tick(&mut b, 3_001).next, Some(due));
+    assert!(matches!(tick(&mut b, due.0).op, Some(Op::UpdateParams(l, _)) if l == link()));
+}
+
+/// A link judged to fit and moved off it within the same millisecond is asked once it settles.
+#[test]
+fn a_link_moved_off_the_want_as_it_is_judged_is_asked() {
+    let mut b = Bench::new(cable());
+    b.phone_up_at(1_000, ANDROID_17);
+    assert_eq!(b.encrypted(1_170).op, None);
+    b.params(1_170, ANDROID_17_OWN);
+    assert_eq!(asks(&b.run_to(1_170 + u64::from(SETTLE.0) + 1)), 1);
+}
+
+/// No wake is named for an ask that cannot go: its budget spent, or the link pairing again.
+#[test]
+fn no_wake_is_named_for_an_ask_that_cannot_go() {
+    let mut b = asked_on_battery();
+    let mut next = b.refuse(FailureKind::Busy).next;
+    let mut asked = 1;
+    while let Some(due) = next.filter(|t| t.0 < 200_000) {
+        next = tick(&mut b, due.0).next;
+        if b.asked.is_some() {
+            asked += 1;
+            next = b.refuse(FailureKind::Busy).next;
+        }
+    }
+    assert_eq!(asked, usize::from(ASKS_PER_WANT));
+
+    let mut b = asked_on_battery();
+    b.accept();
+    b.granted(1_500, BATTERY);
+    b.params(3_000, OWN);
+    b.at(3_500, Input::Radio(RadioEvent::Pairing(wrist_ble::PairingEvent { link: link(), step: wrist_ble::PairingStep::Numeric(123_456) })));
+    for ms in [3_000 + u64::from(SETTLE.0), 7_000, 8_000] {
+        assert_eq!(tick(&mut b, ms).op, None);
+    }
+
+    let mut b = asked_on_battery();
+    b.accept();
+    let mut at = 1_500;
+    for _ in 0..ASKS_PER_WANT {
+        b.granted(at, BATTERY);
+        b.params(at + 2_000, OWN);
+        b.run_to(at + 2_000 + u64::from(SETTLE.0) + 10);
+        at += 20_000;
+    }
+    b.granted(at, BATTERY);
+    b.params(at + 2_000, OWN);
+    assert_eq!(tick(&mut b, at + 2_001).next, None);
+}

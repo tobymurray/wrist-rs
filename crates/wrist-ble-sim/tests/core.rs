@@ -103,7 +103,9 @@ fn the_deadline_announces_securing_turning_unsecured() {
     h.at(next.0, Input::Tick);
     let mut t = next;
     while status(&h.core.state, t).phone == PhoneStatus::Securing {
-        t = h.next().unwrap();
+        let next = h.next().unwrap();
+        assert!(next > t, "{next:?} at {t:?}");
+        t = next;
         h.at(t.0, Input::Tick);
     }
     assert!(t.since(Instant(1_000) + ASK_TO_PAIR_AFTER) <= Millis(1), "{t:?}");
@@ -206,6 +208,7 @@ fn a_chip_that_never_comes_up_is_started_once_an_hour_after_its_fault() {
         if matches!(out.chip, Some(Action::Start(_))) {
             starts.push(now);
         }
+        assert!(out.next.is_some_and(|t| t > now), "{:?} at {now:?}", out.next);
         now = out.next.unwrap();
         out = core.step(now, Input::Tick);
     }
@@ -280,6 +283,8 @@ fn a_start_with_no_answer_is_stopped_before_the_next() {
     let out = core.step(Instant(at), Input::Submitted(Err(refused)));
     assert!(matches!(out.op, Some(Op::Advertise(Some(_)))), "{out:?}");
     assert_eq!(core.counters.divergences, 0);
+    // Nothing connectable stopped: the radio has been silent since the chip came up.
+    assert_eq!(core.state.silent_since, Instant(0));
 }
 
 /// A phone's link or the chip's reset ends whatever advertising there was.
@@ -496,13 +501,12 @@ fn a_security_request_refused_for_good_fails_the_pairing_at_once() {
         let mut h = Harness::new(Goals { radio_on: true, ..Goals::OFF });
         phone_up(&mut h, 1_000, link);
         let mut now = Instant(1_000);
-        let out = loop {
-            now = h.core.step(now, Input::Tick).next.unwrap();
-            let out = h.core.step(now, Input::Tick);
-            if out.op.is_some() {
-                break out;
-            }
-        };
+        let out = (0..100)
+            .find_map(|_| {
+                now = h.core.step(now, Input::Tick).next.unwrap();
+                Some(h.core.step(now, Input::Tick)).filter(|out| out.op.is_some())
+            })
+            .expect("an operation");
         assert_eq!(out.op, Some(Op::RequestSecurity(link)));
         let refusal = match refusal {
             Input::Radio(RadioEvent::Done(_, r)) => {
@@ -725,4 +729,124 @@ fn a_failed_snapshot_is_asked_for_again() {
     h.at(at + 62_000, Input::Radio(RadioEvent::EventsLost));
     h.at(at + 62_000, Input::Snapshot(Err(wrist_ble::Fault::Silent)));
     assert_eq!(h.next(), Some(Instant(at + 62_000 + retry)));
+}
+
+fn wanting(peer: PeerAddr, profile: &'static Profile) -> Goals {
+    Goals { radio_on: true, peripherals: [Some(Want { profile, peer, priority: 0 }), None, None], ..Goals::OFF }
+}
+
+fn strap_linked(h: &mut Harness, ms: u64) -> ConnHandle {
+    let link = ConnHandle::new(0x802);
+    h.at(ms, Input::Radio(RadioEvent::LinkUp { link, role: LeConnRole::Central, peer: strap(), params: Some(PHONE) }));
+    assert!(matches!(h.core.state.peers[0].unwrap().machine.stage, Stage::Linked { .. }));
+    link
+}
+
+static CSC: Profile = Profile { kind: Kind::Csc, service: BluetoothUuid::from_u16(0x1816), subscribe: &[BluetoothUuid::from_u16(0x2A5B)], cadence: Cadence::Events, silence: Silence::Idle, ..HR };
+
+/// The same goals again leave each peripheral where it is.
+#[test]
+fn goals_set_again_keep_each_peripheral_as_it_is() {
+    let mut h = Harness::new(wanting(strap(), &HR));
+    strap_linked(&mut h, 1_000);
+    let before = h.core.state.peers[0].unwrap().machine;
+    let ops = h.ops.len();
+    h.at(2_000, Input::Goals(wanting(strap(), &HR)));
+    assert_eq!(h.core.state.peers[0].unwrap().machine, before);
+    assert_eq!(h.ops.len(), ops, "{:?}", &h.ops[ops..]);
+}
+
+/// A peripheral wanted with another profile is let go and set up afresh, its link first.
+#[test]
+fn a_peripheral_wanted_with_another_profile_starts_afresh() {
+    let mut h = Harness::new(wanting(strap(), &HR));
+    let link = strap_linked(&mut h, 1_000);
+    h.at(2_000, Input::Goals(wanting(strap(), &CSC)));
+    assert_eq!(h.ops.last(), Some(&Op::Disconnect(link, wrist_ble::DisconnectReason::RemoteUserTerminatedConn)));
+    h.at(2_100, Input::Radio(RadioEvent::LinkDown { link, reason: Status::CONN_TERMINATED_BY_LOCAL_HOST }));
+    let p = h.core.state.peers[0].unwrap();
+    assert_eq!(p.want.profile.kind, Kind::Csc);
+    assert_eq!((p.machine.stage, p.machine.chosen_at), (Stage::Seeking { since: Instant(2_100), quick: 0 }, Instant(2_100)));
+}
+
+/// Another peripheral in a slot is looked for at once, or once the link to the one it replaces
+/// is down.
+#[test]
+fn a_peripheral_replaced_by_another_is_looked_for() {
+    let other = PeerAddr { kind: AddrKind::PUBLIC, addr: BdAddr::new([6, 5, 4, 3, 2, 1]) };
+    let mut h = Harness::new(wanting(strap(), &HR));
+    h.at(2_000, Input::Goals(wanting(other, &HR)));
+    let p = h.core.state.peers[0].unwrap();
+    assert_eq!((p.want.peer, p.machine.stage), (other, Stage::Seeking { since: Instant(2_000), quick: 0 }));
+
+    let mut h = Harness::new(wanting(strap(), &HR));
+    let link = strap_linked(&mut h, 1_000);
+    h.at(2_000, Input::Goals(wanting(other, &HR)));
+    assert_eq!(h.ops.last(), Some(&Op::Disconnect(link, wrist_ble::DisconnectReason::RemoteUserTerminatedConn)));
+    h.at(2_100, Input::Radio(RadioEvent::LinkDown { link, reason: Status::CONN_TERMINATED_BY_LOCAL_HOST }));
+    let p = h.core.state.peers[0].unwrap();
+    assert_eq!((p.want.peer, p.machine.stage), (other, Stage::Seeking { since: Instant(2_100), quick: 0 }));
+    assert!(matches!(status(&h.core.state, h.now).peers[0].unwrap().state, PeerState::Finding { .. }));
+}
+
+/// A peripheral no longer wanted keeps its slot until its link is down.
+#[test]
+fn a_peripheral_let_go_is_disconnected_before_it_goes() {
+    let mut h = Harness::new(wanting(strap(), &HR));
+    let link = strap_linked(&mut h, 1_000);
+    h.at(2_000, Input::Goals(Goals { radio_on: true, ..Goals::OFF }));
+    assert_eq!(h.ops.last(), Some(&Op::Disconnect(link, wrist_ble::DisconnectReason::RemoteUserTerminatedConn)));
+    assert!(matches!(h.core.state.peers[0].unwrap().machine.stage, Stage::Dropping { .. }));
+    h.at(2_100, Input::Radio(RadioEvent::LinkDown { link, reason: Status::CONN_TERMINATED_BY_LOCAL_HOST }));
+    assert!(h.core.state.peers[0].is_none());
+}
+
+/// Goals set again unchanged leave the settle clock; a change to what the radio plans for
+/// restarts it.
+#[test]
+fn the_settle_clock_restarts_with_each_change_to_the_radios_goals() {
+    use wrist_ble::policy::goals::PhoneGoal;
+    let mut h = Harness::new(Goals { radio_on: true, ..Goals::OFF });
+    let g = *h.core.goals();
+    h.at(1_000, Input::Goals(g));
+    assert_eq!(h.core.settled_since, Instant(0));
+    let changes = [
+        Goals { power: Power::Cable, ..g },
+        Goals { transfer: true, ..g },
+        Goals { phone: PhoneGoal { discoverable: false, ..g.phone }, ..g },
+        Goals { radio_on: false, ..g },
+    ];
+    for (i, changed) in changes.into_iter().enumerate() {
+        let ms = 2_000 * (i as u64 + 1);
+        h.at(ms, Input::Goals(changed));
+        assert_eq!(h.core.settled_since, Instant(ms), "{changed:?}");
+        h.at(ms + 1_000, Input::Goals(g));
+        if g.radio_on && !changed.radio_on {
+            let up = started(&h.core);
+            h.step(up);
+        }
+    }
+}
+
+/// A security request goes out beside an operation on another link.
+#[test]
+fn a_security_request_goes_beside_another_links_operation() {
+    let mut h = Harness::new(wanting(strap(), &HR));
+    let strap_link = strap_linked(&mut h, 1_000);
+    phone_up(&mut h, 1_100, ConnHandle::new(0x801));
+    h.at(2_000, Input::Goals(Goals { radio_on: true, ..Goals::OFF }));
+    assert_eq!(h.core.pending().map(|p| p.op), Some(Op::Disconnect(strap_link, wrist_ble::DisconnectReason::RemoteUserTerminatedConn)));
+    h.at(6_100, Input::Tick);
+    assert_eq!(h.ops.last(), Some(&Op::RequestSecurity(ConnHandle::new(0x801))));
+}
+
+/// A peripheral stopped for a busy radio looks again once the planner fits it.
+#[test]
+fn a_peripheral_stopped_for_a_busy_radio_resumes_when_it_fits() {
+    use wrist_ble::policy::plan::Conflict;
+    let mut h = Harness::new(wanting(strap(), &HR));
+    h.core.state.peers[0].as_mut().unwrap().machine.stage = Stage::Stopped(StopReason::RadioBusy(Conflict::Transfer));
+    h.at(5_000, Input::Tick);
+    let m = h.core.state.peers[0].unwrap().machine;
+    assert_eq!((m.stage, m.heard_at), (Stage::Seeking { since: Instant(5_000), quick: 0 }, Instant(5_000)));
 }
