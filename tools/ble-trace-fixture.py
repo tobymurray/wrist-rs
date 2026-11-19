@@ -8,8 +8,8 @@ carry no address; the driver's commands that are one of the core's operations; t
 events but advertising reports, console writes and replies to other commands (one lists the
 bonded addresses), with a connection's peer and resolvable addresses zeroed and a reply cut after
 its status; the console commands the replay reads
-(its goals, answers, `ble disconnect` and a USB `update`); the `[update]` lines that bound an
-image's transfer; scenario marks, with anything shaped like an address replaced. Every line keeps its host time, as seconds or the wall clock's HH:MM:SS.mmm.
+(its goals, answers, `ble disconnect`, `ble interval now` and a USB `update`); the `[update]`
+lines that bound an image's transfer; scenario marks, with anything shaped like an address replaced. Every line keeps its host time, as seconds or the wall clock's HH:MM:SS.mmm.
 """
 
 import argparse
@@ -18,7 +18,7 @@ import sys
 
 # The driver's commands the replay reads as operations (wrist-bluenrg2's shadow.rs, driver_op).
 OPS = {0xFC83, 0xFC81, 0xFD81, 0xFC8D, 0xFC95, 0xFCA5, 0xFC88, 0xFC93, 0xFC97, 0xFC9D}
-GOALS = re.compile(r'^ble (on|off|yes|no|disconnect|profile (auto|cable|battery))$')
+GOALS = re.compile(r'^ble (on|off|yes|no|disconnect|profile (auto|cable|battery)|interval now [0-9]+ [0-9]+)$')
 DECIMAL = re.compile(r'^\+?[0-9]+$')
 HEX = re.compile(r'^\+?[0-9A-Fa-f]+$')
 LINE = re.compile(r'^\s*((?:\d{2}:\d{2}:\d{2}|\d+)\.\d{3}) (.*)$')
