@@ -626,9 +626,7 @@ impl<'a> Core<'a> {
         };
         self.snapshot_retry = None;
         self.snapshot_failures = 0;
-        // The phone's link may have been ended and made again on its handle behind the lost
-        // events, which a snapshot cannot show: what was known of its parameters, and the console's
-        // ask of it, are let go, so the link is judged afresh by its next update or the menu's ask.
+        // An update, or the answer to the console's ask, may be among the lost events.
         self.forget_phone_params();
         self.console = None;
         let found = s.links.iter().flatten().find(|l| l.role == LeConnRole::Peripheral);

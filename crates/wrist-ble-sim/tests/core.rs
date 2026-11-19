@@ -828,8 +828,7 @@ fn the_settle_clock_restarts_with_each_change_to_the_radios_goals() {
     }
 }
 
-/// A security request goes out beside an operation on another link
-/// (`a_security_request_waits_for_its_links_ask` in `reconciler.rs` for its own link's).
+/// A security request goes out beside an operation on another link.
 #[test]
 fn a_security_request_goes_beside_another_links_operation() {
     let mut h = Harness::new(wanting(strap(), &HR));

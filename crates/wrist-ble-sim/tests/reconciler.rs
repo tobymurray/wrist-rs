@@ -735,8 +735,7 @@ fn security_events_end_the_security_request_alone() {
     }
 }
 
-/// A security request waits behind its own link's parameter ask (`a_security_request_goes_beside_another_links_operation`
-/// in `core.rs` for another link's).
+/// A security request waits behind its own link's parameter ask.
 #[test]
 fn a_security_request_waits_for_its_links_ask() {
     let mut b = asked_on_battery();

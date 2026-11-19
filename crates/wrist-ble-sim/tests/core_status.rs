@@ -325,9 +325,8 @@ fn the_whole_line() {
     assert_eq!(line(&state, t(1_800)), "[ble] status phone=connected peers=hr:live(72bpm,0.8s) rower:reconnecting(1s) radio=ok plan=ok drift=0s");
 }
 
-/// The edge of the securing row, on [`phone::ASK_TO_PAIR_AFTER`].
 #[test]
-fn phone_securing_turns_unsecured_just_past_five_seconds() {
+fn phone_securing_turns_unsecured_just_past_the_ask_to_pair_time() {
     let mut state = ready(t(0));
     phone_up(&mut state, t(1_000));
     let edge = t(1_000) + phone::ASK_TO_PAIR_AFTER;
@@ -344,7 +343,7 @@ fn phone_unreachable_while_advertising_unconnectably() {
     assert_eq!(phone_token(&state, t(4_000)), "unreachable(not-converged,4s)");
 }
 
-/// The edge of the quiet row: a reading exactly the quiet time old is still live.
+/// A reading exactly the quiet time old is still live.
 #[test]
 fn peer_quiet_just_past_the_quiet_time() {
     let c = ctx(&HR);
