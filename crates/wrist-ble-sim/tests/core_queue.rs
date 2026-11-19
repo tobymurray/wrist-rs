@@ -110,3 +110,16 @@ fn an_answer_already_queued_is_not_queued_twice() {
     assert_eq!(answers, 1, "{:?}", h.ops);
     assert_eq!(h.core.counters.dropped, 0);
 }
+
+#[test]
+fn an_answer_with_no_room_left_is_counted() {
+    let mut h = Harness::new();
+    h.now = Instant(100);
+    h.peer_request(0x810);
+    for link in 0x820..0x820 + 9 {
+        h.peer_request(link);
+    }
+    h.release();
+    assert!(!h.ops.contains(&Op::AnswerParamRequest(ConnHandle::new(0x828), false)), "{:?}", h.ops);
+    assert_eq!(h.core.counters.dropped, 2);
+}
