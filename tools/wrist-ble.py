@@ -151,8 +151,9 @@ async def wait_kept(name, timeout):
                 if not await attach(client, con):
                     continue
                 while time.time() < end:
+                    since = len(con.lines)
                     await send(client, "boot")
-                    line = await con.wait_for(["[boot] state"], 3)
+                    line = await con.wait_for(["[boot] state"], 3, since)
                     if line and "state boot" in line:
                         print("-- kept: state boot", flush=True)
                         return True

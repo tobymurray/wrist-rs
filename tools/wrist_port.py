@@ -108,11 +108,12 @@ async def air_attach(client, con):
     import asyncio
     await client.start_notify(TX, con.on_notify)
     for _ in range(10):
+        since = len(con.lines)
         try:
             await asyncio.wait_for(air_send(client, "ping"), 5)
         except Exception as e:
             return f"a write was not answered ({e!r})"
-        if await con.wait_for(["pong"], 1):
+        if await con.wait_for(["pong"], 1, since):
             return None
     return "no answer"
 
@@ -125,8 +126,9 @@ async def air_hasten(client, con):
     line = None
     for _ in range(5):
         await asyncio.sleep(0.6)
+        since = len(con.lines)
         await air_send(client, "ble")
-        line = await con.wait_for(["[ble] connected"], 2)
+        line = await con.wait_for(["[ble] connected"], 2, since)
         if line and f"interval {FAST_INTERVAL * 1.25:.2f} ms" in line:
             break
     found = re.search(r"interval [0-9.]+ ms", line or "")
