@@ -176,13 +176,13 @@ pub fn note_reading(s: &pmic::Snapshot) {
     });
 }
 
-pub fn command(args: &[u8], uart: Uart) {
+pub async fn command(args: &[u8], uart: Uart) {
     let text = core::str::from_utf8(args).unwrap_or("").trim();
     if let Some(rest) = text.strip_prefix("sleep") {
-        return crate::sleep::command(rest, uart);
+        return crate::sleep::command(rest, uart).await;
     }
     if text == "gauge" {
-        return pmic::write_last_gauge(&mut uart.lines());
+        return pmic::write_last_gauge(&mut uart.lines()).await;
     }
     if !text.is_empty() {
         return uart.write_line("[power] usage: power | power gauge | power sleep [on|off|status|clear-crash]");
@@ -213,6 +213,7 @@ pub fn command(args: &[u8], uart: Uart) {
         Err(_) => uart.write_str("not set"),
     }
     uart.write_line("");
+    uart.pace().await;
     match RUNS.lock(|r| r.borrow().1) {
         None => uart.write_line("[power] no stretch on battery finished since boot"),
         Some(run) => write_run(uart, &run),
@@ -221,9 +222,12 @@ pub fn command(args: &[u8], uart: Uart) {
     uart.write_str("[power] PWR_CR1 ");
     uart.write_hex32(cr1);
     uart.write_line(if cr1 & PWR_CR1_ULPMEN != 0 { ": ULPMEN set" } else { ": ULPMEN clear" });
+    uart.pace().await;
     pmic::write_gauge_config(&mut uart.lines());
+    uart.pace().await;
     crate::write_buttons(uart);
-    crate::sleep::command("", uart);
+    uart.pace().await;
+    crate::sleep::command("", uart).await;
 }
 
 fn write_run(uart: Uart, run: &BatteryRun) {

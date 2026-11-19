@@ -448,7 +448,9 @@ async fn listen<'d>(mut rx: Receiver<'d, Usb<'d>>, flash: &'static FlashMutex) -
                                 len = 0;
                                 continue 'link;
                             }
-                            command(&line[..len], flash);
+                            if !submit(&line[..len]) {
+                                Uart::best_effort().write_line("[usb] command dropped: the queue is full");
+                            }
                         }
                         len = 0;
                     }
@@ -460,6 +462,54 @@ async fn listen<'d>(mut rx: Receiver<'d, Usb<'d>>, flash: &'static FlashMutex) -
                     _ => {}
                 }
             }
+        }
+    }
+}
+
+/// Command lines from USB and the air, each ended by `\n`.
+static LINES_IN: Pipe<CriticalSectionRawMutex, 512> = Pipe::new();
+
+/// Queues a command line for [`commands`]; false if there is no room for all of it.
+pub fn submit(line: &[u8]) -> bool {
+    // Every writer runs on the one executor, and none awaits in here.
+    if LINES_IN.free_capacity() <= line.len() {
+        return false;
+    }
+    for mut part in [line, b"\n"] {
+        while let Ok(n @ 1..) = LINES_IN.try_write(part) {
+            part = &part[n..];
+        }
+    }
+    true
+}
+
+/// Runs the commands from USB and the air in turn, letting their held output out a line per
+/// poll.
+#[embassy_executor::task]
+pub async fn commands(flash: &'static FlashMutex) -> ! {
+    let uart = Uart::best_effort();
+    let (mut line, mut n) = ([0u8; 192], 0);
+    loop {
+        let mut b = [0u8];
+        LINES_IN.read(&mut b).await;
+        match b[0] {
+            b'\n' => {
+                Uart::hold(true);
+                command(&line[..n], flash).await;
+                Uart::hold(false);
+                n = 0;
+                loop {
+                    embassy_futures::yield_now().await;
+                    if !uart.release_line() {
+                        break;
+                    }
+                }
+            }
+            b if n < line.len() => {
+                line[n] = b;
+                n += 1;
+            }
+            _ => {}
         }
     }
 }
@@ -483,7 +533,7 @@ pub fn parse_transfer(cmd: &[u8]) -> Option<(Target, usize, u32)> {
 }
 
 #[allow(clippy::too_many_lines)]
-pub fn command(cmd: &[u8], flash: &'static FlashMutex) {
+async fn command(cmd: &[u8], flash: &'static FlashMutex) {
     let uart = Uart::best_effort();
     Uart::retry();
     match cmd.strip_suffix(b" ").unwrap_or(cmd) {
@@ -491,20 +541,24 @@ pub fn command(cmd: &[u8], flash: &'static FlashMutex) {
             uart.write_line(
                 "[usb] commands: help ping uptime version boot reset report usblog time [set YYYY-MM-DD HH:MM:SS|zone <min> [<utc s> <min>]...] alarm [HH:MM|on|off|test|wake-test <s>] power [gauge|sleep on|off|status|clear-crash] page [lag [s]|vcom [auto|low|high]|light on|off|dump|stress [...]] press <up|down|back|select> [long] modules [force view|link1] haptic [tap|alarm|stop] flash survey|ecc-test staging <len>|<off> <n> update <len> <crc32> loader <len> <crc32>",
             );
+            uart.pace().await;
             uart.write_line("[usb]   boot: the loader's state word; update: stream a new application (tools/wrist-update.py)");
             uart.write_line("[usb]   time set: the calendar in local time (tools/wrist-time.py sends the host's)");
             uart.write_line("[usb]   time zone: minutes east of UTC, then up to two changes as UTC seconds since 1970 and the new offset");
             uart.write_line("[usb]   alarm: one a day at a local HH:MM, rung on the face and the motor; on and off keep the time; test rings it now; wake-test times RTC alarm A's interrupt");
             uart.write_line("[usb]   report: the full report (clocks, RTC, USB registers and log), written in pieces");
             uart.write_line("[usb]   reset: software reset; hold Select through it for the bootloader's USB mode");
+            uart.pace().await;
             uart.write_line("[usb]   power: the input, the last stretch on battery, sleep counters, the retained crash record");
             uart.write_line("[usb]   page: the face as last drawn; frame, executor-latency and per-task CPU figures; vcom and the light");
             uart.write_line("[usb]   page dump: the frame last drawn, as run-length rows (tools/wrist-frame.py)");
             uart.write_line("[usb]   page stress: glyphs|churn|edge|full|pages in place of the page, held at a step or run every MS; off");
             uart.write_line("[usb]   press: a debounced press, as if from the button; never a hold");
             uart.write_line("[usb]   modules: what the display, link1 and GNSS slots' EEPROMs say");
+            uart.pace().await;
             uart.write_line("[usb]   flash survey: which pages hold anything or raise ECC errors, a CRC per region, and the flash controller's status; never writes flash");
             uart.write_line("[usb]   flash ecc-test: reads ST's 1-bit and 2-bit ECC test words; the NMI must catch the second");
+            uart.pace().await;
             #[cfg(feature = "ble")]
             uart.write_line("[usb]   ble [on|off|version|yes|no|bonds|forget [address]|disconnect|profile auto|cable|battery|interval now <min> <max>]: the radio; off until `ble on`, which persists; `ble yes` confirms a pairing");
             uart.write_line("[usb]   haptic [tap|alarm|stop]: the vibration motor; bare, what the driver reads back");
@@ -514,15 +568,15 @@ pub fn command(cmd: &[u8], flash: &'static FlashMutex) {
             uart.write_line("[usb]   ble probe: the chip's firmware and updater versions, and its anchor period idle, advertising, or beside a link");
         }
         #[cfg(feature = "ble")]
-        b"ble" => crate::ble::command(b"", uart),
+        b"ble" => crate::ble::write_status(uart).await,
         #[cfg(feature = "ble")]
         rest if rest.starts_with(b"ble ") => crate::ble::command(&rest[4..], uart),
         rest if rest == b"haptic" || rest.starts_with(b"haptic ") => crate::haptic::command(&rest[6..], uart),
         b"usblog" => crate::ask_report(crate::Report::UsbLog, uart),
         b"report" => crate::ask_report(crate::Report::Full, uart),
-        rest if rest == b"modules" || rest.starts_with(b"modules ") => crate::modules::command(&rest[7..], uart),
+        rest if rest == b"modules" || rest.starts_with(b"modules ") => crate::modules::command(&rest[7..], uart).await,
         b"rtc" | b"time" => crate::ask_report(crate::Report::Rtc, uart),
-        rest if rest == b"power" || rest.starts_with(b"power ") => crate::power::command(&rest[5..], uart),
+        rest if rest == b"power" || rest.starts_with(b"power ") => crate::power::command(&rest[5..], uart).await,
         rest if rest == b"alarm" || rest.starts_with(b"alarm ") => crate::alarm::command(&rest[5..], uart),
         set if set.starts_with(b"time set ") => {
             let text = core::str::from_utf8(&set[9..]).unwrap_or("");
@@ -568,7 +622,8 @@ pub fn command(cmd: &[u8], flash: &'static FlashMutex) {
         }
         b"ping" => uart.write_line("[usb] pong"),
         rest if rest == b"press" || rest.starts_with(b"press ") => press(&rest[5..], uart),
-        rest if rest == b"page" || rest.starts_with(b"page ") => crate::glass::command(&rest[4..], uart),
+        b"page" => crate::glass::write_page(uart).await,
+        rest if rest.starts_with(b"page ") => crate::glass::command(&rest[4..], uart),
         b"uptime" => {
             uart.write_str("[usb] uptime ");
             uart.write_u32(u32::try_from(Instant::now().as_secs()).unwrap_or(u32::MAX));

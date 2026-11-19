@@ -460,7 +460,7 @@ pub fn write_gauge(uart: &mut Lines, s: &Snapshot) {
 }
 
 /// The gauge's registers from the last full reading.
-pub fn write_last_gauge(uart: &mut Lines) {
+pub async fn write_last_gauge(uart: &mut Lines) {
     let Some((at, s)) = LAST_FULL.lock(Cell::get) else {
         return uart.write_line("[gauge] no full reading yet");
     };
@@ -468,6 +468,7 @@ pub fn write_last_gauge(uart: &mut Lines) {
     uart.write_u32(u32::try_from(embassy_time::Instant::now().as_secs().saturating_sub(at)).unwrap_or(u32::MAX));
     uart.write_line(" s ago:");
     write_summary(uart, &s);
+    uart.pace().await;
     write_gauge(uart, &s);
 }
 

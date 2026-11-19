@@ -138,7 +138,6 @@ pub async fn lag_probe() -> ! {
 
 pub fn command(args: &[u8], uart: Uart) {
     match core::str::from_utf8(args).unwrap_or("").trim() {
-        "" => write_page(uart),
         "lag" => arm_lag_command(uart, LAG_BOOT_S),
         lag if lag.starts_with("lag ") => match lag[4..].trim().parse::<u32>() {
             Ok(s) if (1..=LAG_MAX_S).contains(&s) => arm_lag_command(uart, s),
@@ -329,7 +328,7 @@ fn write_us_as_ms(uart: &mut Lines, label: &str, us: u32) {
     uart.write_str(" ms");
 }
 
-fn write_page(uart: Uart) {
+pub async fn write_page(uart: Uart) {
     let uart = &mut uart.lines();
     let (page, back) = crate::nav_now();
     uart.write_str("[glass] page ");
@@ -339,6 +338,7 @@ fn write_page(uart: Uart) {
         write_ms(uart, ", back to the face in ", u32::try_from(ms).unwrap_or(u32::MAX));
     }
     uart.write_line("");
+    uart.pace().await;
     match SHOWN.lock(|s| *s.borrow()) {
         None => uart.write_line("[glass] nothing sent to the panel yet"),
         Some(glass) => {
@@ -356,6 +356,7 @@ fn write_page(uart: Uart) {
             }
         }
     }
+    uart.pace().await;
     uart.write_str("[glass] frames ");
     uart.write_u32(FRAMES.load(Ordering::Relaxed));
     uart.write_str(", unchanged recompositions ");
@@ -374,6 +375,7 @@ fn write_page(uart: Uart) {
     uart.write_str(", over 5 ms ");
     uart.write_u32(LAGS_OVER_5MS.swap(0, Ordering::Relaxed));
     uart.write_line(" times (maxima since the last `page`)");
+    uart.pace().await;
     let c = COST.lock(|s| *s.borrow());
     uart.write_str("[glass] last frame's CPU, total/longest step us:");
     for (label, step) in [(" layout ", c.layout), (", render ", c.render), (", changed ", c.changed), (", write ", c.write)] {
@@ -398,7 +400,9 @@ fn write_page(uart: Uart) {
     }
     uart.write_line(" (`page lag [seconds]` arms it; from boot for 60 s)");
     write_stress(uart);
-    crate::busy::write(uart);
+    uart.pace().await;
+    crate::busy::write(uart).await;
+    uart.pace().await;
     let lags = LAGS.lock(|l| core::mem::take(&mut *l.borrow_mut()));
     if lags.iter().any(|&(at, _)| at != 0) {
         uart.write_str("[glass] the last stalls over 5 ms (uptime ms: late us):");

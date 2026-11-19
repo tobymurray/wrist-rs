@@ -186,8 +186,6 @@ enum Request {
 static REQUESTS: Channel<CriticalSectionRawMutex, Request, 4> = Channel::new();
 /// A line from the central's RX and its length.
 type Line = ([u8; 192], usize);
-/// The central's command lines for [`commands`], each ended by `\n`: room for the longest write.
-static LINES_IN: Pipe<CriticalSectionRawMutex, 512> = Pipe::new();
 /// Raised by other tasks that leave the loop work it cannot see coming: console output for a
 /// subscribed central. The loop clears it before it reads that state.
 static WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
@@ -321,10 +319,9 @@ fn power() -> Power {
     }
 }
 
-/// `ble`, `ble on|off|version|yes|no|bonds|forget [address]|disconnect|profile auto|cable|battery|interval now <min> <max>|scan [s [interval window]]`.
+/// `ble on|off|version|yes|no|bonds|forget [address]|disconnect|profile auto|cable|battery|interval now <min> <max>|scan [s [interval window]]`.
 pub fn command(args: &[u8], uart: Uart) {
     let request = match args {
-        b"" => return write_status(uart),
         b"on" => Request::On,
         b"off" => Request::Off,
         b"version" => Request::Version,
@@ -419,7 +416,8 @@ pub fn command(args: &[u8], uart: Uart) {
     }
 }
 
-pub fn write_status(uart: Uart) {
+#[allow(clippy::too_many_lines)]
+pub async fn write_status(uart: Uart) {
     uart.write_str("[ble] ");
     uart.write_str(match STATE.load(Ordering::Relaxed) {
         STATE_OFF => "off (chip in reset)",
@@ -452,6 +450,7 @@ pub fn write_status(uart: Uart) {
     write_address(uart, bluenrg2::Address { kind: AddrKind::RANDOM, addr: BdAddr(ADDRESS.each_ref().map(|b| b.load(Ordering::Relaxed))) });
     uart.write_str(", bonded ");
     uart.write_u32(u32::from(BONDED.load(Ordering::Relaxed)));
+    uart.pace().await;
     let n = |label: &str, v: &AtomicU32| {
         uart.write_str(label);
         uart.write_u32(v.load(Ordering::Relaxed));
@@ -464,6 +463,7 @@ pub fn write_status(uart: Uart) {
     n(", unsecured writes dropped ", &UNSECURED);
     n(", irq stuck after read ", &TRANSPORT.irq_stuck_read);
     n(" write ", &TRANSPORT.irq_stuck_write);
+    uart.pace().await;
     n(", connect failures ", &CONNECT_FAILURES);
     n(", update failures ", &UPDATE_FAILURES);
     if UPDATE_FAILURES.load(Ordering::Relaxed) > 0 {
@@ -481,6 +481,7 @@ pub fn write_status(uart: Uart) {
         uart.write_hex8(LAST_RESTART.load(Ordering::Relaxed));
         uart.write_str(")");
     }
+    uart.pace().await;
     n(", core asked ", &CORE_ASKED);
     n(" refused ", &CORE_REFUSED);
     n(" failed ", &CORE_FAILED);
@@ -490,6 +491,7 @@ pub fn write_status(uart: Uart) {
     n(" busy restarts ", &CORE_BUSY_SPENT);
     n(" dropped ", &CORE_DROPPED);
     n(" restarts ", &CORE_RESTARTS);
+    uart.pace().await;
     n(", shadow disagreements ", &SHADOW);
     match LAST_PAIRING.load(Ordering::Relaxed) {
         0 => {}
@@ -681,29 +683,6 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
         crate::rtc::set_radio_wanted(false);
         uart.write_line("[ble] off: chip held in reset");
         on = false;
-    }
-}
-
-/// The central's commands, run by the USB console's parser in a task of their own, so the
-/// radio's task is never held while one writes its output.
-#[embassy_executor::task]
-pub async fn commands(flash: &'static FlashMutex) -> ! {
-    let (mut line, mut n) = ([0u8; 192], 0);
-    loop {
-        let mut b = [0u8];
-        LINES_IN.read(&mut b).await;
-        match b[0] {
-            b'\n' => {
-                crate::console::command(&line[..n], flash);
-                n = 0;
-                embassy_futures::yield_now().await;
-            }
-            b if n < line.len() => {
-                line[n] = b;
-                n += 1;
-            }
-            _ => {}
-        }
     }
 }
 
@@ -1221,8 +1200,8 @@ impl Link<'_> {
         }
     }
 
-    /// Bytes the central wrote to RX: one command per line, run by the USB console's parser
-    /// and answered through the mirror, or the next piece of an image.
+    /// Bytes the central wrote to RX: one command per line, answered through the mirror, or
+    /// the next piece of an image.
     fn console_bytes(&mut self, data: &[u8]) {
         if let Some(session) = self.transfer.as_mut() {
             self.last_data = Instant::now();
@@ -1246,8 +1225,7 @@ impl Link<'_> {
         self.run_line();
     }
 
-    /// A transfer starts here; any other command goes to [`commands`], since one can take
-    /// milliseconds to write its output.
+    /// A transfer starts here; any other command goes to the console's task.
     fn run_line(&mut self) {
         let (line, n) = core::mem::replace(&mut self.line, ([0; 192], 0));
         if n == 0 {
@@ -1257,14 +1235,7 @@ impl Link<'_> {
             Some((Target::Application, len, crc)) => self.start_transfer(len, crc),
             Some((Target::Loader, ..)) => self.uart.write_line("[loader] error: not over the air; USB only"),
             None => {
-                // The only writer: what the check finds free stays free.
-                if LINES_IN.free_capacity() > n {
-                    for mut part in [&line[..n], b"\n"] {
-                        while let Ok(k @ 1..) = LINES_IN.try_write(part) {
-                            part = &part[k..];
-                        }
-                    }
-                } else {
+                if !crate::console::submit(&line[..n]) {
                     self.uart.write_line("[ble] command dropped: the queue is full");
                 }
             }

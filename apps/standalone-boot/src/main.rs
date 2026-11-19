@@ -452,8 +452,9 @@ fn main() -> ! {
         spawn(spawner, "haptic", haptic::serve().unwrap());
         spawn(spawner, "alarm", alarm::run().unwrap());
         if let Some(pins) = usb {
-            spawn(spawner, "console", console::service(pins, flash).unwrap());
+            spawn(spawner, "usb", console::service(pins, flash).unwrap());
         }
+        spawn(spawner, "console", console::commands(flash).unwrap());
         #[cfg(feature = "ble")]
         spawn(
             spawner,
@@ -475,8 +476,6 @@ fn main() -> ! {
             )
             .unwrap(),
         );
-        #[cfg(feature = "ble")]
-        spawn(spawner, "air", ble::commands(flash).unwrap());
     })
 }
 
