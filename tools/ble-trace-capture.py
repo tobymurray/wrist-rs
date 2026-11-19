@@ -7,8 +7,8 @@
 
 The watch needs `ble on` and a bond with this host, whose Bluetooth plays the phone; the tool
 holds the USB console for the whole run and prefixes each line with the host's seconds. Then
-`tools/ble-trace-fixture.py` makes a fixture of it, and `cargo run -p wrist-ble-sim --bin replay`
-replays it. Needs bleak and pyserial.
+`cargo run -p wrist-ble-sim --bin fixture` makes a fixture of it, and
+`cargo run -p wrist-ble-sim --bin replay` replays it. Needs bleak and pyserial.
 """
 import argparse
 import asyncio

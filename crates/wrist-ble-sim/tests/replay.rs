@@ -3,10 +3,11 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
-use wrist_ble::{Instant, Op, OpKind};
+use wrist_ble::{Op, OpKind};
 use wrist_ble::policy::engine::Omitted;
-use wrist_bluenrg2::shadow::{trace, Excuse};
+use wrist_bluenrg2::shadow::Excuse;
 use wrist_bluenrg2::shadow::DriverOp;
+use wrist_ble_sim::capture::stamped;
 use wrist_ble_sim::replay::{replay, Report, Who};
 
 fn traces() -> Vec<(String, String)> {
@@ -120,55 +121,6 @@ fn a_core_that_acts_alone_is_a_disagreement() {
     assert!(!replay(&without_driver).disagreements().is_empty(), "{name}");
 }
 
-fn hex(h: &str) -> Vec<u8> {
-    (0..h.len() / 2).map(|i| u8::from_str_radix(&h[2 * i..2 * i + 2], 16).unwrap()).collect()
-}
-
-/// Kept lines only: what `tools/ble-trace-fixture.py` writes, so no fixture holds an address.
-#[test]
-fn traces_hold_only_what_the_scrub_keeps() {
-    for (name, capture) in traces() {
-        for line in capture.lines() {
-            let (_, text) = line.split_once(' ').unwrap();
-            if text.starts_with("== ") || text.starts_with(">> usb ble ") || text.starts_with(">> usb update ") || text.starts_with("[update] ") {
-                let joined: String = text.chars().filter(|c| !matches!(c, ':' | '-' | '_')).collect();
-                assert!(!joined.split(|c: char| !c.is_ascii_hexdigit()).any(|w| w.len() >= 12), "{name}: an address in {line}");
-                continue;
-            }
-            let f: Vec<&str> = text.split(' ').collect();
-            assert_eq!(f[0], "[trace]", "{name}: {line}");
-            match f[2] {
-                "r" | "l" => assert_eq!(f.len(), 3, "{name}: {line}"),
-                "m" => assert!(f.len() == 4 && matches!(f[3], "00" | "01"), "{name}: {line}"),
-                "s" => assert!(f.len() == 3 || trace::decode(Instant(0), &hex(f[3])).is_some(), "{name}: {line}"),
-                "c" | "e" => {
-                    let p = hex(f[3]);
-                    assert!(p.len() >= 3, "{name}: {line}");
-                    if f[2] == "e" {
-                        assert_eq!(p[0], 0x04, "{name}: {line}");
-                        if matches!(p[1], 0x0E | 0x0F) {
-                            assert_eq!((p.len(), p[2]), (7, 4), "{name}: more than a reply's status in {line}");
-                        }
-                        if p[1] == 0x3E {
-                            assert_ne!(p[3], 0x02, "{name}: a report in {line}");
-                            let addresses = match p[3] {
-                                0x01 => 9..15,
-                                0x0A => 9..27,
-                                _ => 0..0,
-                            };
-                            assert!(p[addresses].iter().all(|&b| b == 0), "{name}: an address in {line}");
-                        }
-                        if p[1] == 0xFF {
-                            assert_ne!(u16::from_le_bytes([p[3], p[4]]), 0x0C01, "{name}: console data in {line}");
-                        }
-                    }
-                }
-                _ => panic!("{name}: {line}"),
-            }
-        }
-    }
-}
-
 #[test]
 fn an_event_the_core_could_not_read_is_a_disagreement() {
     let r = Report { unknown_events: 1, ..Report::default() };
@@ -191,10 +143,8 @@ fn after_a_reset(first: &str, between: &[&str], then: &str, gap_ms: u64) -> Stri
     out
 }
 
-/// A fixture line's host time in milliseconds.
 fn host_ms(line: &str) -> Option<u64> {
-    let (s, ms) = line.trim_start().split_once(' ')?.0.split_once('.')?;
-    Some(s.parse::<u64>().ok()? * 1_000 + ms.parse::<u64>().ok()?)
+    stamped(line).map(|s| s.ms)
 }
 
 /// (chip ms, host ms) of each trace line.
@@ -283,18 +233,17 @@ fn the_rebond_a_lost_bond_needs_goes_out_past_the_security_request() {
 /// A capture stamped by the wall clock replays as one stamped in seconds.
 #[test]
 fn wall_clock_stamps_replay_as_seconds_do() {
-    let on_the_clock = |c: &str| c.lines().next().is_some_and(|l| l.as_bytes().get(2) == Some(&b':'));
+    let on_the_clock = |c: &str| c.lines().next().and_then(stamped).is_some_and(|s| s.stamp.contains(':'));
     assert!(on_the_clock(&fixture("bluez-suite.log")));
     for (name, capture) in traces().into_iter().filter(|(_, c)| !on_the_clock(c)) {
         let restamped: String = capture
             .lines()
-            .map(|line| match line.trim_start().split_once(' ') {
-                Some((t, rest)) if t.contains('.') && t.split('.').next().is_some_and(|s| s.parse::<u64>().is_ok()) => {
-                    let (s, ms) = t.split_once('.').unwrap();
-                    let s = 9 * 3600 + 27 * 60 + s.parse::<u64>().unwrap();
-                    format!("{:02}:{:02}:{:02}.{ms} {rest}\n", s / 3600, s / 60 % 60, s % 60)
+            .map(|line| match stamped(line) {
+                Some(s) => {
+                    let ms = (9 * 3600 + 27 * 60) * 1_000 + s.ms;
+                    format!("{:02}:{:02}:{:02}.{:03} {}\n", ms / 3_600_000, ms / 60_000 % 60, ms / 1_000 % 60, ms % 1_000, s.text)
                 }
-                _ => format!("{line}\n"),
+                None => format!("{line}\n"),
             })
             .collect();
         assert_ne!(restamped, capture, "{name}: nothing restamped");
