@@ -1044,17 +1044,9 @@ impl Link<'_> {
             }
             (prompt, owed)
         });
-        if let Some(yes) = owed {
-            if prompt == Prompt::Answered(yes) {
-                self.shadow.answer(now_ms(), yes);
-            }
-            self.uart.write_line(if yes {
-                "[ble] comparison confirmed"
-            } else if prompt == Prompt::Answered(false) {
-                "[ble] comparison rejected"
-            } else {
-                "[ble] comparison not answered in 60 s: rejected"
-            });
+        // Unanswered, the digits only stop: the core answers at its own deadline.
+        if let Some(yes) = owed.filter(|&yes| prompt == Prompt::Answered(yes)) {
+            self.shadow.answer(now_ms(), yes);
         }
     }
 
@@ -1584,6 +1576,16 @@ impl Link<'_> {
                 self.uart.write_line(why);
             }
             (Op::AllowRebond(_), _) => self.uart.write_line("[ble] the central lost its bond; allowing it to pair again"),
+            (Op::ConfirmNumeric(_, yes), Ok(0)) => self.uart.write_line(if yes { "[ble] comparison confirmed" } else { "[ble] comparison rejected" }),
+            (Op::ConfirmNumeric(..), Ok(s)) => {
+                self.uart.write_str("[ble] comparison answer refused, status ");
+                self.uart.write_hex8(s);
+                self.uart.write_line("");
+            }
+            (Op::ConfirmNumeric(..), Err(why)) => {
+                self.uart.write_str("[ble] comparison answer: ");
+                self.uart.write_line(why);
+            }
             _ => {}
         }
     }

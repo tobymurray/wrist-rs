@@ -41,8 +41,8 @@ pub mod ble {
         pub now: u64,
         /// Work an event or request left for the loop: do it on the next pass.
         pub work: bool,
-        /// A numeric comparison is answered from the console (which signals) or rejected
-        /// at this tick.
+        /// A numeric comparison's digits stop at this tick, unless the console answers first
+        /// (which signals).
         pub confirm_by: Option<u64>,
         pub transfer: Transfer,
         /// `None` with no central subscribed to the console over an encrypted link.

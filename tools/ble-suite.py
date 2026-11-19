@@ -376,8 +376,8 @@ class Scenario:
 
 def counters(status):
     """The `ble` line's counters of things that should never happen, by name; a field's later counters
-    take its first one's prefix (`irq stuck after write`). The core's operations asked and re-asked
-    are its ordinary work."""
+    take its first one's prefix (`irq stuck after write`). The core's operations asked, re-asked and
+    refused are its ordinary work."""
     found = {}
     for field in status.split(', '):
         prefix = None
@@ -386,9 +386,15 @@ def counters(status):
                 prefix = name.rpartition(' ')[0]
             elif prefix and ' ' not in name:
                 name = f'{prefix} {name}'
-            if not re.search(r'events|bonded|interval|latency|address|core asked|core reasks', name):
+            if not re.search(r'events|bonded|interval|latency|address|core asked|core reasks|core refused', name):
                 found[name] = int(value)
     return found
+
+
+def unheld(before, after, lines):
+    """The core's refusals between two `ble` lines beyond its asks held for the central's answer."""
+    refused = [int(m[1]) if (m := re.search(r'core asked \d+ refused (\d+)', s)) else 0 for s in (before, after)]
+    return refused[1] - refused[0] - sum('[ble] interval request held' in l for _, l in lines)
 
 
 def failed_to_establish(path):
@@ -553,6 +559,8 @@ async def soak(s, usb, phone, build, a):
     after = await usb.ask('ble', STATUS, 3) or ''
     up_after = await usb.ask('uptime', r'\[usb\] uptime (\d+)', 3)
     grew = {k: (v, counters(after).get(k)) for k, v in counters(before).items() if counters(after).get(k) != v}
+    if (n := unheld(before, after, usb.since(first))) > 0:
+        grew['core refused, not held'] = n
     got = [r for r in readings if r]
     worst = max((r[0] for r in got), default=None)
     over = sum(r[1] for r in got)
