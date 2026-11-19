@@ -154,30 +154,24 @@ def main():
             "to install at the next reset: plug it back in and run `boot` with tools/wrist-cmd.py; "
             "`state boot` means nothing was marked, so run this again, and `state swap` means `reset` installs it")
     hit, line = wait_for(s, [f"{tag} ok", f"{tag} error"], 180)
-    if hit is None and not args.loader and swap_marked(s):
-        hit = f"{tag} ok"
     if hit != f"{tag} ok":
         sys.exit("the watch reported an error, or went quiet")
     print(f"written and verified in {time.time() - t0:.1f} s")
     apply(s, args)
 
 
-def swap_marked(s):
-    """After the result line was lost, as it can be while flash is written: whether `boot`
-    reads `state swap`, which an update or revert accepted only from `state boot` marked."""
-    s.write(b"boot\r\n")
-    _, line = wait_for(s, ["[boot] state"], 5)
-    if line and "state swap" in line:
-        print("the watch reports the swap marked; taking that as success", flush=True)
-        return True
-    return False
-
-
 def revert(s):
     """`update revert`: None once the watch has marked the image it replaced, else why not."""
     s.write(b"update revert\r\n")
     hit, line = wait_for(s, ["[update] revert ok", "[update] revert:", "[update] error"], 60)
-    if hit == "[update] revert ok" or hit is None and swap_marked(s):
+    if hit is None:
+        # The result line can be lost while flash is written; the loader's state is the truth.
+        s.write(b"boot\r\n")
+        _, state = wait_for(s, ["[boot] state"], 5)
+        if state and "state swap" in state:
+            print("the watch reports the swap marked; taking that as success", flush=True)
+            return None
+    if hit == "[update] revert ok":
         return None
     return "the watch did not revert" + (f": {line}" if line else ", or went quiet")
 

@@ -106,7 +106,6 @@ async def transfer(client, con, path, chunk_pace, chunk_max=VALUE_LEN):
         if chunk_pace:
             await asyncio.sleep(chunk_pace)
     print(f"-- sent in {time.time() - t0:.1f} s; waiting for the watch to verify and write", flush=True)
-    # From before the last chunk's write: an answer can arrive before its response.
     line = await con.wait_for(["[update] ok", "error", "mismatch", "abandoned"], 90, since)
     if line and " ok " in line:
         return True
@@ -376,7 +375,7 @@ async def main():
 
 
 async def revert(client, con):
-    """`update revert`: the watch copies the image it replaced back into the other slot."""
+    """`update revert`: whether the watch marked the image it replaced."""
     since = len(con.lines)
     await send(client, "update revert")
     line = await con.wait_for(["[update] revert ok", "[update] revert:", "[update] error"], 90, since)

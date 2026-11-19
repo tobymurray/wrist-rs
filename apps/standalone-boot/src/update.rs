@@ -194,22 +194,9 @@ pub fn abort(s: Session) {
 }
 
 async fn crc32_yielding(bytes: &[u8]) -> u32 {
-    crc32_padded_yielding(bytes, 0).await
-}
-
-/// The CRC-32 of `bytes` then `pad` erased bytes, 4 KiB between yields.
-async fn crc32_padded_yielding(bytes: &[u8], pad: usize) -> u32 {
     let mut crc = 0xFFFF_FFFF;
     for piece in bytes.chunks(4096) {
         crc = wrist_flash::plan::crc32_continue(crc, piece);
-        embassy_futures::yield_now().await;
-    }
-    static ERASED: [u8; 4096] = [0xFF; 4096];
-    let mut left = pad;
-    while left > 0 {
-        let n = left.min(ERASED.len());
-        crc = wrist_flash::plan::crc32_continue(crc, &ERASED[..n]);
-        left -= n;
         embassy_futures::yield_now().await;
     }
     !crc
@@ -429,7 +416,6 @@ fn write_and_mark(flash: &'static FlashMutex, image: &[u8], crc: u32) -> Result<
         .map_err(|_| "could not mark the swap")
 }
 
-/// `update revert`, asked for on the console and run by [`revert_task`].
 pub static REVERT: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 /// Puts back the image the last kept update replaced, as an update of its own.
@@ -445,7 +431,7 @@ pub async fn revert_task(flash: &'static FlashMutex) -> ! {
     }
 }
 
-/// Set once the heartbeat has marked this image booted, or tried to; a mark before then would undo a revert.
+/// Set after this image's mark as booted, which would undo a revert marked before it.
 pub static KEPT: AtomicBool = AtomicBool::new(false);
 
 async fn revert(flash: &'static FlashMutex) -> Result<(), &'static str> {
@@ -467,27 +453,22 @@ async fn revert_staged(flash: &'static FlashMutex) -> Result<(), &'static str> {
     let staging = unsafe { core::slice::from_raw_parts_mut(STAGING as *mut u8, STAGING_SIZE) };
     let first = u8::try_from(DFU.start).unwrap_or(u8::MAX);
     let pages = u8::try_from(DFU.end).unwrap_or(u8::MAX) - first;
-    // Flash, read a page between yields with the ECC catch armed, while nothing writes it:
-    // the write below comes from the copy in RAM.
-    if !crate::flash::copy_bank1_page(first, &mut staging[..PAGE_SIZE]) {
-        return Err(refuse(Refusal::Unreadable));
-    }
+    // Flash, read while nothing writes it: the write below comes from the copy in RAM.
+    crate::flash::copy_bank1_page(first, &mut staging[..PAGE_SIZE]).map_err(refuse)?;
     let active = unsafe { core::slice::from_raw_parts(Target::Application.base() as *const u8, PAGE_SIZE) };
     replaced(&staging[..PAGE_SIZE], active).map_err(refuse)?;
     let mut used = 0;
     for n in 1..pages {
         let at = usize::from(n - 1) * PAGE_SIZE;
         let piece = &mut staging[at..at + PAGE_SIZE];
-        if !crate::flash::copy_bank1_page(first + n, piece) {
-            return Err(refuse(Refusal::Unreadable));
-        }
+        crate::flash::copy_bank1_page(first + n, piece).map_err(refuse)?;
         used = used_after(used, at, piece);
         embassy_futures::yield_now().await;
     }
-    let image = image_in(&staging[..usize::from(pages - 1) * PAGE_SIZE], used).map_err(refuse)?;
-    let running = crate::version::image();
-    let (head, pad) = at_running_len(image, running.len());
-    if crate::version::crc() == Some(crc32_padded_yielding(head, pad).await) {
+    let slot = &staging[..usize::from(pages - 1) * PAGE_SIZE];
+    let image = image_in(slot, used).map_err(refuse)?;
+    let same = at_running_len(slot, crate::version::image().len());
+    if crate::version::crc() == Some(crc32_yielding(same).await) {
         return Err("the other slot holds this same image; nothing written");
     }
     let len = image.len();

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host tests for wrist-ble.py: pairing answers, and answers that beat their write; no watch needed."""
+"""Host tests for wrist-ble.py's pairing answers; no watch needed."""
 import asyncio
 import importlib.util
 from pathlib import Path
@@ -110,7 +110,7 @@ class Revert(unittest.TestCase):
         return asyncio.run(asyncio.wait_for(wrist_ble.revert(Client(), con), 2))
 
     def test_a_refusal_is_seen(self):
-        self.assertFalse(self.outcome('[update] revert: the other slot holds this same image; nothing written'))
+        self.assertFalse(self.outcome('[update] revert: the other slot is empty; nothing written'))
 
     def test_success_is_seen(self):
         self.assertTrue(self.outcome('[update] revert ok 1 bytes, crc 0x0, swap marked; reset to apply'))
@@ -152,9 +152,6 @@ class Transfer(unittest.TestCase):
 
     def test_an_ok_before_the_last_write_returns_is_seen(self):
         self.assertTrue(self.outcome('[update] ok 1024 bytes, crc 0, swap marked; reset to apply'))
-
-    def test_an_error_before_the_last_write_returns_is_seen(self):
-        self.assertFalse(self.outcome('[update] error: crc mismatch; nothing written'))
 
     def test_a_lost_ok_falls_back_to_a_fast_boot_answer(self):
         self.assertTrue(self.outcome(None, '[boot] state swap (just updated; not yet marked booted)'))

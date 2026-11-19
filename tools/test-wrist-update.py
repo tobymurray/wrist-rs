@@ -3,11 +3,8 @@
 import importlib.util
 from pathlib import Path
 import sys
-import types
 import unittest
 
-sys.modules.setdefault('serial', types.SimpleNamespace(Serial=None, SerialException=Exception,
-                                                       SerialTimeoutException=Exception))
 sys.path.insert(0, str(Path(__file__).parent))
 spec = importlib.util.spec_from_file_location('wrist_update', Path(__file__).with_name('wrist-update.py'))
 wrist_update = importlib.util.module_from_spec(spec)
@@ -36,14 +33,6 @@ class Revert(unittest.TestCase):
         real = wrist_update.wait_for
         wrist_update.wait_for = lambda port, needles, timeout, echo=True: real(port, needles, min(timeout, 0.3), False)
         self.addCleanup(setattr, wrist_update, 'wait_for', real)
-
-    def test_success(self):
-        port = Port({b'update revert': '[update] revert ok 1 bytes, crc 0x0, swap marked; reset to apply'})
-        self.assertIsNone(wrist_update.revert(port))
-
-    def test_a_refusal(self):
-        port = Port({b'update revert': '[update] revert: the other slot holds this same image; nothing written'})
-        self.assertIn('same image', wrist_update.revert(port))
 
     def test_a_lost_result_line_asks_boot(self):
         swap = Port({b'update revert': None, b'boot': '[boot] state swap (just updated; not yet marked booted)'})

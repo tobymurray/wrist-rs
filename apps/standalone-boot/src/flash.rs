@@ -10,9 +10,10 @@ use core::{
 };
 use wrist_flash::{
     plan::{bank1_page_address, bank2_page_address, crc32_continue, FIRST_KERNEL_PAGE, PAGE_SIZE, PAGE_SIZE_U32},
+    previous::Refusal,
     survey::{
-        arm, blank, catches, ecc, eccr_clearing_both, eccr_clearing_double, offset, region_at, Area, Map, Region,
-        Registers, ECCC, ECCD, ECCIE, PAGES_PER_BANK, PAGES_PER_LINE, REGIONS, SYSF_ECC,
+        arm, blank, catches, ecc, eccr_clearing_both, eccr_clearing_double, offset, read_trusted, region_at, Area,
+        Map, Region, Registers, ECCC, ECCD, ECCIE, PAGES_PER_BANK, PAGES_PER_LINE, REGIONS, SYSF_ECC,
     },
 };
 
@@ -111,20 +112,29 @@ fn ecc_test(uart: Uart) {
     uart.write_line(if pass { "[flash] ecc-test passed" } else { "[flash] ecc-test FAILED" });
 }
 
-/// Copies bank 1's page `page` into `to`, a page long, with the NMI's catch armed for it: false
-/// if a read raised a double ECC error, after which the copy is not to be trusted.
-pub fn copy_bank1_page(page: u8, to: &mut [u8]) -> bool {
+/// From flash rather than the cache, with the NMI's catch armed for the page.
+///
+/// # Errors
+/// While a survey holds the catch, or if an ECC error latched.
+pub fn copy_bank1_page(page: u8, to: &mut [u8]) -> Result<(), Refusal> {
+    if ARMED.compare_exchange(0, arm(Area::Bank1, u32::from(page)), Relaxed, Relaxed).is_err() {
+        return Err(Refusal::Busy);
+    }
     clear_ecc();
     let caught = CAUGHT.load(Relaxed);
-    ARMED.store(arm(Area::Bank1, u32::from(page)), Relaxed);
+    let fresh = invalidate_icache();
     fence();
     // SAFETY: one page of memory-mapped flash, read only.
-    let from = unsafe { core::slice::from_raw_parts(bank1_page_address(page) as *const u8, PAGE_SIZE) };
-    to.copy_from_slice(from);
+    to.copy_from_slice(unsafe { core::slice::from_raw_parts(bank1_page_address(page) as *const u8, PAGE_SIZE) });
     fence();
+    let trusted = fresh && read_trusted(eccr(), CAUGHT.load(Relaxed) != caught);
+    clear_ecc();
     ARMED.store(0, Relaxed);
-    let double_here = ecc(eccr()).is_some_and(|e| e.double && e.area == Area::Bank1 && e.page() == u32::from(page));
-    CAUGHT.load(Relaxed) == caught && !double_here
+    if trusted {
+        Ok(())
+    } else {
+        Err(Refusal::Unreadable)
+    }
 }
 
 pub fn command(args: &[u8], uart: Uart) {

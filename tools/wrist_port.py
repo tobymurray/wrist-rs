@@ -86,9 +86,7 @@ class AirConsole:
                 self.echo(text)
 
     async def wait_for(self, needles, timeout, since=None):
-        """The first line from `since` (an index into `lines`, else the next line) holding a needle.
-        After a command, pass `len(lines)` from before its write: the watch can answer before
-        the write's own response returns."""
+        """The first line from `since` (an index into `lines`, else the next line) holding a needle."""
         import asyncio
         start = len(self.lines) if since is None else since
         end = time.time() + timeout

@@ -289,6 +289,13 @@ pub const fn catches(armed: u32, eccr: u32) -> bool {
     }
 }
 
+/// From `FLASH_ECCR` after a read and whether the NMI caught an error in it: trusted only with none
+/// latched, since a latched one stops the next from latching (RM0456 7.9.11).
+#[must_use]
+pub const fn read_trusted(eccr: u32, caught: bool) -> bool {
+    !caught && ecc(eccr).is_none()
+}
+
 impl Registers {
     /// `NSCR.LOCK`: nothing can program or erase until the keys are written.
     #[must_use]
@@ -357,6 +364,16 @@ impl Registers {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_read_is_trusted_only_with_no_error_latched() {
+        assert!(read_trusted(0, false));
+        assert!(!read_trusted(0, true));
+        assert!(!read_trusted(ECCC | (120 * crate::plan::PAGE_SIZE_U32), false));
+        assert!(!read_trusted(ECCC | BK_ECC | 0x40, false));
+        assert!(!read_trusted(ECCC | SYSF_ECC | 0x1F00, false));
+        assert!(read_trusted(ECCIE, false));
+    }
 
     #[test]
     fn the_installer_reads_these_registers() {
