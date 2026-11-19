@@ -215,7 +215,7 @@ static TRANSPORT: Counts = Counts::new();
 static FRAGMENTS: AtomicU32 = AtomicU32::new(0);
 /// Writes dropped because the link was not encrypted.
 static UNSECURED: AtomicU32 = AtomicU32::new(0);
-/// The link's connection interval (1.25 ms units) and slave latency.
+/// The phone link's connection interval (1.25 ms units), 0 if unknown, and its latency.
 static INTERVAL: AtomicU16 = AtomicU16::new(0);
 static LATENCY: AtomicU16 = AtomicU16::new(0);
 /// Console writes identical to the one before (a write delivered twice).
@@ -430,10 +430,15 @@ pub fn write_status(uart: Uart) {
     });
     if STATE.load(Ordering::Relaxed) == STATE_CONNECTED {
         uart.write_str(if ENCRYPTED.load(Ordering::Relaxed) { ", encrypted" } else { ", NOT encrypted" });
-        uart.write_str(", interval ");
-        write_interval(uart, INTERVAL.load(Ordering::Relaxed));
-        uart.write_str(" latency ");
-        uart.write_u32(u32::from(LATENCY.load(Ordering::Relaxed)));
+        match INTERVAL.load(Ordering::Relaxed) {
+            0 => uart.write_str(", interval unknown"),
+            units => {
+                uart.write_str(", interval ");
+                write_interval(uart, units);
+                uart.write_str(" latency ");
+                uart.write_u32(u32::from(LATENCY.load(Ordering::Relaxed)));
+            }
+        }
     }
     uart.write_str(", timing ");
     uart.write_str(match (PROFILE.load(Ordering::Relaxed), power()) {
@@ -1610,9 +1615,12 @@ impl Link<'_> {
         self.shadow.set_goals(now_ms(), Goals { phone: PhoneGoal { discoverable: on, ..g.phone }, ..g });
     }
 
-    /// The radio as the core's record has it, for the `ble` line and the page.
+    /// The radio and the phone's link as the core's record has them, for the `ble` line and the page.
     fn show(&self) {
         set_state(self.shown.unwrap_or_else(|| Radio::of(self.shadow.state())) as u8);
+        let params = self.shadow.phone_params();
+        INTERVAL.store(params.map_or(0, |p| p.interval.as_u16()), Ordering::Relaxed);
+        LATENCY.store(params.map_or(0, |p| p.latency), Ordering::Relaxed);
     }
 
     /// The core's counters and the radio onto the `ble` line.
@@ -1702,7 +1710,7 @@ impl Link<'_> {
                 self.subscribed = cccd == Cccd::Notify;
                 return self.set_mirror();
             }
-            Some(RadioEvent::LinkUp { link, peer, params, .. }) => return self.connected(link, peer, params),
+            Some(RadioEvent::LinkUp { link, peer, .. }) => return self.connected(link, peer),
             Some(RadioEvent::Pairing(PairingEvent { step: PairingStep::LocalKeyMissing, .. })) => {
                 if let Some(peer) = self.peer {
                     old_key(|k| k.refused(peer));
@@ -1719,14 +1727,14 @@ impl Link<'_> {
             Event::LeConnectionFailed { .. } => {
                 CONNECT_FAILURES.fetch_add(1, Ordering::Relaxed);
             }
-            Event::LeConnectionUpdateComplete { conn_interval: iv, peripheral_latency: lat, .. } => {
-                INTERVAL.store(iv.as_u16(), Ordering::Relaxed);
-                LATENCY.store(lat, Ordering::Relaxed);
-                self.uart.write_str("[ble] connection interval ");
-                write_interval(self.uart, iv.as_u16());
-                self.uart.write_str(", latency ");
-                self.uart.write_u32(u32::from(lat));
-                self.uart.write_line("");
+            Event::LeConnectionUpdateComplete { handle, conn_interval: iv, peripheral_latency: lat, .. } => {
+                if self.shadow.state().phone.link() == Some(handle) {
+                    self.uart.write_str("[ble] connection interval ");
+                    write_interval(self.uart, iv.as_u16());
+                    self.uart.write_str(", latency ");
+                    self.uart.write_u32(u32::from(lat));
+                    self.uart.write_line("");
+                }
             }
             Event::LeConnectionUpdateFailed { status, .. } => {
                 UPDATE_FAILURES.fetch_add(1, Ordering::Relaxed);
@@ -1765,13 +1773,9 @@ impl Link<'_> {
         }
     }
 
-    fn connected(&mut self, link: ConnHandle, peer: wrist_ble::PeerAddr, params: Option<wrist_ble::LinkParams>) {
+    fn connected(&mut self, link: ConnHandle, peer: wrist_ble::PeerAddr) {
         CONN_HANDLE.store(link.raw(), Ordering::Relaxed);
         self.peer = Some(bluenrg2::Address { kind: peer.kind, addr: peer.addr });
-        if let Some(p) = params {
-            INTERVAL.store(p.interval.as_u16(), Ordering::Relaxed);
-            LATENCY.store(p.latency, Ordering::Relaxed);
-        }
         set_encrypted(false);
         self.subscribed = false;
         self.set_mirror();

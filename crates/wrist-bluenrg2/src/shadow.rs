@@ -8,7 +8,7 @@ pub mod verdict;
 
 use bluenrg2::opcode;
 use wrist_ble::{
-    AddrKind, BdAddr, ChipInfo, ConnHandle, ConnParams, Failure, FailureKind, Fault, Instant, LeConnRole, LinkStatus, Op, OpId, OpKind, Outcome, PeerAddr, RadioEvent, Snapshot,
+    AddrKind, BdAddr, ChipInfo, ConnHandle, ConnParams, Failure, FailureKind, Fault, Instant, LeConnRole, LinkParams, LinkStatus, Op, OpId, OpKind, Outcome, PeerAddr, RadioEvent, Snapshot,
     MAX_LINKS,
 };
 use wrist_ble::policy::chip::Action;
@@ -382,6 +382,12 @@ impl<O: Observer> Shadow<O> {
     #[must_use]
     pub fn phone_want(&self) -> Option<ConnParams> {
         self.core.phone_want()
+    }
+
+    /// The phone link's parameters as the core holds them.
+    #[must_use]
+    pub fn phone_params(&self) -> Option<LinkParams> {
+        self.core.phone_params()
     }
 
     /// `ble yes` or `ble no`.

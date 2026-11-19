@@ -74,6 +74,10 @@ fn anchor_lines_say_what_ran_beside_it() {
         line(Probe::Anchor(Beside::Link { interval: 28, latency: 4 }), &p),
         "probe anchor beside=link conn_interval_us=35000 latency=4 anchor_period_us=35000 max_free_slot_us=10000"
     );
+    assert_eq!(
+        line(Probe::Anchor(Beside::Link { interval: 0, latency: 0 }), &p),
+        "probe anchor beside=link conn_interval=unknown anchor_period_us=35000 max_free_slot_us=10000"
+    );
 }
 
 #[test]

@@ -410,3 +410,19 @@ fn the_radio_shown_is_the_cores_record() {
     s.event(Instant(1_000), PHONE);
     assert_eq!(Radio::of(s.state()), Radio::Connected);
 }
+
+#[test]
+fn the_phones_parameters_are_its_links_alone() {
+    let mut s = asked();
+    let interval = |s: &Shadow<Log>| s.phone_params().map(|p| (p.interval.as_u16(), p.latency));
+    assert_eq!(interval(&s), Some((0x24, 0)));
+    // A central link, 0x0802, and its update to 100 ms, latency 4.
+    let central = [&[0x04, 0x3E, 0x13, 0x01, 0x00, 0x02, 0x08, 0x00, 0x00][..], &[1, 2, 3, 4, 5, 6, 0x50, 0x00, 0x00, 0x00, 0xF4, 0x01, 0x00]].concat();
+    s.event(Instant(2_000), &central);
+    s.event(Instant(2_100), &[0x04, 0x3E, 0x0A, 0x03, 0x00, 0x02, 0x08, 0x50, 0x00, 0x04, 0x00, 0xF4, 0x01]);
+    assert_eq!(interval(&s), Some((0x24, 0)), "another link's update");
+    s.event(Instant(2_200), &[0x04, 0x3E, 0x0A, 0x03, 0x00, 0x01, 0x08, 0x18, 0x00, 0x00, 0x00, 0xF4, 0x01]);
+    assert_eq!(interval(&s), Some((0x18, 0)));
+    s.event(Instant(3_000), &[0x04, 0x05, 0x04, 0x00, 0x01, 0x08, 0x13]);
+    assert_eq!(interval(&s), None, "the next link's are its own");
+}
