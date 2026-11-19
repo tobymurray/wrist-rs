@@ -26,7 +26,8 @@
 //!
 //! Restarts. A boot the driver's start did not ask for is the chip restarting by itself
 //! (`wrist_bluenrg2::wake::ble::restart`): the link and everything on it is dropped, no command
-//! goes to it, and it is reset through its pin and brought up again.
+//! goes to it, and it is reset through its pin and brought up again, until the core's budget for
+//! resets is spent.
 //!
 //! Address. A static random address from the MCU's unique id
 //! (`wrist_bluenrg2::bonds::static_random_address`), so bonds survive updates.
@@ -80,7 +81,7 @@ use wrist_bluenrg2::snapshot::{Snap, Snapping};
 use wrist_bluenrg2::start::{Setup, Start, Starting, Step};
 use wrist_bluenrg2::transport::{self, Counts};
 use wrist_logic::pages::{OldKey, Pairing, Prompt};
-use wrist_bluenrg2::wake::ble::restart::{Boot, Restarts};
+use wrist_bluenrg2::wake::ble::restart::{self, Boot};
 use wrist_bluenrg2::wake::ble::{server, Lines, Outbox, Power, Radio, Scan, Sink};
 
 use crate::console::Target;
@@ -772,9 +773,6 @@ struct Link<'d> {
     boot: Option<Boot>,
     /// A start under way, or one that stopped at a step: shown whatever the core holds.
     shown: Option<Radio>,
-    /// The chip restarted by itself more often than [`Restarts`] allows: hold it in reset.
-    kept_restarting: bool,
-    restarts: Restarts,
     shadow: &'d mut Shadow<Said>,
     /// `ble probe refuse`: the core's next command answered with this status, unsent.
     #[cfg(feature = "ble-probe")]
@@ -809,8 +807,6 @@ impl<'d> Link<'d> {
             seen: Seen::default(),
             boot: None,
             shown: None,
-            kept_restarting: false,
-            restarts: Restarts::default(),
             shadow,
             #[cfg(feature = "ble-probe")]
             refuse_next: None,
@@ -1098,12 +1094,13 @@ impl Link<'_> {
         let _ = self.shadow.take_snapshot();
     }
 
-    /// Bring up again a chip that restarted by itself since the driver last reset it, within the
-    /// budget; whether it is up.
+    /// Bring up again a chip that restarted by itself since the driver last reset it, unless the
+    /// core gave up on it; whether it is up.
     async fn recover(&mut self) -> bool {
         while self.chip.restarted() {
-            if self.kept_restarting {
-                self.uart.write_line("[ble] the chip restarted more than 3 times in an hour");
+            if Radio::of(self.shadow.state()) == Radio::Failed {
+                let _ = self.shadow.chip_action();
+                self.uart.write_line("[ble] the core gave up on the chip: too many resets in an hour");
                 return false;
             }
             self.bring_up().await;
@@ -1814,8 +1811,8 @@ impl Link<'_> {
     /// `ACI_BLUE_INITIALIZED`: the boot a reset waits for, or a restart nobody asked for, which
     /// leaves nothing of the link or the configuration; [`Link::serve`] brings the chip up again.
     fn initialized(&mut self, booting: bool, reason: BootReason) {
-        let boot = self.restarts.initialized(booting, reason, Instant::now().as_ticks(), embassy_time::TICK_HZ);
-        let restarted = matches!(boot, Boot::Restarted | Boot::KeptRestarting);
+        let boot = restart::boot(booting, reason);
+        let restarted = boot == Boot::Restarted;
         self.uart.write_str(if restarted { "[ble] the chip restarted by itself, reason " } else { "[ble] chip initialised, reason " });
         self.uart.write_hex8(reason.into_inner());
         self.uart.write_str(" (");
@@ -1828,7 +1825,6 @@ impl Link<'_> {
         RESTARTS.fetch_add(1, Ordering::Relaxed);
         LAST_RESTART.store(reason.into_inner(), Ordering::Relaxed);
         self.chip_gone();
-        self.kept_restarting |= boot == Boot::KeptRestarting;
     }
 
     /// The chip is starting again: nothing of its link or the work it left survives.

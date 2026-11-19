@@ -426,3 +426,24 @@ fn the_phones_parameters_are_its_links_alone() {
     s.event(Instant(3_000), &[0x04, 0x05, 0x04, 0x00, 0x01, 0x08, 0x13]);
     assert_eq!(interval(&s), None, "the next link's are its own");
 }
+
+/// The chip's own restarts and the core's spend one budget, the core's: within it each is started
+/// again, past it the chip is held and the radio shown failed.
+#[test]
+fn a_chip_that_keeps_restarting_is_held_by_the_cores_budget() {
+    use wrist_ble::policy::chip::RESETS_PER_HOUR;
+    use wrist_bluenrg2::wake::ble::Radio;
+    const WATCHDOG: &[u8] = &[0x04, 0xFF, 0x03, 0x01, 0x00, 0x05];
+    let mut s = driving();
+    let mut at = 1_000;
+    for _ in 0..RESETS_PER_HOUR {
+        s.event(Instant(at), WATCHDOG);
+        assert!(matches!(s.chip_action(), Some(Action::Start(_))), "restarted within the budget");
+        s.event(Instant(at + 100), BOOTED);
+        assert_eq!(Radio::of(s.state()), Radio::Idle);
+        at += 60_000;
+    }
+    s.event(Instant(at), WATCHDOG);
+    assert_eq!(s.chip_action(), Some(Action::Hold));
+    assert_eq!(Radio::of(s.state()), Radio::Failed);
+}
