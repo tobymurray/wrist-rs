@@ -11,6 +11,8 @@ pub mod ble {
     pub mod restart;
     pub mod server;
 
+    use wrist_ble::policy::{self, chip::Chip};
+
     use super::earliest;
 
     /// A firmware image arriving over the console's RX characteristic.
@@ -111,7 +113,7 @@ pub mod ble {
         6 <= min && min <= max && max <= 3_200 && supervised(max, NOW_LATENCY, NOW_TIMEOUT)
     }
 
-    /// Where the radio is, as `ble` reports it.
+    /// Where the radio is, as `ble` and the page report it.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     #[repr(u8)]
     pub enum Radio {
@@ -136,10 +138,17 @@ pub mod ble {
             }
         }
 
-        /// After a start, whether it failed: the chip never came up.
+        /// The radio as the core's record has it, while it is on.
         #[must_use]
-        pub const fn start_failed(self) -> bool {
-            matches!(self, Self::Starting | Self::Failed)
+        pub fn of(state: &policy::State) -> Self {
+            match state.chip.state {
+                Chip::Off => Self::Off,
+                Chip::Starting { .. } => Self::Starting,
+                Chip::Fault { .. } => Self::Failed,
+                Chip::Ready(_) if state.phone.link().is_some() => Self::Connected,
+                Chip::Ready(_) if state.radio.advertising.is_some() => Self::Advertising,
+                Chip::Ready(_) => Self::Idle,
+            }
         }
     }
 

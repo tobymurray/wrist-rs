@@ -388,3 +388,25 @@ fn a_refusal_during_the_drivers_scan_ends_with_it() {
         assert_eq!(interval(s.issue()), Some(160), "by the chip {by_the_chip}");
     }
 }
+
+#[test]
+fn the_radio_shown_is_the_cores_record() {
+    use wrist_bluenrg2::wake::ble::Radio;
+    let mut s = Shadow::new(CHIP, Goals::OFF, Log::default());
+    assert!(s.set_mode(Mode::Drive));
+    assert_eq!(Radio::of(s.state()), Radio::Off);
+    s.set_goals(Instant(0), goals());
+    assert_eq!(Radio::of(s.state()), Radio::Starting);
+    s.event(Instant(100), BOOTED);
+    assert_eq!(Radio::of(s.state()), Radio::Idle);
+    carry_out(&mut s, 100, Ok(OpId(1)));
+    assert_eq!(Radio::of(s.state()), Radio::Advertising);
+    // A scan's pause: the core's own stop.
+    s.set_goals(Instant(200), Goals { phone: PhoneGoal { discoverable: false, pairing_open: true }, ..goals() });
+    assert_eq!(carry_out(&mut s, 200, Ok(OpId(2))), Op::Advertise(None));
+    assert_eq!(Radio::of(s.state()), Radio::Idle);
+    s.set_goals(Instant(300), goals());
+    carry_out(&mut s, 300, Ok(OpId(3)));
+    s.event(Instant(1_000), PHONE);
+    assert_eq!(Radio::of(s.state()), Radio::Connected);
+}

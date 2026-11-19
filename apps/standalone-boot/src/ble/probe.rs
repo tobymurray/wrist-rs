@@ -20,7 +20,7 @@ use embassy_time::Timer;
 
 use wrist_bluenrg2::wake::ble::timing;
 
-use super::{power, trace_command, Link, CONN_HANDLE, DEVICE_NAME, INTERVAL, LATENCY, STATE, STATE_ADVERTISING, STATE_CONNECTED, STATE_IDLE};
+use super::{power, trace_command, Link, CONN_HANDLE, DEVICE_NAME, INTERVAL, LATENCY, STATE, STATE_ADVERTISING, STATE_CONNECTED};
 use crate::uart::Uart;
 
 /// `ble probe adv`'s steps: the interval (0.625 ms units) each `ACI_GAP_SET_DISCOVERABLE` asks
@@ -188,20 +188,24 @@ impl Link<'_> {
         }
         self.read(Probe::Firmware).await;
         self.read(Probe::Updater).await;
+        let advertising = Beside::Advertising { interval: self.advertising_interval() };
         match STATE.load(Ordering::Relaxed) {
-            STATE_CONNECTED => self.read_anchor().await,
+            STATE_CONNECTED => {
+                let link = Beside::Link { interval: INTERVAL.load(Ordering::Relaxed), latency: LATENCY.load(Ordering::Relaxed) };
+                self.read_anchor(link).await;
+            }
             STATE_ADVERTISING => {
                 if self.stop_advertising().await {
-                    self.read_anchor().await;
-                    self.restore_advertising().await;
-                    self.read_anchor().await;
+                    self.read_anchor(Beside::Idle).await;
+                    if self.restore_advertising().await {
+                        self.read_anchor(advertising).await;
+                    }
                 }
             }
             _ => {
-                self.read_anchor().await;
-                self.restore_advertising().await;
-                self.read_anchor().await;
-                if STATE.load(Ordering::Relaxed) == STATE_ADVERTISING {
+                self.read_anchor(Beside::Idle).await;
+                if self.restore_advertising().await {
+                    self.read_anchor(advertising).await;
                     self.stop_advertising().await;
                 }
             }
@@ -231,24 +235,15 @@ impl Link<'_> {
 
     async fn stop_advertising(&mut self) -> bool {
         let stopped = matches!(self.command(ACI_GAP_SET_NON_DISCOVERABLE, &[]).await, Ok(r) if r.status == 0);
-        if stopped {
-            STATE.store(STATE_IDLE, Ordering::Relaxed);
-        } else {
+        if !stopped {
             self.uart.write_line("[ble] probe: advertising would not stop");
         }
         stopped
     }
 
-    /// The anchor period, labelled with what the radio was doing once the reply came.
-    async fn read_anchor(&mut self) {
+    /// The anchor period, labelled with what the probe left the radio doing.
+    async fn read_anchor(&mut self, beside: Beside) {
         let reply = self.command(ACI_HAL_GET_ANCHOR_PERIOD, &[]).await.ok();
-        let beside = match STATE.load(Ordering::Relaxed) {
-            STATE_CONNECTED => {
-                Beside::Link { interval: INTERVAL.load(Ordering::Relaxed), latency: LATENCY.load(Ordering::Relaxed) }
-            }
-            STATE_ADVERTISING => Beside::Advertising { interval: self.advertising_interval() },
-            _ => Beside::Idle,
-        };
         write(self.uart, Line { probe: Probe::Anchor(beside), reply: reply.as_ref().map(|r| (r.status, &r.params[..r.len])) });
     }
 
@@ -313,7 +308,6 @@ impl Link<'_> {
             Timer::after_millis(STEP_MS).await;
         }
         let _ = self.command(ACI_GAP_SET_NON_DISCOVERABLE, &[]).await;
-        STATE.store(STATE_IDLE, Ordering::Relaxed);
         self.restore_advertising().await;
         self.uart.write_line("[ble] probe adv: done");
     }
@@ -323,18 +317,20 @@ impl Link<'_> {
         self.shadow.state().radio.advertising.map_or(timing(power(), false).advertise, |a| a.interval_min.as_u16())
     }
 
-    /// Advertising again after a probe stopped it, at [`Self::advertising_interval`].
-    async fn restore_advertising(&mut self) {
+    /// Advertising again after a probe stopped it, at [`Self::advertising_interval`]; whether it is.
+    async fn restore_advertising(&mut self) -> bool {
         match self.discoverable(self.advertising_interval()).await {
-            Ok(0) => {}
+            Ok(0) => true,
             Ok(status) => {
                 self.uart.write_str("[ble] probe: advertising refused, status ");
                 self.uart.write_hex8(status);
                 self.uart.write_line("");
+                false
             }
             Err(why) => {
                 self.uart.write_str("[ble] probe: advertising: ");
                 self.uart.write_line(why);
+                false
             }
         }
     }
@@ -362,12 +358,7 @@ impl Link<'_> {
         let Some(c) = wrist_bluenrg2::commands::command(&op, DEVICE_NAME, |_| None, None) else {
             return Err("not sent: no command carries it out");
         };
-        self.command(c.opcode, c.params()).await.map(|r| {
-            if r.status == 0 {
-                STATE.store(STATE_ADVERTISING, Ordering::Relaxed);
-            }
-            r.status
-        })
+        self.command(c.opcode, c.params()).await.map(|r| r.status)
     }
 
     /// `ACI_GAP_TERMINATE` with `reason`, and the chip's status.

@@ -108,12 +108,8 @@ fn interval_now_keeps_to_its_supervision_timeout() {
 }
 
 #[test]
-fn a_start_that_never_advertised_failed() {
+fn the_radio_survives_its_atomic() {
     use wrist_bluenrg2::wake::ble::Radio;
-    assert!(Radio::Starting.start_failed() && Radio::Failed.start_failed());
-    for up in [Radio::Idle, Radio::Advertising, Radio::Connected] {
-        assert!(!up.start_failed(), "{up:?}");
-    }
     for r in [Radio::Off, Radio::Starting, Radio::Idle, Radio::Advertising, Radio::Connected, Radio::Failed] {
         assert_eq!(Radio::from_u8(r as u8), r);
     }

@@ -765,6 +765,8 @@ struct Link<'d> {
     seen: Seen,
     /// How the boot a reset asked for came up.
     boot: Option<Boot>,
+    /// A start under way, or one that stopped at a step: shown whatever the core holds.
+    shown: Option<Radio>,
     /// The chip restarted by itself more often than [`Restarts`] allows: hold it in reset.
     kept_restarting: bool,
     restarts: Restarts,
@@ -801,6 +803,7 @@ impl<'d> Link<'d> {
             scanner: scan::Scanner::default(),
             seen: Seen::default(),
             boot: None,
+            shown: None,
             kept_restarting: false,
             restarts: Restarts::default(),
             shadow,
@@ -1100,12 +1103,13 @@ impl Link<'_> {
             }
             self.bring_up().await;
         }
-        !Radio::from_u8(STATE.load(Ordering::Relaxed)).start_failed()
+        self.shown.is_none()
     }
 
     /// The driver's start.
     async fn bring_up(&mut self) {
-        set_state(STATE_STARTING);
+        self.shown = Some(Radio::Starting);
+        self.show();
         clear_prompt();
         #[cfg(feature = "ble-trace")]
         {
@@ -1172,7 +1176,8 @@ impl Link<'_> {
         write_address(self.uart, bluenrg2::Address { kind: AddrKind::RANDOM, addr: BdAddr(addr) });
         self.uart.write_line(if central { ", peripheral and central" } else { ", peripheral only" });
         self.list_bonds(false).await;
-        set_state(STATE_IDLE);
+        self.shown = None;
+        self.show();
     }
 
     /// Console output to a subscribed central, one notification per pass.
@@ -1309,7 +1314,8 @@ impl Link<'_> {
     }
 
     fn fail_at(&mut self, step: &[&str]) {
-        set_state(STATE_FAILED);
+        self.shown = Some(Radio::Failed);
+        self.show();
         self.uart.write_str("[ble] start failed at ");
         for part in step {
             self.uart.write_str(part);
@@ -1505,6 +1511,7 @@ impl Link<'_> {
             let reply = self.answered(c.opcode, c.params()).await;
             let taken = self.chip.settle(&op, &reply);
             self.shadow.submitted(now_ms(), taken);
+            self.show();
             self.issued(&op, reply.as_ref().map(|r| r.status).map_err(|why| unanswered(*why)), taken);
             // The rest of the drain the reply came in, and what the driver ended meanwhile.
             self.packets().await;
@@ -1534,19 +1541,15 @@ impl Link<'_> {
         self.chip.reply()
     }
 
-    /// The console line for the core's operation, and the state the page shows.
+    /// The console line for the core's operation.
     fn issued(&mut self, op: &Op, status: Result<u8, &'static str>, taken: Result<wrist_ble::OpId, Failure>) {
         match (*op, status) {
             (Op::Advertise(Some(a)), Ok(0)) => {
-                set_state(STATE_ADVERTISING);
                 self.uart.write_str("[ble] advertising as UNA every ");
                 self.uart.write_u32(u32::from(a.interval_min.as_u16()) * 625 / 1000);
                 self.uart.write_line(" ms");
             }
             (Op::Advertise(Some(_)), Ok(s)) => {
-                if self.scanner.advertising_refused() {
-                    set_state(STATE_IDLE);
-                }
                 self.uart.write_str("[ble] advertising refused, status ");
                 self.uart.write_hex8(s);
                 self.uart.write_line("");
@@ -1607,8 +1610,14 @@ impl Link<'_> {
         self.shadow.set_goals(now_ms(), Goals { phone: PhoneGoal { discoverable: on, ..g.phone }, ..g });
     }
 
-    /// The core's counters onto the `ble` line.
+    /// The radio as the core's record has it, for the `ble` line and the page.
+    fn show(&self) {
+        set_state(self.shown.unwrap_or_else(|| Radio::of(self.shadow.state())) as u8);
+    }
+
+    /// The core's counters and the radio onto the `ble` line.
     fn publish(&self) {
+        self.show();
         let c = self.shadow.counters();
         for (slot, v) in [
             (&CORE_ASKED, c.submitted),
@@ -1638,8 +1647,13 @@ impl Link<'_> {
         }
     }
 
-    /// One thing a drain handed out, its bytes in `packet`.
+    /// One thing a drain handed out, its bytes in `packet`, and the radio as it leaves the core.
     fn got(&mut self, packet: &[u8; transport::MAX_READ], got: Got) {
+        self.take(packet, got);
+        self.show();
+    }
+
+    fn take(&mut self, packet: &[u8; transport::MAX_READ], got: Got) {
         #[cfg(feature = "ble-probe")]
         if self.withhold_connection && matches!(got, Got::Packet { event: Some(RadioEvent::LinkUp { .. }), .. }) {
             self.withhold_connection = false;
@@ -1722,7 +1736,6 @@ impl Link<'_> {
                 if status != BleStatus::SUCCESS {
                     DISCONNECT_FAILURES.fetch_add(1, Ordering::Relaxed);
                 }
-                set_state(STATE_IDLE);
                 self.link_gone();
                 self.uart.write_str("[ble] disconnected, reason ");
                 self.uart.write_hex8(reason.into_inner());
@@ -1759,7 +1772,6 @@ impl Link<'_> {
             INTERVAL.store(p.interval.as_u16(), Ordering::Relaxed);
             LATENCY.store(p.latency, Ordering::Relaxed);
         }
-        set_state(STATE_CONNECTED);
         set_encrypted(false);
         self.subscribed = false;
         self.set_mirror();
@@ -1817,7 +1829,6 @@ impl Link<'_> {
 
     /// The chip is starting again: nothing of its link or the work it left survives.
     fn chip_gone(&mut self) {
-        set_state(STATE_STARTING);
         self.link_gone();
         clear_out(self.outbox.discard());
         self.outbox = Outbox::default();

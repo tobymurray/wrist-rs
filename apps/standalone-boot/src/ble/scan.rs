@@ -7,7 +7,7 @@ use bluenrg2::opcode::{ACI_GAP_START_GENERAL_DISCOVERY_PROC, ACI_GAP_TERMINATE_G
 use bluenrg2::{filter_duplicates, gap_proc, AddrKind, Address, BleStatus, LeAdvEventKind, Uuid};
 use wrist_bluenrg2::wake::ble::{scan, Scan};
 
-use super::{power, write_address, Link, Request, STATE, STATE_ADVERTISING, STATE_IDLE};
+use super::{power, write_address, Link, Request, STATE, STATE_ADVERTISING};
 use crate::uart::Uart;
 
 const SCAN_DEFAULT_S: u8 = 10;
@@ -108,11 +108,6 @@ impl Scanner {
         self.scan.map(|(until, ..)| until)
     }
 
-    /// Advertising was refused: whether a scan is the reason.
-    pub(super) fn advertising_refused(&self) -> bool {
-        self.scan.is_some()
-    }
-
     /// LE Advertising Report while a scan runs: one line per advertiser, up to [`SCAN_LINES`].
     pub(super) fn advertising(&mut self, data: &[u8], uart: Uart) {
         let Some((_, printed, heard)) = self.scan.as_mut() else {
@@ -187,7 +182,6 @@ impl Link<'_> {
             return Ok(status);
         }
         if self.pause_advertising().await {
-            STATE.store(STATE_IDLE, Ordering::Relaxed);
             self.uart.write_line("[ble] advertising paused: the chip will not do both");
         }
         Ok(self.command(opcode, params).await?.status)
