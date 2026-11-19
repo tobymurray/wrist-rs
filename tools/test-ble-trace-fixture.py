@@ -29,6 +29,10 @@ class Scrub(unittest.TestCase):
         self.assertIsNone(fixture.scrub('85.804 >> usb ble bonds'))
         self.assertIsNone(fixture.scrub('85.804 >> usb ble forget C2:3D:4E:5F:60:71'))
 
+    def test_the_consoles_interval_ask_is_kept(self):
+        self.assertEqual(fixture.scrub('85.804 >> usb ble interval now 24 40'), '85.804 >> usb ble interval now 24 40')
+        self.assertIsNone(fixture.scrub('85.804 >> usb ble interval now 24'))
+
     def test_a_transfers_bounds_are_kept(self):
         for line in ['2524.936 [update] send 345624 bytes', '2529.546 [update] received 16492',
                      '2625.693 [update] ok 345624 bytes, crc 0xFE7A7220, swap marked; reset to apply']:
