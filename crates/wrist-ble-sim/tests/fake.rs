@@ -126,6 +126,16 @@ fn captured_data_length(prefix: &str, units: u16) -> Vec<u64> {
 #[test]
 fn a_phones_data_length_changes_when_the_captures_show() {
     let reconnects: Vec<u64> = include_str!("../fixtures/bluez-reconnects.txt").lines().filter(|l| !l.starts_with('#')).filter_map(|l| l.split(' ').next()?.parse().ok()).collect();
+    let shown = |seed, os| {
+        let mut f = ready(seed);
+        f.submit(Op::Advertise(Some(ADV_100))).unwrap();
+        f.phone_arrives(Phone::new(os, 1));
+        let events = run(&mut f, 5_000);
+        let (up, _) = link_up(&events);
+        events.iter().find(|(_, e)| matches!(e, RadioEvent::DataLength { .. })).map(|(at, _)| u64::from(at.since(up).0))
+    };
+    assert_eq!(captured_data_length("android17-", 15), []);
+    assert!((0..8).all(|seed| shown(seed, Os::Android17).is_none()));
     for (os, prefix, units) in [(Os::Linux, "bluez-", 24), (Os::Android, "android14-", 36), (Os::Mac, "mac-", 24)] {
         let mut seen = captured_data_length(prefix, units);
         if os == Os::Linux {
@@ -133,17 +143,7 @@ fn a_phones_data_length_changes_when_the_captures_show() {
         }
         assert!(seen.len() >= 4, "{os:?}: {seen:?}");
         let (lo, hi) = (*seen.iter().min().unwrap(), *seen.iter().max().unwrap());
-        let took: Vec<u64> = (0..32)
-            .map(|seed| {
-                let mut f = ready(seed);
-                f.submit(Op::Advertise(Some(ADV_100))).unwrap();
-                f.phone_arrives(Phone::new(os, 1));
-                let events = run(&mut f, 5_000);
-                let (up, _) = link_up(&events);
-                let at = events.iter().find(|(_, e)| matches!(e, RadioEvent::DataLength { .. })).unwrap().0;
-                at.since(up).0.into()
-            })
-            .collect();
+        let took: Vec<u64> = (0..32).map(|seed| shown(seed, os).unwrap()).collect();
         let (min, max) = (*took.iter().min().unwrap(), *took.iter().max().unwrap());
         assert!(lo <= min && max <= hi && min - lo <= (hi - lo) / 8 && hi - max <= (hi - lo) / 8, "{os:?}: {took:?} against {lo}..={hi}");
     }
@@ -425,6 +425,92 @@ fn a_new_phone_pairs_by_numeric_comparison() {
     f.submit(Op::ConfirmNumeric(link, true)).unwrap();
     let shown: Vec<_> = kinds(&run(&mut f, 12_000)).into_iter().filter(|k| *k != "done").collect();
     assert_eq!(shown, ["paired", "encrypted", "mtu", "subscribed"]);
+}
+
+/// Each interval the phone's link takes, with when, after it connects.
+fn intervals(seed: u64, phone: Phone, ask: Option<(u64, ConnParams)>, until: u64) -> Vec<(u64, u16)> {
+    let mut f = ready(seed);
+    f.submit(Op::Advertise(Some(ADV_100))).unwrap();
+    f.phone_arrives(phone);
+    let (up, link) = until_up(&mut f);
+    let mut events = Vec::new();
+    if let Some((after, params)) = ask {
+        events.extend(run(&mut f, up.0 + after));
+        f.submit(Op::UpdateParams(link, params)).unwrap();
+    }
+    events.extend(run(&mut f, up.0 + until));
+    events
+        .iter()
+        .filter_map(|(t, e)| match e {
+            RadioEvent::Params { result: Ok(p), .. } => Some((t.since(up).0.into(), p.interval.as_u16())),
+            _ => None,
+        })
+        .collect()
+}
+
+fn until_up(f: &mut Fake) -> (Instant, ConnHandle) {
+    until(f, |e| if let RadioEvent::LinkUp { link, .. } = e { Some(*link) } else { None })
+}
+
+/// The phone runs its own update and this device's one at a time, and its short run at 7.5 ms
+/// goes back to what this device was granted, whenever it asked.
+#[test]
+fn a_phones_own_update_and_the_watchs_run_in_turn() {
+    let battery = ConnParams { interval_min: Duration::from_u16(80), interval_max: Duration::from_u16(160), ..conn(80) };
+    for seed in 0..8 {
+        for after in (300..1_600).step_by(10) {
+            let seen = intervals(seed, Phone { keys: Keys::None, ..Phone::new(Os::Android, 4) }, Some((after, battery)), 6_000);
+            assert_eq!(seen.last().map(|&(_, iv)| iv), Some(156), "seed {seed}, asked at {after}: {seen:?}");
+            assert!(seen.iter().any(|&(_, iv)| iv == 6), "seed {seed}, asked at {after}: {seen:?}");
+            // Each starts once the one before is in, and takes six events at its interval.
+            for pair in seen.windows(2) {
+                let ((at, units), (next, _)) = (pair[0], pair[1]);
+                assert!(next - at >= u64::from(units) * 5 / 4 * 6, "seed {seed}, asked at {after}: {seen:?}");
+            }
+        }
+    }
+}
+
+/// A phone starts no update of its own while encryption starts on its link.
+#[test]
+fn a_phones_own_update_waits_for_encryption() {
+    for seed in 0..32 {
+        let mut f = ready(seed);
+        f.submit(Op::Advertise(Some(ADV_100))).unwrap();
+        f.phone_arrives(Phone { keys: Keys::ChipLost, ..Phone::new(Os::Android, 4) });
+        let events = run(&mut f, 3_000);
+        let ended = events.iter().find(|(_, e)| matches!(e, RadioEvent::Encryption { .. })).unwrap().0;
+        let fast = events.iter().find(|(_, e)| matches!(e, RadioEvent::Params { result: Ok(p), .. } if p.interval.as_u16() == 6)).unwrap().0;
+        assert!(fast.since(ended).0 >= 6 * 45, "seed {seed}: encrypted at {ended:?}, 7.5 ms at {fast:?}");
+    }
+}
+
+/// Android 17 connects at 18.75 ms and moves itself to 48.75 ms about a second in, or a third of
+/// one bonded, never to 7.5 ms (`fixtures/traces/android17-bond-not-recognised.log`).
+#[test]
+fn an_android_17_phone_moves_itself_to_48_75_ms() {
+    let mut unbonded = Vec::new();
+    for seed in 0..16 {
+        for (keys, lo, hi) in [(Keys::None, 977, 991), (Keys::Bonded, 321, 321)] {
+            let phone = Phone { keys, ..Phone::new(Os::Android17, 4) };
+            let mut f = ready(seed);
+            f.submit(Op::Advertise(Some(ADV_100))).unwrap();
+            f.phone_arrives(phone);
+            let events = run(&mut f, 3_000);
+            let up = events.iter().find_map(|(_, e)| if let RadioEvent::LinkUp { params, .. } = e { *params } else { None });
+            assert_eq!(up.map(|p| p.interval.as_u16()), Some(15));
+            let seen = intervals(seed, phone, None, 3_000);
+            assert!(matches!(seen[..], [(at, 39)] if (lo..=hi).contains(&at)), "seed {seed} {keys:?}: {seen:?}");
+            if keys == Keys::None {
+                unbonded.push(seen[0].0);
+            }
+        }
+    }
+    assert!(unbonded.iter().max().unwrap() - unbonded.iter().min().unwrap() >= 7, "{unbonded:?}");
+    // Its own move undoes no grant.
+    let ask = ConnParams { interval_min: Duration::from_u16(12), interval_max: Duration::from_u16(24), ..conn(12) };
+    let seen = intervals(1, Phone { keys: Keys::Bonded, ..Phone::new(Os::Android17, 4) }, Some((200, ask)), 3_000);
+    assert_eq!(seen.last().map(|&(_, iv)| iv), Some(24), "{seen:?}");
 }
 
 /// An unbonded Android runs its link at 7.5 ms for a third of a second, then goes back to 45 ms;

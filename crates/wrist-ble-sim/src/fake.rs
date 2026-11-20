@@ -79,6 +79,10 @@ struct Link {
     asking: Option<OpId>,
     /// The peer's own update, until its instant.
     peer_update_until: Option<Instant>,
+    /// The interval a phone's short run at 7.5 ms goes back to, until it does.
+    back: Option<u16>,
+    /// An update this device asked for has been applied.
+    granted: bool,
     subscribed: bool,
     pairing: bool,
 }
@@ -98,10 +102,12 @@ enum Do {
     ConsoleOn(ConnHandle),
     /// A short run at 7.5 ms, then back to the interval the link had.
     PeerBurst(ConnHandle),
-    PeerUpdate(ConnHandle, u16),
+    PeerUpdate(ConnHandle, Move),
     PeerUpdateApplied(ConnHandle, u16),
     /// The central's answer to this peripheral's request: the parameters it will apply, if any.
     Answered(ConnHandle, OpId, Option<LinkParams>),
+    /// An update the central held behind its own goes on air.
+    UpdateStarts(ConnHandle, LinkParams, OpId),
     UpdateApplied(ConnHandle, LinkParams, OpId),
     UpdateFailed(ConnHandle, OpId),
     PairRequest(ConnHandle),
@@ -112,6 +118,16 @@ enum Do {
     Reading(ConnHandle),
     Report(u64),
     ScanEnds(u64),
+}
+
+/// Where a phone's own update takes its link.
+#[derive(Clone, Copy, Debug)]
+enum Move {
+    To(u16),
+    /// Back from its short run, to the interval the link would have had without it.
+    Back,
+    /// To this interval, unless this device has been granted one.
+    Prefers(u16),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -697,7 +713,11 @@ impl Fake {
                 let granted = self.phones[i].phone.grant(params.interval_min, params.interval_max);
                 let p = LinkParams { interval: granted, latency: params.latency, timeout: params.timeout };
                 self.after(ms(iv), Do::Answered(l, id, Some(p)));
-                self.after(ms(lead), Do::UpdateApplied(l, p, id));
+                // The central runs one update at a time: this one starts once its own is in.
+                match link.peer_update_until {
+                    Some(until) => self.agenda_at(until, Do::UpdateStarts(l, p, id)),
+                    None => self.after(ms(lead), Do::UpdateApplied(l, p, id)),
+                }
             }
             Peer::Sensor(i) if self.sensors[i].sensor.refuses_updates => self.after(ms(lead), Do::UpdateFailed(l, id)),
             Peer::Sensor(_) => {
@@ -849,6 +869,12 @@ impl Fake {
                     if link.encrypted || link.encrypting {
                         return;
                     }
+                    // The peer starts no encryption across its own update.
+                    if link.peer_update_until.is_some() {
+                        let iv = interval_ms(link.params);
+                        self.after(ms(iv), Do::EncryptStart(l));
+                        return;
+                    }
                     link.encrypting = true;
                     link.doomed |= link.updating.is_some();
                     let crossed = link.doomed;
@@ -878,19 +904,33 @@ impl Fake {
                 }
             }
             Do::PeerBurst(l) => {
-                let Some(link) = self.link(l) else { return };
-                let had = link.params.interval.as_u16();
+                let Some(link) = self.link_mut(l) else { return };
+                link.back = Some(link.params.interval.as_u16());
+                let params = link.params;
                 let events = u32::try_from(INSTANT_EVENTS).unwrap_or(6);
-                let fast = interval_ms(link.params) * events;
-                let back = interval_ms(LinkParams { interval: Duration::from_u16(6), ..link.params }) * events;
-                self.after(ms(0), Do::PeerUpdate(l, 6));
+                let fast = interval_ms(params) * events;
+                let back = interval_ms(LinkParams { interval: Duration::from_u16(6), ..params }) * events;
+                self.after(ms(0), Do::PeerUpdate(l, Move::To(6)));
                 // Back 300 to 340 ms after 7.5 ms takes hold.
-                self.later(fast + 300 - back, fast + 340 - back, Do::PeerUpdate(l, had));
+                self.later(fast + 300 - back, fast + 340 - back, Do::PeerUpdate(l, Move::Back));
             }
-            Do::PeerUpdate(l, units) => {
+            Do::PeerUpdate(l, to) => {
                 let now = self.now;
                 let Some(link) = self.link_mut(l) else { return };
                 let iv = interval_ms(link.params);
+                // One update at a time, and none while encryption starts.
+                if link.updating.is_some() || link.peer_update_until.is_some() || link.encrypting {
+                    self.after(ms(iv), Do::PeerUpdate(l, to));
+                    return;
+                }
+                let units = match to {
+                    Move::Prefers(_) if link.granted => return,
+                    Move::To(units) | Move::Prefers(units) => units,
+                    Move::Back => {
+                        let Some(units) = link.back.take() else { return };
+                        units
+                    }
+                };
                 let until = now + ms(iv * u32::try_from(INSTANT_EVENTS).unwrap_or(6));
                 link.peer_update_until = Some(until);
                 self.agenda_at(until, Do::PeerUpdateApplied(l, units));
@@ -916,6 +956,12 @@ impl Fake {
                     self.emit(RadioEvent::Done(id, Ok(Outcome::Done)));
                 }
             }
+            Do::UpdateStarts(l, p, id) => {
+                let Some(link) = self.link(l) else { return };
+                let iv = interval_ms(link.params);
+                let lead = iv * u32::try_from(INSTANT_EVENTS).unwrap_or(6) + self.rng.range(0, iv);
+                self.after(ms(lead), Do::UpdateApplied(l, p, id));
+            }
             // A phone's update completes after its answer, and may after a newer ask is taken.
             Do::UpdateApplied(l, p, id) => {
                 let Some(link) = self.link_mut(l) else { return };
@@ -923,6 +969,10 @@ impl Fake {
                     link.updating = None;
                 }
                 link.params = p;
+                link.granted = true;
+                if link.back.is_some() {
+                    link.back = Some(p.interval.as_u16());
+                }
                 self.end(id);
                 self.emit(RadioEvent::Params { link: l, result: Ok(p) });
             }
@@ -989,6 +1039,7 @@ impl Fake {
         }
         let units = match p.phone.os {
             Os::Android => 36,
+            Os::Android17 => 15,
             Os::Mac => 12,
             Os::Linux => 24,
         };
@@ -997,8 +1048,9 @@ impl Fake {
         self.phones[i].link = Some(h);
         self.settle(Change::PeripheralUp);
         self.emit(RadioEvent::LinkUp { link: h, role: LeConnRole::Peripheral, peer: p.phone.addr, params: Some(params) });
-        let (lo, hi) = p.phone.data_length();
-        self.later(lo, hi, Do::Emit(RadioEvent::DataLength { link: h, tx: DATA_LENGTH.0, rx: DATA_LENGTH.1, tx_time: DATA_TIME.0, rx_time: DATA_TIME.1 }));
+        if let Some((lo, hi)) = p.phone.data_length() {
+            self.later(lo, hi, Do::Emit(RadioEvent::DataLength { link: h, tx: DATA_LENGTH.0, rx: DATA_LENGTH.1, tx_time: DATA_TIME.0, rx_time: DATA_TIME.1 }));
+        }
         match p.phone.keys {
             Keys::Bonded | Keys::ChipLost => {
                 let ((lo, hi), _) = p.phone.encryption();
@@ -1007,10 +1059,14 @@ impl Fake {
             Keys::PhoneLost => self.later(50, 100, Do::PairRequest(h)),
             Keys::None => {}
         }
-        if p.phone.os == Os::Android && p.phone.keys != Keys::Bonded {
+        let lead = interval_ms(params) * u32::try_from(INSTANT_EVENTS).unwrap_or(6);
+        match p.phone.os {
             // 7.5 ms takes hold 750 to 1000 ms after connecting.
-            let lead = interval_ms(params) * u32::try_from(INSTANT_EVENTS).unwrap_or(6);
-            self.later(750 - lead, 1_000 - lead, Do::PeerBurst(h));
+            Os::Android if p.phone.keys != Keys::Bonded => self.later(750 - lead, 1_000 - lead, Do::PeerBurst(h)),
+            // 48.75 ms takes hold 977 to 991 ms after connecting, or 321 bonded.
+            Os::Android17 if p.phone.keys == Keys::Bonded => self.after(ms(321 - lead), Do::PeerUpdate(h, Move::Prefers(39))),
+            Os::Android17 => self.later(977 - lead, 991 - lead, Do::PeerUpdate(h, Move::Prefers(39))),
+            _ => {}
         }
     }
 
@@ -1199,6 +1255,8 @@ impl Fake {
             updating: None,
             asking: None,
             peer_update_until: None,
+            back: None,
+            granted: false,
             subscribed: false,
             pairing: false,
         });

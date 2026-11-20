@@ -29,7 +29,7 @@ enum Act {
 }
 
 fn act() -> impl Strategy<Value = Act> {
-    let os = prop_oneof![Just(Os::Mac), Just(Os::Android), Just(Os::Linux)];
+    let os = prop_oneof![Just(Os::Mac), Just(Os::Android), Just(Os::Android17), Just(Os::Linux)];
     let keys = prop_oneof![4 => Just(Keys::Bonded), 1 => Just(Keys::None), 1 => Just(Keys::PhoneLost), 1 => Just(Keys::ChipLost)];
     let power = prop_oneof![Just(Power::Cable), Just(Power::Battery)];
     let cause = prop_oneof![Just(ResetCause::PowerOn), Just(ResetCause::Watchdog), Just(ResetCause::Brownout), Just(ResetCause::Updater)];
