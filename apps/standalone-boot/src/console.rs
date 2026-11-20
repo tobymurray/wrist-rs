@@ -7,6 +7,7 @@ use embassy_stm32::usb::{self, Driver};
 use embassy_stm32::{bind_interrupts, peripherals, Peri};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::pipe::Pipe;
+use embassy_sync::signal::Signal;
 use embassy_time::{Instant, Timer};
 use embassy_usb::driver::EndpointError;
 use embassy_usb::class::cdc_acm::device::{CdcAcmClass, Receiver, Sender, State};
@@ -448,8 +449,8 @@ async fn listen<'d>(mut rx: Receiver<'d, Usb<'d>>, flash: &'static FlashMutex) -
                                 len = 0;
                                 continue 'link;
                             }
-                            if !submit(&line[..len]) {
-                                Uart::best_effort().write_line("[usb] command dropped: the queue is full");
+                            while !submit(&line[..len]) {
+                                ROOM.wait().await;
                             }
                         }
                         len = 0;
@@ -468,6 +469,9 @@ async fn listen<'d>(mut rx: Receiver<'d, Usb<'d>>, flash: &'static FlashMutex) -
 
 /// Command lines from USB and the air, each ended by `\n`.
 static LINES_IN: Pipe<CriticalSectionRawMutex, 512> = Pipe::new();
+
+/// Raised as [`commands`] takes a line from [`LINES_IN`].
+static ROOM: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 /// Queues a command line for [`commands`]; false if there is no room for all of it.
 pub fn submit(line: &[u8]) -> bool {
@@ -494,6 +498,7 @@ pub async fn commands(flash: &'static FlashMutex) -> ! {
         LINES_IN.read(&mut b).await;
         match b[0] {
             b'\n' => {
+                ROOM.signal(());
                 Uart::hold(true);
                 command(&line[..n], flash).await;
                 Uart::hold(false);
