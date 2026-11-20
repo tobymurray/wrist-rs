@@ -152,7 +152,7 @@ fn us(cycles: u32) -> u32 {
 }
 
 /// The figures since the last call, then zeroed.
-pub fn write(uart: &mut Lines) {
+pub async fn write(uart: &mut Lines) {
     let book = BOOK.lock(|b| {
         let mut b = b.borrow_mut();
         let copy = (b.tasks, b.awake, b.wakes, b.longest, b.longest_task, b.longest_at_ms);
@@ -178,8 +178,12 @@ pub fn write(uart: &mut Lines) {
     uart.write_str(" at ");
     uart.write_u32(at);
     uart.write_line(" ms");
+    uart.pace().await;
     uart.write_str("[busy] task polls/us/longest us:");
-    for t in tasks.iter().filter(|t| t.id != 0) {
+    for (i, t) in tasks.iter().filter(|t| t.id != 0).enumerate() {
+        if i % 4 == 3 {
+            uart.pace().await;
+        }
         uart.write_str(" ");
         uart.write_str(t.name);
         uart.write_str(" ");

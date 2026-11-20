@@ -109,11 +109,12 @@ pub fn allowed(slot: Slot) -> bool {
     !found(slot).verdict.refuses() || forced(slot)
 }
 
-pub fn command(args: &[u8], uart: Uart) {
+pub async fn command(args: &[u8], uart: Uart) {
     match core::str::from_utf8(args).unwrap_or("").trim() {
         "" => {
             for slot in ALL {
                 write_slot(uart, slot);
+                uart.pace().await;
             }
         }
         "force view" => {

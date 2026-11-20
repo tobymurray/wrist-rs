@@ -186,13 +186,15 @@ enum Request {
 static REQUESTS: Channel<CriticalSectionRawMutex, Request, 4> = Channel::new();
 /// A line from the central's RX and its length.
 type Line = ([u8; 192], usize);
-/// The central's command lines for [`commands`], each ended by `\n`: room for the longest write.
-static LINES_IN: Pipe<CriticalSectionRawMutex, 512> = Pipe::new();
 /// Raised by other tasks that leave the loop work it cannot see coming: console output for a
 /// subscribed central. The loop clears it before it reads that state.
 static WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 /// Console output for the central, filled while [`MIRROR`] is set.
-static OUT: Pipe<CriticalSectionRawMutex, 2048> = Pipe::new();
+static OUT: Pipe<CriticalSectionRawMutex, 4096> = Pipe::new();
+/// Raised as room opens in [`OUT`] or the mirror stops, for [`room`].
+static ROOM: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+/// The longest a line waits in [`room`] before it goes regardless.
+const ROOM_WAIT: Duration = Duration::from_secs(3);
 /// Console output on its way into [`OUT`], a whole line at a time.
 static LINES: Mutex<CriticalSectionRawMutex, RefCell<Lines<256>>> = Mutex::new(RefCell::new(Lines::new()));
 /// Lines the mirror dropped because [`OUT`] was full.
@@ -286,14 +288,26 @@ impl Sink for OutSink {
     }
 }
 
-/// Empties [`OUT`] and forgets the line in hand; `cut`: the central was left inside a line.
-fn clear_out(cut: bool) {
+/// Empties [`OUT`] and forgets the line in hand.
+fn clear_out() {
     LINES.lock(|lines| {
         OUT.clear();
         if let Ok(mut l) = lines.try_borrow_mut() {
-            l.clear(cut);
+            l.clear();
         }
     });
+    ROOM.signal(());
+}
+
+/// Waits, boundedly, until a line of `len` bytes fits in the mirror with room to spare for
+/// output that cannot wait, or the mirror stops: a long command goes at the link's pace.
+pub async fn room(len: usize) {
+    let until = Instant::now() + ROOM_WAIT;
+    while MIRROR.load(Ordering::Relaxed) && !wrist_logic::console::room(OUT.free_capacity(), OUT.capacity(), len) {
+        if embassy_time::with_deadline(until, ROOM.wait()).await.is_err() {
+            return;
+        }
+    }
 }
 
 /// Console output, mirrored to a subscribed central over an encrypted link. Never blocks:
@@ -321,10 +335,9 @@ fn power() -> Power {
     }
 }
 
-/// `ble`, `ble on|off|version|yes|no|bonds|forget [address]|disconnect|profile auto|cable|battery|interval now <min> <max>|scan [s [interval window]]`.
+/// `ble on|off|version|yes|no|bonds|forget [address]|disconnect|profile auto|cable|battery|interval now <min> <max>|scan [s [interval window]]`.
 pub fn command(args: &[u8], uart: Uart) {
     let request = match args {
-        b"" => return write_status(uart),
         b"on" => Request::On,
         b"off" => Request::Off,
         b"version" => Request::Version,
@@ -419,7 +432,8 @@ pub fn command(args: &[u8], uart: Uart) {
     }
 }
 
-pub fn write_status(uart: Uart) {
+#[allow(clippy::too_many_lines)]
+pub async fn write_status(uart: Uart) {
     uart.write_str("[ble] ");
     uart.write_str(match STATE.load(Ordering::Relaxed) {
         STATE_OFF => "off (chip in reset)",
@@ -452,6 +466,7 @@ pub fn write_status(uart: Uart) {
     write_address(uart, bluenrg2::Address { kind: AddrKind::RANDOM, addr: BdAddr(ADDRESS.each_ref().map(|b| b.load(Ordering::Relaxed))) });
     uart.write_str(", bonded ");
     uart.write_u32(u32::from(BONDED.load(Ordering::Relaxed)));
+    uart.pace().await;
     let n = |label: &str, v: &AtomicU32| {
         uart.write_str(label);
         uart.write_u32(v.load(Ordering::Relaxed));
@@ -464,6 +479,7 @@ pub fn write_status(uart: Uart) {
     n(", unsecured writes dropped ", &UNSECURED);
     n(", irq stuck after read ", &TRANSPORT.irq_stuck_read);
     n(" write ", &TRANSPORT.irq_stuck_write);
+    uart.pace().await;
     n(", connect failures ", &CONNECT_FAILURES);
     n(", update failures ", &UPDATE_FAILURES);
     if UPDATE_FAILURES.load(Ordering::Relaxed) > 0 {
@@ -481,6 +497,7 @@ pub fn write_status(uart: Uart) {
         uart.write_hex8(LAST_RESTART.load(Ordering::Relaxed));
         uart.write_str(")");
     }
+    uart.pace().await;
     n(", core asked ", &CORE_ASKED);
     n(" refused ", &CORE_REFUSED);
     n(" failed ", &CORE_FAILED);
@@ -490,6 +507,7 @@ pub fn write_status(uart: Uart) {
     n(" busy restarts ", &CORE_BUSY_SPENT);
     n(" dropped ", &CORE_DROPPED);
     n(" restarts ", &CORE_RESTARTS);
+    uart.pace().await;
     n(", shadow disagreements ", &SHADOW);
     match LAST_PAIRING.load(Ordering::Relaxed) {
         0 => {}
@@ -674,6 +692,7 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
         link.chip.hold();
         drop(link);
         MIRROR.store(false, Ordering::Relaxed);
+        ROOM.signal(());
         set_encrypted(false);
         set_state(STATE_OFF);
         clear_prompt();
@@ -681,29 +700,6 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
         crate::rtc::set_radio_wanted(false);
         uart.write_line("[ble] off: chip held in reset");
         on = false;
-    }
-}
-
-/// The central's commands, run by the USB console's parser in a task of their own, so the
-/// radio's task is never held while one writes its output.
-#[embassy_executor::task]
-pub async fn commands(flash: &'static FlashMutex) -> ! {
-    let (mut line, mut n) = ([0u8; 192], 0);
-    loop {
-        let mut b = [0u8];
-        LINES_IN.read(&mut b).await;
-        match b[0] {
-            b'\n' => {
-                crate::console::command(&line[..n], flash);
-                n = 0;
-                embassy_futures::yield_now().await;
-            }
-            b if n < line.len() => {
-                line[n] = b;
-                n += 1;
-            }
-            _ => {}
-        }
     }
 }
 
@@ -912,7 +908,7 @@ impl Link<'_> {
                 Some(_) => Transfer::Claimed,
             },
             console: (self.chip.server().is_some() && MIRROR.load(Ordering::Relaxed))
-                .then(|| Console { pending: !OUT.is_empty() || self.outbox.holding(), next_at: tick(self.console_at) }),
+                .then(|| Console { pending: !OUT.is_empty() || self.outbox.pending(), next_at: tick(self.console_at) }),
             abandon_at: self.transfer.as_ref().map(|_| tick(self.last_data + TRANSFER_IDLE + one)),
             scan_end: self.scanner.until().map(tick),
         };
@@ -1016,7 +1012,8 @@ impl Link<'_> {
             self.finish_transfer = false;
             if let Some(session) = self.transfer.take() {
                 // What queued while the mirror waited is stale; the result line must find room.
-                clear_out(self.outbox.discard());
+                self.outbox.clear();
+                clear_out();
                 if let Err(why) = crate::update::finish_app(self.flash, session).await {
                     self.uart.write_str("[update] error: ");
                     self.uart.write_line(why);
@@ -1188,20 +1185,22 @@ impl Link<'_> {
             return;
         }
         let most = (self.mtu.saturating_sub(ATT_HEADER_LEN)).clamp(DEFAULT_VALUE_LEN, server::CONSOLE_VALUE_LEN);
-        let (chunk, n) = self.outbox.next(most, |buf| OUT.try_read(buf).unwrap_or(0));
-        if n == 0 {
+        let chunk = self.outbox.next(most, |buf| OUT.try_read(buf).unwrap_or(0));
+        if chunk.is_empty() {
             return;
         }
+        ROOM.signal(());
         let link = ConnHandle::new(CONN_HANDLE.load(Ordering::Relaxed));
-        let notify = Payload::new(&chunk[..n]).map(|value| Op::Notify(link, server::TX, value));
-        // 0xFF, as for no reply, if it could not be built.
-        let status = match notify.and_then(|op| commands::command(&op, DEVICE_NAME, |_| None, self.chip.server())) {
-            Some(c) => self.command(c.opcode, c.params()).await.map_or(0xFF, |r| r.status),
-            None => 0xFF,
+        let notify = Payload::new(chunk)
+            .map(|value| Op::Notify(link, server::TX, value))
+            .and_then(|op| commands::command(&op, DEVICE_NAME, |_| None, self.chip.server()));
+        let answer = match notify {
+            Some(c) => self.exchange(c.opcode, c.params()).await.map(|r| r.status),
+            None => Err(Unanswered::TooLong),
         };
         self.console_at = Instant::now() + CONSOLE_PACE;
-        if self.outbox.sent(chunk, n, status).is_err() {
-            self.uart.write_line("[ble] a console notification was refused");
+        if self.outbox.sent(answer) {
+            self.uart.write_line("[ble] a console notification was lost");
         }
     }
 
@@ -1209,7 +1208,8 @@ impl Link<'_> {
     fn set_mirror(&mut self) {
         let on = self.subscribed && ENCRYPTED.load(Ordering::Relaxed);
         if on != MIRROR.swap(on, Ordering::Relaxed) {
-            clear_out(self.outbox.discard());
+            self.outbox.clear();
+            clear_out();
             self.uart.write_line(if on {
                 "[ble] console attached over the air; 'help' lists commands"
             } else {
@@ -1218,8 +1218,8 @@ impl Link<'_> {
         }
     }
 
-    /// Bytes the central wrote to RX: one command per line, run by the USB console's parser
-    /// and answered through the mirror, or the next piece of an image.
+    /// Bytes the central wrote to RX: one command per line, answered through the mirror, or
+    /// the next piece of an image.
     fn console_bytes(&mut self, data: &[u8]) {
         if let Some(session) = self.transfer.as_mut() {
             self.last_data = Instant::now();
@@ -1243,8 +1243,7 @@ impl Link<'_> {
         self.run_line();
     }
 
-    /// A transfer starts here; any other command goes to [`commands`], since one can take
-    /// milliseconds to write its output.
+    /// A transfer starts here; any other command goes to the console's task.
     fn run_line(&mut self) {
         let (line, n) = core::mem::replace(&mut self.line, ([0; 192], 0));
         if n == 0 {
@@ -1254,14 +1253,7 @@ impl Link<'_> {
             Some((Target::Application, len, crc)) => self.start_transfer(len, crc),
             Some((Target::Loader, ..)) => self.uart.write_line("[loader] error: not over the air; USB only"),
             None => {
-                // The only writer: what the check finds free stays free.
-                if LINES_IN.free_capacity() > n {
-                    for mut part in [&line[..n], b"\n"] {
-                        while let Ok(k @ 1..) = LINES_IN.try_write(part) {
-                            part = &part[k..];
-                        }
-                    }
-                } else {
+                if !crate::console::submit(&line[..n]) {
                     self.uart.write_line("[ble] command dropped: the queue is full");
                 }
             }
@@ -1832,7 +1824,7 @@ impl Link<'_> {
     /// The chip is starting again: nothing of its link or the work it left survives.
     fn chip_gone(&mut self) {
         self.link_gone();
-        clear_out(self.outbox.discard());
+        clear_out();
         self.outbox = Outbox::default();
         self.mtu = DEFAULT_MTU;
         self.finish_transfer = false;

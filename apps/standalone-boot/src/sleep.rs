@@ -74,7 +74,7 @@ fn on_stop(event: StopEvent) {
 fn ticks_ms(ticks: &AtomicU32) -> u32 {
     u32::try_from(u64::from(ticks.load(Ordering::Relaxed)) * 1000 / embassy_time::TICK_HZ).unwrap_or(u32::MAX)
 }
-pub fn command(text: &str, uart: Uart) {
+pub async fn command(text: &str, uart: Uart) {
     match text.trim() {
         "clear-crash" => crate::crash::clear(),
         "on" | "auto" => set_enabled(true),
@@ -83,11 +83,13 @@ pub fn command(text: &str, uart: Uart) {
         _ => return uart.write_line("[sleep] usage: power sleep [on|off|status|clear-crash]"),
     }
     crate::crash::report(uart);
+    uart.pace().await;
     uart.write_str("[sleep] policy="); uart.write_str(if enabled() { "auto" } else { "off" });
     uart.write_str(" input="); uart.write_str(match INPUT.load(Ordering::Relaxed) { BATTERY => "battery", EXTERNAL => "external", _ => "unknown" });
     uart.write_str(" stop1_wakes="); uart.write_u32(STOP1.load(Ordering::Relaxed));
     uart.write_str(" stop2_wakes="); uart.write_u32(STOP2.load(Ordering::Relaxed));
     uart.write_str(" stop_ms="); uart.write_u32(ticks_ms(&STOP_TICKS));
+    uart.pace().await;
     uart.write_str(" restore_ms="); uart.write_u32(ticks_ms(&RESTORE_TICKS));
     uart.write_str(" sleeps="); uart.write_u32(SLEEPS.load(Ordering::Relaxed));
     uart.write_str(" sleep_ms="); uart.write_u32(ticks_ms(&SLEEP_TICKS));
@@ -95,7 +97,7 @@ pub fn command(text: &str, uart: Uart) {
     uart.write_str(" last_sleep_holds="); uart.write_u32(holds >> 16); uart.write_str("/"); uart.write_u32(holds & 0xFFFF);
     uart.write_str(" last_wake_vector="); uart.write_u32(WAKE_IRQ.load(Ordering::Relaxed));
     uart.write_line("; USB, unknown input, active UART/DMA/timers inhibit Stop2");
-    write_time_driver(uart);
+    write_time_driver(uart).await;
 }
 
 fn write_cycles(uart: Uart, label: &str, waits: u32, cycles: u32, max: u32) {
@@ -108,7 +110,7 @@ fn write_cycles(uart: Uart, label: &str, waits: u32, cycles: u32, max: u32) {
 
 /// The LPTIM4 time driver's counters since boot (`vendor/embassy-stm32/WRIST-PATCHES.md`).
 #[allow(clippy::cast_possible_truncation)]
-fn write_time_driver(uart: Uart) {
+async fn write_time_driver(uart: Uart) {
     let s = embassy_stm32::low_power::time_driver_stats::snapshot();
     let ms = |ticks: u32| u32::try_from(u64::from(ticks) * 1000 / embassy_time::TICK_HZ).unwrap_or(u32::MAX);
     uart.write_str("[lptim] DIER writes "); uart.write_u32(s.dier_writes);
@@ -119,11 +121,13 @@ fn write_time_driver(uart: Uart) {
     uart.write_str("; overflows finding the alarm overdue "); uart.write_u32(s.overdue_at_overflow);
     uart.write_str(", with CCIE clear "); uart.write_u32(s.overdue_ccie_clear);
     uart.write_line("");
+    uart.pace().await;
     write_cycles(uart, "[lptim] CMPOK waits ", s.cmpok_waits, s.cmpok_cycles, s.cmpok_max_cycles);
     uart.write_str(", set at the first poll "); uart.write_u32(s.cmpok_first_poll);
     uart.write_str(", unchanged and skipped "); uart.write_u32(s.compare_skipped);
     write_cycles(uart, "; DIEROK waits ", s.dierok_waits, s.dierok_cycles, s.dierok_max_cycles);
     uart.write_line("");
+    uart.pace().await;
     uart.write_str("[lptim] waits over 2 ms: DIEROK "); uart.write_u32(s.dierok_timeouts);
     uart.write_str(", CMPOK "); uart.write_u32(s.cmpok_timeouts);
     uart.write_str("; given up after writing again: DIEROK "); uart.write_u32(s.dierok_given_up);
@@ -140,12 +144,17 @@ fn write_time_driver(uart: Uart) {
         uart.write_str("; the counter moved "); uart.write_u32(u32::from(t.counter_ticks));
         uart.write_line(" ticks while the second write was waited on");
     }
+    uart.pace().await;
     uart.write_str("[lptim] alarms handled over 5 ms late "); uart.write_u32(s.late_alarms);
     uart.write_str(", the latest by at most "); uart.write_u32(ms(s.late_max_ticks));
     uart.write_line(" ms");
+    uart.pace().await;
     if s.late.iter().any(|l| l.late_ticks != 0) {
         uart.write_str("[lptim] the last (uptime ms: late ms, alarm's low 16 bits, flags):");
-        for l in s.late.iter().filter(|l| l.late_ticks != 0) {
+        for (i, l) in s.late.iter().filter(|l| l.late_ticks != 0).enumerate() {
+            if i % 4 == 3 {
+                uart.pace().await;
+            }
             uart.write_str(" "); uart.write_u32(ms(l.at_ticks));
             uart.write_str(":"); uart.write_u32(ms(l.late_ticks));
             uart.write_str(","); uart.write_hex32(u32::from(l.alarm_lo));

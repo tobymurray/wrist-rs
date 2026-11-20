@@ -7,6 +7,8 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex;
 
+use wrist_logic::console::Held;
+
 use crate::mmio::{
     enable_clock, gpio, modify32, read32, write32, GPIOC_BASE, GPIO_AFRL, GPIO_MODER, GPIO_OSPEEDR,
     GPIO_OTYPER, GPIO_PUPDR, NVIC_ICER0, NVIC_ICPR0, NVIC_ISER0, RCC_AHB2ENR1,
@@ -90,6 +92,10 @@ static TX_GUARD: Mutex<CriticalSectionRawMutex, RefCell<Option<embassy_stm32::rc
 pub fn track_sleep() { TRACK_SLEEP.store(true, Ordering::Relaxed); Uart::arm(); }
 
 static TX: Mutex<CriticalSectionRawMutex, RefCell<Ring>> = Mutex::new(RefCell::new(Ring::new()));
+
+/// Queued output held from [`Uart::hold`] until [`Uart::release_line`] lets it out.
+static HOLDING: AtomicBool = AtomicBool::new(false);
+static HELD: Mutex<CriticalSectionRawMutex, RefCell<Held<4096>>> = Mutex::new(RefCell::new(Held::new()));
 
 #[no_mangle]
 pub unsafe extern "C" fn USART3() {
@@ -219,6 +225,11 @@ impl Uart {
     /// A synchronous handle for fault handlers; it sends the queued backlog
     /// first.
     pub fn direct() -> Self {
+        Self::retry();
+        Self::drain_sync(2048);
+        Self::hold(false);
+        while Self::best_effort().release_line() {}
+        Self::drain_sync(RING);
         Self(Mode::Direct)
     }
 
@@ -271,6 +282,14 @@ impl Uart {
     fn write_raw(self, bytes: &[u8]) {
         if bytes.is_empty() {
             return;
+        }
+        if self.0 == Mode::Queued && HOLDING.load(Ordering::Relaxed) {
+            if HELD.lock(|h| h.try_borrow_mut().is_ok_and(|mut h| h.hold(bytes))) {
+                return;
+            }
+            // Full: what is held goes first, and the rest unheld.
+            Self::hold(false);
+            while self.release_line() {}
         }
         // On battery no cable hears it (`power.rs`), and draining it would
         // keep the core out of Stop2.
@@ -350,9 +369,51 @@ impl Uart {
         Lines { uart: self, buf: [0; LINE], n: 0 }
     }
 
+    /// Holds queued output from here on, or stops, for [`Uart::release_line`] to let out.
+    pub fn hold(on: bool) {
+        HOLDING.store(on, Ordering::Relaxed);
+    }
+
+    /// Lets out each whole line held, a poll apiece, then holds again, keeping a line half
+    /// written held so no other task's output lands inside it.
+    pub async fn pace(self) {
+        Self::hold(false);
+        self.let_out(true).await;
+        Self::hold(true);
+    }
+
+    /// Lets out what is held a line per poll, each once the mirror has room for it; `whole`:
+    /// not a line still being written.
+    pub async fn let_out(self, whole: bool) {
+        loop {
+            embassy_futures::yield_now().await;
+            let len = HELD.lock(|h| h.try_borrow().map_or(0, |h| if whole && !h.whole_line() { 0 } else { h.next_len() }));
+            if len == 0 {
+                return;
+            }
+            #[cfg(feature = "ble")]
+            crate::ble::room(len).await;
+            self.release_line();
+        }
+    }
+
+    /// Writes the next line held; whether more is held.
+    pub fn release_line(self) -> bool {
+        let mut piece = [0u8; 128];
+        loop {
+            let (n, more) = HELD.lock(|h| h.try_borrow_mut().map_or((0, false), |mut h| h.take(&mut piece)));
+            self.write_raw(&piece[..n]);
+            if !more || piece[..n].last() == Some(&b'\n') {
+                return more;
+            }
+        }
+    }
+
     /// Blocks until the backlog is on the wire: for rate changes, resets and
     /// fault handlers, never a task's steady state.
     pub fn flush(self) {
+        Self::hold(false);
+        while Self::best_effort().release_line() {}
         Self::drain_sync(RING);
         if !GAVE_UP.load(Ordering::Relaxed) && !Self::poll(USART_ISR_TC) {
             GAVE_UP.store(true, Ordering::Relaxed);
@@ -422,6 +483,12 @@ impl Lines {
         self.push(s.as_bytes());
         self.push(b"\r\n");
         self.flush();
+    }
+
+    /// [`Uart::pace`], with what is gathered held first.
+    pub async fn pace(&mut self) {
+        self.flush();
+        self.uart.pace().await;
     }
 }
 
