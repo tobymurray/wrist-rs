@@ -148,9 +148,7 @@ installed, on a computer with Bluetooth on.
     soak over the air alone, where the watch sleeps as it does on battery: `.venv/bin/python
     tools/ble-suite.py --air --scenarios console,soak --soak-minutes 30 --gap 120` ends
     `PASSED`. Record its `gauge:` line, the mean of the gauge's AvgCurrent and the drop in
-    charge and RepCap; the gauge reads in 156.25 µA steps with an offset of about 1 mA, so
-    these show only faults of a milliamp or more. Plug back in: `cmd "boot;version"`, `state
-    boot` and the build.
+    charge and RepCap. Plug back in: `cmd "boot;version"`, `state boot` and the build.
 22. On the Bluetooth page, Select: it reads `off`, `cmd ble` `off (chip in reset)`, and `ble
     ping` says no watch is found. The radio stays off for section B.
 
