@@ -71,8 +71,8 @@ impl<const N: usize> Held<N> {
 /// The furthest [`Log::read`] looks for the end of a line it lost the start of.
 pub const SKIP_MAX: u64 = 512;
 
-/// The console's output kept for a central that was away, each line stamped with the uptime it
-/// began at. Positions count every byte ever kept.
+/// The console's output, each line stamped with the uptime it began at; positions count every
+/// byte ever kept.
 pub struct Log<const N: usize> {
     buf: [u8; N],
     end: u64,

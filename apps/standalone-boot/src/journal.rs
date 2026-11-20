@@ -1,5 +1,4 @@
-//! The console's output kept in RAM, so a central that was away reads what it missed
-//! (`log since <n>`): on battery nothing else hears it.
+//! The console's output kept in RAM for a central that was away (`log since <n>`).
 
 use core::cell::RefCell;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -31,8 +30,8 @@ pub fn record(bytes: &[u8]) {
     });
 }
 
-/// `log [since <n>]`: what was kept from position `n`, then `[log] next <end>` for the next read.
-/// A position past the end is a restart's: the read starts again from the beginning.
+/// `log [since <n>]`: what was kept from `n`, or from the start when `n` is past the end, then
+/// `[log] next <end>`.
 pub async fn command(args: &[u8], uart: Uart) {
     let text = core::str::from_utf8(args).unwrap_or("").trim();
     let asked = match text.strip_prefix("since") {
