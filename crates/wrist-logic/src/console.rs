@@ -76,7 +76,7 @@ pub const SKIP_MAX: u64 = 512;
 pub struct Log<const N: usize> {
     buf: [u8; N],
     end: u64,
-    fresh: bool,
+    mid_line: bool,
 }
 
 /// What [`Log::read`] copied: `len` bytes from position `from`.
@@ -95,7 +95,7 @@ impl<const N: usize> Default for Log<N> {
 impl<const N: usize> Log<N> {
     #[must_use]
     pub const fn new() -> Self {
-        Self { buf: [0; N], end: 0, fresh: true }
+        Self { buf: [0; N], end: 0, mid_line: false }
     }
 
     #[must_use]
@@ -134,15 +134,15 @@ impl<const N: usize> Log<N> {
             if b == b'\r' {
                 continue;
             }
-            if self.fresh {
+            if !self.mid_line {
                 self.push_decimal(now_ms / 1000, 1);
                 self.push(b'.');
                 self.push_decimal(now_ms % 1000, 3);
                 self.push(b' ');
-                self.fresh = false;
+                self.mid_line = true;
             }
             self.push(b);
-            self.fresh = b == b'\n';
+            self.mid_line = b != b'\n';
         }
     }
 
