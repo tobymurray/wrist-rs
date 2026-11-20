@@ -290,7 +290,7 @@ impl Replay {
         if text.starts_with("[trace] ") {
             self.trace(text);
         } else if let Some(cmd) = text.strip_prefix(">> usb ") {
-            // The capture tools log the command as asked and send it stripped (`write_command`).
+            // Sent stripped by `wrist_port.write_command`.
             match command(cmd.trim()) {
                 Some(Command::Update(len, _)) => self.usb_update = Some(UsbUpdate::Asked(len)),
                 Some(Command::Radio(on)) => self.shadow.radio(now, on),

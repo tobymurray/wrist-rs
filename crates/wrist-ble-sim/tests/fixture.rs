@@ -181,7 +181,6 @@ fn every_command_kept_reads_back_as_itself() {
     assert_eq!(command("update 5 1234"), Some(Command::Update(5, 0x1234)));
 }
 
-/// The console drops one trailing space and no more.
 #[test]
 fn a_command_is_trimmed_as_the_console_trims_it() {
     assert_eq!(command("ble on "), Some(Command::Radio(true)));

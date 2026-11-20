@@ -74,11 +74,13 @@ fn a_capture_that_begins_with_the_chip_up_is_taken_as_up() {
 fn a_capture_that_begins_as_the_chip_comes_up_is_a_start() {
     let from = |name: &str, first: &str| fixture(name).lines().skip_while(|l| !l.ends_with(first)).flat_map(|l| [l, "\n"]).collect::<String>();
     let ready = from("bluez-suite.log", " e 04FF03010001");
+    let watchdog = ready.replacen("04FF03010001", "04FF03010005", 1);
     for capture in [from("bluez-cable.log", " r"), ready.replacen("04FF03010001", "04ff03010001", 1), ready] {
         let r = replay(&capture);
         assert_eq!(r.seeded, None, "{}", r.render(false));
         assert_eq!(r.disagreements(), Vec::<String>::new(), "{}", r.render(false));
     }
+    assert!(replay(&watchdog).seeded.is_some());
 }
 
 #[test]
