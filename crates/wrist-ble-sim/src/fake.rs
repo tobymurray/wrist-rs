@@ -507,7 +507,7 @@ impl Fake {
             Op::Scan(None) => {
                 let id = self.accept(op);
                 if self.acts.get().scanning.is_some() {
-                    let _ = self.acts.apply(Change::Scan(None));
+                    self.settle(Change::Scan(None));
                     self.scan_gen += 1;
                     self.emit_after(ms(2), RadioEvent::ScanDone);
                 }
@@ -521,14 +521,14 @@ impl Fake {
                 self.admit(Change::Initiate(Some(params)))?;
                 self.central_start();
                 let id = self.accept(op);
-                let _ = self.acts.apply(Change::Initiate(Some(params)));
+                self.settle(Change::Initiate(Some(params)));
                 self.initiating = Some((id, peer, params));
                 self.try_sensor_connect();
                 Ok(id)
             }
             Op::CancelConnect => {
                 let Some((cid, ..)) = self.initiating.take() else { return Err(refused(&op, COMMAND_DISALLOWED)) };
-                let _ = self.acts.apply(Change::Initiate(None));
+                self.settle(Change::Initiate(None));
                 let id = self.accept(op);
                 self.done_after(cid, ms(1), Err(failure(FailureKind::NotConnected, 0x02)));
                 self.done_after(id, ms(1), Ok(Outcome::Done));
@@ -631,7 +631,7 @@ impl Fake {
     }
 
     fn set_adv(&mut self, p: Option<AdvParams>) {
-        let _ = self.acts.apply(Change::Advertise(p));
+        self.settle(Change::Advertise(p));
         for i in 0..self.phones.len() {
             self.try_phone(i);
         }
@@ -639,7 +639,7 @@ impl Fake {
 
     fn start_scan(&mut self, p: ScanParams) {
         self.central_start();
-        let _ = self.acts.apply(Change::Scan(Some(p)));
+        self.settle(Change::Scan(Some(p)));
         self.scan_gen += 1;
         let gen = self.scan_gen;
         let end = CAPABILITIES.discovery_max.map_or(p.duration, |max| p.duration.min(max));
@@ -827,7 +827,7 @@ impl Fake {
             Do::Deadline(id) => {
                 if self.initiating.is_some_and(|(cid, ..)| cid == id) {
                     self.initiating = None;
-                    let _ = self.acts.apply(Change::Initiate(None));
+                    self.settle(Change::Initiate(None));
                 }
                 if self.end(id).is_some() {
                     self.emit(RadioEvent::Done(id, Err(failure(FailureKind::Timeout, 0xFF))));
@@ -960,7 +960,7 @@ impl Fake {
             Do::Report(gen) => self.report(gen),
             Do::ScanEnds(gen) => {
                 if gen == self.scan_gen && self.acts.get().scanning.is_some() {
-                    let _ = self.acts.apply(Change::Scan(None));
+                    self.settle(Change::Scan(None));
                     self.emit(RadioEvent::ScanDone);
                 }
             }
@@ -995,7 +995,7 @@ impl Fake {
         let params = LinkParams { interval: Duration::from_u16(units), latency: 0, timeout: Duration::from_u16(500) };
         let Some(h) = self.new_link(LeConnRole::Peripheral, Peer::Phone(i), params, None) else { return };
         self.phones[i].link = Some(h);
-        let _ = self.acts.apply(Change::PeripheralUp);
+        self.settle(Change::PeripheralUp);
         self.emit(RadioEvent::LinkUp { link: h, role: LeConnRole::Peripheral, peer: p.phone.addr, params: Some(params) });
         self.later(90, 110, Do::Emit(RadioEvent::DataLength { link: h, tx: DATA_LENGTH.0, rx: DATA_LENGTH.1, tx_time: DATA_TIME.0, rx_time: DATA_TIME.1 }));
         match p.phone.keys {
@@ -1084,7 +1084,7 @@ impl Fake {
             Ok(a) => a,
             Err(kind) => {
                 self.initiating = None;
-                let _ = self.acts.apply(Change::Initiate(None));
+                self.settle(Change::Initiate(None));
                 self.end(id);
                 self.emit(RadioEvent::Done(id, Err(failure(FailureKind::Schedule(kind), native(kind)))));
                 return;
@@ -1157,10 +1157,10 @@ impl Fake {
         let Some(i) = self.links.iter().position(|k| k.is_some_and(|k| k.handle == l)) else { return };
         let Some(link) = self.links[i].take() else { return };
         if let Some(slot) = link.slot {
-            let _ = self.acts.apply(Change::Close { slot });
+            self.settle(Change::Close { slot });
         }
         if link.role == LeConnRole::Peripheral {
-            let _ = self.acts.apply(Change::PeripheralDown);
+            self.settle(Change::PeripheralDown);
         }
         let ended: Vec<OpId> = self.ops.iter().filter(|p| p.op.link() == Some(l)).map(|p| p.id).collect();
         let disconnect = self.pending(OpKind::Disconnect, l);
@@ -1202,6 +1202,13 @@ impl Fake {
             pairing: false,
         });
         Some(handle)
+    }
+
+    /// `change`, which the air has already made, applied to the scheduler's state.
+    fn settle(&mut self, change: Change) {
+        if let Err(kind) = self.acts.apply(change) {
+            panic!("the scheduler's state refused {change:?} ({kind:?}) at {:?}: {:?}", self.now, self.acts.get());
+        }
     }
 
     /// The scheduler's state holds the links on air and the initiation.
@@ -1314,5 +1321,33 @@ impl wrist_ble::Radio for Fake {
 
     async fn snapshot(&mut self) -> Result<Snapshot, wrist_ble::Fault> {
         Ok(Fake::snapshot(self))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Fake, LeConnRole, LinkParams, Duration, Peer, PhoneState, Status, ConnHandle};
+    use crate::peers::{Os, Phone};
+
+    fn up(f: &mut Fake, role: LeConnRole, peer: Peer, slot: Option<u8>) -> ConnHandle {
+        let params = LinkParams { interval: Duration::from_u16(40), latency: 0, timeout: Duration::from_u16(400) };
+        f.new_link(role, peer, params, slot).unwrap()
+    }
+
+    #[test]
+    #[should_panic(expected = "refused Close")]
+    fn a_central_link_the_state_never_held_is_caught_as_it_goes() {
+        let mut f = Fake::new(1);
+        let h = up(&mut f, LeConnRole::Central, Peer::Sensor(0), Some(0));
+        f.link_down(h, Status::CONN_TIMEOUT);
+    }
+
+    #[test]
+    #[should_panic(expected = "refused PeripheralDown")]
+    fn a_peripheral_link_the_state_never_held_is_caught_as_it_goes() {
+        let mut f = Fake::new(1);
+        f.phones.push(PhoneState { phone: Phone::new(Os::Linux, 1), wants: false, link: None, gone: false });
+        let h = up(&mut f, LeConnRole::Peripheral, Peer::Phone(0), None);
+        f.link_down(h, Status::CONN_TIMEOUT);
     }
 }
