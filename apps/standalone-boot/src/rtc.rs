@@ -32,6 +32,7 @@ const TR_PM: u32 = 1 << 22;
 const RTC_ALRMAR: u32 = RTC_BASE + 0x40;
 const RTC_ALRMASSR: u32 = RTC_BASE + 0x44;
 const RTC_SR: u32 = RTC_BASE + 0x50;
+const CR_BYPSHAD: u32 = 1 << 5;
 const CR_ALRAE: u32 = 1 << 8;
 const CR_ALRAIE: u32 = 1 << 12;
 const SR_ALRAF: u32 = 1 << 0;
@@ -78,10 +79,10 @@ fn clock_bus() {
 }
 
 /// True if the calendar runs; its shadow registers are then a copy made after the last Stop
-/// exit, before which they can be a whole sleep stale (RM0456 63.3.10).
+/// exit, before which they can be a whole sleep stale (RM0456 63.3.12).
 fn calendar_ready() -> bool {
-    /// A copy takes at most two LSE cycles.
-    const RSF_POLLS: u32 = 10_000;
+    /// Over two RTC clock cycles, the longest a copy takes (RM0456 63.6.7).
+    const RSF_US: u32 = 100;
     if unsafe { read32(RCC_BDCR) } & RCC_BDCR_RTCEN == 0 {
         return false;
     }
@@ -93,14 +94,14 @@ fn calendar_ready() -> bool {
         write32(PWR_DBPR, PWR_DBPR_DBP);
         write32(RTC_WPR, WPR_KEY1);
         write32(RTC_WPR, WPR_KEY2);
+        // RSF never comes with BYPSHAD set (RM0456 63.6.4); stock sets it (una-kernel-public `Rtc::init`).
+        if read32(RTC_CR) & CR_BYPSHAD != 0 {
+            modify32(RTC_CR, CR_BYPSHAD, 0);
+        }
         modify32(RTC_ICSR, ICSR_RSF, 0);
         write32(RTC_WPR, WPR_LOCK);
-        for _ in 0..RSF_POLLS {
-            if read32(RTC_ICSR) & ICSR_RSF != 0 {
-                break;
-            }
-        }
     }
+    wait_cycles(RTC_ICSR, ICSR_RSF, RSF_US * crate::busy::CORE_MHZ);
     true
 }
 
@@ -110,8 +111,11 @@ fn wait_for(reg: u32, mask: u32, ms: u32) -> bool {
 
 /// On the cycle counter, at `cycles_per_ms` core cycles a millisecond.
 fn wait_for_at(reg: u32, mask: u32, ms: u32, cycles_per_ms: u32) -> bool {
+    wait_cycles(reg, mask, ms.saturating_mul(cycles_per_ms))
+}
+
+fn wait_cycles(reg: u32, mask: u32, budget: u32) -> bool {
     crate::busy::init();
-    let budget = ms.saturating_mul(cycles_per_ms);
     let from = crate::busy::cycles();
     loop {
         if unsafe { read32(reg) } & mask != 0 {
