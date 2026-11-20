@@ -321,6 +321,11 @@ pub async fn room(len: usize) {
     }
 }
 
+/// Lines the mirror has dropped for want of room, this boot.
+pub fn lines_dropped() -> u32 {
+    LINES_DROPPED.load(Ordering::Relaxed)
+}
+
 /// Console output, mirrored to a subscribed central over an encrypted link. Never blocks:
 /// a line that does not fit is dropped whole. The lock spans the room check and the write;
 /// a fault handler that interrupts it finds the lines borrowed and mirrors nothing.

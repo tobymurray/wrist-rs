@@ -300,7 +300,7 @@ class Usb:
 # -- the watch with no cable --
 
 LOG_SINCE = re.compile(r'^\[log\] since (\d+)')
-LOG_NEXT = re.compile(r'^\[log\] next (\d+) at (\d+\.\d{3})(?:, (\d+) bytes lost)?')
+LOG_NEXT = re.compile(r'^\[log\] next (\d+) at (\d+\.\d{3})(?:, (\d+) bytes lost)?(?:, (\d+) lines dropped on the way)?')
 LOG_LINE = re.compile(r'^(\d+\.\d{3}) (.*)$')
 # Seconds an answer may take on the way; a restart puts the watch's clock back by the uptime it had.
 RESTART_LAG = 5
@@ -308,7 +308,8 @@ RESTART_LAG = 5
 
 def read_log(lines):
     """The last whole `log since` answer in `lines`: (its lines as (uptime s, text), the next position,
-    the uptime at its end, bytes lost, whether the watch restarted), or None before its end."""
+    the uptime at its end, bytes lost, lines of it dropped on the way, whether the watch restarted),
+    or None before its end."""
     start = next((i for i in range(len(lines) - 1, -1, -1) if LOG_SINCE.match(lines[i])), None)
     if start is None:
         return None
@@ -316,7 +317,7 @@ def read_log(lines):
         if m := LOG_NEXT.match(lines[j]):
             # Live lines from other tasks can land between the kept ones; they come again next read.
             kept = [(float(k[1]), k[2]) for line in lines[start + 1:j] if (k := LOG_LINE.match(line))]
-            return kept, int(m[1]), float(m[2]), int(m[3] or 0), 'restarted' in lines[start]
+            return kept, int(m[1]), float(m[2]), int(m[3] or 0), int(m[4] or 0), 'restarted' in lines[start]
     return None
 
 
@@ -327,7 +328,7 @@ class Air:
     def __init__(self, phone, path):
         self.phone, self.link = phone, None
         self.lines, self.at, self.offset, self.uptime = [], 0, None, 0
-        self.restarts, self.lost = 0, 0
+        self.restarts, self.lost, self.dropped = 0, 0, 0
         self.log = open(path, 'a')
 
     def _note(self, text, t=None):
@@ -383,7 +384,8 @@ class Air:
                 print('-- log: no end to the answer', flush=True)
                 return False
             await asyncio.sleep(0.05)
-        kept, self.at, now, lost, restarted = got
+        kept, self.at, now, lost, dropped, restarted = got
+        self.dropped += dropped
         offset = time.time() - now
         if not restarted and self.offset is not None and offset - self.offset > max(RESTART_LAG, self.uptime / 2):
             # Positions began again at 0 and have since passed the last read's: read from 0.
@@ -731,7 +733,7 @@ async def soak(s, usb, phone, build, a):
     before = await usb.ask('ble', STATUS, 3) or ''
     up_before = await usb.ask('uptime', r'\[usb\] uptime (\d+)', 3)
     first = usb.mark()
-    lost, restarts = (usb.lost, usb.restarts) if air else (0, 0)
+    lost, dropped, restarts = (usb.lost, usb.dropped, usb.restarts) if air else (0, 0, 0)
     if not air:
         await page(usb)
     end = time.time() + a.soak_minutes * 60
@@ -799,9 +801,10 @@ async def soak(s, usb, phone, build, a):
         print('  no executor-latency probe: its timer would keep the core out of Stop 2', flush=True)
         n = figures['readings'] if figures else 0
         s.check(n >= int(a.soak_minutes) - 1, f'the gauge read every minute ({n} readings in {a.soak_minutes} min)')
-        lost = usb.lost - lost
-        s.check(None not in up and up[1] > up[0] and usb.restarts == restarts and not lost,
-                f'no reset: uptime {up[0]} to {up[1]} s, the log never began again, {lost} bytes of it lost')
+        lost, dropped = usb.lost - lost, usb.dropped - dropped
+        s.check(None not in up and up[1] > up[0] and usb.restarts == restarts and not lost and not dropped,
+                f'no reset: uptime {up[0]} to {up[1]} s, the log never began again, {lost} bytes of it lost, '
+                f'{dropped} of its lines dropped on the way')
     else:
         s.check(got and worst <= 5.0 and over == 0, f'executor late by at most {worst} ms over {len(got)} `page` readings, '
                 f'over 5 ms {over} times')
@@ -1085,7 +1088,7 @@ async def run(a, out, result):
         if isinstance(usb, Air):
             await usb.detach()
             usb.log.close()
-            result['log'] = {'restarts': usb.restarts, 'bytes_lost': usb.lost}
+            result['log'] = {'restarts': usb.restarts, 'bytes_lost': usb.lost, 'lines_dropped': usb.dropped}
         else:
             usb.close()
 

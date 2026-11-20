@@ -618,7 +618,7 @@ class Watch:
     """A watch reached over the air alone: what it logs on its uptime, and its answers to `log since`."""
 
     def __init__(self, reasons=()):
-        self.t0, self.log, self.reasons, self.sent, self.lost = time.time() - 100, [], list(reasons), [], 0
+        self.t0, self.log, self.reasons, self.sent, self.lost, self.dropped = time.time() - 100, [], list(reasons), [], 0, 0
 
     def say(self, text):
         time.sleep(0.005)
@@ -634,7 +634,8 @@ class Watch:
         lines.append(f'[log] since {n}' + (': past the end, so from the start (the watch restarted)' if restarted else ''))
         for t, line in self.log[0 if restarted else n:]:
             lines += [f'{t:.3f} {line}', '[hb] a live line between kept ones']
-        lines.append(f'[log] next {len(self.log)} at {time.time() - self.t0:.3f}' + (f', {self.lost} bytes lost' if self.lost else ''))
+        lines.append(f'[log] next {len(self.log)} at {time.time() - self.t0:.3f}' + (f', {self.lost} bytes lost' if self.lost else '')
+                     + (f', {self.dropped} lines dropped on the way' if self.dropped else ''))
 
 
 class WatchLink:
@@ -715,9 +716,9 @@ class AirAlone(unittest.TestCase):
         lines = ['[log] since 7', '12.500 [ble] connected', '[hb] 3', '13.000 [pwr] 3900 mV']
         self.assertIsNone(suite.read_log(lines))
         got = suite.read_log(lines + ['[log] next 90 at 14.250, 6 bytes lost'])
-        self.assertEqual(got, ([(12.5, '[ble] connected'), (13.0, '[pwr] 3900 mV')], 90, 14.25, 6, False))
+        self.assertEqual(got, ([(12.5, '[ble] connected'), (13.0, '[pwr] 3900 mV')], 90, 14.25, 6, 0, False))
         again = suite.read_log(['[log] since 500: past the end, so from the start (the watch restarted)', '[log] next 3 at 1.000'])
-        self.assertTrue(again[4])
+        self.assertTrue(again[5])
         self.assertEqual([suite.quiet(l) for l in lines + ['[usb] pong']], [True, True, True, True, False])
 
     def test_the_log_resumes_where_it_ended_and_a_restart_is_seen(self):
@@ -762,6 +763,17 @@ class AirAlone(unittest.TestCase):
             self.assertEqual(air.lost, 0)
             asyncio.run(air.sync())
             self.assertEqual(air.lost, 40)
+
+    def test_lines_the_mirror_dropped_count_from_the_first_read(self):
+        self.assertEqual(suite.read_log(['[log] since 0', '[log] next 9 at 1.000, 2 lines dropped on the way'])[4], 2)
+        watch = Watch()
+        watch.dropped = 3
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(suite.wrist_ble, 'send', watch.send):
+            air, _ = self.air(watch, d)
+            asyncio.run(air.attach())
+            self.assertEqual(air.dropped, 3)
+            asyncio.run(air.sync())
+            self.assertEqual(air.dropped, 6)
 
     def test_an_ask_is_answered_from_the_log(self):
         watch = Watch()
