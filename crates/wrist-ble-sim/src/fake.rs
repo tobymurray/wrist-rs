@@ -21,9 +21,9 @@ use crate::rng::Rng;
 pub const CONSOLE: ServerAttr = wrist_bluenrg2::wake::ble::server::TX;
 
 /// The link-layer payloads the chip reports on each link, as a host's capture shows them.
-const DATA_LENGTH: (u16, u16) = (27, 251);
+const DATA_LENGTH: (u16, u16) = (251, 251);
 /// Their time on air on the 1M PHY (Core Vol 6 Part B §4.5.10).
-const DATA_TIME: (Micros, Micros) = (Micros(328), Micros(2120));
+const DATA_TIME: (Micros, Micros) = (Micros(2120), Micros(2120));
 
 /// Connection events before a link that never formed is dropped (Core Vol 6 Part B §4.5.2).
 const ESTABLISH_EVENTS: u64 = 6;

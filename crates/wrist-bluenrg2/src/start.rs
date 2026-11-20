@@ -6,6 +6,7 @@ use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal_async::delay::DelayNs;
 use embedded_hal_async::digital::Wait;
 use embedded_hal_async::spi::SpiBus;
+use wrist_ble::bt_hci::cmd::{le::LeWriteSuggestedDefaultDataLength, Cmd as _};
 use wrist_ble::ServerTable;
 
 use crate::commands::Command;
@@ -36,6 +37,7 @@ pub enum Step {
     PublicAddressSlot,
     TxPower,
     EventMask,
+    DataLength,
     GattInit,
     GapInit,
     DeviceName,
@@ -71,11 +73,15 @@ pub enum Starting {
 
 const PERIPHERAL_AND_CENTRAL: u8 = 0x05;
 
+/// The largest packet a link sends, and its time on the 1M PHY: the chip's supported maximum
+/// (ST's `bluenrg1_hal_aci.h`, config offset 0xD1). Links otherwise start at 27 octets.
+const DATA_LENGTH: (u16, u16) = (251, 2120);
+
 /// The roles `ACI_GAP_INIT` is asked for, in turn: the peripheral alone if the chip refuses both,
 /// so updates never depend on the central role.
 const ROLES: [u8; 2] = [PERIPHERAL_AND_CENTRAL, gap_role::PERIPHERAL];
 
-const EARLY: [Step; 5] = [Step::StaticRandomAddress, Step::PublicAddressSlot, Step::TxPower, Step::EventMask, Step::GattInit];
+const EARLY: [Step; 6] = [Step::StaticRandomAddress, Step::PublicAddressSlot, Step::TxPower, Step::EventMask, Step::DataLength, Step::GattInit];
 const LATE: [Step; 3] = [Step::DeviceName, Step::IoCapability, Step::SecurityRequirements];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -149,6 +155,10 @@ impl<'a> Start<'a> {
             Cmd::Early(1) => Command::new(opcode::ACI_HAL_WRITE_CONFIG_DATA, &[&address(config::PUBLIC_ADDRESS)]),
             Cmd::Early(2) => Command::new(opcode::ACI_HAL_SET_TX_POWER_LEVEL, &[&s.tx_power]),
             Cmd::Early(3) => Command::new(opcode::HCI_SET_EVENT_MASK, &[&s.event_mask]),
+            Cmd::Early(4) => Command::new(
+                LeWriteSuggestedDefaultDataLength::OPCODE.to_raw(),
+                &[&DATA_LENGTH.0.to_le_bytes(), &DATA_LENGTH.1.to_le_bytes()],
+            ),
             Cmd::Early(_) => Command::new(opcode::ACI_GATT_INIT, &[]),
             Cmd::Gap(i) => Command::new(opcode::ACI_GAP_INIT, &[&[ROLES[i], privacy::DISABLED, s.name_room]]),
             Cmd::Late(0) => {
