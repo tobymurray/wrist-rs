@@ -23,7 +23,7 @@ result.json is written and --restore put back.
 --air needs no cable, so the watch sleeps as it does on battery: commands go over a link, and the
 watch's own lines come from its log (`log since`), read whenever a link attaches. A hang-up's
 reason is read on the next link, a last one closing each scenario. The soak runs no latency probe
-then, and every soak records the fuel gauge's figures, which show only faults of a milliamp or more.
+then, and every soak records the fuel gauge's figures.
 """
 import argparse
 import asyncio
@@ -318,9 +318,8 @@ def read_log(lines):
 
 
 class Air:
-    """The watch's console with no cable: its own lines from its log (`log since`), read on each link
-    as it attaches and while an ask waits, and commands over the link in hand, or one opened for them.
-    A line's time is the watch's uptime moved onto this computer's clock."""
+    """The watch's console with no cable: its lines from `log since` on each link, its commands over
+    the link in hand or a new one, each line's uptime moved onto this computer's clock."""
 
     def __init__(self, phone, path):
         self.phone, self.link = phone, None
@@ -765,7 +764,6 @@ async def soak(s, usb, phone, build, a):
                 judge(cycles, answered, await hang_up(usb, mark))
             await asyncio.sleep(a.gap)
 
-    # Off the cable the probe's 10 ms timer would keep the core out of Stop 2, the state on trial.
     await asyncio.gather(*([] if air else [pager()]), phone_cycles())
     if air:
         for (cycle, answered, _), reason in zip(later, await reasons(usb, [m for _, _, m in later])):
@@ -790,7 +788,7 @@ async def soak(s, usb, phone, build, a):
             f'(failed: {failures or "none"})')
     s.check(before and after and not grew, f'the `ble` counters did not move ({grew or "none moved"})')
     if air:
-        print('  no executor-latency probe: its 10 ms timer would keep the core out of Stop 2', flush=True)
+        print('  no executor-latency probe: its timer would keep the core out of Stop 2', flush=True)
         n = figures['readings'] if figures else 0
         s.check(n >= int(a.soak_minutes) - 1, f'the gauge read every minute ({n} readings in {a.soak_minutes} min)')
         lost = usb.lost - lost
