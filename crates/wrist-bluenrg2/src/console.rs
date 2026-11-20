@@ -23,18 +23,39 @@ pub const fn boot_reason(reason: BootReason) -> &'static str {
 /// `0A:1B:2C:3D:4E:5F`, then ` (random)` for a random address, resolved (3) or not, as
 /// [`parse_address`] reads it back.
 #[must_use]
-pub fn address(a: Address) -> impl fmt::Display {
-    struct Text(Address);
-    impl fmt::Display for Text {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            write!(f, "{}", self.0)?;
-            if self.0.kind.as_raw() & 0x01 != 0 {
-                f.write_str(" (random)")?;
-            }
-            Ok(())
-        }
+pub fn address(a: Address) -> AddressText {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut text = AddressText { buf: [0; 26], len: 17 };
+    for (i, b) in a.addr.into_inner().iter().rev().enumerate() {
+        text.buf[3 * i] = HEX[usize::from(b >> 4)];
+        text.buf[3 * i + 1] = HEX[usize::from(b & 0xF)];
+        text.buf[3 * i + 2] = b':';
     }
-    Text(a)
+    if a.kind.as_raw() & 0x01 != 0 {
+        text.buf[17..].copy_from_slice(b" (random)");
+        text.len = 26;
+    }
+    text
+}
+
+/// What [`address`] writes, made without the formatting machinery, which costs the watch.
+#[derive(Clone, Copy)]
+pub struct AddressText {
+    buf: [u8; 26],
+    len: usize,
+}
+
+impl AddressText {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        core::str::from_utf8(&self.buf[..self.len]).unwrap_or("?")
+    }
+}
+
+impl fmt::Display for AddressText {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// An address as [`address`] writes it, read back: colons or dashes, either case.
