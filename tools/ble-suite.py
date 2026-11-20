@@ -73,6 +73,7 @@ PROBED = re.compile(r'latency probe ran (\d+) s since the last')
 BUILD_CHAR = rb'[0-9A-Za-z._-]'
 STATUS = r'\[ble\] .*, timing '
 HANG_UP = re.compile(r'\[ble\] disconnected, reason (\w+)')
+CONNECTED = re.compile(r'\[ble\] connected\s*$')
 
 
 def stamp(t=None):
@@ -301,6 +302,8 @@ class Usb:
 LOG_SINCE = re.compile(r'^\[log\] since (\d+)')
 LOG_NEXT = re.compile(r'^\[log\] next (\d+) at (\d+\.\d{3})(?:, (\d+) bytes lost)?')
 LOG_LINE = re.compile(r'^(\d+\.\d{3}) (.*)$')
+# Seconds an answer may take on the way; a restart puts the watch's clock back by the uptime it had.
+RESTART_LAG = 5
 
 
 def read_log(lines):
@@ -323,7 +326,7 @@ class Air:
 
     def __init__(self, phone, path):
         self.phone, self.link = phone, None
-        self.lines, self.at, self.offset = [], 0, None
+        self.lines, self.at, self.offset, self.uptime = [], 0, None, 0
         self.restarts, self.lost = 0, 0
         self.log = open(path, 'a')
 
@@ -382,6 +385,13 @@ class Air:
             await asyncio.sleep(0.05)
         kept, self.at, now, lost, restarted = got
         offset = time.time() - now
+        if not restarted and self.offset is not None and offset - self.offset > max(RESTART_LAG, self.uptime / 2):
+            # Positions began again at 0 and have since passed the last read's: read from 0.
+            self.restarts += 1
+            print('-- log: the watch restarted', flush=True)
+            self.at, self.offset = 0, None
+            return await self.sync(timeout)
+        self.uptime = now
         # What the first read finds gone was never this run's.
         if self.offset is not None:
             self.lost += lost
@@ -431,10 +441,10 @@ class Air:
             await asyncio.sleep(0.5)
 
     def hang_up(self, mark):
-        """The reason the watch gave for the first hang-up after the first link from `mark`."""
+        """The reason the watch gave for hanging up the first link from `mark`, before the next."""
         lines = [l for _, l in self.since(mark)]
-        up = next((i for i, l in enumerate(lines) if re.search(r'\[ble\] connected\s*$', l)), None)
-        found = next((m for l in lines[up:] if (m := HANG_UP.search(l))), None) if up is not None else None
+        up = [i for i, l in enumerate(lines) if CONNECTED.search(l)] + [len(lines)]
+        found = next((m for l in lines[up[0]:up[1]] if (m := HANG_UP.search(l))), None) if len(up) > 1 else None
         return found[1] if found else None
 
 
@@ -594,11 +604,9 @@ async def hang_up(usb, mark, timeout=8):
 
 
 async def reasons(usb, marks):
-    """Each mark's hang-up reason, read once the last link is over."""
-    if isinstance(usb, Air):
-        await usb.settle()
-        return [usb.hang_up(m) for m in marks]
-    return [await hang_up(usb, m, 0) for m in marks]
+    """Over the air alone, each mark's hang-up reason, read once the last link is over."""
+    await usb.settle()
+    return [usb.hang_up(m) for m in marks]
 
 
 # -- scenarios --
@@ -614,9 +622,9 @@ async def console(s, usb, phone, build, a):
         s.check(await link.command('version', rf'build {re.escape(build)}(?: |$)'), f'session {i}: version is build {build}')
         s.check(await link.command('ble', r'\[ble\] connected, encrypted'), f'session {i}: ble reports the link encrypted')
         await link.close()
-        await hang_up(usb, mark)
-        marks.append((i, mark))
-    for (i, _), reason in zip(marks, await reasons(usb, [m for _, m in marks])):
+        marks.append((i, mark, await hang_up(usb, mark)))
+    found = await reasons(usb, [m for _, m, _ in marks]) if isinstance(usb, Air) else [r for *_, r in marks]
+    for (i, _, _), reason in zip(marks, found):
         s.check(reason == '13', f'session {i}: the watch saw a clean hang-up (reason {reason})')
 
 
@@ -625,7 +633,7 @@ async def reconnect(s, usb, phone, build, a):
 
     def judge(i, pong, mark, nxt, reason):
         lines = [(t, l) for t, l in usb.since(mark) if nxt is None or t < nxt]
-        connected = next((t for t, l in lines if re.search(r'\[ble\] connected\s*$', l)), None)
+        connected = next((t for t, l in lines if CONNECTED.search(l)), None)
         encrypted = next((t for t, l in lines if '[ble] link encrypted' in l), None)
         bad = [l for _, l in lines if re.search(r'pairing failed|encryption off|lost its bond', l)]
         took = round(encrypted - connected, 3) if connected and encrypted else None
@@ -851,8 +859,9 @@ async def update(s, usb, phone, build, a):
     took = round(time.time() - t0, 1)
     s.data['seconds_to_state_boot'] = took
     s.check(kept, f'the update over the air reached `state boot` ({took} s)')
-    s.check(not [l for _, l in usb.since(mark) if 'revert' in l], 'the loader never reverted')
     s.check(await usb.ask('version', rf'build {re.escape(build)}(?: |$)', 10), f'the watch runs build {build} after it')
+    after = [l for _, l in usb.since(mark)]
+    s.check(after and not [l for l in after if 'revert' in l], 'the loader never reverted')
     s.check(await radio_back(usb, 10), 'the radio is back on after the reset')
     if a.profile:
         s.check(await usb.ask(f'ble profile {a.profile}', r'\[ble\] timing', 5), f'`ble profile {a.profile}` held again')

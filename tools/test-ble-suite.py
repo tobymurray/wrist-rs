@@ -649,7 +649,9 @@ class WatchLink:
     async def close(self):
         if self.client.is_connected:
             self.client.is_connected = False
-            self.watch.say(f'[ble] disconnected, reason {self.watch.reasons.pop(0) if self.watch.reasons else "13"}')
+            reason = self.watch.reasons.pop(0) if self.watch.reasons else '13'
+            if reason:
+                self.watch.say(f'[ble] disconnected, reason {reason}')
 
 
 class WatchPhone:
@@ -661,6 +663,45 @@ class WatchPhone:
         self.watch.say('[ble] connected')
         self.watch.say('[ble] link encrypted')
         return WatchLink(self.watch)
+
+
+class CableHangUps(unittest.TestCase):
+    def test_a_session_whose_hang_up_never_came_fails_on_the_cable(self):
+        lines = []
+
+        class Con:
+            lines = property(lambda self: lines)
+
+            def mark(self):
+                return len(lines)
+
+            def since(self, mark):
+                return lines[mark:]
+
+            wait = suite.Usb.wait
+
+        class SessionLink(Link):
+            def __init__(self, silent):
+                super().__init__()
+                self.silent = silent
+
+            async def close(self):
+                if not self.silent:
+                    lines.append((time.time(), '[ble] disconnected, reason 13'))
+
+        class Sessions:
+            n = 0
+
+            async def connect(self):
+                self.n += 1
+                lines.append((time.time(), '[ble] connected'))
+                return SessionLink(self.n == 1)
+
+        s = suite.Scenario('console', '')
+        with mock.patch.object(suite.hang_up, '__defaults__', (0.1,)), mock.patch.object(SessionLink, 'command',
+                                                                                         lambda self, text, pattern, timeout=3: asyncio.sleep(0, 'build b ok')):
+            asyncio.run(suite.console(s, Con(), Sessions(), 'b', argparse.Namespace(sessions=2)))
+        self.assertEqual([c['passed'] for c in s.checks if 'hang-up' in c['what']], [False, True])
 
 
 class AirAlone(unittest.TestCase):
@@ -696,6 +737,21 @@ class AirAlone(unittest.TestCase):
             asyncio.run(air.sync())
             self.assertEqual(air.restarts, 1)
             self.assertEqual(air.lines[-1][1], '[boot] after the reset')
+
+    def test_a_restart_that_has_said_more_than_the_last_read_is_seen(self):
+        watch = Watch()
+        watch.say('[boot] marked booted')
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(suite.wrist_ble, 'send', watch.send), \
+                mock.patch('sys.stdout', io.StringIO()):
+            air, _ = self.air(watch, d)
+            asyncio.run(air.attach())
+            watch.t0, watch.log = time.time(), []
+            for line in ('[crash] the last reset', '[boot] after the reset', '[hb] 1', '[hb] 2', '[hb] 3'):
+                watch.say(line)
+            asyncio.run(air.sync())
+            self.assertEqual(air.restarts, 1)
+            self.assertEqual([l for _, l in air.lines][3:], ['[crash] the last reset', '[boot] after the reset', '[hb] 1', '[hb] 2', '[hb] 3'])
+            self.assertLess(abs(air.lines[-1][0] - time.time()), 0.5)
 
     def test_only_what_the_run_could_have_read_counts_as_lost(self):
         watch = Watch()
@@ -738,6 +794,60 @@ class AirAlone(unittest.TestCase):
         said = [c for c in s.checks if 'hang-up' in c['what']]
         self.assertEqual([(c['passed'], c['what'][-11:]) for c in said], [(True, '(reason 13)'), (False, '(reason 08)')])
         self.assertEqual(phone.links, 3)
+
+    def test_a_hang_up_the_watch_never_said_is_not_the_next_one(self):
+        watch = Watch(reasons=[None, '13'])
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(suite.wrist_ble, 'send', watch.send):
+            air, phone = self.air(watch, d)
+            s = suite.Scenario('console', '')
+            with mock.patch('sys.stdout', io.StringIO()):
+                asyncio.run(suite.console(s, air, suite.AirPhone(air, phone), 'b', argparse.Namespace(sessions=2)))
+        self.assertEqual([c['passed'] for c in s.checks if 'hang-up' in c['what']], [False, True])
+
+    def test_a_revert_is_read_before_it_is_judged(self):
+        watch = Watch()
+        watch.say('[boot] marked booted')
+
+        class Updating(WatchPhone):
+            async def update(self, image):
+                watch.t0, watch.log = time.time(), []
+                watch.say('[boot] state revert (the previous update failed to mark itself booted)')
+                return True
+
+        async def send(client, text):
+            if text == 'version':
+                return watch.say('[usb] standalone-boot 0.1 build b crc 00000000')
+            return await watch.send(client, text)
+
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(suite.wrist_ble, 'send', send), \
+                mock.patch.object(suite, 'radio_back', lambda usb, attempts: asyncio.sleep(0, True)), \
+                mock.patch('sys.stdout', io.StringIO()):
+            phone = Updating(watch)
+            air = suite.Air(phone, Path(d) / 'console.log')
+            asyncio.run(air.attach())
+            s = suite.Scenario('update', '')
+            asyncio.run(suite.update(s, air, suite.AirPhone(air, phone), 'b', argparse.Namespace(update_image='app.bin', profile=None)))
+        self.assertFalse(next(c['passed'] for c in s.checks if 'reverted' in c['what']))
+        self.assertTrue(next(c['passed'] for c in s.checks if 'runs build' in c['what']))
+
+    def test_no_revert_is_judged_from_nothing_read(self):
+        watch = Watch()
+
+        class Unreachable(WatchPhone):
+            async def update(self, image):
+                return True
+
+            async def connect(self):
+                return None
+
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(suite.wrist_ble, 'send', watch.send), \
+                mock.patch.object(suite, 'radio_back', lambda usb, attempts: asyncio.sleep(0, True)), \
+                mock.patch('sys.stdout', io.StringIO()):
+            phone = Unreachable(watch)
+            air = suite.Air(phone, Path(d) / 'console.log')
+            s = suite.Scenario('update', '')
+            asyncio.run(suite.update(s, air, suite.AirPhone(air, phone), 'b', argparse.Namespace(update_image='app.bin', profile=None)))
+        self.assertFalse(next(c['passed'] for c in s.checks if 'reverted' in c['what']))
 
     def test_the_gauge_s_figures_and_what_they_cannot_show(self):
         lines = [(0, '[pwr] 3900 mV  soc 80.0%  25 C  now -1000 uA  avg -1200 uA  rails all good'),
