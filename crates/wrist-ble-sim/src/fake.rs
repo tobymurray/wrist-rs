@@ -106,7 +106,7 @@ enum Do {
     PeerUpdateApplied(ConnHandle, u16),
     /// The central's answer to this peripheral's request: the parameters it will apply, if any.
     Answered(ConnHandle, OpId, Option<LinkParams>),
-    /// An update the central held behind its own goes on air.
+    /// A granted update goes on air, once the central's own is in.
     UpdateStarts(ConnHandle, LinkParams, OpId),
     UpdateApplied(ConnHandle, LinkParams, OpId),
     UpdateFailed(ConnHandle, OpId),
@@ -713,11 +713,6 @@ impl Fake {
                 let granted = self.phones[i].phone.grant(params.interval_min, params.interval_max);
                 let p = LinkParams { interval: granted, latency: params.latency, timeout: params.timeout };
                 self.after(ms(iv), Do::Answered(l, id, Some(p)));
-                // The central runs one update at a time: this one starts once its own is in.
-                match link.peer_update_until {
-                    Some(until) => self.agenda_at(until, Do::UpdateStarts(l, p, id)),
-                    None => self.after(ms(lead), Do::UpdateApplied(l, p, id)),
-                }
             }
             Peer::Sensor(i) if self.sensors[i].sensor.refuses_updates => self.after(ms(lead), Do::UpdateFailed(l, id)),
             Peer::Sensor(_) => {
@@ -912,8 +907,8 @@ impl Fake {
                 let now = self.now;
                 let Some(link) = self.link_mut(l) else { return };
                 let iv = interval_ms(link.params);
-                // One update at a time, and none while encryption starts.
-                if link.updating.is_some() || link.peer_update_until.is_some() || link.encrypting {
+                // One update on air at a time, and none while encryption starts.
+                if (link.updating.is_some() && link.asking.is_none()) || link.peer_update_until.is_some() || link.encrypting {
                     self.after(ms(iv), Do::PeerUpdate(l, to));
                     return;
                 }
@@ -951,10 +946,14 @@ impl Fake {
                 if granted.is_none() {
                     link.updating = None;
                 }
+                let until = link.peer_update_until;
                 self.emit(RadioEvent::ParamsAnswered { link: l, accepted: granted.is_some() });
                 if self.end(id).is_some() && granted.is_some() {
                     self.emit(RadioEvent::Done(id, Ok(Outcome::Done)));
                 }
+                let Some(p) = granted else { return };
+                // The central runs one update at a time: this one starts once its own is in.
+                self.agenda_at(until.unwrap_or(self.now), Do::UpdateStarts(l, p, id));
             }
             Do::UpdateStarts(l, p, id) => {
                 let Some(link) = self.link(l) else { return };

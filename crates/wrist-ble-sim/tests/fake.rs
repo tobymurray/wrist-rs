@@ -520,10 +520,12 @@ fn an_android_17_phone_moves_itself_to_48_75_ms() {
         }
     }
     assert!(unbonded.iter().max().unwrap() - unbonded.iter().min().unwrap() >= 7, "{unbonded:?}");
-    // Its own move undoes no grant.
+    // Asked as its own move starts, it takes that move first and the grant after, and undoes neither.
     let ask = ConnParams { interval_min: Duration::from_u16(12), interval_max: Duration::from_u16(24), ..conn(12) };
-    let seen = intervals(1, Phone { keys: Keys::Bonded, ..Phone::new(Os::Android17, 4) }, &[(200, ask)], 3_000);
-    assert_eq!(seen.last().map(|&(_, iv)| iv), Some(24), "{seen:?}");
+    for seed in 0..8 {
+        let seen = intervals(seed, Phone { keys: Keys::Bonded, ..Phone::new(Os::Android17, 4) }, &[(200, ask)], 3_000);
+        assert!(matches!(seen[..], [(321, 39), (_, 24)]), "seed {seed}: {seen:?}");
+    }
 }
 
 /// An unbonded Android runs its link at 7.5 ms for a third of a second, then goes back to 45 ms;
