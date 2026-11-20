@@ -1,5 +1,16 @@
 //! A console command's output, held while it runs and let out a line at a time.
 
+/// Room a line let out into a slow sink leaves for output that cannot wait, a full power
+/// report among it.
+pub const HEADROOM: usize = 2048;
+
+/// Whether a line of `len` bytes may go into a sink of `capacity` holding `free` now: it
+/// leaves [`HEADROOM`], or the sink is empty.
+#[must_use]
+pub const fn room(free: usize, capacity: usize, len: usize) -> bool {
+    free >= len + HEADROOM || free == capacity
+}
+
 pub struct Held<const N: usize> {
     buf: [u8; N],
     len: usize,
@@ -33,6 +44,14 @@ impl<const N: usize> Held<N> {
     #[must_use]
     pub fn whole_line(&self) -> bool {
         self.buf[self.out..self.len].contains(&b'\n')
+    }
+
+    /// What [`Held::take`] lets out with a large enough piece: up to and including the next
+    /// `\n`, else all that is held.
+    #[must_use]
+    pub fn next_len(&self) -> usize {
+        let rest = &self.buf[self.out..self.len];
+        rest.iter().position(|&b| b == b'\n').map_or(rest.len(), |i| i + 1)
     }
 
     /// Copies out what is held up to and including its next `\n`, at most `piece.len()` bytes;

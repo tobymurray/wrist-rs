@@ -488,7 +488,7 @@ pub fn submit(line: &[u8]) -> bool {
 }
 
 /// Runs the commands from USB and the air in turn, letting their held output out a line per
-/// poll.
+/// poll as fast as the mirror takes it.
 #[embassy_executor::task]
 pub async fn commands(flash: &'static FlashMutex) -> ! {
     let uart = Uart::best_effort();
@@ -503,12 +503,7 @@ pub async fn commands(flash: &'static FlashMutex) -> ! {
                 command(&line[..n], flash).await;
                 Uart::hold(false);
                 n = 0;
-                loop {
-                    embassy_futures::yield_now().await;
-                    if !uart.release_line() {
-                        break;
-                    }
-                }
+                uart.let_out(false).await;
             }
             b if n < line.len() => {
                 line[n] = b;

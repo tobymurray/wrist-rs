@@ -378,14 +378,23 @@ impl Uart {
     /// written held so no other task's output lands inside it.
     pub async fn pace(self) {
         Self::hold(false);
+        self.let_out(true).await;
+        Self::hold(true);
+    }
+
+    /// Lets out what is held a line per poll, each once the mirror has room for it; `whole`:
+    /// not a line still being written.
+    pub async fn let_out(self, whole: bool) {
         loop {
             embassy_futures::yield_now().await;
-            if !HELD.lock(|h| h.try_borrow().is_ok_and(|h| h.whole_line())) {
-                break;
+            let len = HELD.lock(|h| h.try_borrow().map_or(0, |h| if whole && !h.whole_line() { 0 } else { h.next_len() }));
+            if len == 0 {
+                return;
             }
+            #[cfg(feature = "ble")]
+            crate::ble::room(len).await;
             self.release_line();
         }
-        Self::hold(true);
     }
 
     /// Writes the next line held; whether more is held.

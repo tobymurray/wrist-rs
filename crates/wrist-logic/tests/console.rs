@@ -1,4 +1,4 @@
-use wrist_logic::console::Held;
+use wrist_logic::console::{room, Held, HEADROOM};
 
 /// Each release as the console's task makes it: pieces up to a line's end.
 fn releases<const N: usize>(held: &mut Held<N>, piece: usize) -> Vec<Vec<u8>> {
@@ -70,4 +70,79 @@ fn a_line_still_being_written_is_not_whole() {
     let mut piece = [0u8; 64];
     assert_eq!(held.take(&mut piece), (39, true));
     assert!(!held.whole_line());
+}
+
+#[test]
+fn the_next_line_is_measured_with_its_end() {
+    let mut held = Held::<64>::new();
+    assert_eq!(held.next_len(), 0);
+    assert!(held.hold(b"[usb] pong\r\n[hb] 1"));
+    assert_eq!(held.next_len(), 12);
+    held.take(&mut [0; 64]);
+    assert_eq!(held.next_len(), 6);
+}
+
+#[test]
+fn a_line_longer_than_the_headroom_allows_still_goes_into_an_empty_sink() {
+    assert!(room(4096, 4096, 3000));
+    assert!(!room(4095, 4096, 3000));
+    assert!(room(HEADROOM + 100, 4096, 100));
+    assert!(!room(HEADROOM + 99, 4096, 100));
+}
+
+/// The mirror's queue as `ble.rs` fills it: a line goes in whole or is dropped.
+struct Mirror {
+    used: usize,
+    dropped: usize,
+}
+
+impl Mirror {
+    const CAPACITY: usize = 4096;
+
+    fn put(&mut self, len: usize) {
+        if self.used + len <= Self::CAPACITY {
+            self.used += len;
+        } else {
+            self.dropped += 1;
+        }
+    }
+}
+
+/// About 2.5 KB of a command's output let out a line at a time, through [`room`] when
+/// `paced`, over a battery-timed link that carries 220 bytes a connection event, behind a
+/// `ble` line already queued; a full power report, which cannot wait, lands an event in.
+/// The lines the mirror dropped.
+fn long_output_beside_a_report(paced: bool) -> usize {
+    let output = [287, 130, 101, 125, 186, 134, 151, 120, 121, 152, 108, 76, 92, 93, 146, 76, 110, 220, 64, 62];
+    let report = [27, 48, 51, 18, 30, 51, 66, 121, 128, 76, 63, 84, 103, 69, 69, 91, 69, 154, 37];
+    let mut mirror = Mirror { used: 760, dropped: 0 };
+    let mut held = Held::<4096>::new();
+    for len in output {
+        let mut line = vec![b'x'; len - 2];
+        line.extend(b"\r\n");
+        assert!(held.hold(&line));
+    }
+    let mut piece = [0u8; 4096];
+    for event in 0..100 {
+        while held.whole_line() && (!paced || room(Mirror::CAPACITY - mirror.used, Mirror::CAPACITY, held.next_len())) {
+            let (n, _) = held.take(&mut piece);
+            mirror.put(n);
+        }
+        if event == 1 {
+            for len in report {
+                mirror.put(len);
+            }
+        }
+        mirror.used = mirror.used.saturating_sub(220);
+        if !held.whole_line() && mirror.used == 0 {
+            return mirror.dropped;
+        }
+    }
+    panic!("the output never drained");
+}
+
+#[test]
+fn long_output_goes_at_the_links_pace_and_leaves_room_for_a_report() {
+    assert!(long_output_beside_a_report(false) > 0);
+    assert_eq!(long_output_beside_a_report(true), 0);
 }

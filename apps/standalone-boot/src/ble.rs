@@ -190,7 +190,11 @@ type Line = ([u8; 192], usize);
 /// subscribed central. The loop clears it before it reads that state.
 static WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 /// Console output for the central, filled while [`MIRROR`] is set.
-static OUT: Pipe<CriticalSectionRawMutex, 2048> = Pipe::new();
+static OUT: Pipe<CriticalSectionRawMutex, 4096> = Pipe::new();
+/// Raised as room opens in [`OUT`] or the mirror stops, for [`room`].
+static ROOM: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+/// The longest a line waits in [`room`] before it goes regardless.
+const ROOM_WAIT: Duration = Duration::from_secs(3);
 /// Console output on its way into [`OUT`], a whole line at a time.
 static LINES: Mutex<CriticalSectionRawMutex, RefCell<Lines<256>>> = Mutex::new(RefCell::new(Lines::new()));
 /// Lines the mirror dropped because [`OUT`] was full.
@@ -292,6 +296,18 @@ fn clear_out() {
             l.clear();
         }
     });
+    ROOM.signal(());
+}
+
+/// Waits, boundedly, until a line of `len` bytes fits in the mirror with room to spare for
+/// output that cannot wait, or the mirror stops: a long command goes at the link's pace.
+pub async fn room(len: usize) {
+    let until = Instant::now() + ROOM_WAIT;
+    while MIRROR.load(Ordering::Relaxed) && !wrist_logic::console::room(OUT.free_capacity(), OUT.capacity(), len) {
+        if embassy_time::with_deadline(until, ROOM.wait()).await.is_err() {
+            return;
+        }
+    }
 }
 
 /// Console output, mirrored to a subscribed central over an encrypted link. Never blocks:
@@ -676,6 +692,7 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
         link.chip.hold();
         drop(link);
         MIRROR.store(false, Ordering::Relaxed);
+        ROOM.signal(());
         set_encrypted(false);
         set_state(STATE_OFF);
         clear_prompt();
@@ -1172,6 +1189,7 @@ impl Link<'_> {
         if chunk.is_empty() {
             return;
         }
+        ROOM.signal(());
         let link = ConnHandle::new(CONN_HANDLE.load(Ordering::Relaxed));
         let notify = Payload::new(chunk)
             .map(|value| Op::Notify(link, server::TX, value))
