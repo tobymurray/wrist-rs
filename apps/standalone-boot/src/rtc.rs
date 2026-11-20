@@ -32,6 +32,7 @@ const TR_PM: u32 = 1 << 22;
 const RTC_ALRMAR: u32 = RTC_BASE + 0x40;
 const RTC_ALRMASSR: u32 = RTC_BASE + 0x44;
 const RTC_SR: u32 = RTC_BASE + 0x50;
+const CR_BYPSHAD: u32 = 1 << 5;
 const CR_ALRAE: u32 = 1 << 8;
 const CR_ALRAIE: u32 = 1 << 12;
 const SR_ALRAF: u32 = 1 << 0;
@@ -160,6 +161,13 @@ fn start_at(cycles_per_ms: u32) -> Result<&'static str, &'static str> {
     unsafe { write32(PWR_DBPR, PWR_DBPR_DBP) };
     let bdcr = unsafe { read32(RCC_BDCR) };
     if bdcr & RCC_BDCR_RTCEN != 0 {
+        // Stock firmware sets it, and with it RSF never comes (RM0456 63.3.12).
+        unsafe {
+            write32(RTC_WPR, WPR_KEY1);
+            write32(RTC_WPR, WPR_KEY2);
+            modify32(RTC_CR, CR_BYPSHAD, 0);
+            write32(RTC_WPR, WPR_LOCK);
+        }
         let src = match bdcr & RCC_BDCR_RTCSEL_MASK {
             RCC_BDCR_RTCSEL_LSE => SRC_LSE,
             RCC_BDCR_RTCSEL_LSI => SRC_LSI,
