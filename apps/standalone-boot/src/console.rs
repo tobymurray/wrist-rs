@@ -539,7 +539,7 @@ async fn command(cmd: &[u8], flash: &'static FlashMutex) {
     match cmd.strip_suffix(b" ").unwrap_or(cmd) {
         b"help" | b"?" => {
             uart.write_line(
-                "[usb] commands: help ping uptime version boot reset report usblog time [set YYYY-MM-DD HH:MM:SS|zone <min> [<utc s> <min>]...] alarm [HH:MM|on|off|test|wake-test <s>] power [gauge|sleep on|off|status|clear-crash] page [lag [s]|vcom [auto|low|high]|light on|off|dump|stress [...]] press <up|down|back|select> [long] modules [force view|link1] haptic [tap|alarm|stop] flash survey|ecc-test staging <len>|<off> <n> update <len> <crc32> loader <len> <crc32>",
+                "[usb] commands: help ping uptime version boot reset report usblog log [since <n>] time [set YYYY-MM-DD HH:MM:SS|zone <min> [<utc s> <min>]...] alarm [HH:MM|on|off|test|wake-test <s>] power [gauge|sleep on|off|status|clear-crash] page [lag [s]|vcom [auto|low|high]|light on|off|dump|stress [...]] press <up|down|back|select> [long] modules [force view|link1] haptic [tap|alarm|stop] flash survey|ecc-test staging <len>|<off> <n> update <len> <crc32> loader <len> <crc32>",
             );
             uart.pace().await;
             uart.write_line("[usb]   boot: the loader's state word; update: stream a new application (tools/wrist-update.py)");
@@ -548,6 +548,7 @@ async fn command(cmd: &[u8], flash: &'static FlashMutex) {
             uart.write_line("[usb]   alarm: one a day at a local HH:MM, rung on the face and the motor; on and off keep the time; test rings it now; wake-test times RTC alarm A's interrupt");
             uart.write_line("[usb]   report: the full report (clocks, RTC, USB registers and log), written in pieces");
             uart.write_line("[usb]   reset: software reset; hold Select through it for the bootloader's USB mode");
+            uart.write_line("[usb]   log since <n>: the console's output kept in RAM from position n, each line after the uptime it began at; ends with the next read's n");
             uart.pace().await;
             uart.write_line("[usb]   power: the input, the last stretch on battery, sleep counters, the retained crash record");
             uart.write_line("[usb]   page: the face as last drawn; frame, executor-latency and per-task CPU figures; vcom and the light");
@@ -573,6 +574,7 @@ async fn command(cmd: &[u8], flash: &'static FlashMutex) {
         rest if rest.starts_with(b"ble ") => crate::ble::command(&rest[4..], uart),
         rest if rest == b"haptic" || rest.starts_with(b"haptic ") => crate::haptic::command(&rest[6..], uart),
         b"usblog" => crate::ask_report(crate::Report::UsbLog, uart),
+        rest if rest == b"log" || rest.starts_with(b"log ") => crate::journal::command(&rest[3..], uart).await,
         b"report" => crate::ask_report(crate::Report::Full, uart),
         rest if rest == b"modules" || rest.starts_with(b"modules ") => crate::modules::command(&rest[7..], uart).await,
         b"rtc" | b"time" => crate::ask_report(crate::Report::Rtc, uart),
