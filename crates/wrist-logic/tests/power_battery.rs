@@ -24,6 +24,16 @@ fn a_reading_out_of_order_does_not_shorten_the_run() {
 }
 
 #[test]
+fn a_run_lasts_to_its_end_not_its_last_reading() {
+    let mut run = BatteryRun::new(0);
+    run.reading(10_000, Some(-1), None, None, None);
+    run.end(69_999);
+    assert_eq!(run.seconds(), 69);
+    run.end(30_000);
+    assert_eq!(run.seconds(), 69);
+}
+
+#[test]
 fn time_to_empty_is_5_625_s_a_count_and_unknown_at_ffff() {
     assert_eq!(tte_seconds(0), Some(0));
     assert_eq!(tte_seconds(8), Some(45));

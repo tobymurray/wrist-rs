@@ -219,7 +219,12 @@ impl BatteryRun {
         self.samples
     }
 
-    /// From the start to the last reading.
+    /// Brings the run up to `now_ms`, between readings or at its end.
+    pub fn end(&mut self, now_ms: u64) {
+        self.last_ms = self.last_ms.max(now_ms);
+    }
+
+    /// From the start to the last reading or [`BatteryRun::end`].
     #[must_use]
     pub const fn seconds(&self) -> u64 {
         (self.last_ms - self.start_ms) / 1000
