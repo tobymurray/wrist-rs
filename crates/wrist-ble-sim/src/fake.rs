@@ -20,7 +20,7 @@ use crate::rng::Rng;
 /// The console's TX in the watch's table, which a phone subscribes to.
 pub const CONSOLE: ServerAttr = wrist_bluenrg2::wake::ble::server::TX;
 
-/// The link-layer payloads the chip reports on each link, as a host's capture shows them.
+/// The link-layer payloads the chip reports on each link with a central that takes 251 octets.
 const DATA_LENGTH: (u16, u16) = (251, 251);
 /// Their time on air on the 1M PHY (Core Vol 6 Part B §4.5.10).
 const DATA_TIME: (Micros, Micros) = (Micros(2120), Micros(2120));

@@ -8,6 +8,7 @@ use std::cell::Cell;
 use bluenrg2::{gap_role, io_capability, opcode, BootReason};
 use common::{driver, event, Shared};
 use embassy_futures::block_on;
+use wrist_ble::bt_hci::cmd::{le::LeWriteSuggestedDefaultDataLength, Cmd as _};
 use wrist_ble::{CharDecl, RadioEvent, ResetCause, ServerTable, ServiceDecl};
 use wrist_bluenrg2::bonds::PAIRING;
 use wrist_bluenrg2::driver::{Got, Unanswered};
@@ -114,8 +115,7 @@ fn a_start_sends_the_bring_up_ble_rs_sent_and_builds_the_server() {
         (opcode::ACI_HAL_WRITE_CONFIG_DATA, address(0x00)),
         (opcode::ACI_HAL_SET_TX_POWER_LEVEL, vec![0x01, 0x04]),
         (opcode::HCI_SET_EVENT_MASK, EVENT_MASK.to_vec()),
-        // HCI_LE_WRITE_SUGGESTED_DEFAULT_DATA_LENGTH: 251 octets in 2120 us.
-        (0x2024, vec![0xFB, 0x00, 0x48, 0x08]),
+        (LeWriteSuggestedDefaultDataLength::OPCODE.to_raw(), [251u16.to_le_bytes(), 2120u16.to_le_bytes()].concat()),
         (opcode::ACI_GATT_INIT, vec![]),
         (opcode::ACI_GAP_INIT, vec![gap_role::PERIPHERAL | gap_role::CENTRAL, 0x00, 7]),
         (opcode::ACI_GATT_UPDATE_CHAR_VALUE, vec![0x05, 0x00, 0x06, 0x00, 0x00, 3, b'U', b'N', b'A']),

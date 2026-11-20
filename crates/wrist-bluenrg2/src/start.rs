@@ -73,8 +73,8 @@ pub enum Starting {
 
 const PERIPHERAL_AND_CENTRAL: u8 = 0x05;
 
-/// The largest packet a link sends, and its time on the 1M PHY: the chip's supported maximum
-/// (ST's `bluenrg1_hal_aci.h`, config offset 0xD1). Links otherwise start at 27 octets.
+/// The chip's supported maximum payload and its time on the 1M PHY (ST's `bluenrg1_hal_aci.h`,
+/// config offset 0xD1).
 const DATA_LENGTH: (u16, u16) = (251, 2120);
 
 /// The roles `ACI_GAP_INIT` is asked for, in turn: the peripheral alone if the chip refuses both,
