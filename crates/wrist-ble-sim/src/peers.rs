@@ -63,9 +63,9 @@ impl Phone {
         }
     }
 
-    /// When the link's data length changes, after connecting, as each changed it at the interval it
-    /// connects at (`fixtures/bluez-reconnects.txt`, `fixtures/traces`); the same at any other, a
-    /// simplification.
+    /// When the phone changes the link's data length after connecting, with the chip suggesting no
+    /// default, as each did at the interval it connects at (`fixtures/bluez-reconnects.txt`,
+    /// `fixtures/traces`); the same at any other, a simplification.
     pub(crate) fn data_length(self) -> (u32, u32) {
         match self.os {
             Os::Mac => (633, 1_038),

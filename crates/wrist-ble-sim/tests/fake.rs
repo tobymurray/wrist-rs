@@ -145,7 +145,7 @@ fn a_phones_data_length_changes_when_the_captures_show() {
             })
             .collect();
         let (min, max) = (*took.iter().min().unwrap(), *took.iter().max().unwrap());
-        assert!(lo <= min && max <= hi && max - min >= (hi - lo) / 2, "{os:?}: {took:?} against {lo}..={hi}");
+        assert!(lo <= min && max <= hi && min - lo <= (hi - lo) / 8 && hi - max <= (hi - lo) / 8, "{os:?}: {took:?} against {lo}..={hi}");
     }
 }
 
