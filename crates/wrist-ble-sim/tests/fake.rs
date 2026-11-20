@@ -471,7 +471,7 @@ fn a_phones_own_update_and_the_watchs_run_in_turn() {
     }
 }
 
-/// Android's short run at 7.5 ms goes back however long the watch's updates held it off.
+/// Android's short run at 7.5 ms waits for the watch's granted updates, and goes back on time after.
 #[test]
 fn a_phones_short_run_goes_back_after_the_watchs_updates() {
     let battery = ConnParams { interval_min: Duration::from_u16(80), interval_max: Duration::from_u16(160), ..conn(80) };
@@ -480,6 +480,10 @@ fn a_phones_short_run_goes_back_after_the_watchs_updates() {
         for after in (450..1_200).step_by(10) {
             let seen = intervals(seed, Phone { keys: Keys::None, ..Phone::new(Os::Android, 4) }, &[(350, battery), (after, cable)], 6_000);
             assert_eq!(seen.last().map(|&(_, iv)| iv), Some(24), "seed {seed}, asked again at {after}: {seen:?}");
+            // 7.5 ms goes on air once the update before it is in, and holds at most 340 ms.
+            let fast = seen.iter().position(|&(_, iv)| iv == 6).unwrap();
+            let ((before, units), (at, _), (back, _)) = (seen[fast - 1], seen[fast], seen[fast + 1]);
+            assert!(at - before >= u64::from(units) * 5 / 4 * 6 && back - at <= 340, "seed {seed}, asked again at {after}: {seen:?}");
         }
     }
 }

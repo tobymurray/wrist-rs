@@ -79,6 +79,8 @@ struct Link {
     asking: Option<OpId>,
     /// The peer's own update, until its instant.
     peer_update_until: Option<Instant>,
+    /// Updates the central has granted and not yet applied.
+    granting: u8,
     /// The interval a phone's short run at 7.5 ms goes back to, until it does.
     back: Option<u16>,
     /// An update this device asked for has been applied.
@@ -908,7 +910,7 @@ impl Fake {
                 let Some(link) = self.link_mut(l) else { return };
                 let iv = interval_ms(link.params);
                 // One update on air at a time, and none while encryption starts.
-                if (link.updating.is_some() && link.asking.is_none()) || link.peer_update_until.is_some() || link.encrypting {
+                if link.granting > 0 || link.peer_update_until.is_some() || link.encrypting {
                     self.after(ms(iv), Do::PeerUpdate(l, to));
                     return;
                 }
@@ -947,6 +949,7 @@ impl Fake {
                     link.updating = None;
                 }
                 let until = link.peer_update_until;
+                link.granting += u8::from(granted.is_some());
                 self.emit(RadioEvent::ParamsAnswered { link: l, accepted: granted.is_some() });
                 if self.end(id).is_some() && granted.is_some() {
                     self.emit(RadioEvent::Done(id, Ok(Outcome::Done)));
@@ -968,6 +971,7 @@ impl Fake {
                     link.updating = None;
                 }
                 link.params = p;
+                link.granting = link.granting.saturating_sub(1);
                 link.granted = true;
                 if link.back.is_some() {
                     link.back = Some(p.interval.as_u16());
@@ -1254,6 +1258,7 @@ impl Fake {
             updating: None,
             asking: None,
             peer_update_until: None,
+            granting: 0,
             back: None,
             granted: false,
             subscribed: false,
