@@ -338,7 +338,7 @@ pub mod ble {
             let went = status == Ok(bluenrg2::BleStatus::SUCCESS);
             let unknown = answer == Err(Unanswered::NoReply);
             if cleared || unknown {
-                self.cut |= (went || unknown) && inside;
+                self.cut = if went { inside } else { self.cut || (unknown && inside) };
                 if cleared {
                     self.owe_line_end();
                     return false;

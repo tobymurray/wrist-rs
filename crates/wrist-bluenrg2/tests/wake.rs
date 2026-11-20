@@ -275,6 +275,17 @@ fn a_whole_line_in_flight_at_a_clear_needs_no_new_line() {
 }
 
 #[test]
+fn a_line_ended_in_flight_at_a_clear_needs_no_new_line_after_a_cut_one() {
+    let mut out = Outbox::<8>::default();
+    assert_eq!(next_with(&mut out, 4, b"[hb] 1\r\n"), b"[hb]");
+    assert!(!out.sent(SENT));
+    assert_eq!(next_with(&mut out, 8, b" 1\r\n"), b" 1\r\n");
+    out.clear();
+    assert!(!out.sent(SENT));
+    assert!(!out.pending());
+}
+
+#[test]
 fn an_answer_with_nothing_in_flight_changes_nothing() {
     let mut out = Outbox::<8>::default();
     assert_eq!(out.next(8, |_| 0), b"");
