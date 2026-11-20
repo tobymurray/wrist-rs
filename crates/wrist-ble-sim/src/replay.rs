@@ -14,6 +14,8 @@ use wrist_bluenrg2::shadow::verdict::{Act, Disagreement};
 use wrist_bluenrg2::shadow::{trace, DriverOp, Excuse, Observer, Shadow};
 use wrist_bluenrg2::INFO;
 
+use crate::capture::{self, command, stamped, Command, Profile};
+
 /// One line of the replay's timeline.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
@@ -285,29 +287,17 @@ impl Replay {
     fn line(&mut self, text: &str) {
         let text = text.trim();
         let now = self.shadow.now();
-        if let Some(rest) = text.strip_prefix("[trace] ") {
-            self.trace(rest);
+        if text.starts_with("[trace] ") {
+            self.trace(text);
         } else if let Some(cmd) = text.strip_prefix(">> usb ") {
-            if let Some(len) = usb_update(cmd.trim()) {
-                self.usb_update = Some(UsbUpdate::Asked(len));
-            }
-            match cmd.trim() {
-                "ble off" => self.shadow.radio(now, false),
-                "ble on" => self.shadow.radio(now, true),
-                "ble profile battery" => self.shadow.timing(now, Power::Battery, self.transfer),
-                "ble profile cable" | "ble profile auto" => self.shadow.timing(now, Power::Cable, self.transfer),
-                "ble disconnect" => self.shadow.operator_disconnect(now),
-                c if c.starts_with("ble interval now ") => {
-                    let mut units = c[17..].split_whitespace().map(|w| w.parse::<u16>().ok());
-                    if let (Some(Some(min)), Some(Some(max))) = (units.next(), units.next()) {
-                        if wrist_bluenrg2::wake::ble::interval_now(min, max) {
-                            self.shadow.interval_now(now, min, max);
-                        }
-                    }
-                }
-                "ble yes" => self.shadow.answer(now, true),
-                "ble no" => self.shadow.answer(now, false),
-                _ => {}
+            match command(cmd.trim()) {
+                Some(Command::Update(len, _)) => self.usb_update = Some(UsbUpdate::Asked(len)),
+                Some(Command::Radio(on)) => self.shadow.radio(now, on),
+                Some(Command::Profile(p)) => self.shadow.timing(now, if p == Profile::Battery { Power::Battery } else { Power::Cable }, self.transfer),
+                Some(Command::Disconnect) => self.shadow.operator_disconnect(now),
+                Some(Command::IntervalNow(min, max)) => self.shadow.interval_now(now, min, max),
+                Some(Command::Answer(yes)) => self.shadow.answer(now, yes),
+                None => {}
             }
             self.push(Who::Line, format!(">> {cmd}"));
         } else if let Some(update) = text.strip_prefix("[update] ") {
@@ -353,15 +343,10 @@ impl Replay {
         }
     }
 
-    fn trace(&mut self, rest: &str) {
-        let mut f = rest.split_whitespace();
-        let (Some(ms), Some(dir)) = (f.next().and_then(|m| m.parse::<u64>().ok()), f.next()) else { return };
-        let bytes: Vec<u8> = f
-            .next()
-            .filter(|h| !h.starts_with('+'))
-            .map(|h| (0..h.len() / 2).filter_map(|i| u8::from_str_radix(&h[2 * i..2 * i + 2], 16).ok()).collect())
-            .unwrap_or_default();
-        let cut = rest.contains(" +");
+    fn trace(&mut self, text: &str) {
+        let Some(t) = capture::trace(text) else { return };
+        let (ms, dir, cut) = (t.ms, t.kind, t.cut);
+        let bytes = t.packet.unwrap_or_default();
         self.last_ms = Some(ms);
         let at = Instant(self.base.unwrap_or_default() + ms);
         self.shadow.advance(at);
@@ -414,14 +399,6 @@ fn uptime_ms(text: &str) -> Option<u64> {
     s.parse::<u64>().ok().map(|s| s * 1_000)
 }
 
-/// The length of the USB `update` the console takes `cmd` as, as `parse_transfer` in the
-/// firmware's console.rs reads it.
-fn usb_update(cmd: &str) -> Option<u32> {
-    let mut parts = cmd.strip_prefix("update ")?.split_whitespace();
-    let len = parts.next()?.parse::<u32>().ok()?;
-    u32::from_str_radix(parts.next()?, 16).ok().map(|_| len)
-}
-
 /// Replays lines of `<host seconds> <console line>`, as `tools/ble-trace-capture.py` writes them.
 /// A watch reset starts the core again, and the host's clock carries the timeline across it.
 #[must_use]
@@ -432,11 +409,8 @@ pub fn replay(capture: &str) -> Report {
     let mut started = false;
     let mut offset: Option<i64> = None;
     for line in capture.lines() {
-        let (host, text) = match line.trim_start().split_once(' ') {
-            Some((t, rest)) => host_ms(t).map_or((None, line), |t| (Some(t), rest)),
-            None => (None, line),
-        };
-        let traced = text.trim().strip_prefix("[trace] ").and_then(|r| r.split_whitespace().next()).and_then(|m| m.parse::<u64>().ok());
+        let (host, text) = stamped(line).map_or((None, line), |s| (i64::try_from(s.ms).ok(), s.text));
+        let traced = capture::trace(text.trim()).map(|t| t.ms);
         // This line on the timeline by the host's clock, which runs on through a reset.
         let now = r.shadow.now().0;
         let by_host = host.zip(offset).and_then(|(h, o)| u64::try_from(h + o).ok()).map_or(now, |t| t.max(now));
@@ -479,22 +453,4 @@ fn comes_up(text: &str) -> bool {
     let mut f = text.split_whitespace().skip(2);
     // `ACI_BLUE_INITIALIZED`, started normally.
     matches!((f.next(), f.next()), (Some("r"), _) | (Some("e"), Some("04FF03010001")))
-}
-
-/// A line's host time in milliseconds, from seconds with three decimals or a wall clock's `HH:MM:SS.mmm`.
-fn host_ms(t: &str) -> Option<i64> {
-    let (s, ms) = t.split_once('.')?;
-    (ms.len() == 3 && ms.bytes().all(|b| b.is_ascii_digit())).then_some(())?;
-    let mut seconds = 0i64;
-    let mut fields = 0;
-    for field in s.split(':') {
-        fields += 1;
-        let ok = !field.is_empty() && field.bytes().all(|b| b.is_ascii_digit()) && (fields == 1 || field.len() == 2);
-        if !ok || fields > 3 {
-            return None;
-        }
-        seconds = seconds * 60 + field.parse::<i64>().ok()?;
-    }
-    (fields == 1 || fields == 3).then_some(())?;
-    Some(seconds * 1_000 + ms.parse::<i64>().ok()?)
 }

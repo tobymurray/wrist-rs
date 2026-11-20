@@ -47,6 +47,12 @@ impl DriverOp {
     }
 }
 
+/// Whether the driver's command `opcode` is one of the core's operations.
+#[must_use]
+pub fn is_op(opcode: u16) -> bool {
+    driver_op(opcode).is_some()
+}
+
 /// The driver's command as the operation it carries out, for the commands that are one.
 fn driver_op(opcode: u16) -> Option<(OpKind, &'static str)> {
     Some(match opcode {
