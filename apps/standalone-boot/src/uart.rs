@@ -225,6 +225,11 @@ impl Uart {
     /// A synchronous handle for fault handlers; it sends the queued backlog
     /// first.
     pub fn direct() -> Self {
+        Self::retry();
+        Self::drain_sync(2048);
+        Self::hold(false);
+        while Self::best_effort().release_line() {}
+        Self::drain_sync(RING);
         Self(Mode::Direct)
     }
 
