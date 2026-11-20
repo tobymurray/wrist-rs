@@ -568,7 +568,7 @@ async fn command(cmd: &[u8], flash: &'static FlashMutex) {
             uart.write_line("[usb]   ble probe: the chip's firmware and updater versions, and its anchor period idle, advertising, or beside a link");
         }
         #[cfg(feature = "ble")]
-        b"ble" => crate::ble::write_status(uart).await,
+        rest if rest.trim_ascii_end() == b"ble" => crate::ble::write_status(uart).await,
         #[cfg(feature = "ble")]
         rest if rest.starts_with(b"ble ") => crate::ble::command(&rest[4..], uart),
         rest if rest == b"haptic" || rest.starts_with(b"haptic ") => crate::haptic::command(&rest[6..], uart),
@@ -622,7 +622,7 @@ async fn command(cmd: &[u8], flash: &'static FlashMutex) {
         }
         b"ping" => uart.write_line("[usb] pong"),
         rest if rest == b"press" || rest.starts_with(b"press ") => press(&rest[5..], uart),
-        b"page" => crate::glass::write_page(uart).await,
+        rest if rest.trim_ascii_end() == b"page" => crate::glass::write_page(uart).await,
         rest if rest.starts_with(b"page ") => crate::glass::command(&rest[4..], uart),
         b"uptime" => {
             uart.write_str("[usb] uptime ");
