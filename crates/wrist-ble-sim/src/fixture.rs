@@ -2,6 +2,10 @@
 
 use std::fmt::Write as _;
 
+use bluenrg2::event_code::{COMMAND_COMPLETE, COMMAND_STATUS, LE_META, VENDOR};
+use bluenrg2::le_subevent::{ADVERTISING_REPORT, CONNECTION_COMPLETE, ENHANCED_CONNECTION_COMPLETE};
+use bluenrg2::packet::EVENT;
+use bluenrg2::vendor::GATT_ATTRIBUTE_MODIFIED;
 use wrist_ble::Instant;
 use wrist_bluenrg2::shadow::{is_op, trace as snapshot};
 
@@ -51,17 +55,6 @@ pub fn keep(line: &str) -> Option<String> {
     Some(out)
 }
 
-const EVENT: u8 = 0x04;
-const LE_META: u8 = 0x3E;
-const VENDOR: u8 = 0xFF;
-const COMMAND_COMPLETE: u8 = 0x0E;
-const COMMAND_STATUS: u8 = 0x0F;
-const REPORT: u8 = 0x02;
-const CONNECTION_COMPLETE: u8 = 0x01;
-const ENHANCED_CONNECTION_COMPLETE: u8 = 0x0A;
-/// `ACI_GATT_ATTRIBUTE_MODIFIED`, which carries what a central writes to the console.
-const ATTRIBUTE_MODIFIED: u16 = 0x0C01;
-
 /// The chip's event `p` as a fixture keeps it: a reply to an operation cut after its status, a
 /// connection's peer and resolvable addresses zeroed; `None` for an advertising report, a console
 /// write or a reply to another command.
@@ -79,12 +72,12 @@ fn event(mut p: Vec<u8>) -> Option<Vec<u8>> {
             p.truncate(7);
             p[2] = 4;
         }
-        VENDOR if p.len() >= 5 && u16_at(3) == ATTRIBUTE_MODIFIED => return None,
+        VENDOR if p.len() >= 5 && u16_at(3) == GATT_ATTRIBUTE_MODIFIED => return None,
         LE_META if p.len() >= 4 => {
             // After the subevent: status, handle, role and the peer's kind, then its address and,
             // in the enhanced event, the local and peer resolvable addresses.
             let addresses = match p[3] {
-                REPORT => return None,
+                ADVERTISING_REPORT => return None,
                 CONNECTION_COMPLETE => 9..15,
                 ENHANCED_CONNECTION_COMPLETE => 9..27,
                 _ => 0..0,

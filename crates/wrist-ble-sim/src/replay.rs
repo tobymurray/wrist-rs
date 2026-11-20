@@ -290,6 +290,7 @@ impl Replay {
         if text.starts_with("[trace] ") {
             self.trace(text);
         } else if let Some(cmd) = text.strip_prefix(">> usb ") {
+            // Sent stripped by `wrist_port.write_command`.
             match command(cmd.trim()) {
                 Some(Command::Update(len, _)) => self.usb_update = Some(UsbUpdate::Asked(len)),
                 Some(Command::Radio(on)) => self.shadow.radio(now, on),
@@ -410,7 +411,8 @@ pub fn replay(capture: &str) -> Report {
     let mut offset: Option<i64> = None;
     for line in capture.lines() {
         let (host, text) = stamped(line).map_or((None, line), |s| (i64::try_from(s.ms).ok(), s.text));
-        let traced = capture::trace(text.trim()).map(|t| t.ms);
+        let trace = capture::trace(text.trim());
+        let traced = trace.as_ref().map(|t| t.ms);
         // This line on the timeline by the host's clock, which runs on through a reset.
         let now = r.shadow.now().0;
         let by_host = host.zip(offset).and_then(|(h, o)| u64::try_from(h + o).ok()).map_or(now, |t| t.max(now));
@@ -436,7 +438,7 @@ pub fn replay(capture: &str) -> Report {
                 let goals = r.shadow.goals();
                 r.shadow.set_goals(Instant(ms), goals);
                 started = true;
-                if !comes_up(text) {
+                if !trace.as_ref().is_some_and(comes_up) {
                     r.seed();
                 }
             }
@@ -449,8 +451,9 @@ pub fn replay(capture: &str) -> Report {
 }
 
 /// Whether a trace line is the driver resetting the chip or the chip's ready.
-fn comes_up(text: &str) -> bool {
-    let mut f = text.split_whitespace().skip(2);
-    // `ACI_BLUE_INITIALIZED`, started normally.
-    matches!((f.next(), f.next()), (Some("r"), _) | (Some("e"), Some("04FF03010001")))
+fn comes_up(t: &capture::Trace<'_>) -> bool {
+    let started = |p: &[u8]| {
+        matches!(bluenrg2::parse(p), bluenrg2::Event::Vendor(bluenrg2::VendorEvent::BlueInitialized { reason: Some(bluenrg2::BootReason::STARTED), .. }))
+    };
+    t.kind == "r" || (t.kind == "e" && t.packet.as_deref().is_some_and(started))
 }

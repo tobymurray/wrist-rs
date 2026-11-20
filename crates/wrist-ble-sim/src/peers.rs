@@ -7,9 +7,12 @@ use wrist_ble::{AddrKind, BdAddr, BluetoothUuid, Interval, Millis, ParamRange, P
 pub enum Os {
     /// macOS: a bonded Mac encrypts soon after connecting.
     Mac,
-    /// Android: connects at 45 ms, unbonded runs 7.5 ms for a third of a second and goes back,
-    /// and encrypts as `BlueZ` does.
+    /// Android 14 joining from nRF Connect: connects at 45 ms, unbonded runs 7.5 ms for a third
+    /// of a second and goes back, and encrypts as `BlueZ` does.
     Android,
+    /// Android 17: connects at 18.75 ms and moves itself to 48.75 ms, bonded or not; never 7.5 ms,
+    /// and no data length change (`fixtures/traces/android17-*.log`).
+    Android17,
     /// `BlueZ`: reads the features before encrypting (`fixtures/bluez-reconnects.txt`).
     Linux,
 }
@@ -60,6 +63,20 @@ impl Phone {
         match self.os {
             Os::Mac => ((30, 60), (160, 270)),
             Os::Android | Os::Linux => ((45, 65), (197, 559)),
+            Os::Android17 => ((40, 60), (165, 180)),
+        }
+    }
+
+    /// When the phone changes the link's data length after connecting, if it does, as each did at
+    /// the interval it connects at in captures from before the chip suggested a default
+    /// (`fixtures/bluez-reconnects.txt`, `fixtures/traces`); the same at any other, a
+    /// simplification.
+    pub(crate) fn data_length(self) -> Option<(u32, u32)> {
+        match self.os {
+            Os::Mac => Some((633, 1_038)),
+            Os::Android => Some((194, 273)),
+            Os::Android17 => None,
+            Os::Linux => Some((63, 182)),
         }
     }
 
