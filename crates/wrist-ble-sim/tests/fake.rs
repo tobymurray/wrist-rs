@@ -546,6 +546,9 @@ fn an_android_17_phone_moves_itself_to_48_75_ms() {
     for seed in 0..8 {
         let seen = intervals(seed, Phone { keys: Keys::Bonded, ..Phone::new(Os::Android17, 4) }, &[(200, ask)], 3_000);
         assert!(matches!(seen[..], [(321, 39), (_, 24)]), "seed {seed}: {seen:?}");
+        // Granted before its own move, it keeps the grant.
+        let seen = intervals(seed, Phone { keys: Keys::None, ..Phone::new(Os::Android17, 4) }, &[(200, ask)], 3_000);
+        assert!(matches!(seen[..], [(_, 24)]), "seed {seed}: {seen:?}");
     }
 }
 
