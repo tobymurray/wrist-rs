@@ -16,6 +16,7 @@ import sys
 import tempfile
 import textwrap
 import time
+import types
 import unittest
 from unittest import mock
 import zlib
@@ -111,7 +112,7 @@ def snap(build, ble=True):
 
 def suite_args(**kw):
     base = dict(port=None, install=None, restore=None, image=None, btmon=False, name='UNA', scenarios=['console'], sessions=1,
-                restart_radio=False, profile=None)
+                restart_radio=False, profile=None, air=False)
     base.update(kw)
     return argparse.Namespace(**base)
 
@@ -611,6 +612,144 @@ class Judgements(unittest.TestCase):
             raise RuntimeError('No powered Bluetooth adapters found')
         with mock.patch.object(suite.wrist_ble, 'find', gone), mock.patch('builtins.print'):
             self.assertIsNone(asyncio.run(suite.BleakPhone('UNA').connect()))
+
+
+class Watch:
+    """A watch reached over the air alone: what it logs on its uptime, and its answers to `log since`."""
+
+    def __init__(self, reasons=()):
+        self.t0, self.log, self.reasons, self.sent, self.lost = time.time() - 100, [], list(reasons), [], 0
+
+    def say(self, text):
+        time.sleep(0.005)
+        self.log.append((time.time() - self.t0, text))
+
+    async def send(self, client, text):
+        self.sent.append(text)
+        m = re.match(r'log since (\d+)$', text)
+        if not m:
+            return self.say(f'[usb] {text} answered')
+        n, lines = int(m[1]), client.link.con.lines
+        restarted = n > len(self.log)
+        lines.append(f'[log] since {n}' + (': past the end, so from the start (the watch restarted)' if restarted else ''))
+        for t, line in self.log[0 if restarted else n:]:
+            lines += [f'{t:.3f} {line}', '[hb] a live line between kept ones']
+        lines.append(f'[log] next {len(self.log)} at {time.time() - self.t0:.3f}' + (f', {self.lost} bytes lost' if self.lost else ''))
+
+
+class WatchLink:
+    def __init__(self, watch):
+        self.watch = watch
+        self.client = types.SimpleNamespace(is_connected=True, link=self)
+        self.con = types.SimpleNamespace(lines=[])
+
+    async def command(self, text, pattern, timeout=3):
+        return 'ok'
+
+    async def close(self):
+        if self.client.is_connected:
+            self.client.is_connected = False
+            self.watch.say(f'[ble] disconnected, reason {self.watch.reasons.pop(0) if self.watch.reasons else "13"}')
+
+
+class WatchPhone:
+    def __init__(self, watch):
+        self.watch, self.links = watch, 0
+
+    async def connect(self):
+        self.links += 1
+        self.watch.say('[ble] connected')
+        self.watch.say('[ble] link encrypted')
+        return WatchLink(self.watch)
+
+
+class AirAlone(unittest.TestCase):
+    """--air: the watch's lines from its log, read over each link."""
+
+    def air(self, watch, d):
+        phone = WatchPhone(watch)
+        return suite.Air(phone, Path(d) / 'console.log'), phone
+
+    def test_a_log_answer_is_whole_or_nothing(self):
+        lines = ['[log] since 7', '12.500 [ble] connected', '[hb] 3', '13.000 [pwr] 3900 mV']
+        self.assertIsNone(suite.read_log(lines))
+        got = suite.read_log(lines + ['[log] next 90 at 14.250, 6 bytes lost'])
+        self.assertEqual(got, ([(12.5, '[ble] connected'), (13.0, '[pwr] 3900 mV')], 90, 14.25, 6, False))
+        again = suite.read_log(['[log] since 500: past the end, so from the start (the watch restarted)', '[log] next 3 at 1.000'])
+        self.assertTrue(again[4])
+        self.assertEqual([suite.quiet(l) for l in lines + ['[usb] pong']], [True, True, True, True, False])
+
+    def test_the_log_resumes_where_it_ended_and_a_restart_is_seen(self):
+        watch = Watch()
+        watch.say('[boot] marked booted')
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(suite.wrist_ble, 'send', watch.send), \
+                mock.patch('sys.stdout', io.StringIO()):
+            air, _ = self.air(watch, d)
+            asyncio.run(air.attach())
+            self.assertEqual([l for _, l in air.lines], ['[boot] marked booted', '[ble] connected', '[ble] link encrypted'])
+            watch.say('[pwr] 3900 mV')
+            asyncio.run(air.sync())
+            self.assertEqual([l for _, l in air.lines][3:], ['[pwr] 3900 mV'])
+            self.assertLess(abs(air.lines[-1][0] - time.time()), 0.5)
+            watch.log = []
+            watch.say('[boot] after the reset')
+            asyncio.run(air.sync())
+            self.assertEqual(air.restarts, 1)
+            self.assertEqual(air.lines[-1][1], '[boot] after the reset')
+
+    def test_only_what_the_run_could_have_read_counts_as_lost(self):
+        watch = Watch()
+        watch.lost = 40
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(suite.wrist_ble, 'send', watch.send):
+            air, _ = self.air(watch, d)
+            asyncio.run(air.attach())
+            self.assertEqual(air.lost, 0)
+            asyncio.run(air.sync())
+            self.assertEqual(air.lost, 40)
+
+    def test_an_ask_is_answered_from_the_log(self):
+        watch = Watch()
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(suite.wrist_ble, 'send', watch.send):
+            air, phone = self.air(watch, d)
+            self.assertEqual(asyncio.run(air.ask('uptime', r'uptime answered')), '[usb] uptime answered')
+            self.assertEqual(asyncio.run(air.ask('ping', r'ping answered')), '[usb] ping answered')
+            self.assertEqual(phone.links, 1)
+            self.assertIn('>> air uptime', (Path(d) / 'console.log').read_text())
+
+    def test_traffic_reads_the_log_before_its_answers_outrun_it(self):
+        watch = Watch()
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(suite.wrist_ble, 'send', watch.send), \
+                mock.patch.object(suite, 'SYNC_EVERY', 0):
+            air, _ = self.air(watch, d)
+            link = asyncio.run(air.attach())
+            before = sum(t.startswith('log since') for t in watch.sent)
+            self.assertTrue(asyncio.run(suite.traffic(link, 0, air)))
+            self.assertEqual(sum(t.startswith('log since') for t in watch.sent), before + 1)
+            self.assertTrue(asyncio.run(suite.traffic(link, 0)))
+            self.assertEqual(sum(t.startswith('log since') for t in watch.sent), before + 1)
+
+    def test_each_hang_up_is_judged_from_the_next_link(self):
+        watch = Watch(reasons=['13', '08'])
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(suite.wrist_ble, 'send', watch.send):
+            air, phone = self.air(watch, d)
+            s = suite.Scenario('console', '')
+            with mock.patch('sys.stdout', io.StringIO()):
+                asyncio.run(suite.console(s, air, suite.AirPhone(air, phone), 'b', argparse.Namespace(sessions=2)))
+        said = [c for c in s.checks if 'hang-up' in c['what']]
+        self.assertEqual([(c['passed'], c['what'][-11:]) for c in said], [(True, '(reason 13)'), (False, '(reason 08)')])
+        self.assertEqual(phone.links, 3)
+
+    def test_the_gauge_s_figures_and_what_they_cannot_show(self):
+        lines = [(0, '[pwr] 3900 mV  soc 80.0%  25 C  now -1000 uA  avg -1200 uA  rails all good'),
+                 (60, '[gauge]  RepCap 0C80 100.00 mAh  FullCapNom 0C80 1600.00 mAh'),
+                 (1800, '[ble] connected'),
+                 (3600, '[pwr] 3880 mV  soc 79.5%  25 C  now -500 uA  avg -800 uA  rails all good'),
+                 (3660, '[gauge]  RepCap 0C7F 99.50 mAh  FullCapNom 0C80 1600.00 mAh')]
+        figures = suite.gauge(lines)
+        self.assertEqual((figures['readings'], figures['mean_avg_current_ua'], figures['soc_drop']), (2, -1000, 0.5))
+        self.assertEqual((figures['rep_cap_drop_mah'], figures['rep_cap_drop_ua']), (0.5, 500))
+        self.assertIn('156.25 uA', suite.said(figures))
+        self.assertIsNone(suite.gauge(lines[2:3]))
 
 
 def load(name):
