@@ -1300,6 +1300,7 @@ impl Link<'_> {
             Step::PublicAddressSlot => self.fail("public address slot"),
             Step::TxPower => self.fail("TX power"),
             Step::EventMask => self.fail("event mask"),
+            Step::DataLength => self.fail("data length"),
             Step::GattInit => self.fail("GATT init"),
             Step::GapInit => self.fail("GAP init"),
             Step::DeviceName => self.fail("device name"),
