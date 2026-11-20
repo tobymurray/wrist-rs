@@ -139,6 +139,15 @@ def wake_rate(power, before):
     return (int(wakes[1]) - int(earlier[1])) / minutes if minutes else None
 
 
+SOAK_MINUTES = 30
+
+
+def soak_gauge(out):
+    """Step 21: the soak's `gauge:` line, the figures to record."""
+    m = re.search(r'^\s*gauge: (.*)$', out, re.M)
+    return f'gauge: {m[1] if m else "no reading"}'
+
+
 SLOTS = ('view', 'link1', 'link2')
 
 
@@ -952,6 +961,11 @@ class Gate:
         self.save('step21-update.txt', out)
         self.check(21, 'kept: state boot' in out, 'an update over the air, kept: state boot')
         self.installed(21, 'the candidate over the air')
+        rc, out = self.tool('ble-suite.py', '--air', '--scenarios', 'console,soak', '--soak-minutes', SOAK_MINUTES,
+                            '--gap', '120', '--out', self.out / 'step21-soak', timeout=(SOAK_MINUTES + 15) * 60)
+        self.save('step21-soak.txt', out)
+        self.check(21, rc == 0 and '\nPASSED' in out, f'{SOAK_MINUTES} min soak off the cable, over the air alone: PASSED')
+        self.log(f'    {soak_gauge(out)}')
         self.do(21, 'plug the cable back in')
         self.version_is(21, self.m['build_id'])
 

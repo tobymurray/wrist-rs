@@ -802,6 +802,28 @@ class GateScript(unittest.TestCase):
             self.assertNotIn(gate.POWER_RESET, [w for _, w in asked])
             self.assertIn(gate.INTO_BOOTLOADER, [w for _, w in asked])
 
+    def test_step_21_soaks_off_the_cable_before_it_goes_back_in(self):
+        g = gate.Gate(argparse.Namespace())
+        g.m, g.pkg, g.out = {'build_id': 'b'}, Path('pkg'), Path('out')
+        order, logged = [], []
+        g.save = g.installed = lambda *a: None
+        g.log = logged.append
+        g.check = lambda step, ok, what: order.append(('check', ok, what)) or ok
+        g.do = lambda step, what: order.append(what)
+        g.version_is = lambda *a: True
+        replies = {'wrist-ble.py': '[boot] state boot\nbuild b\nkept: state boot', 'wrist-time.py': '[rtc] set\nthe watch is +0.01 s from',
+                   'ble-suite.py': '  gauge: 30 readings over 0.5 h, mean AvgCurrent -900 uA\n\nPASSED; see out'}
+        g.tool = lambda *a, **k: order.append(a) or (0, replies[a[0]])
+        g.step21()
+        unplug, soak, plug = (next(i for i, o in enumerate(order) if want(o)) for want in (
+            lambda o: o == 'unplug the cable', lambda o: o[0] == 'ble-suite.py', lambda o: o == 'plug the cable back in'))
+        self.assertLess(unplug, soak)
+        self.assertLess(soak, plug)
+        self.assertIn('--air', order[soak])
+        self.assertIn(('check', True, '30 min soak off the cable, over the air alone: PASSED'), order)
+        self.assertIn('    gauge: 30 readings over 0.5 h, mean AvgCurrent -900 uA', logged)
+        self.assertEqual(gate.soak_gauge('no such line'), 'gauge: no reading')
+
     def test_step_16_sets_the_clock_before_the_face(self):
         g = gate.Gate(argparse.Namespace())
         order = []

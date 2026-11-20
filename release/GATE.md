@@ -144,8 +144,13 @@ installed, on a computer with Bluetooth on.
     digits to confirm with Select. `cmd "ble bonds"` lists at least one.
 21. `ble "boot;version"` answers `state boot` and the build. `.venv/bin/python
     tools/wrist-time.py --ble` prints `[rtc] set` and reads the clock back within 0.25 s.
-    Unplug, then `ble --update app.bin`: it ends `kept: state boot`. Plug back in: `cmd
-    "boot;version"`, `state boot` and the build.
+    Unplug, then `ble --update app.bin`: it ends `kept: state boot`. Still unplugged, the
+    soak over the air alone, where the watch sleeps as it does on battery: `.venv/bin/python
+    tools/ble-suite.py --air --scenarios console,soak --soak-minutes 30 --gap 120` ends
+    `PASSED`. Record its `gauge:` line, the mean of the gauge's AvgCurrent and the drop in
+    charge and RepCap; the gauge reads in 156.25 µA steps with an offset of about 1 mA, so
+    these show only faults of a milliamp or more. Plug back in: `cmd "boot;version"`, `state
+    boot` and the build.
 22. On the Bluetooth page, Select: it reads `off`, `cmd ble` `off (chip in reset)`, and `ble
     ping` says no watch is found. The radio stays off for section B.
 
