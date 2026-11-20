@@ -94,6 +94,10 @@ fn calendar_ready() -> bool {
         write32(PWR_DBPR, PWR_DBPR_DBP);
         write32(RTC_WPR, WPR_KEY1);
         write32(RTC_WPR, WPR_KEY2);
+        // RSF never comes with BYPSHAD set (RM0456 63.6.4); stock sets it (una-kernel-public `Rtc::init`).
+        if read32(RTC_CR) & CR_BYPSHAD != 0 {
+            modify32(RTC_CR, CR_BYPSHAD, 0);
+        }
         modify32(RTC_ICSR, ICSR_RSF, 0);
         write32(RTC_WPR, WPR_LOCK);
     }
@@ -160,13 +164,6 @@ fn start_at(cycles_per_ms: u32) -> Result<&'static str, &'static str> {
     unsafe { write32(PWR_DBPR, PWR_DBPR_DBP) };
     let bdcr = unsafe { read32(RCC_BDCR) };
     if bdcr & RCC_BDCR_RTCEN != 0 {
-        // [`calendar_ready`] waits on RSF, which never comes with BYPSHAD set (RM0456 63.6.4).
-        unsafe {
-            write32(RTC_WPR, WPR_KEY1);
-            write32(RTC_WPR, WPR_KEY2);
-            modify32(RTC_CR, CR_BYPSHAD, 0);
-            write32(RTC_WPR, WPR_LOCK);
-        }
         let src = match bdcr & RCC_BDCR_RTCSEL_MASK {
             RCC_BDCR_RTCSEL_LSE => SRC_LSE,
             RCC_BDCR_RTCSEL_LSI => SRC_LSI,
