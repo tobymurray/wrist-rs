@@ -200,10 +200,13 @@ fn notify<const N: usize>(out: &mut Outbox<8>, ring: &mut Ring<N>, most: usize, 
 /// What the central reads as the outbox empties the pipe.
 fn drain<const N: usize>(out: &mut Outbox<8>, ring: &mut Ring<N>) -> Vec<u8> {
     let mut central = Vec::new();
-    while out.pending() || ring.len() > 0 {
+    for _ in 0..=N {
+        if !out.pending() && ring.len() == 0 {
+            return central;
+        }
         central.extend(notify(out, ring, 8, SENT));
     }
-    central
+    panic!("the outbox never emptied");
 }
 
 #[test]

@@ -5,7 +5,7 @@ fn releases<const N: usize>(held: &mut Held<N>, piece: usize) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
     let mut buf = vec![0u8; piece];
     let mut line = Vec::new();
-    loop {
+    for _ in 0..=N {
         let (n, more) = held.take(&mut buf);
         line.extend(&buf[..n]);
         if n == 0 || buf[n - 1] == b'\n' || !more {
@@ -17,6 +17,7 @@ fn releases<const N: usize>(held: &mut Held<N>, piece: usize) -> Vec<Vec<u8>> {
             }
         }
     }
+    panic!("the held output never emptied");
 }
 
 #[test]
@@ -35,7 +36,7 @@ fn a_line_longer_than_a_piece_comes_out_in_pieces() {
     assert!(held.hold(b"abcdefghij\r\nk\r\n"));
     let mut piece = [0u8; 4];
     let mut got = Vec::new();
-    loop {
+    for _ in 0..64 {
         let (n, more) = held.take(&mut piece);
         assert!(n <= 4);
         got.push(piece[..n].to_vec());
