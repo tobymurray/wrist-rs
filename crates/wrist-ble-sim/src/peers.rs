@@ -8,8 +8,7 @@ pub enum Os {
     /// macOS: a bonded Mac encrypts soon after connecting.
     Mac,
     /// Android 14 joining from nRF Connect: connects at 45 ms, unbonded runs 7.5 ms for a third
-    /// of a second and goes back, and encrypts as `BlueZ` does. Joining from Settings, which
-    /// pairs at once and runs 7.5 ms after encrypting or not at all, is not modelled.
+    /// of a second and goes back, and encrypts as `BlueZ` does.
     Android,
     /// Android 17: connects at 18.75 ms and moves itself to 48.75 ms, bonded or not; never 7.5 ms,
     /// and no data length change (`fixtures/traces/android17-*.log`).
@@ -68,8 +67,8 @@ impl Phone {
         }
     }
 
-    /// When the phone changes the link's data length after connecting, as each did at the interval
-    /// it connects at in captures from before the chip suggested a default
+    /// When the phone changes the link's data length after connecting, if it does, as each did at
+    /// the interval it connects at in captures from before the chip suggested a default
     /// (`fixtures/bluez-reconnects.txt`, `fixtures/traces`); the same at any other, a
     /// simplification.
     pub(crate) fn data_length(self) -> Option<(u32, u32)> {
