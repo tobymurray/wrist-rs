@@ -54,10 +54,10 @@ pub enum Command {
     Update(u32, u32),
 }
 
-/// The command `cmd` is, as the firmware's console takes it.
+/// The command `cmd` is, as the firmware's console takes it: one trailing space dropped.
 #[must_use]
 pub fn command(cmd: &str) -> Option<Command> {
-    Some(match cmd {
+    Some(match cmd.strip_suffix(' ').unwrap_or(cmd) {
         "ble on" => Command::Radio(true),
         "ble off" => Command::Radio(false),
         "ble yes" => Command::Answer(true),

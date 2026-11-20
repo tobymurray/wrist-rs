@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use wrist_ble_sim::capture::{command, scrub_addresses, stamped, Command};
+use wrist_ble_sim::capture::{command, scrub_addresses, stamped, Command, Profile};
 use wrist_ble_sim::fixture::{fixture, keep};
 use wrist_ble_sim::replay::{replay, Report};
 
@@ -179,6 +179,15 @@ fn every_command_kept_reads_back_as_itself() {
     assert_eq!(command("ble profile"), None);
     assert_eq!(command("ble on now"), None);
     assert_eq!(command("update 5 1234"), Some(Command::Update(5, 0x1234)));
+}
+
+/// The console drops one trailing space and no more.
+#[test]
+fn a_command_is_trimmed_as_the_console_trims_it() {
+    assert_eq!(command("ble on "), Some(Command::Radio(true)));
+    assert_eq!(command("ble profile battery "), Some(Command::Profile(Profile::Battery)));
+    assert_eq!(command("ble on  "), None);
+    assert_eq!(command(" ble on"), None);
 }
 
 #[test]

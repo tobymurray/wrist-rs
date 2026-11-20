@@ -7,7 +7,7 @@ use wrist_ble::{Op, OpKind};
 use wrist_ble::policy::engine::Omitted;
 use wrist_bluenrg2::shadow::Excuse;
 use wrist_bluenrg2::shadow::DriverOp;
-use wrist_ble_sim::capture::stamped;
+use wrist_ble_sim::capture::{stamped, trace, Trace};
 use wrist_ble_sim::replay::{replay, Report, Who};
 
 fn traces() -> Vec<(String, String)> {
@@ -59,7 +59,7 @@ fn a_capture_that_begins_with_the_chip_up_is_taken_as_up() {
     let r = replay(&fixture("bluez-suite.log"));
     assert_eq!(r.disagreements(), Vec::<String>::new(), "{}", r.render(false));
     let (at, ops) = r.seeded.clone().expect("not seeded");
-    let first = fixture("bluez-suite.log").lines().next().and_then(|l| l.split_whitespace().nth(2)?.parse::<u64>().ok());
+    let first = fixture("bluez-suite.log").lines().next().and_then(traced).map(|t| t.ms);
     assert_eq!(Some(at), first);
     assert!(ops.iter().all(|op| op.kind() == OpKind::Advertise), "{ops:?}");
     assert_eq!(r.resets, 1, "the update's reset");
@@ -73,7 +73,8 @@ fn a_capture_that_begins_with_the_chip_up_is_taken_as_up() {
 #[test]
 fn a_capture_that_begins_as_the_chip_comes_up_is_a_start() {
     let from = |name: &str, first: &str| fixture(name).lines().skip_while(|l| !l.ends_with(first)).flat_map(|l| [l, "\n"]).collect::<String>();
-    for capture in [from("bluez-cable.log", " r"), from("bluez-suite.log", " e 04FF03010001")] {
+    let ready = from("bluez-suite.log", " e 04FF03010001");
+    for capture in [from("bluez-cable.log", " r"), ready.replacen("04FF03010001", "04ff03010001", 1), ready] {
         let r = replay(&capture);
         assert_eq!(r.seeded, None, "{}", r.render(false));
         assert_eq!(r.disagreements(), Vec::<String>::new(), "{}", r.render(false));
@@ -137,8 +138,8 @@ fn after_a_reset(first: &str, between: &[&str], then: &str, gap_ms: u64) -> Stri
         let _ = writeln!(out, "{} {line}", stamp(last + 1));
     }
     for line in then.lines() {
-        let (_, rest) = line.trim_start().split_once(' ').unwrap();
-        let _ = writeln!(out, "{} {rest}", stamp(last + gap_ms + host_ms(line).unwrap()));
+        let line = stamped(line).unwrap();
+        let _ = writeln!(out, "{} {}", stamp(last + gap_ms + line.ms), line.text);
     }
     out
 }
@@ -147,9 +148,13 @@ fn host_ms(line: &str) -> Option<u64> {
     stamped(line).map(|s| s.ms)
 }
 
+fn traced(line: &str) -> Option<Trace<'_>> {
+    trace(stamped(line)?.text)
+}
+
 /// (chip ms, host ms) of each trace line.
 fn clock(capture: &str) -> Vec<(u64, u64)> {
-    capture.lines().filter_map(|l| Some((l.split_whitespace().nth(2)?.parse().ok()?, host_ms(l)?))).collect()
+    capture.lines().filter_map(|l| Some((traced(l)?.ms, host_ms(l)?))).collect()
 }
 
 /// A capture that ends forced to battery timing, which a reset puts back to auto, on the cable.
@@ -271,7 +276,7 @@ fn an_update_over_the_air_is_a_transfer() {
 fn an_update_over_usb_is_no_transfer() {
     let capture = fixture("bluez-update-on-battery.log");
     let send = capture.lines().find(|l| l.contains(" [update] send ")).unwrap();
-    let at = send.split_once(' ').unwrap().0;
+    let at = stamped(send).unwrap().stamp;
     let over_usb = capture.replace(send, &format!("{at} >> usb update 345624 FE7A7220\n{send}"));
     let d = replay(&over_usb).disagreements();
     assert!(d.len() == 2 && d[0].contains("the core asked for 12-12 units") && d[1].contains("the driver asked for 80-160 units"), "{d:?}");
@@ -415,8 +420,7 @@ fn a_usb_update_answered_leaves_the_next_transfer() {
 
 /// What a trace line is: `c`, `e`, `l`, `r` or `s`.
 fn kind(line: &str) -> Option<&str> {
-    let (_, text) = line.split_once(" [trace] ")?;
-    text.split_whitespace().nth(1)
+    traced(line).map(|t| t.kind)
 }
 
 /// The core told a lost read of the driver's on the watch (`ble probe lose link`, the connection
