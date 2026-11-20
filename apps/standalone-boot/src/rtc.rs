@@ -79,9 +79,9 @@ fn clock_bus() {
 }
 
 /// True if the calendar runs; its shadow registers are then a copy made after the last Stop
-/// exit, before which they can be a whole sleep stale (RM0456 63.3.10).
+/// exit, before which they can be a whole sleep stale (RM0456 63.3.12).
 fn calendar_ready() -> bool {
-    /// A copy takes at most two LSE cycles, 61 µs.
+    /// Over two RTC clock cycles, the longest a copy takes (RM0456 63.6.7).
     const RSF_US: u32 = 100;
     if unsafe { read32(RCC_BDCR) } & RCC_BDCR_RTCEN == 0 {
         return false;
@@ -160,7 +160,7 @@ fn start_at(cycles_per_ms: u32) -> Result<&'static str, &'static str> {
     unsafe { write32(PWR_DBPR, PWR_DBPR_DBP) };
     let bdcr = unsafe { read32(RCC_BDCR) };
     if bdcr & RCC_BDCR_RTCEN != 0 {
-        // Stock firmware sets it, and with it RSF never comes (RM0456 63.3.12).
+        // [`calendar_ready`] waits on RSF, which never comes with BYPSHAD set (RM0456 63.6.4).
         unsafe {
             write32(RTC_WPR, WPR_KEY1);
             write32(RTC_WPR, WPR_KEY2);
