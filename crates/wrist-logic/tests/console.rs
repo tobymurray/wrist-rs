@@ -90,7 +90,7 @@ fn a_line_longer_than_the_headroom_allows_still_goes_into_an_empty_sink() {
     assert!(!room(HEADROOM + 99, 4096, 100));
 }
 
-/// The mirror's queue as `ble.rs` fills it: a line goes in whole or is dropped.
+/// A queue a line goes into whole or not at all.
 struct Mirror {
     used: usize,
     dropped: usize,

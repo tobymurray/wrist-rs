@@ -1,7 +1,6 @@
 //! A console command's output, held while it runs and let out a line at a time.
 
-/// Room a line let out into a slow sink leaves for output that cannot wait, a full power
-/// report among it.
+/// Room a line let out into a slow sink leaves for output that cannot wait.
 pub const HEADROOM: usize = 2048;
 
 /// Whether a line of `len` bytes may go into a sink of `capacity` holding `free` now: it

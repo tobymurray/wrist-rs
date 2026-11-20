@@ -193,8 +193,10 @@ static WAKE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 static OUT: Pipe<CriticalSectionRawMutex, 4096> = Pipe::new();
 /// Raised as room opens in [`OUT`] or the mirror stops, for [`room`].
 static ROOM: Signal<CriticalSectionRawMutex, ()> = Signal::new();
-/// The longest a line waits in [`room`] before it goes regardless.
+/// The longest [`room`] waits before lines go regardless, until room next opens.
 const ROOM_WAIT: Duration = Duration::from_secs(3);
+/// [`room`] waited [`ROOM_WAIT`] in vain, and room has not opened since.
+static STALLED: AtomicBool = AtomicBool::new(false);
 /// Console output on its way into [`OUT`], a whole line at a time.
 static LINES: Mutex<CriticalSectionRawMutex, RefCell<Lines<256>>> = Mutex::new(RefCell::new(Lines::new()));
 /// Lines the mirror dropped because [`OUT`] was full.
@@ -296,6 +298,11 @@ fn clear_out() {
             l.clear();
         }
     });
+    room_opened();
+}
+
+fn room_opened() {
+    STALLED.store(false, Ordering::Relaxed);
     ROOM.signal(());
 }
 
@@ -303,8 +310,12 @@ fn clear_out() {
 /// output that cannot wait, or the mirror stops: a long command goes at the link's pace.
 pub async fn room(len: usize) {
     let until = Instant::now() + ROOM_WAIT;
-    while MIRROR.load(Ordering::Relaxed) && !wrist_logic::console::room(OUT.free_capacity(), OUT.capacity(), len) {
+    while MIRROR.load(Ordering::Relaxed)
+        && !STALLED.load(Ordering::Relaxed)
+        && !wrist_logic::console::room(OUT.free_capacity(), OUT.capacity(), len)
+    {
         if embassy_time::with_deadline(until, ROOM.wait()).await.is_err() {
+            STALLED.store(true, Ordering::Relaxed);
             return;
         }
     }
@@ -1185,11 +1196,16 @@ impl Link<'_> {
             return;
         }
         let most = (self.mtu.saturating_sub(ATT_HEADER_LEN)).clamp(DEFAULT_VALUE_LEN, server::CONSOLE_VALUE_LEN);
-        let chunk = self.outbox.next(most, |buf| OUT.try_read(buf).unwrap_or(0));
+        let chunk = self.outbox.next(most, |buf| {
+            let n = OUT.try_read(buf).unwrap_or(0);
+            if n > 0 {
+                room_opened();
+            }
+            n
+        });
         if chunk.is_empty() {
             return;
         }
-        ROOM.signal(());
         let link = ConnHandle::new(CONN_HANDLE.load(Ordering::Relaxed));
         let notify = Payload::new(chunk)
             .map(|value| Op::Notify(link, server::TX, value))
