@@ -997,7 +997,8 @@ impl Fake {
         self.phones[i].link = Some(h);
         self.settle(Change::PeripheralUp);
         self.emit(RadioEvent::LinkUp { link: h, role: LeConnRole::Peripheral, peer: p.phone.addr, params: Some(params) });
-        self.later(90, 110, Do::Emit(RadioEvent::DataLength { link: h, tx: DATA_LENGTH.0, rx: DATA_LENGTH.1, tx_time: DATA_TIME.0, rx_time: DATA_TIME.1 }));
+        let (lo, hi) = p.phone.data_length();
+        self.later(lo, hi, Do::Emit(RadioEvent::DataLength { link: h, tx: DATA_LENGTH.0, rx: DATA_LENGTH.1, tx_time: DATA_TIME.0, rx_time: DATA_TIME.1 }));
         match p.phone.keys {
             Keys::Bonded | Keys::ChipLost => {
                 let ((lo, hi), _) = p.phone.encryption();
@@ -1105,6 +1106,7 @@ impl Fake {
             self.after(ms(iv * u32::try_from(ESTABLISH_EVENTS).unwrap_or(6)), Do::Lost(h, Status::CONN_FAILED_SYNCHRONIZATION_TIMEOUT));
             return;
         }
+        // A simplification: no capture holds a central link's.
         let dl = ms(self.rng.range(90, 110).max(iv * 2));
         self.after(dl, Do::Emit(RadioEvent::DataLength { link: h, tx: DATA_LENGTH.0, rx: DATA_LENGTH.1, tx_time: DATA_TIME.0, rx_time: DATA_TIME.1 }));
         if let Some((after, _)) = s.asks {

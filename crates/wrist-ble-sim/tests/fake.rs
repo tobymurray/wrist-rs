@@ -4,6 +4,10 @@ use wrist_ble::{
     Activities, AdvParams, Cccd, Change, CharRef, ConnHandle, ConnParams, DiscoverWhat, Duration, FailureKind, Instant, LeConnRole, Millis, Op, Outcome,
     PairingStep, ParamRange, RadioEvent, Radio, ResetCause, ScanParams, SchedKind, ServerTable, Status,
 };
+use std::path::Path;
+
+use bluenrg2::Event;
+use wrist_ble_sim::capture::{stamped, trace};
 use wrist_ble_sim::fake::{Fake, Note, CONSOLE};
 use wrist_ble_sim::now;
 use wrist_bluenrg2::Scheduler;
@@ -87,6 +91,62 @@ fn bluez_encrypts() -> (Millis, Millis) {
     let ms: Vec<u32> = fixture.lines().filter(|l| !l.starts_with('#')).filter_map(|l| l.split(' ').nth(1)?.parse().ok()).collect();
     assert!(ms.len() > 40);
     (Millis(*ms.iter().min().unwrap()), Millis(*ms.iter().max().unwrap()))
+}
+
+/// Milliseconds from each link's connection to its data length change in the traces named
+/// `prefix*`, of the links that connected at `units` and stayed there until it.
+fn captured_data_length(prefix: &str, units: u16) -> Vec<u64> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/traces");
+    let mut took = Vec::new();
+    for path in std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().path()) {
+        if !path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with(prefix)) {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        let mut up = Vec::new();
+        for t in text.lines().filter_map(|l| trace(stamped(l)?.text)).filter(|t| t.kind == "e") {
+            match bluenrg2::parse(t.packet.as_deref().unwrap_or_default()) {
+                Event::LeConnectionComplete { handle, timing: Some(timing), .. } if timing.conn_interval.as_u16() == units => up.push((handle, t.ms)),
+                Event::LeDataLengthChange { handle, .. } => {
+                    if let Some(i) = up.iter().position(|(h, _)| *h == handle) {
+                        took.push(t.ms - up.remove(i).1);
+                    }
+                }
+                Event::LeConnectionUpdateComplete { handle, conn_interval, .. } if conn_interval.as_u16() != units => up.retain(|(h, _)| *h != handle),
+                Event::DisconnectionComplete { handle, .. } => up.retain(|(h, _)| *h != handle),
+                _ => {}
+            }
+        }
+    }
+    took
+}
+
+/// Each phone's data length changes as long after it connects as the captures show, anywhere in
+/// that window.
+#[test]
+fn a_phones_data_length_changes_when_the_captures_show() {
+    let reconnects: Vec<u64> = include_str!("../fixtures/bluez-reconnects.txt").lines().filter(|l| !l.starts_with('#')).filter_map(|l| l.split(' ').next()?.parse().ok()).collect();
+    for (os, prefix, units) in [(Os::Linux, "bluez-", 24), (Os::Android, "android14-", 36), (Os::Mac, "mac-", 24)] {
+        let mut seen = captured_data_length(prefix, units);
+        if os == Os::Linux {
+            seen.extend(&reconnects);
+        }
+        assert!(seen.len() >= 4, "{os:?}: {seen:?}");
+        let (lo, hi) = (*seen.iter().min().unwrap(), *seen.iter().max().unwrap());
+        let took: Vec<u64> = (0..32)
+            .map(|seed| {
+                let mut f = ready(seed);
+                f.submit(Op::Advertise(Some(ADV_100))).unwrap();
+                f.phone_arrives(Phone::new(os, 1));
+                let events = run(&mut f, 5_000);
+                let (up, _) = link_up(&events);
+                let at = events.iter().find(|(_, e)| matches!(e, RadioEvent::DataLength { .. })).unwrap().0;
+                at.since(up).0.into()
+            })
+            .collect();
+        let (min, max) = (*took.iter().min().unwrap(), *took.iter().max().unwrap());
+        assert!(lo <= min && max <= hi && max - min >= (hi - lo) / 2, "{os:?}: {took:?} against {lo}..={hi}");
+    }
 }
 
 #[test]

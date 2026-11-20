@@ -63,6 +63,17 @@ impl Phone {
         }
     }
 
+    /// When the link's data length changes, after connecting, as each changed it at the interval it
+    /// connects at (`fixtures/bluez-reconnects.txt`, `fixtures/traces`); the same at any other, a
+    /// simplification.
+    pub(crate) fn data_length(self) -> (u32, u32) {
+        match self.os {
+            Os::Mac => (633, 1_038),
+            Os::Android => (194, 273),
+            Os::Linux => (63, 182),
+        }
+    }
+
     /// The interval granted for a request: the longest multiple of 15 ms in range, as `BlueZ` and
     /// Android chose.
     #[must_use]
