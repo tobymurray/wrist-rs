@@ -488,6 +488,23 @@ fn a_phones_short_run_goes_back_after_the_watchs_updates() {
     }
 }
 
+/// The watch's grants go on air one at a time and in the order asked, however they bunch up.
+#[test]
+fn the_watchs_grants_apply_in_the_order_asked() {
+    let battery = ConnParams { interval_min: Duration::from_u16(80), interval_max: Duration::from_u16(160), ..conn(80) };
+    let cable = ConnParams { interval_min: Duration::from_u16(12), interval_max: Duration::from_u16(24), ..conn(12) };
+    for seed in 0..4 {
+        for first in (300..1_000).step_by(10) {
+            let seen = intervals(seed, Phone { keys: Keys::None, ..Phone::new(Os::Android, 4) }, &[(first, battery), (first + 50, cable)], 6_000);
+            assert_eq!(seen.last().map(|&(_, iv)| iv), Some(24), "seed {seed}, asked at {first}: {seen:?}");
+            for pair in seen.windows(2) {
+                let ((at, units), (next, _)) = (pair[0], pair[1]);
+                assert!(next - at >= u64::from(units) * 5 / 4 * 6, "seed {seed}, asked at {first}: {seen:?}");
+            }
+        }
+    }
+}
+
 /// A phone starts no update of its own while encryption starts on its link.
 #[test]
 fn a_phones_own_update_waits_for_encryption() {

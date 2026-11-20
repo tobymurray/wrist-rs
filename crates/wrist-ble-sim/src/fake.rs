@@ -81,6 +81,8 @@ struct Link {
     peer_update_until: Option<Instant>,
     /// Updates the central has granted and not yet applied.
     granting: u8,
+    /// A granted update on air, until its instant.
+    grant_until: Option<Instant>,
     /// The interval a phone's short run at 7.5 ms goes back to, until it does.
     back: Option<u16>,
     /// An update this device asked for has been applied.
@@ -960,9 +962,18 @@ impl Fake {
             }
             Do::UpdateStarts(l, p, id) => {
                 let Some(link) = self.link(l) else { return };
+                // And once the grant before it is in.
+                if let Some(at) = link.grant_until {
+                    self.agenda_at(at, Do::UpdateStarts(l, p, id));
+                    return;
+                }
                 let iv = interval_ms(link.params);
                 let lead = iv * u32::try_from(INSTANT_EVENTS).unwrap_or(6) + self.rng.range(0, iv);
-                self.after(ms(lead), Do::UpdateApplied(l, p, id));
+                let at = self.now + ms(lead);
+                if let Some(link) = self.link_mut(l) {
+                    link.grant_until = Some(at);
+                }
+                self.agenda_at(at, Do::UpdateApplied(l, p, id));
             }
             // A phone's update completes after its answer, and may after a newer ask is taken.
             Do::UpdateApplied(l, p, id) => {
@@ -972,6 +983,7 @@ impl Fake {
                 }
                 link.params = p;
                 link.granting = link.granting.saturating_sub(1);
+                link.grant_until = None;
                 link.granted = true;
                 if link.back.is_some() {
                     link.back = Some(p.interval.as_u16());
@@ -1259,6 +1271,7 @@ impl Fake {
             asking: None,
             peer_update_until: None,
             granting: 0,
+            grant_until: None,
             back: None,
             granted: false,
             subscribed: false,
