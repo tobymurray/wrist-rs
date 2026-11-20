@@ -214,9 +214,13 @@ pub async fn command(args: &[u8], uart: Uart) {
     }
     uart.write_line("");
     uart.pace().await;
-    match RUNS.lock(|r| r.borrow().1) {
+    let (now, last) = RUNS.lock(|r| *r.borrow());
+    if let Some(run) = now {
+        write_run(uart, "[power] on battery now: ", &run);
+    }
+    match last {
         None => uart.write_line("[power] no stretch on battery finished since boot"),
-        Some(run) => write_run(uart, &run),
+        Some(run) => write_run(uart, "[power] last on battery: ", &run),
     }
     let cr1 = unsafe { read32(PWR_CR1) };
     uart.write_str("[power] PWR_CR1 ");
@@ -230,9 +234,9 @@ pub async fn command(args: &[u8], uart: Uart) {
     crate::sleep::command("", uart).await;
 }
 
-fn write_run(uart: Uart, run: &BatteryRun) {
+fn write_run(uart: Uart, label: &str, run: &BatteryRun) {
     let s = run.seconds();
-    uart.write_str("[power] last on battery: ");
+    uart.write_str(label);
     write_duration(uart, s);
     uart.write_str(", mean ");
     match run.mean_ua() {

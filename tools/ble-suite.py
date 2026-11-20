@@ -5,6 +5,7 @@
     tools/ble-suite.py --install new.bin --restore old.bin    install new.bin first, put old.bin back after
     tools/ble-suite.py --scenarios console,reconnect --soak-minutes 5
     tools/ble-suite.py --restart-radio --profile battery --scenarios soak    a soak the replay can read
+    tools/ble-suite.py --air --scenarios console,soak --gap 120    off the cable, over the air alone
 
 The watch needs a `ble` image with the radio on (`ble on`), bonded to this computer
 (`wrist-ble.py --pair`), and its USB console free. The suite holds that console for the whole
@@ -18,6 +19,11 @@ replay -- console.log` replays a `ble-trace` image's run.
 --restore must be the running image's app.bin, and the update scenario sends --image (which must
 then be the installed build) or, without it, the installed image. SIGTERM ends a run as Ctrl-C does:
 result.json is written and --restore put back.
+
+--air needs no cable, so the watch sleeps as it does on battery: commands go over a link, and the
+watch's own lines come from its log (`log since`), read whenever a link attaches. A hang-up's
+reason is read on the next link, a last one closing each scenario. The soak runs no latency probe
+then, and every soak records the fuel gauge's figures.
 """
 import argparse
 import asyncio
@@ -67,6 +73,7 @@ PROBED = re.compile(r'latency probe ran (\d+) s since the last')
 BUILD_CHAR = rb'[0-9A-Za-z._-]'
 STATUS = r'\[ble\] .*, timing '
 HANG_UP = re.compile(r'\[ble\] disconnected, reason (\w+)')
+CONNECTED = re.compile(r'\[ble\] connected\s*$')
 
 
 def stamp(t=None):
@@ -290,6 +297,171 @@ class Usb:
         return (await self.wait(pattern, mark, timeout))[1]
 
 
+# -- the watch with no cable --
+
+LOG_SINCE = re.compile(r'^\[log\] since (\d+)')
+LOG_NEXT = re.compile(r'^\[log\] next (\d+) at (\d+\.\d{3})(?:, (\d+) bytes lost)?')
+LOG_LINE = re.compile(r'^(\d+\.\d{3}) (.*)$')
+# Seconds an answer may take on the way; a restart puts the watch's clock back by the uptime it had.
+RESTART_LAG = 5
+
+
+def read_log(lines):
+    """The last whole `log since` answer in `lines`: (its lines as (uptime s, text), the next position,
+    the uptime at its end, bytes lost, whether the watch restarted), or None before its end."""
+    start = next((i for i in range(len(lines) - 1, -1, -1) if LOG_SINCE.match(lines[i])), None)
+    if start is None:
+        return None
+    for j in range(start + 1, len(lines)):
+        if m := LOG_NEXT.match(lines[j]):
+            # Live lines from other tasks can land between the kept ones; they come again next read.
+            kept = [(float(k[1]), k[2]) for line in lines[start + 1:j] if (k := LOG_LINE.match(line))]
+            return kept, int(m[1]), float(m[2]), int(m[3] or 0), 'restarted' in lines[start]
+    return None
+
+
+class Air:
+    """The watch's console with no cable: its lines from `log since` on each link, its commands over
+    the link in hand or a new one, each line's uptime moved onto this computer's clock."""
+
+    def __init__(self, phone, path):
+        self.phone, self.link = phone, None
+        self.lines, self.at, self.offset, self.uptime = [], 0, None, 0
+        self.restarts, self.lost = 0, 0
+        self.log = open(path, 'a')
+
+    def _note(self, text, t=None):
+        t = time.time() if t is None else t
+        self.log.write(f'{seconds(t)} {text}\n')
+        self.log.flush()
+
+    def mark(self):
+        return time.time()
+
+    def since(self, mark):
+        return [(t, l) for t, l in self.lines if t >= mark]
+
+    def _up(self):
+        return self.link is not None and getattr(self.link.client, 'is_connected', False)
+
+    async def attach(self):
+        """The link in hand, or a new one with the log read; None if none could be made."""
+        if not self._up():
+            self.link = await self.phone.connect()
+            if self.link:
+                await self.sync()
+        return self.link
+
+    async def detach(self):
+        link, self.link = self.link, None
+        if link:
+            await link.close()
+
+    async def connect(self):
+        """A link of its own, for a scenario's session."""
+        await self.detach()
+        return await self.attach()
+
+    async def settle(self):
+        """Read what the watch said since the last link, its hang-up among it."""
+        await self.attach()
+        await self.detach()
+
+    async def sync(self, timeout=60):
+        if not self._up():
+            return False
+        con = self.link.con
+        start = len(con.lines)
+        try:
+            await wrist_ble.send(self.link.client, f'log since {self.at}')
+        except Exception as e:
+            print(f'-- log: {e!r}', flush=True)
+            return False
+        end = time.time() + timeout
+        while not (got := read_log(con.lines[start:])):
+            if time.time() >= end:
+                print('-- log: no end to the answer', flush=True)
+                return False
+            await asyncio.sleep(0.05)
+        kept, self.at, now, lost, restarted = got
+        offset = time.time() - now
+        if not restarted and self.offset is not None and offset - self.offset > max(RESTART_LAG, self.uptime / 2):
+            # Positions began again at 0 and have since passed the last read's: read from 0.
+            self.restarts += 1
+            print('-- log: the watch restarted', flush=True)
+            self.at, self.offset = 0, None
+            return await self.sync(timeout)
+        self.uptime = now
+        # What the first read finds gone was never this run's.
+        if self.offset is not None:
+            self.lost += lost
+        if restarted:
+            self.restarts += 1
+            print('-- log: the watch restarted', flush=True)
+        # The smallest is the answer that waited least on the way.
+        self.offset = offset if restarted or self.offset is None else min(self.offset, offset)
+        for s, text in kept:
+            self.lines.append((s + self.offset, text))
+            self._note(text, s + self.offset)
+        return True
+
+    async def ask(self, text, pattern, timeout=3):
+        if FORBIDDEN.match(text):
+            raise RuntimeError('the suite never runs `ble forget`')
+        if not await self.attach():
+            return None
+        mark = len(self.lines)
+        self._note(f'>> air {text}')
+        try:
+            await wrist_ble.send(self.link.client, text)
+        except Exception as e:
+            print(f'-- `{text}`: {e!r}', flush=True)
+            return None
+        pattern = re.compile(pattern)
+        end = time.time() + max(timeout, 15)
+        while True:
+            if not await self.sync():
+                return None
+            for _, line in self.lines[mark:]:
+                if pattern.search(line):
+                    return line
+            if time.time() >= end:
+                return None
+            await asyncio.sleep(0.5)
+
+    async def wait(self, pattern, mark, timeout):
+        pattern = re.compile(pattern)
+        end = time.time() + timeout
+        while True:
+            for t, line in self.since(mark):
+                if pattern.search(line):
+                    return t, line
+            if not self._up() or time.time() >= end or not await self.sync():
+                return None, None
+            await asyncio.sleep(0.5)
+
+    def hang_up(self, mark):
+        """The reason the watch gave for hanging up the first link from `mark`, before the next."""
+        lines = [l for _, l in self.since(mark)]
+        up = [i for i, l in enumerate(lines) if CONNECTED.search(l)] + [len(lines)]
+        found = next((m for l in lines[up[0]:up[1]] if (m := HANG_UP.search(l))), None) if len(up) > 1 else None
+        return found[1] if found else None
+
+
+class AirPhone:
+    """The phone, for a run over the air alone: each session's link is the console's too."""
+
+    def __init__(self, air, phone):
+        self.air, self.phone = air, phone
+
+    async def connect(self):
+        return await self.air.connect()
+
+    async def update(self, image):
+        await self.air.detach()
+        return await self.phone.update(image)
+
+
 # -- the phone --
 
 class Link:
@@ -317,6 +489,11 @@ class Link:
             print(f'-- hang-up: {e!r}', flush=True)
 
 
+def quiet(text):
+    """Heartbeats, and the log's lines, which console.log keeps."""
+    return text.startswith(('[hb]', '[log] ')) or bool(LOG_LINE.match(text))
+
+
 class BleakPhone:
     """This computer's own adapter as a bonded phone: BlueZ on Linux, CoreBluetooth on macOS."""
 
@@ -332,7 +509,7 @@ class BleakPhone:
                 print(f'-- find: {e!r}', flush=True)
             if self.device is None:
                 return None
-        con = wrist_ble.Console(echo=lambda text: None if text.startswith('[hb]') else print(f'   air: {text}', flush=True))
+        con = wrist_ble.Console(echo=lambda text: None if quiet(text) else print(f'   air: {text}', flush=True))
         client = wrist_ble.BleakClient(self.device, timeout=20)
         try:
             await client.connect()
@@ -418,13 +595,24 @@ def spread(values):
 
 
 async def hang_up(usb, mark, timeout=8):
+    """The watch's reason for the hang-up after `mark`; over the air alone, None until a later link
+    reads it (`Air.settle`), when `reason` gives it."""
+    if isinstance(usb, Air):
+        return None
     _, line = await usb.wait(HANG_UP.pattern, mark, timeout)
     return HANG_UP.search(line)[1] if line else None
+
+
+async def reasons(usb, marks):
+    """Over the air alone, each mark's hang-up reason, read once the last link is over."""
+    await usb.settle()
+    return [usb.hang_up(m) for m in marks]
 
 
 # -- scenarios --
 
 async def console(s, usb, phone, build, a):
+    marks = []
     for i in range(1, a.sessions + 1):
         mark = usb.mark()
         link = await phone.connect()
@@ -434,21 +622,18 @@ async def console(s, usb, phone, build, a):
         s.check(await link.command('version', rf'build {re.escape(build)}(?: |$)'), f'session {i}: version is build {build}')
         s.check(await link.command('ble', r'\[ble\] connected, encrypted'), f'session {i}: ble reports the link encrypted')
         await link.close()
-        reason = await hang_up(usb, mark)
+        marks.append((i, mark, await hang_up(usb, mark)))
+    found = await reasons(usb, [m for _, m, _ in marks]) if isinstance(usb, Air) else [r for *_, r in marks]
+    for (i, _, _), reason in zip(marks, found):
         s.check(reason == '13', f'session {i}: the watch saw a clean hang-up (reason {reason})')
 
 
 async def reconnect(s, usb, phone, build, a):
-    times, failures = [], []
-    for i in range(1, a.reconnects + 1):
-        mark = usb.mark()
-        link = await phone.connect()
-        pong = bool(link) and bool(await link.command('ping', r'\bpong\b'))
-        if link:
-            await link.close()
-        reason = await hang_up(usb, mark)
-        lines = usb.since(mark)
-        connected = next((t for t, l in lines if re.search(r'\[ble\] connected\s*$', l)), None)
+    times, failures, cycles = [], [], []
+
+    def judge(i, pong, mark, nxt, reason):
+        lines = [(t, l) for t, l in usb.since(mark) if nxt is None or t < nxt]
+        connected = next((t for t, l in lines if CONNECTED.search(l)), None)
         encrypted = next((t for t, l in lines if '[ble] link encrypted' in l), None)
         bad = [l for _, l in lines if re.search(r'pairing failed|encryption off|lost its bond', l)]
         took = round(encrypted - connected, 3) if connected and encrypted else None
@@ -459,6 +644,23 @@ async def reconnect(s, usb, phone, build, a):
             times.append(took)
         if not ok:
             failures.append(i)
+
+    air = isinstance(usb, Air)
+    for i in range(1, a.reconnects + 1):
+        mark = usb.mark()
+        link = await phone.connect()
+        pong = bool(link) and bool(await link.command('ping', r'\bpong\b'))
+        if link:
+            await link.close()
+        if air:
+            await hang_up(usb, mark)
+            cycles.append((i, pong, mark))
+        else:
+            judge(i, pong, mark, None, await hang_up(usb, mark))
+    if air:
+        found = await reasons(usb, [m for _, _, m in cycles])
+        for k, ((i, pong, mark), reason) in enumerate(zip(cycles, found)):
+            judge(i, pong, mark, cycles[k + 1][2] if k + 1 < len(cycles) else None, reason)
     s.data['connected_to_encrypted_s'] = spread(times)
     s.data['failed'] = failures
     s.check(a.reconnects > 0 and not failures, f'{a.reconnects} reconnects, each: ping answered, encrypted within {a.encrypt_limit} s, '
@@ -476,9 +678,16 @@ async def page(usb, probed=False):
     return (float(m[1]), int(m[2]), int(PROBED.search(ran)[1])) if m and ran else None
 
 
-async def traffic(link, seconds):
-    end = time.time() + seconds
+# Seconds between reads of the log during traffic, whose answers would otherwise outrun it.
+SYNC_EVERY = 10
+
+
+async def traffic(link, seconds, usb=None):
+    end, synced = time.time() + seconds, time.time()
     while True:
+        if isinstance(usb, Air) and time.time() - synced >= SYNC_EVERY:
+            await usb.sync()
+            synced = time.time()
         try:
             if not await link.command('ble', r'\[ble\] connected') or not await link.command('ping', r'\bpong\b'):
                 return False
@@ -501,7 +710,7 @@ async def lateness(s, usb, phone, build, a):
         return
     readings, since = [], time.time()
     for _ in range(2):
-        s.check(await traffic(link, a.lag_seconds / 2 - 2), 'console traffic over the air answered throughout')
+        s.check(await traffic(link, a.lag_seconds / 2 - 2, usb), 'console traffic over the air answered throughout')
         took = time.time() - since
         readings.append(await page(usb, probed=True))
         since = time.time()
@@ -518,12 +727,21 @@ async def lateness(s, usb, phone, build, a):
 
 
 async def soak(s, usb, phone, build, a):
+    air = isinstance(usb, Air)
     before = await usb.ask('ble', STATUS, 3) or ''
     up_before = await usb.ask('uptime', r'\[usb\] uptime (\d+)', 3)
     first = usb.mark()
-    await page(usb)
+    lost, restarts = (usb.lost, usb.restarts) if air else (0, 0)
+    if not air:
+        await page(usb)
     end = time.time() + a.soak_minutes * 60
-    cycles, failures, readings = 0, [], []
+    cycles, failures, readings, later = 0, [], [], []
+
+    def judge(cycle, answered, reason):
+        ok = answered and reason == '13'
+        print(f'  cycle {cycle}: {"ok" if ok else "FAILED"}, answered {answered}, reason {reason}', flush=True)
+        if not ok:
+            failures.append(cycle)
 
     async def pager():
         armed = 0
@@ -541,21 +759,25 @@ async def soak(s, usb, phone, build, a):
             cycles += 1
             mark = usb.mark()
             link = await phone.connect()
-            answered = bool(link) and await traffic(link, a.hold)
+            answered = bool(link) and await traffic(link, a.hold, usb)
             if link:
                 try:
                     await link.close()
                 except Exception as e:
                     print(f'-- close: {e!r}', flush=True)
-            reason = await hang_up(usb, mark)
-            ok = answered and reason == '13'
-            print(f'  cycle {cycles}: {"ok" if ok else "FAILED"}, answered {answered}, reason {reason}', flush=True)
-            if not ok:
-                failures.append(cycles)
+            if air:
+                print(f'  cycle {cycles}: answered {answered}; its hang-up is read later', flush=True)
+                later.append((cycles, answered, mark))
+            else:
+                judge(cycles, answered, await hang_up(usb, mark))
             await asyncio.sleep(a.gap)
 
-    await asyncio.gather(pager(), phone_cycles())
-    readings.append(await page(usb))
+    await asyncio.gather(*([] if air else [pager()]), phone_cycles())
+    if air:
+        for (cycle, answered, _), reason in zip(later, await reasons(usb, [m for _, _, m in later])):
+            judge(cycle, answered, reason)
+    else:
+        readings.append(await page(usb))
     after = await usb.ask('ble', STATUS, 3) or ''
     up_after = await usb.ask('uptime', r'\[usb\] uptime (\d+)', 3)
     grew = {k: (v, counters(after).get(k)) for k, v in counters(before).items() if counters(after).get(k) != v}
@@ -566,14 +788,59 @@ async def soak(s, usb, phone, build, a):
     over = sum(r[1] for r in got)
     closed = [l for _, l in usb.since(first) if l.startswith('## console closed')]
     up = [int(re.search(r'uptime (\d+)', u)[1]) if u else None for u in (up_before, up_after)]
+    figures = gauge(usb.since(first))
     s.data.update(cycles=cycles, failed=failures, worst_ms=worst, over_5ms=over, page_readings=len(got),
-                  counters_before=counters(before), counters_after=counters(after), uptime_s=up)
+                  counters_before=counters(before), counters_after=counters(after), uptime_s=up, gauge=figures)
+    print(f'  gauge: {said(figures)}', flush=True)
     s.check(cycles and not failures, f'{cycles} phone cycles: attached, console answered for {a.hold} s, reason 13 '
             f'(failed: {failures or "none"})')
     s.check(before and after and not grew, f'the `ble` counters did not move ({grew or "none moved"})')
-    s.check(got and worst <= 5.0 and over == 0, f'executor late by at most {worst} ms over {len(got)} `page` readings, '
-            f'over 5 ms {over} times')
-    s.check(None not in up and up[1] > up[0] and not closed, f'no reset: uptime {up[0]} to {up[1]} s, console never closed')
+    if air:
+        print('  no executor-latency probe: its timer would keep the core out of Stop 2', flush=True)
+        n = figures['readings'] if figures else 0
+        s.check(n >= int(a.soak_minutes) - 1, f'the gauge read every minute ({n} readings in {a.soak_minutes} min)')
+        lost = usb.lost - lost
+        s.check(None not in up and up[1] > up[0] and usb.restarts == restarts and not lost,
+                f'no reset: uptime {up[0]} to {up[1]} s, the log never began again, {lost} bytes of it lost')
+    else:
+        s.check(got and worst <= 5.0 and over == 0, f'executor late by at most {worst} ms over {len(got)} `page` readings, '
+                f'over 5 ms {over} times')
+        s.check(None not in up and up[1] > up[0] and not closed, f'no reset: uptime {up[0]} to {up[1]} s, console never closed')
+
+
+PWR = re.compile(r'^\[pwr\] .*?\bsoc (\d+\.\d)%.*?\bavg (-?\d+) uA')
+REP_CAP = re.compile(r'\bRepCap [0-9A-F]{4} (-?\d+\.\d+) mAh')
+CAVEAT = ('the gauge reads in 156.25 uA steps with an offset of about 1 mA either way: '
+          'these figures show only faults of a milliamp or more')
+
+
+def gauge(lines):
+    """The fuel gauge's figures over `lines`: its AvgCurrent readings' mean, and the charge and the
+    remaining capacity (`RepCap`, in each full reading) at either end; None without a reading."""
+    pwr = [(t, float(m[1]), int(m[2])) for t, l in lines if (m := PWR.search(l))]
+    caps = [(t, float(m[1])) for t, l in lines if (m := REP_CAP.search(l))]
+    if not pwr:
+        return None
+    figures = {'readings': len(pwr), 'hours': round((pwr[-1][0] - pwr[0][0]) / 3600, 3),
+               'mean_avg_current_ua': round(statistics.mean(r[2] for r in pwr)),
+               'soc_first': pwr[0][1], 'soc_last': pwr[-1][1], 'soc_drop': round(pwr[0][1] - pwr[-1][1], 1),
+               'caveat': CAVEAT}
+    if len(caps) >= 2:
+        drop, hours = caps[0][1] - caps[-1][1], (caps[-1][0] - caps[0][0]) / 3600
+        figures.update(rep_cap_first_mah=caps[0][1], rep_cap_last_mah=caps[-1][1], rep_cap_drop_mah=round(drop, 2),
+                       rep_cap_drop_ua=round(drop / hours * 1000) if hours > 0 else None)
+    return figures
+
+
+def said(figures):
+    if not figures:
+        return 'no reading'
+    text = (f'{figures["readings"]} readings over {figures["hours"]} h, mean AvgCurrent {figures["mean_avg_current_ua"]} uA, '
+            f'charge {figures["soc_first"]} % to {figures["soc_last"]} %')
+    if 'rep_cap_drop_mah' in figures:
+        text += (f', RepCap {figures["rep_cap_first_mah"]} to {figures["rep_cap_last_mah"]} mAh '
+                 f'({figures["rep_cap_drop_mah"]} mAh, {figures["rep_cap_drop_ua"]} uA)')
+    return f'{text}; {figures["caveat"]}'
 
 
 async def radio_back(usb, attempts):
@@ -592,8 +859,9 @@ async def update(s, usb, phone, build, a):
     took = round(time.time() - t0, 1)
     s.data['seconds_to_state_boot'] = took
     s.check(kept, f'the update over the air reached `state boot` ({took} s)')
-    s.check(not [l for _, l in usb.since(mark) if 'revert' in l], 'the loader never reverted')
     s.check(await usb.ask('version', rf'build {re.escape(build)}(?: |$)', 10), f'the watch runs build {build} after it')
+    after = [l for _, l in usb.since(mark)]
+    s.check(after and not [l for l in after if 'revert' in l], 'the loader never reverted')
     s.check(await radio_back(usb, 10), 'the radio is back on after the reset')
     if a.profile:
         s.check(await usb.ask(f'ble profile {a.profile}', r'\[ble\] timing', 5), f'`ble profile {a.profile}` held again')
@@ -660,8 +928,10 @@ async def snapshot(usb):
     return {'version': version, 'build': build_of(version), 'crc': crc_of(version), 'boot': boot, 'ble': ble, 'bonds': bonds}
 
 
-def preflight_host(h, explicit):
+def preflight_host(h, explicit, air=False):
     problems = [f'running: {p}' for p in h.other_tools()]
+    if air:
+        return None, problems
     port = wrist_port.find(explicit)
     if port is None:
         problems.append('no watch console found on USB')
@@ -715,7 +985,7 @@ async def run(a, out, result):
     on_sigterm(result)
     h = host()
     result['host'] = {'system': h.name, 'python': platform.python_version()}
-    port, problems = preflight_host(h, a.port)
+    port, problems = preflight_host(h, a.port, a.air)
     result['port'] = port
     for p in problems:
         print(f'  pre-flight: {p}', flush=True)
@@ -729,7 +999,12 @@ async def run(a, out, result):
             result['capture'] = 'failed'
             result['preflight'] = ['--btmon: no capture']
             return False
-    usb = Usb(a.port, out / 'console.log')
+    phone = BleakPhone(a.name)
+    if a.air:
+        usb = Air(phone, out / 'console.log')
+        phone = AirPhone(usb, phone)
+    else:
+        usb = Usb(a.port, out / 'console.log')
     installed = False
     try:
         before = await snapshot(usb)
@@ -772,7 +1047,6 @@ async def run(a, out, result):
             for p in problems:
                 print(f'  pre-flight: {p}', flush=True)
             return False
-        phone = BleakPhone(a.name)
         for name in a.scenarios:
             s = Scenario(name, CRITERIA[name].format(a=a))
             try:
@@ -808,7 +1082,12 @@ async def run(a, out, result):
             result['restored'] = ok and after['build'] == result.get('before', {}).get('build')
             print(f'-- restored: {result["restored"]} ({after["version"]})', flush=True)
         result['after'] = await snapshot(usb)
-        usb.close()
+        if isinstance(usb, Air):
+            await usb.detach()
+            usb.log.close()
+            result['log'] = {'restarts': usb.restarts, 'bytes_lost': usb.lost}
+        else:
+            usb.close()
 
 
 CRITERIA = {
@@ -819,7 +1098,8 @@ CRITERIA = {
     'lateness': '`page lag {a.lag_seconds}` with console traffic over the air, the probe running throughout: '
                 'executor late by at most 5.0 ms, over 5 ms 0 times',
     'soak': '{a.soak_minutes} min of a phone connecting for {a.hold} s of console traffic and leaving for {a.gap} s: '
-            'every cycle answered with reason 13, `ble` counters unchanged, executor at most 5.0 ms late, no reset',
+            'every cycle answered with reason 13, `ble` counters unchanged, executor at most 5.0 ms late (on the cable) '
+            'or a gauge reading every minute (off it), no reset; the gauge\'s figures recorded',
     'update': 'an application update over the air reaches `state boot`, no revert, the same build after it, '
               'radio back on',
 }
@@ -844,6 +1124,8 @@ def main():
     ap.add_argument('--restart-radio', action='store_true',
                     help='`ble off` and `ble on` before the scenarios, so console.log replays from the chip\'s bring-up')
     ap.add_argument('--profile', choices=['cable', 'battery'], help='hold this Bluetooth timing for the run (`ble profile`)')
+    ap.add_argument('--air', action='store_true',
+                    help='over the air alone, with no USB console: the watch\'s own lines come from its log (`log since`)')
     ap.add_argument('--out', type=Path)
     a = ap.parse_args()
     a.scenarios = [s.strip() for s in a.scenarios.split(',') if s.strip()]
@@ -856,6 +1138,8 @@ def main():
         ap.error('--install needs --restore, the running image to put back')
     if a.btmon and not sys.platform.startswith('linux'):
         ap.error('--btmon needs Linux')
+    if a.air and (a.install or a.restart_radio or a.port):
+        ap.error('--air has no cable: --install, --restart-radio and --port need one')
 
     out = a.out or ROOT / 'target/ble-suite' / time.strftime('%Y%m%d-%H%M%S')
     try:

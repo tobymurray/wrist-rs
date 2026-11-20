@@ -12,6 +12,7 @@ mod crash;
 mod flash;
 mod glass;
 mod haptic;
+mod journal;
 mod lcd;
 mod mmio;
 mod modules;
@@ -345,6 +346,7 @@ fn main() -> ! {
     config.enable_debug_during_sleep = false;
     config.min_stop_pause = Duration::from_micros(200);
     let p = embassy_stm32::init(config);
+    journal::clock_started();
     // `panel_dma.rs` drives these through registers.
     let _ = (p.TIM1, p.TIM3, p.TIM4, p.GPDMA1_CH12, p.GPDMA1_CH13, p.GPDMA1_CH14, p.GPDMA1_CH15, p.PA6, p.PA7, p.PB0);
     uart = unsafe { Uart::init_at(busy::CORE_HZ) };
