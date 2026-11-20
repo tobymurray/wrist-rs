@@ -906,13 +906,7 @@ impl Fake {
             Do::PeerBurst(l) => {
                 let Some(link) = self.link_mut(l) else { return };
                 link.back = Some(link.params.interval.as_u16());
-                let params = link.params;
-                let events = u32::try_from(INSTANT_EVENTS).unwrap_or(6);
-                let fast = interval_ms(params) * events;
-                let back = interval_ms(LinkParams { interval: Duration::from_u16(6), ..params }) * events;
                 self.after(ms(0), Do::PeerUpdate(l, Move::To(6)));
-                // Back 300 to 340 ms after 7.5 ms takes hold.
-                self.later(fast + 300 - back, fast + 340 - back, Do::PeerUpdate(l, Move::Back));
             }
             Do::PeerUpdate(l, to) => {
                 let now = self.now;
@@ -940,7 +934,13 @@ impl Fake {
                 link.peer_update_until = None;
                 link.params.interval = Duration::from_u16(units);
                 let p = link.params;
+                let fast = link.back.is_some();
                 self.emit(RadioEvent::Params { link: l, result: Ok(p) });
+                if fast {
+                    // Back 300 to 340 ms after 7.5 ms takes hold.
+                    let lead = interval_ms(p) * u32::try_from(INSTANT_EVENTS).unwrap_or(6);
+                    self.later(300 - lead, 340 - lead, Do::PeerUpdate(l, Move::Back));
+                }
             }
             Do::Answered(l, id, granted) => {
                 let Some(link) = self.link_mut(l) else { return };

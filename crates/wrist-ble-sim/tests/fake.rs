@@ -428,13 +428,13 @@ fn a_new_phone_pairs_by_numeric_comparison() {
 }
 
 /// Each interval the phone's link takes, with when, after it connects.
-fn intervals(seed: u64, phone: Phone, ask: Option<(u64, ConnParams)>, until: u64) -> Vec<(u64, u16)> {
+fn intervals(seed: u64, phone: Phone, asks: &[(u64, ConnParams)], until: u64) -> Vec<(u64, u16)> {
     let mut f = ready(seed);
     f.submit(Op::Advertise(Some(ADV_100))).unwrap();
     f.phone_arrives(phone);
     let (up, link) = until_up(&mut f);
     let mut events = Vec::new();
-    if let Some((after, params)) = ask {
+    for &(after, params) in asks {
         events.extend(run(&mut f, up.0 + after));
         f.submit(Op::UpdateParams(link, params)).unwrap();
     }
@@ -459,7 +459,7 @@ fn a_phones_own_update_and_the_watchs_run_in_turn() {
     let battery = ConnParams { interval_min: Duration::from_u16(80), interval_max: Duration::from_u16(160), ..conn(80) };
     for seed in 0..8 {
         for after in (300..1_600).step_by(10) {
-            let seen = intervals(seed, Phone { keys: Keys::None, ..Phone::new(Os::Android, 4) }, Some((after, battery)), 6_000);
+            let seen = intervals(seed, Phone { keys: Keys::None, ..Phone::new(Os::Android, 4) }, &[(after, battery)], 6_000);
             assert_eq!(seen.last().map(|&(_, iv)| iv), Some(156), "seed {seed}, asked at {after}: {seen:?}");
             assert!(seen.iter().any(|&(_, iv)| iv == 6), "seed {seed}, asked at {after}: {seen:?}");
             // Each starts once the one before is in, and takes six events at its interval.
@@ -467,6 +467,19 @@ fn a_phones_own_update_and_the_watchs_run_in_turn() {
                 let ((at, units), (next, _)) = (pair[0], pair[1]);
                 assert!(next - at >= u64::from(units) * 5 / 4 * 6, "seed {seed}, asked at {after}: {seen:?}");
             }
+        }
+    }
+}
+
+/// Android's short run at 7.5 ms goes back however long the watch's updates held it off.
+#[test]
+fn a_phones_short_run_goes_back_after_the_watchs_updates() {
+    let battery = ConnParams { interval_min: Duration::from_u16(80), interval_max: Duration::from_u16(160), ..conn(80) };
+    let cable = ConnParams { interval_min: Duration::from_u16(12), interval_max: Duration::from_u16(24), ..conn(12) };
+    for seed in 0..4 {
+        for after in (450..1_200).step_by(10) {
+            let seen = intervals(seed, Phone { keys: Keys::None, ..Phone::new(Os::Android, 4) }, &[(350, battery), (after, cable)], 6_000);
+            assert_eq!(seen.last().map(|&(_, iv)| iv), Some(24), "seed {seed}, asked again at {after}: {seen:?}");
         }
     }
 }
@@ -499,7 +512,7 @@ fn an_android_17_phone_moves_itself_to_48_75_ms() {
             let events = run(&mut f, 3_000);
             let up = events.iter().find_map(|(_, e)| if let RadioEvent::LinkUp { params, .. } = e { *params } else { None });
             assert_eq!(up.map(|p| p.interval.as_u16()), Some(15));
-            let seen = intervals(seed, phone, None, 3_000);
+            let seen = intervals(seed, phone, &[], 3_000);
             assert!(matches!(seen[..], [(at, 39)] if (lo..=hi).contains(&at)), "seed {seed} {keys:?}: {seen:?}");
             if keys == Keys::None {
                 unbonded.push(seen[0].0);
@@ -509,7 +522,7 @@ fn an_android_17_phone_moves_itself_to_48_75_ms() {
     assert!(unbonded.iter().max().unwrap() - unbonded.iter().min().unwrap() >= 7, "{unbonded:?}");
     // Its own move undoes no grant.
     let ask = ConnParams { interval_min: Duration::from_u16(12), interval_max: Duration::from_u16(24), ..conn(12) };
-    let seen = intervals(1, Phone { keys: Keys::Bonded, ..Phone::new(Os::Android17, 4) }, Some((200, ask)), 3_000);
+    let seen = intervals(1, Phone { keys: Keys::Bonded, ..Phone::new(Os::Android17, 4) }, &[(200, ask)], 3_000);
     assert_eq!(seen.last().map(|&(_, iv)| iv), Some(24), "{seen:?}");
 }
 
