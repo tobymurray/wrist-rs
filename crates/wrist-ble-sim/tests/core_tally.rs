@@ -378,3 +378,18 @@ fn an_operation_taken_after_its_link_went_is_no_failure() {
         assert_eq!((core.counters.timed_out, core.tally.failures.total()), (timed_out, 0));
     }
 }
+
+/// A peripheral's link is the core's as much as the phone's: a refused operation on it counts.
+#[test]
+fn a_refusal_on_a_peripherals_link_is_a_failure() {
+    use wrist_ble::policy::peripheral::Event;
+    let mut core = core_with_phone();
+    let ctx = ctx(&HR);
+    let dropping = live(&ctx, t(1_000)).step(&ctx, t(1_000), Event::Unwant);
+    core.state = with_peer(core.state, &HR, dropping);
+    let op = (1_000..30_000).step_by(100).find_map(|ms| core.step(t(ms), Input::Tick).op.map(|op| (ms, op)));
+    let (ms, op) = op.expect("an operation");
+    assert_eq!(op.link(), Some(sensor()), "{op:?}");
+    core.step(t(ms), Input::Submitted(Err(Failure { kind: FailureKind::NoResources, native: 0x07 })));
+    assert_eq!(core.tally.failures.rows[0], Some(((FailureKind::NoResources, 0x07), 1)));
+}
