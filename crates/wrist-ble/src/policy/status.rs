@@ -230,6 +230,121 @@ impl Status {
     }
 }
 
+/// The least time between two status lines, so a status that flickers costs at most a line a
+/// second; a change still shows within it (I4).
+pub const LOG_GAP: Millis = Millis::secs(1);
+
+/// When the status next changes with no event, by time alone: a link past
+/// [`ASK_TO_PAIR_AFTER`] unencrypted, a planned gap in advertising past [`REACHABLE_GAP`], and
+/// for a peripheral, a second from now (its readings age).
+#[must_use]
+pub fn next_change(state: &State, now: Instant) -> Option<Instant> {
+    let after = |at: Instant| Some(at + Millis(1)).filter(|&t| t > now);
+    let phone = match (state.chip.state, state.phone) {
+        (Chip::Ready(_), Phone::Up(l)) if matches!(l.security, Security::Unsecured | Security::Unknown) => {
+            after(l.since + ASK_TO_PAIR_AFTER)
+        }
+        (Chip::Ready(_), Phone::Off | Phone::Discoverable)
+            if !matches!(state.radio.advertising, Some(a) if a.connectable) =>
+        {
+            after(state.silent_since + REACHABLE_GAP)
+        }
+        _ => None,
+    };
+    let peers = state.peers.iter().any(Option::is_some).then(|| now + LOG_GAP);
+    [phone, peers].into_iter().flatten().min()
+}
+
+impl Status {
+    /// The status without its ages, countdowns and readings: what a status line is printed for a
+    /// change of.
+    #[must_use]
+    pub fn shape(&self) -> Self {
+        let phone = match self.phone {
+            PhoneStatus::Pairing { value, .. } => PhoneStatus::Pairing { value, left: Millis(0) },
+            PhoneStatus::Unsecured { .. } => PhoneStatus::Unsecured { since: Millis(0) },
+            PhoneStatus::Unreachable { reason, .. } => PhoneStatus::Unreachable { reason, since: Millis(0) },
+            p => p,
+        };
+        let mut peers = self.peers;
+        for p in peers.iter_mut().flatten() {
+            p.state = match p.state {
+                PeerState::Finding { slow, .. } => PeerState::Finding { slow, since: Millis(0) },
+                PeerState::Live { current, .. } => PeerState::Live { value: 0, age: Millis(0), current },
+                PeerState::Unstable { current, .. } => PeerState::Unstable { value: None, age: Millis(0), current },
+                PeerState::Quiet { .. } => PeerState::Quiet { value: None, age: Millis(0) },
+                PeerState::Reconnecting { attempts, .. } => PeerState::Reconnecting { since: Millis(0), attempts },
+                PeerState::Rechecking { left } => PeerState::Rechecking { left: left.map(|_| Millis(0)) },
+                s => s,
+            };
+        }
+        Self { phone, peers, drift: Millis(0), ..*self }
+    }
+
+    /// The phone's status in words, without ages, for the `ble` line: `advertising as UNA every
+    /// 100 ms`, `connected, encrypted`, `connected, NOT encrypted`, and so on.
+    ///
+    /// # Errors
+    ///
+    /// Only those of `w`.
+    pub fn write_words<W: Write>(&self, w: &mut W) -> fmt::Result {
+        match self.phone {
+            PhoneStatus::Off => w.write_str("off"),
+            PhoneStatus::Fault { cause: c, .. } => write!(w, "radio fault ({}), retrying", cause(c)),
+            PhoneStatus::Pairing { value, .. } => write!(w, "connected, pairing: compare {value:06}"),
+            PhoneStatus::Connected => w.write_str("connected, encrypted"),
+            PhoneStatus::Securing => w.write_str("connected, securing"),
+            PhoneStatus::Unsecured { .. } => w.write_str("connected, NOT encrypted"),
+            PhoneStatus::Discoverable { interval_ms: Some(ms) } => write!(w, "advertising as UNA every {ms} ms"),
+            PhoneStatus::Discoverable { interval_ms: None } => w.write_str("advertising as UNA, between intervals"),
+            PhoneStatus::Unreachable { reason: Unreachable::Starting, .. } => w.write_str("starting"),
+            PhoneStatus::Unreachable { reason: Unreachable::Hidden, .. } => w.write_str("up, not advertising (hidden)"),
+            PhoneStatus::Unreachable { reason: Unreachable::Busy(c), .. } => {
+                write!(w, "up, not advertising (busy: {})", conflict(c))
+            }
+            PhoneStatus::Unreachable { reason: Unreachable::NotConverged, .. } => {
+                w.write_str("up, not advertising (not yet where the plan wants)")
+            }
+        }
+    }
+}
+
+/// Which statuses the console prints: each change of [`Status::shape`], at most one line each
+/// [`LOG_GAP`], the latest shape when a change was held.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct StatusLog {
+    shown: Option<Status>,
+    at: Option<Instant>,
+    held: bool,
+}
+
+impl StatusLog {
+    pub const NEW: Self = Self { shown: None, at: None, held: false };
+
+    /// Whether to print `s` now; once true, `s` counts as shown.
+    pub fn due(&mut self, now: Instant, s: &Status) -> bool {
+        let shape = s.shape();
+        if self.shown == Some(shape) {
+            self.held = false;
+            return false;
+        }
+        if self.at.is_some_and(|at| now.since(at) < LOG_GAP) {
+            self.held = true;
+            return false;
+        }
+        self.shown = Some(shape);
+        self.at = Some(now);
+        self.held = false;
+        true
+    }
+
+    /// When a held change may be printed.
+    #[must_use]
+    pub fn next(&self) -> Option<Instant> {
+        self.at.filter(|_| self.held).map(|at| at + LOG_GAP)
+    }
+}
+
 fn write_phone<W: Write>(w: &mut W, p: PhoneStatus) -> fmt::Result {
     match p {
         PhoneStatus::Off => w.write_str("off"),
