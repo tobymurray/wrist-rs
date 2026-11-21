@@ -11,6 +11,7 @@ use crate::policy::invariants::REACHABLE_GAP;
 use crate::policy::peripheral::{self, Ctx, Peripheral, Stage, StopReason, Then};
 use crate::policy::phone::{self, Phone, Security, ASK_TO_PAIR_AFTER};
 use crate::policy::plan::{fingerprint, Fingerprint, Menu, MenuPlanner, Pending, PlanHealth, PlanInput, Planner, Refused, Target, Verdict};
+use crate::policy::tally::Tally;
 use crate::policy::{Peer, State};
 
 #[derive(Clone, Copy, Debug)]
@@ -129,6 +130,7 @@ const QUEUE: usize = MAX_PERIPHERALS + 4;
 pub struct Core<'a> {
     pub state: State,
     pub counters: Counters,
+    pub tally: Tally,
     goals: Goals,
     caps: &'a Capabilities,
     schedule: &'a dyn Schedule,
@@ -178,6 +180,7 @@ impl<'a> Core<'a> {
         Self {
             state: State::OFF,
             counters: Counters::default(),
+            tally: Tally::NEW,
             goals: Goals::OFF,
             caps,
             schedule,
@@ -277,6 +280,7 @@ impl<'a> Core<'a> {
         self.spend(now, &mut out);
         self.reconcile(now, &mut out);
         out.next = self.deadline(now);
+        self.tally.step(now, &input, &self.state, out.op.is_some());
         out
     }
 

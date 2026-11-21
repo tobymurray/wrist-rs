@@ -74,6 +74,7 @@ use wrist_ble::{
 };
 use wrist_ble::policy::goals::{self, Goals, PhoneGoal};
 use wrist_ble::policy::status::{next_change, status, Status as CoreStatus, StatusLog};
+use wrist_ble::policy::tally::Tally;
 use wrist_bluenrg2::shadow::verdict::Disagreement;
 use wrist_bluenrg2::shadow::{Mode, Observer, Shadow};
 use wrist_bluenrg2::commands;
@@ -457,8 +458,16 @@ pub fn command(args: &[u8], uart: Uart) {
     }
 }
 
-#[allow(clippy::too_many_lines)]
+/// `ble`: the radio and its counters, then what went wrong and how often.
 pub async fn write_status(uart: Uart) {
+    write_radio(uart).await;
+    uart.pace().await;
+    let _ = TALLY.lock(Cell::get).write_line(&mut Text(uart));
+    uart.write_line("");
+}
+
+#[allow(clippy::too_many_lines)]
+async fn write_radio(uart: Uart) {
     uart.write_str("[ble] ");
     uart.write_str(match STATE.load(Ordering::Relaxed) {
         STATE_OFF => "off (chip in reset)",
@@ -1679,6 +1688,7 @@ impl Link<'_> {
         self.show();
         let now = self.shadow.now();
         let s = status(self.shadow.state(), now);
+        TALLY.lock(|t| t.set(self.shadow.core_tally()));
         if self.status_log.due(now, &s) {
             write_status_line(self.uart, &s);
         }
@@ -2081,15 +2091,20 @@ fn trace_command(opcode: u16, params: &[u8]) {
     }
 }
 
-fn write_status_line(uart: Uart, s: &CoreStatus) {
-    struct Out(Uart);
-    impl core::fmt::Write for Out {
-        fn write_str(&mut self, s: &str) -> core::fmt::Result {
-            self.0.write_str(s);
-            Ok(())
-        }
+/// The core's tally, as the ble task last copied it.
+static TALLY: Mutex<CriticalSectionRawMutex, Cell<Tally>> = Mutex::new(Cell::new(Tally::NEW));
+
+struct Text(Uart);
+
+impl core::fmt::Write for Text {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        self.0.write_str(s);
+        Ok(())
     }
-    let _ = s.write_line(&mut Out(uart));
+}
+
+fn write_status_line(uart: Uart, s: &CoreStatus) {
+    let _ = s.write_line(&mut Text(uart));
     uart.write_line("");
 }
 
