@@ -308,7 +308,7 @@ fn a_trace_line_the_replay_cannot_read_is_dropped() {
         "1.000 [trace] x r",
         "1.000 [trace] 5 e 04050",
         "1.000 [trace] 5 e 0405GG",
-        "1.000 [trace] 5 x 0102",
+        "1.000 [trace] 5 q 0102",
         "1.000 [trace]  5",
     ] {
         assert_eq!(keep(line), None, "{line}");

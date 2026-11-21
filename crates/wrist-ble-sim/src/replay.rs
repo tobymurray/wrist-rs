@@ -64,6 +64,8 @@ pub struct Report {
     /// answered: the capture's mode not the one the replay took ([`Shadow::driven`]).
     pub unasked_snapshots: u32,
     pub unanswered_snapshots: u32,
+    /// Records the watch did not keep while a dump read its ring: inputs the core missed there.
+    pub not_kept: u32,
 }
 
 impl Report {
@@ -109,6 +111,9 @@ impl Report {
         }
         if self.unasked_snapshots > 0 {
             out.push(format!("{} snapshots of the driver's the core never asked for", self.unasked_snapshots));
+        }
+        if self.not_kept > 0 {
+            out.push(format!("{} records the watch did not keep while dumping: the core missed inputs there", self.not_kept));
         }
         if self.unanswered_snapshots > 0 {
             out.push(format!("{} snapshots the core asked for and the capture never gave", self.unanswered_snapshots));
@@ -389,6 +394,11 @@ impl Replay {
                 }
             }
             "d" => self.shadow.operator_disconnect(at),
+            "x" => {
+                if let &[a, b, c, d] = bytes.as_slice() {
+                    self.shadow.observer.report.not_kept += u32::from_le_bytes([a, b, c, d]);
+                }
+            }
             "s" => {
                 let snapshot = if bytes.is_empty() {
                     Err(Fault::Silent)

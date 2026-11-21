@@ -284,3 +284,13 @@ fn a_held_ring_past_its_first_records_measures_room_from_its_oldest() {
     assert_eq!(read_all(&ring, 0).0.last().map(String::as_str), Some("[trace] 9 r"));
     assert_eq!(ring.hold(false), 0);
 }
+
+/// Records the watch did not keep while dumping are reported beside the verdicts.
+#[test]
+fn records_not_kept_while_dumping_are_reported() {
+    let fixture = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/traces/watch-dump-cable.log")).unwrap();
+    let with_gap = format!("{fixture}69.300 [trace] 69300 x 03000000\n");
+    let r = replay(&with_gap);
+    assert_eq!(r.not_kept, 3);
+    assert!(wrist_ble_sim::fixture::keep("[trace] 69300 x 03000000").is_some());
+}

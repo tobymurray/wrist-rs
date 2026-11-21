@@ -45,7 +45,7 @@ pub fn keep(line: &str) -> Option<String> {
         return Some(format!("{stamp} [trace] {} {}", t.ms, t.kind));
     }
     // The recorder's goals, timing, radio, answer, ask and hang-up: no address in any.
-    if matches!(t.kind, "G" | "g" | "o" | "a" | "i" | "d") {
+    if matches!(t.kind, "G" | "g" | "o" | "a" | "i" | "d" | "x") {
         return Some(format!("{stamp} {text}"));
     }
     let packet = t.packet?;

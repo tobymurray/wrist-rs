@@ -31,6 +31,7 @@ pub(super) enum Dir {
     Answer,
     IntervalNow,
     Disconnect,
+    Gap,
 }
 
 impl Dir {
@@ -48,6 +49,7 @@ impl Dir {
             Dir::Answer => record::ANSWER,
             Dir::IntervalNow => record::INTERVAL_NOW,
             Dir::Disconnect => record::DISCONNECT,
+            Dir::Gap => record::GAP,
         }
     }
 }
@@ -117,13 +119,16 @@ pub async fn dump(args: &[u8], uart: Uart) {
                 at = after;
             }
             Next::Lost(from) => {
-                lost += from.min(end) - at;
+                lost += from - at;
                 at = from;
             }
             Next::End => break,
         }
     }
     let refused = RECORDS.lock(|r| r.borrow_mut().hold(false));
+    if refused > 0 {
+        packet(Dir::Gap, &refused.to_le_bytes());
+    }
     let ms = Instant::now().as_millis();
     let mut line = Line::new();
     let _ = write!(line, "[ble] dump next {at} at {}.{:03}", ms / 1000, ms % 1000);

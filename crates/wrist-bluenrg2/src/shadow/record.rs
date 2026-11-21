@@ -32,8 +32,11 @@ pub const RADIO: u8 = b'o';
 pub const ANSWER: u8 = b'a';
 pub const INTERVAL_NOW: u8 = b'i';
 pub const DISCONNECT: u8 = b'd';
+/// Records the ring refused while a dump read it, and how many: the core's inputs are not
+/// whole across it.
+pub const GAP: u8 = b'x';
 
-const KINDS: [u8; 12] = [COMMAND, EVENT, RESET, MODE, LOST, SNAPSHOT, GOALS, TIMING, RADIO, ANSWER, INTERVAL_NOW, DISCONNECT];
+const KINDS: [u8; 13] = [COMMAND, EVENT, RESET, MODE, LOST, SNAPSHOT, GOALS, TIMING, RADIO, ANSWER, INTERVAL_NOW, DISCONNECT, GAP];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Record {
