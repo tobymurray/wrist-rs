@@ -308,13 +308,22 @@ fn a_trace_line_the_replay_cannot_read_is_dropped() {
         "1.000 [trace] x r",
         "1.000 [trace] 5 e 04050",
         "1.000 [trace] 5 e 0405GG",
-        "1.000 [trace] 5 x 0102",
+        "1.000 [trace] 5 q 0102",
         "1.000 [trace]  5",
     ] {
         assert_eq!(keep(line), None, "{line}");
     }
     assert_eq!(keep("1.000 [ble] connected"), None);
-    assert_eq!(keep("[trace] 5 r"), None);
+}
+
+/// A `ble dump` line has no host stamp: it is kept, stamped with the watch's own milliseconds,
+/// and so are the recorder's goal records; other unstamped text is not.
+#[test]
+fn a_dumped_line_is_stamped_with_the_watchs_time() {
+    assert_eq!(keep("[trace] 5 r").as_deref(), Some("0.005 [trace] 5 r"));
+    assert_eq!(keep("[trace] 12345 G 07").as_deref(), Some("12.345 [trace] 12345 G 07"));
+    assert_eq!(keep("[trace] 12345 g 0100").as_deref(), Some("12.345 [trace] 12345 g 0100"));
+    assert_eq!(keep("[ble] dump next 4973"), None);
 }
 
 #[test]

@@ -576,15 +576,19 @@ async fn command(cmd: &[u8], flash: &'static FlashMutex) {
             uart.write_line("[usb]   flash ecc-test: reads ST's 1-bit and 2-bit ECC test words; the NMI must catch the second");
             uart.pace().await;
             #[cfg(feature = "ble")]
-            uart.write_line("[usb]   ble [on|off|version|yes|no|bonds|forget [address]|disconnect|profile auto|cable|battery|interval now <min> <max>]: the radio; off until `ble on`, which persists; `ble yes` confirms a pairing");
+            uart.write_line("[usb]   ble [on|off|version|yes|no|bonds|status|forget [address]|disconnect|profile auto|cable|battery|interval now <min> <max>]: the radio; off until `ble on`, which persists; `ble yes` confirms a pairing");
             uart.write_line("[usb]   haptic [tap|alarm|stop]: the vibration motor; bare, what the driver reads back");
             #[cfg(feature = "ble")]
             uart.write_line("[usb]   ble scan [s [interval window]]: lists advertisers for s seconds (10 by default), listening for window ms in every interval ms");
+            #[cfg(feature = "ble")]
+            uart.write_line("[usb]   ble dump [since <n>]: the radio's recorded packets and inputs from position n, as [trace] lines a host replays through the core; ends with the next n");
             #[cfg(feature = "ble-probe")]
             uart.write_line("[usb]   ble probe: the chip's firmware and updater versions, and its anchor period idle, advertising, or beside a link");
         }
         #[cfg(feature = "ble")]
         rest if rest.trim_ascii_end() == b"ble" => crate::ble::write_status(uart).await,
+        #[cfg(feature = "ble")]
+        rest if rest == b"ble dump" || rest.starts_with(b"ble dump ") => crate::ble::trace::dump(&rest[8..], uart).await,
         #[cfg(feature = "ble")]
         rest if rest.starts_with(b"ble ") => crate::ble::command(&rest[4..], uart),
         rest if rest == b"haptic" || rest.starts_with(b"haptic ") => crate::haptic::command(&rest[6..], uart),

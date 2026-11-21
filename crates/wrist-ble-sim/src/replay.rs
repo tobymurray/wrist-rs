@@ -11,7 +11,7 @@ use wrist_ble::policy::engine::Tell;
 use wrist_ble::policy::goals::{Goals, PhoneGoal, Power};
 use wrist_ble::policy::{status, State};
 use wrist_bluenrg2::shadow::verdict::{Act, Disagreement};
-use wrist_bluenrg2::shadow::{trace, DriverOp, Excuse, Observer, Shadow};
+use wrist_bluenrg2::shadow::{record, trace, DriverOp, Excuse, Observer, Shadow};
 use wrist_bluenrg2::INFO;
 
 use crate::capture::{self, command, stamped, Command, Profile};
@@ -64,6 +64,8 @@ pub struct Report {
     /// answered: the capture's mode not the one the replay took ([`Shadow::driven`]).
     pub unasked_snapshots: u32,
     pub unanswered_snapshots: u32,
+    /// Records the watch did not keep while a dump read its ring: inputs the core missed there.
+    pub not_kept: u32,
 }
 
 impl Report {
@@ -109,6 +111,9 @@ impl Report {
         }
         if self.unasked_snapshots > 0 {
             out.push(format!("{} snapshots of the driver's the core never asked for", self.unasked_snapshots));
+        }
+        if self.not_kept > 0 {
+            out.push(format!("{} records the watch did not keep while dumping: the core missed inputs there", self.not_kept));
         }
         if self.unanswered_snapshots > 0 {
             out.push(format!("{} snapshots the core asked for and the capture never gave", self.unanswered_snapshots));
@@ -369,6 +374,31 @@ impl Replay {
             // (none when it failed), as a driven core was told them.
             "m" => self.shadow.driven(bytes == [1]),
             "l" => self.shadow.lost_read(at),
+            // The flight recorder's inputs beside the chip's: the core's goals and timing, the
+            // radio, and the operator's answer, ask and hang-up.
+            "G" => match record::decode_goals(&bytes) {
+                Some(g) => self.shadow.set_goals(at, g),
+                None => self.shadow.observer.report.unknown_events += 1,
+            },
+            "g" => {
+                if let &[power, transfer] = bytes.as_slice() {
+                    self.transfer = transfer == 1;
+                    self.shadow.timing(at, if power == 1 { Power::Battery } else { Power::Cable }, self.transfer);
+                }
+            }
+            "o" => self.shadow.radio(at, bytes == [1]),
+            "a" => self.shadow.answer(at, bytes == [1]),
+            "i" => {
+                if let &[a, b, c, d] = bytes.as_slice() {
+                    self.shadow.interval_now(at, u16::from_le_bytes([a, b]), u16::from_le_bytes([c, d]));
+                }
+            }
+            "d" => self.shadow.operator_disconnect(at),
+            "x" => {
+                if let &[a, b, c, d] = bytes.as_slice() {
+                    self.shadow.observer.report.not_kept += u32::from_le_bytes([a, b, c, d]);
+                }
+            }
             "s" => {
                 let snapshot = if bytes.is_empty() {
                     Err(Fault::Silent)
@@ -408,6 +438,7 @@ pub fn replay(capture: &str) -> Report {
     // Driven until a start's `m` says otherwise.
     r.shadow.driven(true);
     let mut started = false;
+    let mut goals_first = false;
     let mut offset: Option<i64> = None;
     for line in capture.lines() {
         let (host, text) = stamped(line).map_or((None, line), |s| (i64::try_from(s.ms).ok(), s.text));
@@ -438,9 +469,17 @@ pub fn replay(capture: &str) -> Report {
                 let goals = r.shadow.goals();
                 r.shadow.set_goals(Instant(ms), goals);
                 started = true;
-                if !trace.as_ref().is_some_and(comes_up) {
+                // A dump from the watch's start opens with its bring-up's goals, then the reset:
+                // which it is, the record after a first `G` says.
+                goals_first = trace.as_ref().is_some_and(|t| t.kind == "G");
+                if !goals_first && !trace.as_ref().is_some_and(comes_up) {
                     r.seed();
                 }
+            }
+        } else if goals_first && traced.is_some() {
+            goals_first = false;
+            if !trace.as_ref().is_some_and(comes_up) {
+                r.seed();
             }
         }
         r.line(text);
