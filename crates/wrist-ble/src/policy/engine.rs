@@ -11,6 +11,7 @@ use crate::policy::invariants::REACHABLE_GAP;
 use crate::policy::peripheral::{self, Ctx, Peripheral, Stage, StopReason, Then};
 use crate::policy::phone::{self, Phone, Security, ASK_TO_PAIR_AFTER};
 use crate::policy::plan::{fingerprint, Fingerprint, Menu, MenuPlanner, Pending, PlanHealth, PlanInput, Planner, Refused, Target, Verdict};
+use crate::policy::tally::{Restart, Tally};
 use crate::policy::{Peer, State};
 
 #[derive(Clone, Copy, Debug)]
@@ -129,6 +130,7 @@ const QUEUE: usize = MAX_PERIPHERALS + 4;
 pub struct Core<'a> {
     pub state: State,
     pub counters: Counters,
+    pub tally: Tally,
     goals: Goals,
     caps: &'a Capabilities,
     schedule: &'a dyn Schedule,
@@ -178,6 +180,7 @@ impl<'a> Core<'a> {
         Self {
             state: State::OFF,
             counters: Counters::default(),
+            tally: Tally::NEW,
             goals: Goals::OFF,
             caps,
             schedule,
@@ -277,6 +280,7 @@ impl<'a> Core<'a> {
         self.spend(now, &mut out);
         self.reconcile(now, &mut out);
         out.next = self.deadline(now);
+        self.tally.step(now, &input, &self.state, out.op.is_some());
         out
     }
 
@@ -322,8 +326,9 @@ impl<'a> Core<'a> {
             // A start that cuts short a chip starting or up, whatever the event: a reset, a
             // failure, a refusal, a missed deadline. Those the host asks for, and a fault's
             // hourly retry, start a chip that was off or given up on.
-            if matches!(a, chip::Action::Start(_)) {
-                self.counters.resets += u32::from(matches!(was, Chip::Starting { .. } | Chip::Ready(_)));
+            if matches!(a, chip::Action::Start(_)) && matches!(was, Chip::Starting { .. } | Chip::Ready(_)) {
+                self.counters.resets += 1;
+                self.tally.restart(Restart::of(e));
             }
             self.forget_radio(now);
             out.chip = Some(a);
@@ -527,6 +532,9 @@ impl<'a> Core<'a> {
                 }
                 self.security_refused(now, &p.op, f, out);
                 if !self.hold_busy_ask(now, &p.op, f) {
+                    if self.counts(&p.op) {
+                        self.tally.failure(f);
+                    }
                     self.back_off(now, p.op.kind());
                 }
             }
@@ -562,6 +570,7 @@ impl<'a> Core<'a> {
                 self.advertising_unknown |= f.kind == FailureKind::Timeout && op.kind() == OpKind::Advertise;
                 let change = change_of(&op);
                 if let (FailureKind::Schedule(_) | FailureKind::ModeExclusion, Some(change)) = (f.kind, change) {
+                    self.tally.failure(f);
                     self.counters.divergences += 1;
                     out.tell(Tell::Divergence { kind: op.kind(), native: f.native });
                     // Refused twice running: the plan cannot avoid it.
@@ -580,6 +589,9 @@ impl<'a> Core<'a> {
                     }
                     self.security_refused(now, &op, f, out);
                     if !self.hold_busy_ask(now, &op, f) {
+                        if self.counts(&op) {
+                            self.tally.failure(f);
+                        }
                         self.back_off(now, op.kind());
                     }
                 }
@@ -681,6 +693,9 @@ impl<'a> Core<'a> {
         if let Some(p) = self.pending.filter(|p| now >= p.deadline + GRACE) {
             self.pending = None;
             self.counters.timed_out += 1;
+            if self.counts(&p.op) {
+                self.tally.failure(Failure { kind: FailureKind::Timeout, native: 0 });
+            }
             self.advertising_unknown |= p.op.kind() == OpKind::Advertise;
             self.back_off(now, p.op.kind());
         }
@@ -965,6 +980,14 @@ impl Bucket {
             _ => Some(now),
         };
         Self { tokens: tokens.saturating_sub(1), since }
+    }
+}
+
+impl Core<'_> {
+    /// Whether an operation's failure is one: not when its link went before the chip answered,
+    /// where the failure is the link's end.
+    fn counts(&self, op: &Op) -> bool {
+        op.link().is_none_or(|l| self.state.phone.link() == Some(l) || self.state.peers.iter().flatten().any(|p| linked(&p.machine) == Some(l)))
     }
 }
 

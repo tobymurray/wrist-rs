@@ -577,3 +577,11 @@ fn a_snapshot_is_carried_in_the_trace_as_the_core_reads_it() {
     assert_eq!(trace::decode(Instant(5), &full), None);
     assert!(trace::decode(Instant(5), &full[..trace::SNAPSHOT_MAX]).is_some());
 }
+
+#[test]
+fn the_cores_tally_counts_the_phones_hang_up() {
+    let mut s = up();
+    s.event(Instant(200), PHONE);
+    s.event(Instant(300), &disconnected(0x0801));
+    assert_eq!(s.core_tally().hang_ups.rows[0], Some((0x13, 1)));
+}

@@ -73,6 +73,11 @@ PROBED = re.compile(r'latency probe ran (\d+) s since the last')
 BUILD_CHAR = rb'[0-9A-Za-z._-]'
 STATUS = r'\[ble\] .*, timing '
 HANG_UP = re.compile(r'\[ble\] disconnected, reason (\w+)')
+COUNTS = r'\[ble\] counts: '
+# The counts that a soak's ordinary work leaves alone; its own hang-ups count as early (the
+# watch's `tally::EARLY_END`) when it holds each link not much longer than this.
+STILL_COUNTS = ('failures', 'pairings failed', 'hung up within', 'chip restarts')
+EARLY_END_S = 12
 CONNECTED = re.compile(r'\[ble\] connected\s*$')
 
 
@@ -570,6 +575,16 @@ def counters(status):
     return found
 
 
+def counts_moved(before, after, hold):
+    """The parts of the `ble` counts line, of those a soak holding each link `hold` seconds should
+    leave alone, that differ."""
+    def parts(line):
+        return {k: p[p.find(k):] for p in line.partition('counts: ')[2].split('; ') for k in STILL_COUNTS if k in p}
+    b, a = parts(before), parts(after)
+    still = [k for k in STILL_COUNTS if k != 'hung up within' or hold > EARLY_END_S]
+    return [k for k in still if b.get(k) != a.get(k)]
+
+
 def unheld(before, after, lines):
     """The core's refusals between two `ble` lines beyond its asks held for the central's answer."""
     refused = [int(m[1]) if (m := re.search(r'core asked \d+ refused (\d+)', s)) else 0 for s in (before, after)]
@@ -733,6 +748,7 @@ async def lateness(s, usb, phone, build, a):
 async def soak(s, usb, phone, build, a):
     air = isinstance(usb, Air)
     before = await usb.ask('ble', STATUS, 3) or ''
+    counts_before = await usb.ask('ble', COUNTS, 3) or ''
     up_before = await usb.ask('uptime', r'\[usb\] uptime (\d+)', 3)
     first = usb.mark()
     lost, dropped, restarts = (usb.lost, usb.dropped, usb.restarts) if air else (0, 0, 0)
@@ -783,6 +799,7 @@ async def soak(s, usb, phone, build, a):
     else:
         readings.append(await page(usb))
     after = await usb.ask('ble', STATUS, 3) or ''
+    counts_after = await usb.ask('ble', COUNTS, 3) or ''
     up_after = await usb.ask('uptime', r'\[usb\] uptime (\d+)', 3)
     grew = {k: (v, counters(after).get(k)) for k, v in counters(before).items() if counters(after).get(k) != v}
     if (n := unheld(before, after, usb.since(first))) > 0:
@@ -794,11 +811,14 @@ async def soak(s, usb, phone, build, a):
     up = [int(re.search(r'uptime (\d+)', u)[1]) if u else None for u in (up_before, up_after)]
     figures = gauge(usb.since(first))
     s.data.update(cycles=cycles, failed=failures, worst_ms=worst, over_5ms=over, page_readings=len(got),
-                  counters_before=counters(before), counters_after=counters(after), uptime_s=up, gauge=figures)
+                  counters_before=counters(before), counters_after=counters(after), counts_before=counts_before,
+                  counts_after=counts_after, uptime_s=up, gauge=figures)
     print(f'  gauge: {said(figures)}', flush=True)
     s.check(cycles and not failures, f'{cycles} phone cycles: attached, console answered for {a.hold} s, reason 13 '
             f'(failed: {failures or "none"})')
     s.check(before and after and not grew, f'the `ble` counters did not move ({grew or "none moved"})')
+    moved = counts_moved(counts_before, counts_after, a.hold)
+    s.check(counts_before and counts_after and not moved, f'no failure, pairing, early hang-up or chip reset counted ({moved or "none"})')
     if air:
         print('  no executor-latency probe: its timer would keep the core out of Stop 2', flush=True)
         n = figures['readings'] if figures else 0

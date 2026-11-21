@@ -313,6 +313,11 @@ impl<O: Observer> Shadow<O> {
     }
 
     #[must_use]
+    pub fn core_tally(&self) -> wrist_ble::policy::tally::Tally {
+        self.core.tally
+    }
+
+    #[must_use]
     pub fn now(&self) -> Instant {
         self.now
     }

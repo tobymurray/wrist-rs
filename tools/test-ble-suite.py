@@ -198,6 +198,8 @@ class Judgements(unittest.TestCase):
 
         class Soak(Usb):
             async def ask(self, text, pattern, timeout=3):
+                if text == 'ble' and pattern == suite.COUNTS:
+                    return '[ble] counts: failures none; chip resets none'
                 if text == 'ble':
                     self.lines['ble'] = next(answers)
                 return await super().ask(text, pattern, timeout)
@@ -218,6 +220,8 @@ class Judgements(unittest.TestCase):
 
         class Soak(Usb):
             async def ask(self, text, pattern, timeout=3):
+                if text == 'ble' and pattern == suite.COUNTS:
+                    return '[ble] counts: failures none; chip resets none'
                 if text == 'ble':
                     self.lines['ble'] = next(answers)
                 return await super().ask(text, pattern, timeout)
@@ -233,6 +237,21 @@ class Judgements(unittest.TestCase):
             asyncio.run(suite.soak(s, Soak({'uptime': ['[usb] uptime 5 s']}), None, 'b',
                                    argparse.Namespace(soak_minutes=0, hold=0, gap=0)))
         return s.checks[1]['passed']
+
+    def test_counts_moved_names_only_the_parts_a_soak_leaves_alone(self):
+        line = ('[ble] counts: failures none; phone hang-ups 13 x{h}; pairings and bonded reconnects ok {h}, pairings failed none; hung up within 10 s '
+                'of encrypting {e}; chip restarts {r}; operations in a minute at most {o}; unreachable now 0 s, worst 0 s; '
+                'plan drift now 0 s, worst 0 s')
+        before = line.format(h=3, e='none', r='none', o=4)
+        self.assertEqual(suite.counts_moved(before, line.format(h=9, e='none', r='none', o=7), 30), [])
+        self.assertEqual(suite.counts_moved(before, line.format(h=9, e='none', r='deadline x1', o=7), 30), ['chip restarts'])
+        self.assertEqual(suite.counts_moved(before, '', 30), ['failures', 'pairings failed', 'hung up within', 'chip restarts'])
+
+    def test_a_soak_holding_links_briefly_leaves_early_hang_ups_alone(self):
+        line = '[ble] counts: failures none; hung up within 10 s of encrypting {e}; chip restarts none'
+        before, after = line.format(e='none'), line.format(e='13 x4')
+        self.assertEqual(suite.counts_moved(before, after, 5), [])
+        self.assertEqual(suite.counts_moved(before, after, 13), ['hung up within'])
 
     def test_a_refusal_no_held_ask_explains_moves_the_counters(self):
         self.assertFalse(self.soak_refusals(held=0))
