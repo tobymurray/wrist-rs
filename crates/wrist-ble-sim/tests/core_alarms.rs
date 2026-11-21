@@ -137,16 +137,15 @@ fn an_operation_storm_alarms_once_and_resyncs_without_a_restart() {
     }
     assert_eq!(told, [Invariant::BoundedEffort], "peak {} at {ms}", b.core.tally.commands_peak);
     assert_eq!(resyncs, 1, "a resync with the alarm");
-    // Woken only when the core asks to be, for a minute: no restart, no second alarm.
-    let mut at = ms;
-    while at < ms + 60_000 {
-        let Some(next) = b.core.step(t(at), Input::Tick).next else { break };
-        at = next.0.max(at + 1);
+    // Each second for a minute, the breach lasting: no restart, no second alarm or resync.
+    for at in (ms..ms + 60_000).step_by(1_000) {
         let outs = b.step(at, Input::Tick);
         told.extend(alarms(&outs));
+        resyncs += outs.iter().filter(|o| o.snapshot).count();
         assert!(!outs.iter().any(|o| matches!(o.chip, Some(Action::Start(_)))), "a restart at {at}");
     }
     assert_eq!(told, [Invariant::BoundedEffort]);
+    assert_eq!(resyncs, 1, "one resync for the episode");
     assert_eq!(b.core.tally.restarts.total(), 0);
 }
 
@@ -216,4 +215,22 @@ fn alarms_are_named_on_the_counts_line() {
     let mut line = String::new();
     tally.write_line(&mut line, t(0)).unwrap();
     assert!(line.contains("; alarms reachable x1 bounded-effort x1 converges x1; "), "{line}");
+}
+
+/// An alarm raised with an operation in flight is told at once; its resync waits until the
+/// operation is done.
+#[test]
+fn the_resync_waits_for_the_operation_in_flight() {
+    let mut b = Bench::new();
+    for _ in 0..=COMMANDS_PER_MINUTE {
+        b.core.tally.step(t(1_000), &Input::Tick, &b.core.state, true);
+    }
+    let asked = b.core.step(t(1_000), Input::Goals(goals(false)));
+    assert!(asked.op.is_some());
+    assert_eq!(alarms(&[asked]), [Invariant::BoundedEffort]);
+    assert!(!asked.snapshot);
+    let submitted = b.core.step(t(1_000), Input::Submitted(Ok(OpId(900))));
+    assert!(!submitted.snapshot);
+    let done = b.core.step(t(1_010), Input::Radio(RadioEvent::Done(OpId(900), Ok(Outcome::Done))));
+    assert!(done.snapshot);
 }

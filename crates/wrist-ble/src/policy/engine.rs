@@ -333,16 +333,6 @@ impl<'a> Core<'a> {
         self.asked.is_some() || self.pending.is_some() || self.backoff.iter().any(|b| b.failures > 0)
     }
 
-    /// When an alarm could next be raised by time alone; none while the core retries, whose own
-    /// wakes see it.
-    fn alarm_mark(&self, now: Instant) -> Option<Instant> {
-        if self.retrying() {
-            return None;
-        }
-        let r = self.record(now);
-        [r.unreachable_from(), r.unconverged_from()].into_iter().flatten().filter(|&t| t > now).min()
-    }
-
     fn set_goals(&mut self, now: Instant, g: Goals, out: &mut Outputs) {
         let was = self.goals;
         self.goals = g;
@@ -977,7 +967,7 @@ impl<'a> Core<'a> {
         let pending = self.pending.map(|p| p.deadline + GRACE);
         let reask = self.reask_at().filter(|&t| t > now);
         let busy = self.phone_busy_until.filter(|&t| t > now);
-        let marks = [self.state.chip.deadline(self.caps), self.state.phone.deadline(), pending, self.phone_mark(now), reask, busy, self.snapshot_retry, self.alarm_mark(now)];
+        let marks = [self.state.chip.deadline(self.caps), self.state.phone.deadline(), pending, self.phone_mark(now), reask, busy, self.snapshot_retry];
         marks.into_iter().flatten().chain(peers).chain(backoff).min()
     }
 

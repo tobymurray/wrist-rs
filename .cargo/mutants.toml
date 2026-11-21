@@ -7,6 +7,4 @@ additional_cargo_test_args = ["--", "--skip", "every_peripheral", "--skip", "the
 # The replay's reading of a capture is a diagnostic: its fixtures check the core through it.
 exclude_globs = ["crates/wrist-ble-sim/src/replay.rs", "crates/wrist-ble-sim/src/bin/replay.rs"]
 # A put that claims to have gone without emptying the line leaves `feed` no room: it spins.
-# An alarm's mark at `now` is one this step has judged already; asked for, the task would spin.
-# No reachable state puts one there, since the reconciler acts on any mismatch first.
-exclude_re = ["replace ble::Lines<N>::put -> bool with true", "replace > with >= in Core<'a>::alarm_mark"]
+exclude_re = ["replace ble::Lines<N>::put -> bool with true"]
