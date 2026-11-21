@@ -705,8 +705,8 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
         );
         // A start, or a restart's recovery, that failed.
         if !(link.start().await && link.serve(&mut changes).await) {
-            link.shadow_off();
             link.last_status();
+            link.shadow_off();
             set_state(STATE_FAILED);
             old_key(OldKey::clear);
             link.chip.hold();
@@ -1656,7 +1656,8 @@ impl Link<'_> {
         LATENCY.store(params.map_or(0, |p| p.latency), Ordering::Relaxed);
     }
 
-    /// A status line for the core's status as the task lets the radio go, if it has changed.
+    /// A status line for the core's status as the task lets the radio go, if it has changed: on a
+    /// failure, before the radio is turned off, so the line shows the fault.
     fn last_status(&mut self) {
         let now = self.shadow.now();
         let s = status(self.shadow.state(), now);
@@ -2073,7 +2074,6 @@ fn trace_command(opcode: u16, params: &[u8]) {
     }
 }
 
-/// The clock the shadow keeps, as the trace stamps packets.
 fn write_status_line(uart: Uart, s: &CoreStatus) {
     struct Out(Uart);
     impl core::fmt::Write for Out {
@@ -2086,6 +2086,7 @@ fn write_status_line(uart: Uart, s: &CoreStatus) {
     uart.write_line("");
 }
 
+/// The clock the shadow keeps, as the trace stamps packets.
 fn now_ms() -> wrist_ble::Instant {
     wrist_ble::Instant(Instant::now().as_millis())
 }

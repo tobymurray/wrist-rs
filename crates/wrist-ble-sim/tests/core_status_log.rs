@@ -147,3 +147,9 @@ fn the_shape_drops_a_peripherals_ages_and_the_drift() {
     assert_ne!(early.drift, late.drift);
     assert_eq!(early.shape(), late.shape());
 }
+
+#[test]
+fn a_peripheral_that_cannot_change_by_time_wakes_nothing() {
+    let state = with_peer(ready(t(0)), &HR, wrist_ble::policy::peripheral::Peripheral::default());
+    assert_eq!(next_change(&state, t(5_000)), None);
+}

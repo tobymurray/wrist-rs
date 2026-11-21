@@ -248,7 +248,10 @@ pub fn next_change(state: &State, now: Instant) -> Option<Instant> {
         }
         _ => None,
     };
-    let peers = state.peers.iter().any(Option::is_some).then(|| now + LOG_GAP);
+    let ages = |p: &crate::policy::Peer| {
+        !matches!(peer_state(&p.machine, p.want.profile, now), PeerState::Off | PeerState::Stopped(_) | PeerState::Incompatible)
+    };
+    let peers = state.peers.iter().flatten().any(ages).then(|| now + LOG_GAP);
     [phone, peers].into_iter().flatten().min()
 }
 
@@ -277,7 +280,6 @@ impl Status {
         }
         Self { phone, peers, drift: Millis(0), ..*self }
     }
-
 }
 
 /// Which statuses the console prints: each change of [`Status::shape`], held to [`LOG_GAP`].
