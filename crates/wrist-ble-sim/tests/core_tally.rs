@@ -362,3 +362,19 @@ fn a_failed_operation_and_a_divergence_are_failures() {
     core.step(t(100), Input::Submitted(Err(Failure { kind: FailureKind::ModeExclusion, native: 0x0C })));
     assert_eq!((core.counters.divergences, core.tally.failures.rows[0]), (1, Some(((FailureKind::ModeExclusion, 0x0C), 1))));
 }
+
+/// An operation the chip took after its link had gone ends in failure, but that is the link's end.
+#[test]
+fn an_operation_taken_after_its_link_went_is_no_failure() {
+    for (end, timed_out) in [(Some(Failure { kind: FailureKind::NotConnected, native: 0 }), 0), (None, 1)] {
+        let mut core = core_with_phone();
+        assert_eq!(core.step(t(10_000), Input::Tick).op, Some(Op::RequestSecurity(phone())));
+        core.step(t(10_050), down(0x13));
+        core.step(t(10_100), Input::Submitted(Ok(OpId(2))));
+        match end {
+            Some(f) => core.step(t(10_200), Input::Radio(RadioEvent::Done(OpId(2), Err(f)))),
+            None => core.step(t(400_000), Input::Tick),
+        };
+        assert_eq!((core.counters.timed_out, core.tally.failures.total()), (timed_out, 0));
+    }
+}
