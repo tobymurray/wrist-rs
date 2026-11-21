@@ -174,8 +174,8 @@ pub struct Core<'a> {
     asked_unknown: bool,
     /// When goals or power last changed, or the chip came up.
     pub settled_since: Instant,
-    /// The invariant broken, and whether the chip has been resynced for it.
-    alarm: Option<(Invariant, bool)>,
+    /// Which of [`invariants::WATCHED`] have their alarm told and still broken.
+    alarms: [bool; invariants::WATCHED.len()],
 }
 
 impl<'a> Core<'a> {
@@ -212,7 +212,7 @@ impl<'a> Core<'a> {
             advertising_unknown: false,
             asked_unknown: false,
             settled_since: Instant(0),
-            alarm: None,
+            alarms: [false; invariants::WATCHED.len()],
         }
     }
 
@@ -307,23 +307,20 @@ impl<'a> Core<'a> {
         }
     }
 
-    /// An alarm when an invariant breaks: told once, and a resync at the first step the core is
-    /// up and waits on no operation of its own ([`Self::retrying`]); over when the breach is. The
-    /// chip is not restarted for it: the busy budget, a refused baseline and the start deadline
-    /// restart a chip that is stuck, and a burst of operations from outside is no fault of it.
+    /// An alarm when an invariant of [`invariants::WATCHED`] breaks: told once and counted, each
+    /// on its own, and again only after it has cleared. Nothing more: a burst of operations from
+    /// outside is no fault of the chip, and a chip that is stuck is restarted by the busy budget,
+    /// a refused baseline and the start deadline.
     fn watch(&mut self, now: Instant, out: &mut Outputs) {
-        let Some(broken) = self.record(now).breach(now) else {
-            self.alarm = None;
-            return;
-        };
-        let (broken, resynced) = self.alarm.unwrap_or_else(|| {
-            out.tell(Tell::Alarm(broken));
-            self.tally.alarm(broken);
-            (broken, false)
-        });
-        let resync = !resynced && !self.retrying() && matches!(self.state.chip.state, Chip::Ready(_));
-        out.snapshot |= resync;
-        self.alarm = Some((broken, resynced || resync));
+        let record = self.record(now);
+        for (told, watched) in self.alarms.iter_mut().zip(invariants::WATCHED) {
+            let broken = record.broken(watched, now, *told);
+            if broken && !*told {
+                out.tell(Tell::Alarm(watched));
+                self.tally.alarm(watched);
+            }
+            *told = broken;
+        }
     }
 
     /// Whether the core waits on an operation of its own: one asked or in flight, which its

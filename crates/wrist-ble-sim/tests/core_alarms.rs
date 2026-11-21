@@ -121,10 +121,10 @@ fn alarms(outs: &[Outputs]) -> Vec<Invariant> {
     outs.iter().flat_map(|o| o.tell).flatten().filter_map(|t| if let Tell::Alarm(i) = t { Some(i) } else { None }).collect()
 }
 
-/// More operations than I2 allows in a minute: one alarm and a resync, told once however long
-/// the episode lasts, and the chip never restarted for it.
+/// More operations than I2 allows in a minute: one alarm, told once however long the episode
+/// lasts, and neither a resync nor a restart for it.
 #[test]
-fn an_operation_storm_alarms_once_and_resyncs_without_a_restart() {
+fn an_operation_storm_alarms_once_and_nothing_more() {
     let mut b = Bench::new();
     let mut told = Vec::new();
     let mut resyncs = 0;
@@ -136,7 +136,7 @@ fn an_operation_storm_alarms_once_and_resyncs_without_a_restart() {
         ms += 500;
     }
     assert_eq!(told, [Invariant::BoundedEffort], "peak {} at {ms}", b.core.tally.commands_peak);
-    assert_eq!(resyncs, 1, "a resync with the alarm");
+    assert_eq!(resyncs, 0);
     // Each second for a minute, the breach lasting: no restart, no second alarm or resync.
     for at in (ms..ms + 60_000).step_by(1_000) {
         let outs = b.step(at, Input::Tick);
@@ -145,7 +145,7 @@ fn an_operation_storm_alarms_once_and_resyncs_without_a_restart() {
         assert!(!outs.iter().any(|o| matches!(o.chip, Some(Action::Start(_)))), "a restart at {at}");
     }
     assert_eq!(told, [Invariant::BoundedEffort]);
-    assert_eq!(resyncs, 1, "one resync for the episode");
+    assert_eq!(resyncs, 0);
     assert_eq!(b.core.tally.restarts.total(), 0);
 }
 
@@ -157,7 +157,7 @@ fn ordinary_work_raises_no_alarm() {
         let outs = b.step(ms, Input::Goals(goals(i % 2 == 0)));
         assert!(alarms(&outs).is_empty(), "{ms} {:?} peak {}", alarms(&outs), b.core.tally.commands_peak);
         let outs = b.step(ms + 10_000, Input::Tick);
-        assert!(alarms(&outs).is_empty(), "{ms}");
+        assert_eq!(alarms(&outs), [], "{ms}");
     }
     assert_eq!(b.core.tally.alarms.total(), 0);
 }
@@ -217,20 +217,54 @@ fn alarms_are_named_on_the_counts_line() {
     assert!(line.contains("; alarms reachable x1 bounded-effort x1 converges x1; "), "{line}");
 }
 
-/// An alarm raised with an operation in flight is told at once; its resync waits until the
-/// operation is done.
+/// A count that hovers at the limit is one alarm: it ends only well under the limit.
 #[test]
-fn the_resync_waits_for_the_operation_in_flight() {
+fn too_many_operations_ends_only_well_under_the_limit() {
+    use wrist_ble::policy::invariants::ALARM_HYSTERESIS;
     let mut b = Bench::new();
     for _ in 0..=COMMANDS_PER_MINUTE {
         b.core.tally.step(t(1_000), &Input::Tick, &b.core.state, true);
     }
-    let asked = b.core.step(t(1_000), Input::Goals(goals(false)));
-    assert!(asked.op.is_some());
-    assert_eq!(alarms(&[asked]), [Invariant::BoundedEffort]);
-    assert!(!asked.snapshot);
-    let submitted = b.core.step(t(1_000), Input::Submitted(Ok(OpId(900))));
-    assert!(!submitted.snapshot);
-    let done = b.core.step(t(1_010), Input::Radio(RadioEvent::Done(OpId(900), Ok(Outcome::Done))));
-    assert!(done.snapshot);
+    assert_eq!(alarms(&b.step(1_000, Input::Tick)), [Invariant::BoundedEffort]);
+    // At the limit, then just under the end mark: the same alarm, not told again.
+    for ms in [61_000, 61_500] {
+        for _ in 0..COMMANDS_PER_MINUTE - ALARM_HYSTERESIS {
+            b.core.tally.step(t(ms), &Input::Tick, &b.core.state, true);
+        }
+    }
+    assert_eq!(alarms(&b.step(62_000, Input::Tick)), []);
+    assert_eq!(b.core.tally.alarms.total(), 1);
+    // Well under it for a whole minute: over, and a new burst is a new alarm.
+    assert_eq!(alarms(&b.step(200_000, Input::Tick)), []);
+    for _ in 0..=COMMANDS_PER_MINUTE {
+        b.core.tally.step(t(201_000), &Input::Tick, &b.core.state, true);
+    }
+    assert_eq!(alarms(&b.step(201_000, Input::Tick)), [Invariant::BoundedEffort]);
+}
+
+/// Another invariant breaking while one is broken is told too.
+#[test]
+fn a_second_invariant_is_told_while_the_first_lasts() {
+    let mut b = Bench::new();
+    for _ in 0..=COMMANDS_PER_MINUTE {
+        b.core.tally.step(t(20_000), &Input::Tick, &b.core.state, true);
+    }
+    // The record loses the advertising the plan still wants, long enough ago for I1.
+    b.core.state.radio.advertising = None;
+    b.core.state.silent_since = t(5_000);
+    let out = b.core.step(t(20_000), Input::Tick);
+    assert_eq!(alarms(&[out]), [Invariant::BoundedEffort, Invariant::Reachable]);
+}
+
+/// Told, too many operations lasts down to the end mark; untold, only over the limit counts.
+#[test]
+fn too_many_operations_ends_at_its_mark() {
+    use wrist_ble::policy::invariants::ALARM_HYSTERESIS;
+    let at = |commands| Record { commands, phone_linked: true, planned: None, ..record() };
+    let mark = COMMANDS_PER_MINUTE - ALARM_HYSTERESIS;
+    assert!(at(mark + 1).broken(Invariant::BoundedEffort, t(0), true));
+    assert!(!at(mark).broken(Invariant::BoundedEffort, t(0), true));
+    assert!(!at(mark + 1).broken(Invariant::BoundedEffort, t(0), false));
+    assert!(at(COMMANDS_PER_MINUTE + 1).broken(Invariant::BoundedEffort, t(0), false));
+    assert!(!at(COMMANDS_PER_MINUTE).broken(Invariant::BoundedEffort, t(0), false));
 }

@@ -15,6 +15,12 @@ pub const REACHABLE_ALARM: Millis = Millis::secs(10);
 /// I2: chip commands a minute, outside GATT traffic and transfers.
 pub const COMMANDS_PER_MINUTE: u32 = 60;
 
+/// The invariants watched on the device, each with an alarm of its own.
+pub const WATCHED: [Invariant; 3] = [Invariant::BoundedEffort, Invariant::Reachable, Invariant::Converges];
+
+/// I2's alarm ends once the minute's operations are this far under the limit.
+pub const ALARM_HYSTERESIS: u32 = 10;
+
 /// I3: with goals and power still this long, the radio has reached the plan or says why not.
 pub const CONVERGE_AFTER: Millis = Millis::secs(15);
 
@@ -71,15 +77,21 @@ impl Record {
         (self.ready && self.idle && self.planned != self.observed).then(|| self.settled_since + CONVERGE_AFTER)
     }
 
-    /// The invariant broken at `now`, if any.
+    /// Whether `broken` is broken at `now`; `told`: its alarm was told and has not ended, so too
+    /// many operations ends only [`ALARM_HYSTERESIS`] under the limit.
+    #[must_use]
+    pub fn broken(&self, broken: Invariant, now: Instant, told: bool) -> bool {
+        match broken {
+            Invariant::BoundedEffort => self.commands > COMMANDS_PER_MINUTE || (told && self.commands > COMMANDS_PER_MINUTE - ALARM_HYSTERESIS),
+            Invariant::Reachable => self.unreachable_from().is_some_and(|t| now >= t),
+            Invariant::Converges => self.unconverged_from().is_some_and(|t| now >= t),
+            _ => false,
+        }
+    }
+
+    /// The first invariant of [`WATCHED`] broken at `now`, if any.
     #[must_use]
     pub fn breach(&self, now: Instant) -> Option<Invariant> {
-        if self.commands > COMMANDS_PER_MINUTE {
-            return Some(Invariant::BoundedEffort);
-        }
-        if self.unreachable_from().is_some_and(|t| now >= t) {
-            return Some(Invariant::Reachable);
-        }
-        self.unconverged_from().filter(|&t| now >= t).map(|_| Invariant::Converges)
+        WATCHED.into_iter().find(|&i| self.broken(i, now, false))
     }
 }
