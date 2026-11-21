@@ -76,7 +76,7 @@ HANG_UP = re.compile(r'\[ble\] disconnected, reason (\w+)')
 COUNTS = r'\[ble\] counts: '
 # The counts that a soak's ordinary work leaves alone; its own hang-ups count as early (the
 # watch's `tally::EARLY_END`) when it holds each link not much longer than this.
-STILL_COUNTS = ('failures', 'pairings', 'hung up within', 'chip restarts')
+STILL_COUNTS = ('failures', 'pairings failed', 'hung up within', 'chip restarts')
 EARLY_END_S = 12
 CONNECTED = re.compile(r'\[ble\] connected\s*$')
 
@@ -579,7 +579,7 @@ def counts_moved(before, after, hold):
     """The parts of the `ble` counts line, of those a soak holding each link `hold` seconds should
     leave alone, that differ."""
     def parts(line):
-        return {k: p for p in line.partition('counts: ')[2].split('; ') for k in STILL_COUNTS if p.startswith(k)}
+        return {k: p[p.find(k):] for p in line.partition('counts: ')[2].split('; ') for k in STILL_COUNTS if k in p}
     b, a = parts(before), parts(after)
     still = [k for k in STILL_COUNTS if k != 'hung up within' or hold > EARLY_END_S]
     return [k for k in still if b.get(k) != a.get(k)]

@@ -122,6 +122,7 @@ pub struct Tally {
     pub failures: Counts<(FailureKind, u16), 8>,
     /// Ends of the core's phone link, by reason.
     pub hang_ups: Counts<u8, 6>,
+    /// Pairings and bonded reconnects alike: the chip reports both as complete.
     pub pairings_ok: u32,
     pub pairing_failures: Counts<PairingStep, 3>,
     /// The step of the last pairing that failed, and its peer when its link's start was seen.
@@ -250,7 +251,7 @@ impl Tally {
         })?;
         w.write_str("; phone hang-ups")?;
         self.hang_ups.write(w, |w, r| write!(w, "{r:02X}"))?;
-        write!(w, "; pairings ok {} failed", self.pairings_ok)?;
+        write!(w, "; pairings and bonded reconnects ok {}, pairings failed", self.pairings_ok)?;
         self.pairing_failures.write(w, |w, s| w.write_str(step_name(s)))?;
         if let Some((peer, step)) = self.last_pairing_failure {
             write!(w, " (last {}", step_name(step))?;

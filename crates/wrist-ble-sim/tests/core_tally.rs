@@ -45,7 +45,7 @@ fn down(reason: u8) -> Input {
 fn nothing_counted_says_so() {
     assert_eq!(
         line(&Tally::NEW, 0),
-        "[ble] counts: failures none; phone hang-ups none; pairings ok 0 failed none; hung up within 10 s of encrypting none; \
+        "[ble] counts: failures none; phone hang-ups none; pairings and bonded reconnects ok 0, pairings failed none; hung up within 10 s of encrypting none; \
          chip restarts none; operations in a minute at most 0; unreachable now 0 s, worst 0 s; plan drift now 0 s, worst 0 s"
     );
 }
@@ -126,7 +126,7 @@ fn pairings_on_the_phones_link_are_counted_with_the_last_failure() {
     }
     assert_eq!(tally.pairings_ok, 1);
     assert!(line(&tally, 10).contains(
-        "; pairings ok 1 failed failed x1 local-key-missing x1 peer-key-missing x1 (last peer-key-missing from 06:05:04:03:02:01); "
+        "; pairings and bonded reconnects ok 1, pairings failed failed x1 local-key-missing x1 peer-key-missing x1 (last peer-key-missing from 06:05:04:03:02:01); "
     ));
 }
 
