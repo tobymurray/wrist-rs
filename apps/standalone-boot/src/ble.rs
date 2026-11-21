@@ -707,7 +707,7 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
         if !(link.start().await && link.serve(&mut changes).await) {
             // The core's own fault, before the radio goes off; a step the driver failed is not the
             // core's to show, so the radio as it goes off.
-            let core_gave_up = link.shown.is_none();
+            let core_gave_up = Radio::of(link.shadow.state()) == Radio::Failed;
             if core_gave_up {
                 link.last_status();
             }
