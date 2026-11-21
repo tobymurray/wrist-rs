@@ -6,8 +6,7 @@ use common::*;
 use wrist_ble::policy::chip::Action;
 use wrist_ble::policy::engine::{Core, Input, Outputs, Tell};
 use wrist_ble::policy::goals::{Goals, PhoneGoal, Power};
-use wrist_ble::policy::invariants::{Invariant, Record, ALARM_RESTART_AFTER, COMMANDS_PER_MINUTE, CONVERGE_AFTER, REACHABLE_ALARM};
-use wrist_ble::policy::tally::Restart;
+use wrist_ble::policy::invariants::{Invariant, Record, COMMANDS_PER_MINUTE, CONVERGE_AFTER, REACHABLE_ALARM};
 use wrist_ble::{AdvParams, Millis, OpId, Outcome, RadioEvent};
 use wrist_bluenrg2::shadow::menu::MENU;
 use wrist_bluenrg2::{Scheduler, CAPABILITIES};
@@ -122,42 +121,33 @@ fn alarms(outs: &[Outputs]) -> Vec<Invariant> {
     outs.iter().flat_map(|o| o.tell).flatten().filter_map(|t| if let Tell::Alarm(i) = t { Some(i) } else { None }).collect()
 }
 
-/// More operations than I2 allows in a minute: one alarm and a resync, then, still too many once
-/// the core is idle, a restart; told once however long it lasts.
+/// More operations than I2 allows in a minute: one alarm and a resync, told once however long
+/// the episode lasts, and the chip never restarted for it.
 #[test]
-fn an_operation_storm_alarms_resyncs_and_then_restarts_the_chip() {
+fn an_operation_storm_alarms_once_and_resyncs_without_a_restart() {
     let mut b = Bench::new();
     let mut told = Vec::new();
-    let mut snapshot_at = None;
+    let mut resyncs = 0;
     let mut ms = 1_000;
     while b.core.tally.alarms.total() == 0 && ms < 60_000 {
         let outs = b.step(ms, Input::Goals(goals(ms % 1_000 == 0)));
         told.extend(alarms(&outs));
-        if outs.iter().any(|o| o.snapshot) {
-            snapshot_at = Some(ms);
-        }
+        resyncs += outs.iter().filter(|o| o.snapshot).count();
         ms += 500;
     }
     assert_eq!(told, [Invariant::BoundedEffort], "peak {} at {ms}", b.core.tally.commands_peak);
-    assert!(snapshot_at.is_some(), "a resync with the alarm");
-    let raised = ms - 500;
-    // From here woken only when the core asks to be: its alarm's own deadline restarts the chip.
-    let mut at = raised;
-    let mut restarted = None;
-    for _ in 0..100 {
-        let next = b.core.step(t(at), Input::Tick).next.expect("a wake");
-        at = next.0;
+    assert_eq!(resyncs, 1, "a resync with the alarm");
+    // Woken only when the core asks to be, for a minute: no restart, no second alarm.
+    let mut at = ms;
+    while at < ms + 60_000 {
+        let Some(next) = b.core.step(t(at), Input::Tick).next else { break };
+        at = next.0.max(at + 1);
         let outs = b.step(at, Input::Tick);
         told.extend(alarms(&outs));
-        if outs.iter().any(|o| matches!(o.chip, Some(Action::Start(_)))) {
-            restarted = Some(at);
-            break;
-        }
+        assert!(!outs.iter().any(|o| matches!(o.chip, Some(Action::Start(_)))), "a restart at {at}");
     }
-    assert_eq!(restarted, Some(raised + u64::from(ALARM_RESTART_AFTER.0)));
     assert_eq!(told, [Invariant::BoundedEffort]);
-    assert_eq!(b.core.tally.restarts.rows[0], Some((Restart::Stuck, 1)));
-    assert_eq!(b.core.tally.alarms.rows[0], Some((Invariant::BoundedEffort, 1)));
+    assert_eq!(b.core.tally.restarts.total(), 0);
 }
 
 /// A core doing its ordinary work raises no alarm.

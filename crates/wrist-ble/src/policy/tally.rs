@@ -70,8 +70,6 @@ pub enum Restart {
     BaselineRefused,
     /// A start's deadline passed.
     Deadline,
-    /// An alarm a resync did not clear.
-    Stuck,
 }
 
 impl Restart {
@@ -83,7 +81,6 @@ impl Restart {
             chip::Event::Reset(c) => Self::Reset(c),
             chip::Event::StartFailed => Self::StartFailed,
             chip::Event::BaselineRefused => Self::BaselineRefused,
-            chip::Event::Stuck => Self::Stuck,
             _ => Self::Deadline,
         }
     }
@@ -360,7 +357,6 @@ fn restart_name(r: Restart) -> &'static str {
         Restart::StartFailed => "start-failed",
         Restart::BaselineRefused => "baseline-refused",
         Restart::Deadline => "deadline",
-        Restart::Stuck => "stuck",
     }
 }
 

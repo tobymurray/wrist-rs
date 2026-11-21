@@ -7,7 +7,7 @@ use crate::{
 
 use crate::policy::chip::{self, Chip, StartId};
 use crate::policy::goals::{Goals, Power, MAX_PERIPHERALS};
-use crate::policy::invariants::{self, Invariant, ALARM_RESTART_AFTER, REACHABLE_GAP};
+use crate::policy::invariants::{self, Invariant, REACHABLE_GAP};
 use crate::policy::peripheral::{self, Ctx, Peripheral, Stage, StopReason, Then};
 use crate::policy::phone::{self, Phone, Security, ASK_TO_PAIR_AFTER};
 use crate::policy::plan::{fingerprint, Fingerprint, Menu, MenuPlanner, Pending, PlanHealth, PlanInput, Planner, Refused, Target, Verdict};
@@ -111,14 +111,6 @@ pub struct Counters {
     pub dropped: u32,
 }
 
-/// How far an alarm's recovery has gone.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Recovery {
-    Told,
-    Resynced,
-    Restarted,
-}
-
 /// Waits before an operation kind that failed is tried again: 1 s, doubling to 32 s.
 #[derive(Clone, Copy, Debug, Default)]
 struct Backoff {
@@ -182,8 +174,8 @@ pub struct Core<'a> {
     asked_unknown: bool,
     /// When goals or power last changed, or the chip came up.
     pub settled_since: Instant,
-    /// The invariant broken, since when, and how far its recovery has gone.
-    alarm: Option<(Invariant, Instant, Recovery)>,
+    /// The invariant broken, and whether the chip has been resynced for it.
+    alarm: Option<(Invariant, bool)>,
 }
 
 impl<'a> Core<'a> {
@@ -315,33 +307,23 @@ impl<'a> Core<'a> {
         }
     }
 
-    /// An alarm when an invariant breaks: told once, a resync at the first step the core waits
-    /// on no operation of its own ([`Self::retrying`]), and a chip restart if the breach holds
-    /// [`ALARM_RESTART_AFTER`] from the alarm and past the resync; over when the breach is.
+    /// An alarm when an invariant breaks: told once, and a resync at the first step the core is
+    /// up and waits on no operation of its own ([`Self::retrying`]); over when the breach is. The
+    /// chip is not restarted for it: the busy budget, a refused baseline and the start deadline
+    /// restart a chip that is stuck, and a burst of operations from outside is no fault of it.
     fn watch(&mut self, now: Instant, out: &mut Outputs) {
         let Some(broken) = self.record(now).breach(now) else {
             self.alarm = None;
             return;
         };
-        let (broken, since, recovery) = self.alarm.unwrap_or_else(|| {
+        let (broken, resynced) = self.alarm.unwrap_or_else(|| {
             out.tell(Tell::Alarm(broken));
             self.tally.alarm(broken);
-            (broken, now, Recovery::Told)
+            (broken, false)
         });
-        let ready = matches!(self.state.chip.state, Chip::Ready(_));
-        let recovery = match recovery {
-            _ if self.retrying() => recovery,
-            Recovery::Told if ready => {
-                out.snapshot = true;
-                Recovery::Resynced
-            }
-            Recovery::Resynced if now.since(since) >= ALARM_RESTART_AFTER => {
-                self.chip(now, chip::Event::Stuck, out);
-                Recovery::Restarted
-            }
-            r => r,
-        };
-        self.alarm = Some((broken, since, recovery));
+        let resync = !resynced && !self.retrying() && matches!(self.state.chip.state, Chip::Ready(_));
+        out.snapshot |= resync;
+        self.alarm = Some((broken, resynced || resync));
     }
 
     /// Whether the core waits on an operation of its own: one asked or in flight, which its
@@ -351,15 +333,14 @@ impl<'a> Core<'a> {
         self.asked.is_some() || self.pending.is_some() || self.backoff.iter().any(|b| b.failures > 0)
     }
 
-    /// When an alarm could next be raised or escalated by time alone; none while the core
-    /// retries, whose own wakes see it.
+    /// When an alarm could next be raised by time alone; none while the core retries, whose own
+    /// wakes see it.
     fn alarm_mark(&self, now: Instant) -> Option<Instant> {
         if self.retrying() {
             return None;
         }
-        let restart = self.alarm.filter(|&(_, _, r)| r == Recovery::Resynced).map(|(_, since, _)| since + ALARM_RESTART_AFTER);
         let r = self.record(now);
-        [restart, r.unreachable_from(), r.unconverged_from()].into_iter().flatten().filter(|&t| t > now).min()
+        [r.unreachable_from(), r.unconverged_from()].into_iter().flatten().filter(|&t| t > now).min()
     }
 
     fn set_goals(&mut self, now: Instant, g: Goals, out: &mut Outputs) {

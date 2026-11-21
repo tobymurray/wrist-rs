@@ -2212,9 +2212,9 @@ impl Observer for Said {
         self.0.write_str("[ble] alarm: ");
         self.0.write_str(wrist_ble::policy::tally::invariant_name(broken));
         self.0.write_line(match broken {
-            Invariant::Reachable => ", no phone can find the watch; re-reading the chip, then restarting it if this lasts",
-            Invariant::BoundedEffort => ", too many operations in a minute; re-reading the chip, then restarting it if this lasts",
-            _ => ", the radio is not where the plan wants it; re-reading the chip, then restarting it if this lasts",
+            Invariant::Reachable => ", no phone can find the watch; re-reading the chip",
+            Invariant::BoundedEffort => ", too many operations in a minute; re-reading the chip",
+            _ => ", the radio is not where the plan wants it; re-reading the chip",
         });
     }
 }

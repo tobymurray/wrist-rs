@@ -21,9 +21,6 @@ pub const CONVERGE_AFTER: Millis = Millis::secs(15);
 /// I4: the status reflects a change of state within this.
 pub const STATUS_WITHIN: Millis = Millis::secs(1);
 
-/// An alarm not cleared by a resync this long after it was raised restarts the chip.
-pub const ALARM_RESTART_AFTER: Millis = CONVERGE_AFTER;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Invariant {
     Reachable,
