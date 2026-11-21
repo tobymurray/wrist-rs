@@ -5,6 +5,7 @@ Linux or Mac host. The watch needs a build with the `ble` feature and `ble on`.
     wrist-ble.py --pair                     pair and bond, confirmed over the USB console
     wrist-ble.py "ble;boot"                 send commands, print the answers
     wrist-ble.py --update app.bin           stage, verify, write, reset, wait until kept
+    wrist-ble.py --revert                   put back the image the last kept update replaced
     wrist-ble.py --listen 30                just print the console for 30 s
 
 Needs `bleak` (pip install bleak) and, for --update over USB-less links, a bond. Finds the
@@ -100,17 +101,19 @@ async def transfer(client, con, path, chunk_pace, chunk_max=VALUE_LEN):
     # Writes with response: each chunk is acknowledged before the next, so the watch's event
     # queue is never outrun.
     for i in range(0, len(image), chunk):
+        since = len(con.lines)
         await client.write_gatt_char(RX, image[i:i + chunk], response=True)
         if chunk_pace:
             await asyncio.sleep(chunk_pace)
     print(f"-- sent in {time.time() - t0:.1f} s; waiting for the watch to verify and write", flush=True)
-    line = await con.wait_for(["[update] ok", "error", "mismatch", "abandoned"], 90)
+    line = await con.wait_for(["[update] ok", "error", "mismatch", "abandoned"], 90, since)
     if line and " ok " in line:
         return True
     if line is None:
         # The ok line can be lost while the core stalls on flash; the loader's state is the truth.
+        since = len(con.lines)
         await send(client, "boot")
-        state = await con.wait_for(["[boot] state"], 5)
+        state = await con.wait_for(["[boot] state"], 5, since)
         if state and "swap" in state:
             print("-- the watch reports the swap marked; taking that as success", flush=True)
             return True
@@ -352,6 +355,8 @@ async def main():
                                        "in place of the USB console")
     ap.add_argument("--hold", type=float, default=0.0, help="--pair: seconds to keep the link after pairing")
     ap.add_argument("--update", help="application image to send")
+    ap.add_argument("--revert", action="store_true",
+                    help="put back the image the last kept update replaced (`update revert`), reset, wait until kept")
     ap.add_argument("--listen", type=float, default=2.0, help="seconds to keep listening at the end")
     ap.add_argument("--no-reset", action="store_true", help="after an update, do not send reset")
     ap.add_argument("--keep-interval", action="store_true", help="do not ask for 15 ms before a transfer")
@@ -363,12 +368,35 @@ async def main():
         if args.command_file and "match" in (args.host_answer, args.watch_answer):
             ap.error("--command-file can't read the watch's number: give --host-answer and --watch-answer")
         return await pair(args.name, args.port, args.host_answer, args.watch_answer, args.command_file, args.hold)
+    if args.revert and args.update:
+        ap.error("--revert and --update are two different updates: give one")
     return await run(args.name, args.commands, args.update, args.listen, not args.no_reset,
-                     args.keep_interval, args.chunk, args.pace)
+                     args.keep_interval, args.chunk, args.pace, args.revert)
 
 
-async def run(name, commands="", update=None, listen=2.0, reset=True, keep_interval=False, chunk=VALUE_LEN, pace=0.0):
-    """Commands, then an update if one is given; 0 once it is done (with `reset`, once kept)."""
+async def revert(client, con):
+    """`update revert`: whether the watch marked the image it replaced."""
+    since = len(con.lines)
+    await send(client, "update revert")
+    line = await con.wait_for(["[update] revert ok", "[update] revert:", "[update] error"], 90, since)
+    if line and "revert ok" in line:
+        return True
+    if line is None:
+        # As after a transfer, the ok line can be lost while the core writes flash.
+        since = len(con.lines)
+        await send(client, "boot")
+        state = await con.wait_for(["[boot] state"], 5, since)
+        if state and "swap" in state:
+            print("-- the watch reports the swap marked; taking that as success", flush=True)
+            return True
+    print(f"-- revert refused: {line}", flush=True)
+    return False
+
+
+async def run(name, commands="", update=None, listen=2.0, reset=True, keep_interval=False, chunk=VALUE_LEN, pace=0.0,
+              go_back=False):
+    """Commands, then an update or a revert if one is asked for; 0 once it is done (with
+    `reset`, once kept)."""
     device = await find(name)
     if device is None:
         return 1
@@ -386,6 +414,10 @@ async def run(name, commands="", update=None, listen=2.0, reset=True, keep_inter
             await fast_interval(client, con)
         if update:
             ok = await transfer(client, con, update, pace, chunk)
+        elif go_back:
+            ok = await revert(client, con)
+        if go_back:
+            update = "the revert"
         if ok and update and reset:
             print("-- reset sent", flush=True)
             await send(client, "reset")

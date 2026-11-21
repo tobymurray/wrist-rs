@@ -107,6 +107,7 @@ The image is a serial console on USB: `/dev/ttyACM*` on Linux, where
 ```sh
 python3 -m venv .venv && .venv/bin/pip install -r tools/requirements.txt
 .venv/bin/python tools/wrist-update.py app.bin        # --loader loader.bin for the loader
+.venv/bin/python tools/wrist-update.py --revert       # the version the last update replaced
 .venv/bin/python tools/wrist-time.py
 .venv/bin/python tools/wrist-cmd.py "boot;version"    # "help" lists the commands
 ```

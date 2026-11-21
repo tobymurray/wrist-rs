@@ -34,6 +34,7 @@ stock version is not supported until they name it.
   with the next daylight-saving changes.
 - Installs updates over USB into a second slot, and goes back to the previous version if
   the watch restarts before the new one has run a while with the computer connected.
+  `wrist-update.py --revert` puts the previous version back on purpose.
 - Turns off everything the face doesn't use, and sleeps on battery.
 - The console, updates and the clock (`wrist-time.py --ble`) over Bluetooth, for a computer it is
   bonded to. The radio stays off until you turn it on, on the Bluetooth page, which also confirms

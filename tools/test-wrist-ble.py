@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Host tests for wrist-ble.py's pairing answers; no watch needed."""
+import asyncio
 import importlib.util
 from pathlib import Path
 import unittest
@@ -93,6 +94,68 @@ class PairingAnswers(unittest.TestCase):
     def test_the_watch_can_be_told_nothing_and_the_host_can_stall_or_cancel(self):
         self.assertEqual(answers('never', 'none', 1, 1), (None, 'never'))
         self.assertEqual(answers('cancel', 'yes', 1, None), ('ble yes', 'cancel'))
+
+
+class Revert(unittest.TestCase):
+    """A watch that answers before the write's own response returns."""
+
+    def outcome(self, answer):
+        con = wrist_ble.Console(echo=lambda text: None)
+
+        class Client:
+            async def write_gatt_char(self, _uuid, data, response):
+                if data.startswith(b'update revert'):
+                    con.on_notify(None, (answer + '\n').encode())
+
+        return asyncio.run(asyncio.wait_for(wrist_ble.revert(Client(), con), 2))
+
+    def test_a_refusal_is_seen(self):
+        self.assertFalse(self.outcome('[update] revert: the other slot is empty; nothing written'))
+
+    def test_success_is_seen(self):
+        self.assertTrue(self.outcome('[update] revert ok 1 bytes, crc 0x0, swap marked; reset to apply'))
+
+
+class Transfer(unittest.TestCase):
+    """A watch that answers the last chunk, or `boot`, before the write's own response returns."""
+
+    def outcome(self, last_chunk_answer, boot_answer=None):
+        import tempfile
+        con = wrist_ble.Console(echo=lambda text: None)
+        image = bytes(range(256)) * 4
+
+        class Client:
+            mtu_size = 247
+            got = 0
+
+            async def write_gatt_char(self, _uuid, data, response):
+                if data.startswith(b'update '):
+                    con.on_notify(None, b'[update] send 1024 bytes\n')
+                elif data.startswith(b'boot'):
+                    if boot_answer:
+                        con.on_notify(None, (boot_answer + '\n').encode())
+                else:
+                    Client.got += len(data)
+                    if Client.got == len(image) and last_chunk_answer:
+                        con.on_notify(None, (last_chunk_answer + '\n').encode())
+
+        real = con.wait_for
+
+        async def quick(needles, timeout, since=None):
+            return await real(needles, min(timeout, 0.3), since)
+
+        con.wait_for = quick
+        with tempfile.NamedTemporaryFile() as f:
+            f.write(image)
+            f.flush()
+            return asyncio.run(asyncio.wait_for(wrist_ble.transfer(Client(), con, f.name, 0), 5))
+
+    def test_an_ok_before_the_last_write_returns_is_seen(self):
+        self.assertTrue(self.outcome('[update] ok 1024 bytes, crc 0, swap marked; reset to apply'))
+
+    def test_a_lost_ok_falls_back_to_a_fast_boot_answer(self):
+        self.assertTrue(self.outcome(None, '[boot] state swap (just updated; not yet marked booted)'))
+        self.assertFalse(self.outcome(None, '[boot] state boot'))
 
 
 if __name__ == '__main__':

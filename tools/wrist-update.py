@@ -2,6 +2,7 @@
 """Send a new application, or with --loader a new loader, over the USB console (apps/wrist-loader/LAYOUT.md).
 
     tools/wrist-update.py app.bin [--port /dev/ttyACM0] [--no-reset] [--loader]
+    tools/wrist-update.py --revert [--port /dev/ttyACM0] [--no-reset]
 """
 import argparse, os, struct, sys, time, zlib
 
@@ -93,7 +94,9 @@ LOST = "the port went away before the whole image was sent; the watch abandons t
 def main():
     global LOST
     ap = argparse.ArgumentParser()
-    ap.add_argument('image')
+    ap.add_argument('image', nargs='?')
+    ap.add_argument('--revert', action='store_true',
+                    help='put back the image the last kept update replaced (`update revert`), instead of sending one')
     ap.add_argument('--port')
     ap.add_argument('--no-reset', action='store_true')
     ap.add_argument('--loader', action='store_true',
@@ -101,6 +104,19 @@ def main():
     ap.add_argument('--pace', type=float, default=0.005,
                     help='seconds between 64-byte packets (default 0.005; the watch drops bursts, see LAYOUT.md)')
     args = ap.parse_args()
+    if args.revert:
+        if args.image or args.loader:
+            ap.error('--revert sends no image and is for the application only')
+        name = wrist_port.find_or_exit(args.port)
+        s = wrist_port.settle(serial.Serial(name, 115200, timeout=0.5, write_timeout=5))
+        LOST = ("the port went away during the revert: plug it back in and run `boot` with tools/wrist-cmd.py; "
+                "`state swap` means `reset` puts the previous image back, `state boot` that nothing was marked")
+        why = revert(s)
+        if why:
+            sys.exit(why)
+        return apply(s, args)
+    if not args.image:
+        ap.error('an image to send, or --revert')
     data = open(args.image, 'rb').read()
     why = mismatch(data, args.loader)
     if why:
@@ -141,6 +157,28 @@ def main():
     if hit != f"{tag} ok":
         sys.exit("the watch reported an error, or went quiet")
     print(f"written and verified in {time.time() - t0:.1f} s")
+    apply(s, args)
+
+
+def revert(s):
+    """`update revert`: None once the watch has marked the image it replaced, else why not."""
+    s.write(b"update revert\r\n")
+    hit, line = wait_for(s, ["[update] revert ok", "[update] revert:", "[update] error"], 60)
+    if hit is None:
+        # The result line can be lost while flash is written; the loader's state is the truth.
+        s.write(b"boot\r\n")
+        _, state = wait_for(s, ["[boot] state"], 5)
+        if state and "state swap" in state:
+            print("the watch reports the swap marked; taking that as success", flush=True)
+            return None
+    if hit == "[update] revert ok":
+        return None
+    return "the watch did not revert" + (f": {line}" if line else ", or went quiet")
+
+
+def apply(s, args):
+    """Reset into the image just marked, unless --no-reset, and wait until it keeps itself."""
+    global LOST
     if args.no_reset:
         return
     LOST = "the port went away after the reset: do not reset the watch; check `boot` with tools/wrist-cmd.py until it reports `state boot`"
