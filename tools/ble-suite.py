@@ -623,6 +623,8 @@ async def console(s, usb, phone, build, a):
         s.check(await link.command('ping', r'\bpong\b'), f'session {i}: ping answered')
         s.check(await link.command('version', rf'build {re.escape(build)}(?: |$)'), f'session {i}: version is build {build}')
         s.check(await link.command('ble', r'\[ble\] connected, encrypted'), f'session {i}: ble reports the link encrypted')
+        s.check(await link.command('ble status', r'\[ble\] status phone=connected peers=- radio=ok plan=ok '),
+                f'session {i}: the core\'s status line says connected')
         await link.close()
         marks.append((i, mark, await hang_up(usb, mark)))
     found = await reasons(usb, [m for _, m, _ in marks]) if isinstance(usb, Air) else [r for *_, r in marks]

@@ -73,6 +73,7 @@ use wrist_ble::{
     ServiceDecl, ATT_MAX_MTU,
 };
 use wrist_ble::policy::goals::{self, Goals, PhoneGoal};
+use wrist_ble::policy::status::{next_change, status, Status as CoreStatus, StatusLog};
 use wrist_bluenrg2::shadow::verdict::Disagreement;
 use wrist_bluenrg2::shadow::{Mode, Observer, Shadow};
 use wrist_bluenrg2::commands;
@@ -145,6 +146,8 @@ enum Request {
     Yes,
     No,
     Bonds,
+    /// `ble status`: the core's status line, now.
+    Status,
     Forget,
     /// `ble forget <address>`: one bond, by its address and type.
     ForgetOne(bluenrg2::Address),
@@ -356,7 +359,7 @@ fn power() -> Power {
     }
 }
 
-/// `ble on|off|version|yes|no|bonds|forget [address]|disconnect|profile auto|cable|battery|interval now <min> <max>|scan [s [interval window]]`.
+/// `ble on|off|version|yes|no|bonds|status|forget [address]|disconnect|profile auto|cable|battery|interval now <min> <max>|scan [s [interval window]]`.
 pub fn command(args: &[u8], uart: Uart) {
     let request = match args {
         b"on" => Request::On,
@@ -365,6 +368,7 @@ pub fn command(args: &[u8], uart: Uart) {
         b"yes" => Request::Yes,
         b"no" => Request::No,
         b"bonds" => Request::Bonds,
+        b"status" => Request::Status,
         b"forget" => Request::Forget,
         rest if rest.starts_with(b"forget ") => {
             match core::str::from_utf8(&rest[7..]).ok().and_then(wrist_bluenrg2::console::parse_address) {
@@ -444,7 +448,7 @@ pub fn command(args: &[u8], uart: Uart) {
         },
         _ => {
             return uart.write_line(
-                "[ble] usage: ble [on|off|version|yes|no|bonds|forget [address]|disconnect|profile auto|cable|battery|interval now <min> <max>|scan [s [interval window]]]",
+                "[ble] usage: ble [on|off|version|yes|no|bonds|status|forget [address]|disconnect|profile auto|cable|battery|interval now <min> <max>|scan [s [interval window]]]",
             )
         }
     };
@@ -650,6 +654,7 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
         while !on {
             match REQUESTS.receive().await {
                 Request::On => on = true,
+                Request::Status => write_status_line(uart, &status(&wrist_ble::policy::State::OFF, now_ms())),
                 Request::Version
                 | Request::Bonds
                 | Request::Forget
@@ -700,7 +705,16 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
         );
         // A start, or a restart's recovery, that failed.
         if !(link.start().await && link.serve(&mut changes).await) {
+            // The core's own fault, before the radio goes off; a step the driver failed is not the
+            // core's to show, so the radio as it goes off.
+            let core_gave_up = Radio::of(link.shadow.state()) == Radio::Failed;
+            if core_gave_up {
+                link.last_status();
+            }
             link.shadow_off();
+            if !core_gave_up {
+                link.last_status();
+            }
             set_state(STATE_FAILED);
             old_key(OldKey::clear);
             link.chip.hold();
@@ -710,6 +724,7 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
         }
         // `ble off`: the chip in reset first, then SPI1, CS and IRQ dropped back to analog.
         link.shadow_off();
+        link.last_status();
         link.chip.hold();
         drop(link);
         MIRROR.store(false, Ordering::Relaxed);
@@ -790,6 +805,8 @@ struct Link<'d> {
     boot: Option<Boot>,
     /// A start under way, or one that stopped at a step: shown whatever the core holds.
     shown: Option<Radio>,
+    /// Which of the core's statuses have gone out as lines.
+    status_log: StatusLog,
     shadow: &'d mut Shadow<Said>,
     /// `ble probe refuse`: the core's next command answered with this status, unsent.
     #[cfg(feature = "ble-probe")]
@@ -824,6 +841,7 @@ impl<'d> Link<'d> {
             seen: Seen::default(),
             boot: None,
             shown: None,
+            status_log: StatusLog::NEW,
             shadow,
             #[cfg(feature = "ble-probe")]
             refuse_next: None,
@@ -934,8 +952,10 @@ impl Link<'_> {
             scan_end: self.scanner.until().map(tick),
         };
         // The first tick at which `now_ms` reaches it.
-        let shadow = self.shadow.next().map(|at| (at.0 * embassy_time::TICK_HZ).div_ceil(1000));
-        wrist_bluenrg2::wake::earliest([wrist_bluenrg2::wake::ble::due(&state), shadow, self.chip.due()]).map(Instant::from_ticks)
+        let ms = |at: wrist_ble::Instant| (at.0 * embassy_time::TICK_HZ).div_ceil(1000);
+        let shadow = self.shadow.next().map(ms);
+        let status = [next_change(self.shadow.state(), self.shadow.now()), self.status_log.next()].into_iter().flatten().min().map(ms);
+        wrist_bluenrg2::wake::earliest([wrist_bluenrg2::wake::ble::due(&state), shadow, self.chip.due(), status]).map(Instant::from_ticks)
     }
 
     async fn request(&mut self, req: Request) {
@@ -949,6 +969,7 @@ impl Link<'_> {
                 }
             }
             Request::Bonds => self.list_bonds(false).await,
+            Request::Status => write_status_line(self.uart, &status(self.shadow.state(), self.shadow.now())),
             Request::Forget => {
                 if self.command(ACI_GAP_CLEAR_SECURITY_DB, &[]).await.is_ok() {
                     BONDED.store(0, Ordering::Relaxed);
@@ -1643,9 +1664,24 @@ impl Link<'_> {
         LATENCY.store(params.map_or(0, |p| p.latency), Ordering::Relaxed);
     }
 
-    /// The core's counters and the radio onto the `ble` line.
-    fn publish(&self) {
+    /// A status line for the core's status as the task lets the radio go, if it has changed.
+    fn last_status(&mut self) {
+        let now = self.shadow.now();
+        let s = status(self.shadow.state(), now);
+        if self.status_log.last(now, &s) {
+            write_status_line(self.uart, &s);
+        }
+    }
+
+    /// The core's counters and the radio onto the `ble` line, and a status line when the status
+    /// has changed.
+    fn publish(&mut self) {
         self.show();
+        let now = self.shadow.now();
+        let s = status(self.shadow.state(), now);
+        if self.status_log.due(now, &s) {
+            write_status_line(self.uart, &s);
+        }
         let c = self.shadow.counters();
         for (slot, v) in [
             (&CORE_ASKED, c.submitted),
@@ -2043,6 +2079,18 @@ fn trace_command(opcode: u16, params: &[u8]) {
             trace::packet(trace::Dir::ToChip, &packet[..n]);
         }
     }
+}
+
+fn write_status_line(uart: Uart, s: &CoreStatus) {
+    struct Out(Uart);
+    impl core::fmt::Write for Out {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            self.0.write_str(s);
+            Ok(())
+        }
+    }
+    let _ = s.write_line(&mut Out(uart));
+    uart.write_line("");
 }
 
 /// The clock the shadow keeps, as the trace stamps packets.

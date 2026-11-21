@@ -230,6 +230,96 @@ impl Status {
     }
 }
 
+/// The least time between two status lines, so a flickering status cannot flood the console.
+pub const LOG_GAP: Millis = Millis::secs(1);
+
+/// When the status next changes by time alone, with no event.
+#[must_use]
+pub fn next_change(state: &State, now: Instant) -> Option<Instant> {
+    let after = |at: Instant| Some(at + Millis(1)).filter(|&t| t > now);
+    let phone = match (state.chip.state, state.phone) {
+        (Chip::Ready(_), Phone::Up(l)) if matches!(l.security, Security::Unsecured | Security::Unknown) => {
+            after(l.since + ASK_TO_PAIR_AFTER)
+        }
+        (Chip::Ready(_), Phone::Off | Phone::Discoverable)
+            if !matches!(state.radio.advertising, Some(a) if a.connectable) =>
+        {
+            after(state.silent_since + REACHABLE_GAP)
+        }
+        _ => None,
+    };
+    let peers = state.peers.iter().flatten().any(|p| matches!(p.machine.stage, Stage::Live { .. })).then(|| now + LOG_GAP);
+    [phone, peers].into_iter().flatten().min()
+}
+
+impl Status {
+    /// The status without its ages, countdowns and readings: what a status line is printed for a
+    /// change of.
+    #[must_use]
+    pub fn shape(&self) -> Self {
+        let phone = match self.phone {
+            PhoneStatus::Pairing { value, .. } => PhoneStatus::Pairing { value, left: Millis(0) },
+            PhoneStatus::Unsecured { .. } => PhoneStatus::Unsecured { since: Millis(0) },
+            PhoneStatus::Unreachable { reason, .. } => PhoneStatus::Unreachable { reason, since: Millis(0) },
+            p => p,
+        };
+        let mut peers = self.peers;
+        for p in peers.iter_mut().flatten() {
+            p.state = match p.state {
+                PeerState::Finding { slow, .. } => PeerState::Finding { slow, since: Millis(0) },
+                PeerState::Live { current, .. } => PeerState::Live { value: 0, age: Millis(0), current },
+                PeerState::Unstable { current, .. } => PeerState::Unstable { value: None, age: Millis(0), current },
+                PeerState::Quiet { .. } => PeerState::Quiet { value: None, age: Millis(0) },
+                PeerState::Reconnecting { attempts, .. } => PeerState::Reconnecting { since: Millis(0), attempts },
+                PeerState::Rechecking { left } => PeerState::Rechecking { left: left.map(|_| Millis(0)) },
+                s => s,
+            };
+        }
+        Self { phone, peers, drift: Millis(0), ..*self }
+    }
+}
+
+/// Which statuses the console prints: each change of [`Status::shape`], held to [`LOG_GAP`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct StatusLog {
+    shown: Option<Status>,
+    at: Option<Instant>,
+    held: bool,
+}
+
+impl StatusLog {
+    pub const NEW: Self = Self { shown: None, at: None, held: false };
+
+    /// Whether to print `s` now; once true, `s` counts as shown.
+    pub fn due(&mut self, now: Instant, s: &Status) -> bool {
+        let shape = s.shape();
+        if self.shown == Some(shape) {
+            self.held = false;
+            return false;
+        }
+        if self.at.is_some_and(|at| now.since(at) < LOG_GAP) {
+            self.held = true;
+            return false;
+        }
+        self.shown = Some(shape);
+        self.at = Some(now);
+        self.held = false;
+        true
+    }
+
+    /// Whether to print `s`, the last status for a while: any change, whatever the gap.
+    pub fn last(&mut self, now: Instant, s: &Status) -> bool {
+        self.at = None;
+        self.due(now, s)
+    }
+
+    /// When a held change may be printed.
+    #[must_use]
+    pub fn next(&self) -> Option<Instant> {
+        self.at.filter(|_| self.held).map(|at| at + LOG_GAP)
+    }
+}
+
 fn write_phone<W: Write>(w: &mut W, p: PhoneStatus) -> fmt::Result {
     match p {
         PhoneStatus::Off => w.write_str("off"),
