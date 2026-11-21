@@ -147,6 +147,8 @@ pub async fn dump(args: &[u8], uart: Uart) {
 
 /// One record's line; how many lines the mirror dropped meanwhile.
 async fn write_record(uart: Uart, r: &Record) -> u32 {
+    // The USB pipe drops what does not fit, and a dump outruns it.
+    crate::console::make_room().await;
     let mut line = Line::new();
     let _ = r.write(&mut line);
     line.push(b"\r\n");
