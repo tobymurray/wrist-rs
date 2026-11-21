@@ -215,3 +215,16 @@ fn a_length_longer_than_any_record_is_no_record() {
     }
     assert_eq!(ring.next(8), Next::End);
 }
+
+/// A console notification keeps its command's header; every other record its first bytes.
+#[test]
+fn a_console_notification_keeps_only_its_header() {
+    use wrist_bluenrg2::shadow::record::{kept, NOTIFY_KEPT};
+    let notify = [0x01, 0x06, 0xFD, 0x20, 0x13, 0x00, 0x16, 0x00, 0x00, 0x1E, b'[', b'b'];
+    assert_eq!(kept(b'c', &notify), NOTIFY_KEPT);
+    assert_eq!(kept(b'e', &notify), KEPT);
+    assert_eq!(kept(b'c', &[0x01, 0x83, 0xFC, 0x00]), KEPT);
+    let mut ring = Ring::<256>::NEW;
+    ring.push_kept(5, b'c', &notify, kept(b'c', &notify));
+    assert_eq!(read_all(&ring, 0).0, ["[trace] 5 c 0106FD2013001600 +4"]);
+}

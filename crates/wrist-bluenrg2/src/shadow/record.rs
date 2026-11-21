@@ -9,6 +9,10 @@ use wrist_ble::Millis;
 /// The most of a record's bytes kept; the rest is only counted.
 pub const KEPT: usize = 40;
 
+/// The bytes kept of a console notification: its command's header, handle and offset. The core
+/// reads no more of it, and the console's own traffic would otherwise fill the ring.
+pub const NOTIFY_KEPT: usize = 8;
+
 /// A record's header: its length, its time in ms, its kind, and its bytes before cutting.
 const HEADER: usize = 1 + 4 + 1 + 2;
 
@@ -95,9 +99,14 @@ impl<const N: usize> Ring<N> {
     }
 
     /// One record at `ms`, dropping the oldest to make room.
-    #[allow(clippy::cast_possible_truncation)]
     pub fn push(&mut self, ms: u64, kind: u8, bytes: &[u8]) {
-        let kept = bytes.len().min(KEPT);
+        self.push_kept(ms, kind, bytes, KEPT);
+    }
+
+    /// One record of which only the first `keep` bytes are kept.
+    #[allow(clippy::cast_possible_truncation)]
+    pub fn push_kept(&mut self, ms: u64, kind: u8, bytes: &[u8], keep: usize) {
+        let kept = bytes.len().min(keep).min(KEPT);
         let len = HEADER + kept;
         // Bounded by the ring's size, so a corrupt length cannot hold the task.
         for _ in 0..N {
@@ -209,4 +218,15 @@ pub fn decode_goals(bytes: &[u8]) -> Option<Goals> {
         scan,
         ..Goals::OFF
     })
+}
+
+/// How many bytes of a record of `kind` to keep: a console notification's header only.
+#[must_use]
+pub fn kept(kind: u8, bytes: &[u8]) -> usize {
+    let notify = kind == COMMAND && bytes.get(1..3) == Some(&bluenrg2::opcode::ACI_GATT_UPDATE_CHAR_VALUE.to_le_bytes()[..]);
+    if notify {
+        NOTIFY_KEPT
+    } else {
+        KEPT
+    }
 }

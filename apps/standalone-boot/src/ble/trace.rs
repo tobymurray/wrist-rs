@@ -68,7 +68,7 @@ pub(super) fn goals(g: &wrist_ble::policy::goals::Goals) {
 
 pub(super) fn packet(dir: Dir, p: &[u8]) {
     let ms = Instant::now().as_millis();
-    RECORDS.lock(|r| r.borrow_mut().push(ms, dir.kind(), p));
+    RECORDS.lock(|r| r.borrow_mut().push_kept(ms, dir.kind(), p, record::kept(dir.kind(), p)));
     #[cfg(feature = "ble-trace")]
     {
         // USB only: mirrored over the air, each line would make the packets that trace the next.
