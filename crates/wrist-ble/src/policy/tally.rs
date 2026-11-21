@@ -1,17 +1,23 @@
-//! What went wrong and how often, kept from the core's inputs and state for the console.
+//! What went wrong and how often, kept as the core judges it, for the console.
 
 use core::fmt::{self, Write};
 
+use crate::policy::chip;
 use crate::policy::engine::Input;
-use crate::policy::status::{status, PhoneStatus};
+use crate::policy::phone::{Phone, Security};
+use crate::policy::status::{status, PhoneStatus, Unreachable};
 use crate::policy::State;
-use crate::{ConnHandle, FailureKind, Instant, LeConnRole, Millis, PairingEvent, PairingStep, PeerAddr, RadioEvent, ResetCause, SchedKind};
+use crate::{ConnHandle, Failure, FailureKind, Instant, LeConnRole, Millis, PairingEvent, PairingStep, PeerAddr, RadioEvent, ResetCause, SchedKind};
 
-/// A link that ends this soon after encrypting is counted as ending early.
+/// A phone link that ends this soon after encrypting is counted as ending early.
 pub const EARLY_END: Millis = Millis::secs(10);
 
-/// The window [`Tally`] counts the core's operations over, for their peak.
+/// The window the operations' peak is counted over, as I2 counts it.
 pub const COMMAND_WINDOW: Millis = Millis::mins(1);
+
+/// The most operations in one [`COMMAND_WINDOW`] the peak can tell apart, more than I2 allows;
+/// more read as at least this.
+pub const PEAK_KEPT: usize = 64;
 
 /// Counts by key, for the first `N` keys seen; later keys are only counted together.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,35 +61,84 @@ impl<K: Copy + PartialEq, const N: usize> Counts<K, N> {
     }
 }
 
-/// The phone's link as the tally follows it.
+/// Why the core restarted a chip that was starting or up.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Link {
-    link: ConnHandle,
-    peer: PeerAddr,
-    encrypted_at: Option<Instant>,
+pub enum Restart {
+    Reset(ResetCause),
+    StartFailed,
+    BaselineRefused,
+    /// A start or a fault's deadline passed.
+    Deadline,
+    Other,
+}
+
+impl Restart {
+    #[must_use]
+    pub fn of(e: chip::Event) -> Self {
+        match e {
+            chip::Event::Reset(c) => Self::Reset(c),
+            chip::Event::StartFailed => Self::StartFailed,
+            chip::Event::BaselineRefused => Self::BaselineRefused,
+            chip::Event::Tick => Self::Deadline,
+            _ => Self::Other,
+        }
+    }
+}
+
+/// When a spell started, and the longest one that has ended.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Spell {
+    from: Option<Instant>,
+    worst: Millis,
+}
+
+impl Spell {
+    fn track(&mut self, now: Instant, from: Option<Instant>) {
+        match (self.from, from) {
+            (Some(was), None) => {
+                self.worst = self.worst.max(now.since(was));
+                self.from = None;
+            }
+            (None, Some(f)) => self.from = Some(f),
+            _ => {}
+        }
+    }
+
+    #[must_use]
+    pub fn now(&self, now: Instant) -> Millis {
+        self.from.map_or(Millis(0), |f| now.since(f))
+    }
+
+    #[must_use]
+    pub fn worst(&self, now: Instant) -> Millis {
+        self.worst.max(self.now(now))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Tally {
-    /// Refusals and failures of the core's operations, by kind and the chip's own code.
+    /// The core's operations refused or failed, by kind and the chip's own code; an ask held
+    /// for the central's answer is not one.
     pub failures: Counts<(FailureKind, u16), 8>,
-    /// Ends of the phone's links, by reason.
+    /// Ends of the core's phone link, by reason.
     pub hang_ups: Counts<u8, 6>,
     pub pairings_ok: u32,
     pub pairing_failures: Counts<PairingStep, 3>,
-    /// The peer and step of the last pairing that failed.
-    pub last_pairing_failure: Option<(PeerAddr, PairingStep)>,
-    /// Ends of the phone's links within [`EARLY_END`] of encrypting, by reason.
+    /// The step of the last pairing that failed, and its peer when its link's start was seen.
+    pub last_pairing_failure: Option<(Option<PeerAddr>, PairingStep)>,
+    /// Ends of the phone link within [`EARLY_END`] of its encrypting, by reason.
     pub early_ends: Counts<u8, 4>,
-    pub chip_resets: Counts<ResetCause, 4>,
-    /// The most operations the core asked for in one [`COMMAND_WINDOW`].
+    pub restarts: Counts<Restart, 4>,
+    /// The most operations the core asked for in any [`COMMAND_WINDOW`], up to [`PEAK_KEPT`].
     pub commands_peak: u32,
-    commands: u32,
-    window_from: Instant,
-    pub unreachable_now: Millis,
-    pub unreachable_worst: Millis,
-    pub drift_worst: Millis,
-    phone: Option<Link>,
+    asked: [u32; PEAK_KEPT],
+    asked_next: usize,
+    /// The phone unreachable for a reason other than being hidden.
+    pub unreachable: Spell,
+    pub drift: Spell,
+    phone: Option<ConnHandle>,
+    phone_peer: Option<PeerAddr>,
+    secure_since: Option<Instant>,
 }
 
 impl Tally {
@@ -94,88 +149,97 @@ impl Tally {
         pairing_failures: Counts::NEW,
         last_pairing_failure: None,
         early_ends: Counts::NEW,
-        chip_resets: Counts::NEW,
+        restarts: Counts::NEW,
         commands_peak: 0,
-        commands: 0,
-        window_from: Instant(0),
-        unreachable_now: Millis(0),
-        unreachable_worst: Millis(0),
-        drift_worst: Millis(0),
+        asked: [u32::MAX; PEAK_KEPT],
+        asked_next: 0,
+        unreachable: Spell { from: None, worst: Millis(0) },
+        drift: Spell { from: None, worst: Millis(0) },
         phone: None,
+        phone_peer: None,
+        secure_since: None,
     };
 
-    /// One step of the core: what it was told, the state it reached, and whether it asked for an
-    /// operation.
+    /// An operation the core counts as refused or failed.
+    pub fn failure(&mut self, f: Failure) {
+        self.failures.add((f.kind, f.native));
+    }
+
+    /// A start the core asked for that cut short a chip starting or up.
+    pub fn restart(&mut self, why: Restart) {
+        self.restarts.add(why);
+    }
+
+    /// The end of one of the core's steps: what it was told, the state it reached, and whether it
+    /// asked for an operation.
     pub fn step(&mut self, now: Instant, input: &Input, state: &State, asked: bool) {
-        match *input {
-            Input::Submitted(Err(f)) => self.failures.add((f.kind, f.native)),
-            Input::Radio(e) => self.event(now, e),
-            _ => {}
-        }
-        if now.since(self.window_from) >= COMMAND_WINDOW {
-            self.window_from = now;
-            self.commands = 0;
+        if let Input::Radio(e) = *input {
+            self.event(now, e);
         }
         if asked {
-            self.commands += 1;
-            self.commands_peak = self.commands_peak.max(self.commands);
+            self.ask(now);
         }
-        self.unreachable_now = match status(state, now).phone {
-            PhoneStatus::Unreachable { since, .. } => since,
-            _ => Millis(0),
+        let link = state.phone.link();
+        if link != self.phone {
+            self.phone = link;
+            self.secure_since = None;
+            if link.is_none() {
+                self.phone_peer = None;
+            }
+        }
+        let secure = matches!(state.phone, Phone::Up(l) if l.security == Security::Secure);
+        self.secure_since = if secure { self.secure_since.or(Some(now)) } else { None };
+        let unreachable = match status(state, now).phone {
+            PhoneStatus::Unreachable { reason, since } if reason != Unreachable::Hidden => Some(now - since),
+            _ => None,
         };
-        self.unreachable_worst = self.unreachable_worst.max(self.unreachable_now);
-        if let Some(at) = state.drift_since {
-            self.drift_worst = self.drift_worst.max(now.since(at));
-        }
+        self.unreachable.track(now, unreachable);
+        self.drift.track(now, state.drift_since);
     }
 
+    /// The core's phone link as it stood before this step's event.
     fn event(&mut self, now: Instant, e: RadioEvent) {
         match e {
-            RadioEvent::Done(_, Err(f)) | RadioEvent::Params { result: Err(f), .. } => self.failures.add((f.kind, f.native)),
-            RadioEvent::ChipReset(cause) => {
-                self.chip_resets.add(cause);
-                self.phone = None;
-            }
-            RadioEvent::Ready(_) => self.phone = None,
             RadioEvent::LinkUp { link, role: LeConnRole::Peripheral, peer, .. } => {
-                self.phone = Some(Link { link, peer, encrypted_at: None });
+                if self.phone.is_none() || self.phone == Some(link) {
+                    self.phone_peer = Some(peer);
+                }
             }
-            RadioEvent::LinkDown { link, reason } => {
-                let Some(l) = self.phone.filter(|l| l.link == link) else { return };
+            RadioEvent::LinkDown { link, reason } if self.phone == Some(link) => {
                 let reason = reason.into_inner();
                 self.hang_ups.add(reason);
-                if l.encrypted_at.is_some_and(|at| now.since(at) <= EARLY_END) {
+                if self.secure_since.is_some_and(|at| now.since(at) <= EARLY_END) {
                     self.early_ends.add(reason);
                 }
-                self.phone = None;
             }
-            RadioEvent::Encryption { link, on } => {
-                if let Some(l) = self.phone.as_mut().filter(|l| l.link == link) {
-                    l.encrypted_at = on.then_some(now);
+            RadioEvent::Pairing(PairingEvent { link, step }) if self.phone == Some(link) => match step {
+                PairingStep::Complete => self.pairings_ok += 1,
+                PairingStep::Failed | PairingStep::LocalKeyMissing | PairingStep::PeerKeyMissing => {
+                    self.pairing_failures.add(step);
+                    self.last_pairing_failure = Some((self.phone_peer, step));
                 }
-            }
-            RadioEvent::Pairing(PairingEvent { link, step }) => {
-                let Some(l) = self.phone.filter(|l| l.link == link) else { return };
-                match step {
-                    PairingStep::Complete => self.pairings_ok += 1,
-                    PairingStep::Failed | PairingStep::LocalKeyMissing | PairingStep::PeerKeyMissing => {
-                        self.pairing_failures.add(step);
-                        self.last_pairing_failure = Some((l.peer, step));
-                    }
-                    PairingStep::Numeric(_) | PairingStep::PasskeyWanted => {}
-                }
-            }
+                PairingStep::Numeric(_) | PairingStep::PasskeyWanted => {}
+            },
             _ => {}
         }
     }
 
-    /// `[ble] counts …`, one line.
+    /// One operation asked at `now`; the peak is the most within any window ending at an ask.
+    #[allow(clippy::cast_possible_truncation)]
+    fn ask(&mut self, now: Instant) {
+        let at = now.0 as u32;
+        self.asked[self.asked_next] = at;
+        self.asked_next = (self.asked_next + 1) % PEAK_KEPT;
+        let within = self.asked.iter().filter(|&&t| t != u32::MAX && at.wrapping_sub(t) < COMMAND_WINDOW.0).count();
+        self.commands_peak = self.commands_peak.max(within as u32);
+    }
+
+    /// `[ble] counts …`, one line, its spells measured to `now`.
     ///
     /// # Errors
     ///
     /// Only those of `w`.
-    pub fn write_line<W: Write>(&self, w: &mut W) -> fmt::Result {
+    pub fn write_line<W: Write>(&self, w: &mut W, now: Instant) -> fmt::Result {
         w.write_str("[ble] counts: failures")?;
         self.failures.write(w, |w, (kind, native)| {
             write_kind(w, kind)?;
@@ -186,21 +250,26 @@ impl Tally {
         write!(w, "; pairings ok {} failed", self.pairings_ok)?;
         self.pairing_failures.write(w, |w, s| w.write_str(step_name(s)))?;
         if let Some((peer, step)) = self.last_pairing_failure {
-            write!(w, " (last {} from ", step_name(step))?;
-            write_peer(w, peer)?;
+            write!(w, " (last {}", step_name(step))?;
+            if let Some(peer) = peer {
+                w.write_str(" from ")?;
+                write_peer(w, peer)?;
+            }
             w.write_char(')')?;
         }
         write!(w, "; hung up within {} s of encrypting", EARLY_END.0 / 1_000)?;
         self.early_ends.write(w, |w, r| write!(w, "{r:02X}"))?;
-        w.write_str("; chip resets")?;
-        self.chip_resets.write(w, |w, c| w.write_str(cause_name(c)))?;
+        w.write_str("; chip restarts")?;
+        self.restarts.write(w, |w, r| w.write_str(restart_name(r)))?;
+        let at_least = if self.commands_peak as usize >= PEAK_KEPT { "at least " } else { "" };
         write!(
             w,
-            "; operations a minute at most {}; unreachable now {} s, worst {} s; plan drift worst {} s",
+            "; operations in a minute at most {at_least}{}; unreachable now {} s, worst {} s; plan drift now {} s, worst {} s",
             self.commands_peak,
-            self.unreachable_now.0 / 1_000,
-            self.unreachable_worst.0 / 1_000,
-            self.drift_worst.0 / 1_000,
+            self.unreachable.now(now).0 / 1_000,
+            self.unreachable.worst(now).0 / 1_000,
+            self.drift.now(now).0 / 1_000,
+            self.drift.worst(now).0 / 1_000,
         )
     }
 }
@@ -239,15 +308,19 @@ fn step_name(s: PairingStep) -> &'static str {
     }
 }
 
-fn cause_name(c: ResetCause) -> &'static str {
-    match c {
-        ResetCause::PowerOn => "power-on",
-        ResetCause::Watchdog => "watchdog",
-        ResetCause::Lockup => "lockup",
-        ResetCause::Brownout => "brownout",
-        ResetCause::Crash => "crash",
-        ResetCause::Updater => "updater",
-        ResetCause::Other => "other",
+fn restart_name(r: Restart) -> &'static str {
+    match r {
+        Restart::Reset(ResetCause::PowerOn) => "reset-power-on",
+        Restart::Reset(ResetCause::Watchdog) => "reset-watchdog",
+        Restart::Reset(ResetCause::Lockup) => "reset-lockup",
+        Restart::Reset(ResetCause::Brownout) => "reset-brownout",
+        Restart::Reset(ResetCause::Crash) => "reset-crash",
+        Restart::Reset(ResetCause::Updater) => "reset-updater",
+        Restart::Reset(ResetCause::Other) => "reset-other",
+        Restart::StartFailed => "start-failed",
+        Restart::BaselineRefused => "baseline-refused",
+        Restart::Deadline => "deadline",
+        Restart::Other => "other",
     }
 }
 

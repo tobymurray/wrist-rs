@@ -462,7 +462,7 @@ pub fn command(args: &[u8], uart: Uart) {
 pub async fn write_status(uart: Uart) {
     write_radio(uart).await;
     uart.pace().await;
-    let _ = TALLY.lock(Cell::get).write_line(&mut Text(uart));
+    let _ = TALLY.lock(Cell::get).write_line(&mut Text(uart), now_ms());
     uart.write_line("");
 }
 

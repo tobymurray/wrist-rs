@@ -1,16 +1,20 @@
-//! The console's counts of what went wrong: what each input adds, and the line.
+//! The console's counts of what went wrong: kept as the core judges it, and the line.
 
 mod common;
 
 use common::*;
-use wrist_ble::policy::engine::Input;
+use wrist_ble::policy::engine::{Core, Input};
+use wrist_ble::policy::goals::{Goals, PhoneGoal, Power};
+use wrist_ble::policy::phone;
 use wrist_ble::policy::plan::{Conflict, Verdict};
-use wrist_ble::policy::tally::{Counts, Tally, COMMAND_WINDOW, EARLY_END};
+use wrist_ble::policy::tally::{Counts, Restart, Tally, COMMAND_WINDOW, EARLY_END, PEAK_KEPT};
 use wrist_ble::policy::State;
 use wrist_ble::{
-    ConnHandle, Failure, FailureKind, LeConnRole, Millis, OpId, PairingEvent, PairingStep, RadioEvent, ResetCause, SchedKind,
-    Status,
+    AddrKind, BdAddr, Duration, Failure, FailureKind, LeConnRole, LinkParams, Op, OpId, Outcome, PairingEvent, PairingStep, PeerAddr,
+    RadioEvent, ResetCause, Status,
 };
+use wrist_bluenrg2::shadow::menu::MENU;
+use wrist_bluenrg2::{Scheduler, CAPABILITIES};
 
 fn quiet() -> State {
     let mut s = ready(t(0));
@@ -18,44 +22,41 @@ fn quiet() -> State {
     s
 }
 
-fn feed(tally: &mut Tally, at: u64, e: RadioEvent) {
-    tally.step(t(at), &Input::Radio(e), &quiet(), false);
+fn with_phone(secure: bool) -> State {
+    let mut s = quiet();
+    phone_up(&mut s, t(0));
+    if secure {
+        s.phone = s.phone.step(t(0), phone::Event::Encryption(phone(), true)).0;
+    }
+    s
 }
 
-fn up(link: ConnHandle, role: LeConnRole) -> RadioEvent {
-    RadioEvent::LinkUp { link, role, peer: peer(), params: None }
-}
-
-fn down(link: ConnHandle, reason: u8) -> RadioEvent {
-    RadioEvent::LinkDown { link, reason: Status::new(reason) }
-}
-
-fn line(tally: &Tally) -> String {
+fn line(tally: &Tally, now: u64) -> String {
     let mut w = String::new();
-    tally.write_line(&mut w).unwrap();
+    tally.write_line(&mut w, t(now)).unwrap();
     w
+}
+
+fn down(reason: u8) -> Input {
+    Input::Radio(RadioEvent::LinkDown { link: phone(), reason: Status::new(reason) })
 }
 
 #[test]
 fn nothing_counted_says_so() {
     assert_eq!(
-        line(&Tally::NEW),
+        line(&Tally::NEW, 0),
         "[ble] counts: failures none; phone hang-ups none; pairings ok 0 failed none; hung up within 10 s of encrypting none; \
-         chip resets none; operations a minute at most 0; unreachable now 0 s, worst 0 s; plan drift worst 0 s"
+         chip restarts none; operations in a minute at most 0; unreachable now 0 s, worst 0 s; plan drift now 0 s, worst 0 s"
     );
 }
 
 #[test]
-fn refusals_and_failures_are_counted_by_kind_and_code() {
+fn failures_are_counted_by_kind_and_code() {
     let mut tally = Tally::NEW;
-    let busy = Failure { kind: FailureKind::Busy, native: 0x0C };
-    let slot = Failure { kind: FailureKind::Schedule(SchedKind::NoSlot), native: 0x85 };
-    tally.step(t(0), &Input::Submitted(Err(busy)), &quiet(), false);
-    feed(&mut tally, 1, RadioEvent::Done(OpId(1), Err(busy)));
-    feed(&mut tally, 2, RadioEvent::Params { link: phone(), result: Err(slot) });
-    feed(&mut tally, 3, RadioEvent::Done(OpId(2), Ok(wrist_ble::Outcome::Done)));
-    assert_eq!(tally.failures.total(), 3);
-    assert!(line(&tally).starts_with("[ble] counts: failures busy/0C x2 schedule-no-slot/85 x1; "));
+    tally.failure(Failure { kind: FailureKind::Busy, native: 0x0C });
+    tally.failure(Failure { kind: FailureKind::Busy, native: 0x0C });
+    tally.failure(Failure { kind: FailureKind::Schedule(wrist_ble::SchedKind::NoSlot), native: 0x85 });
+    assert!(line(&tally, 0).starts_with("[ble] counts: failures busy/0C x2 schedule-no-slot/85 x1; "));
 }
 
 #[test]
@@ -66,25 +67,21 @@ fn counts_past_their_rows_go_to_other() {
     }
     assert_eq!(c.rows, [Some((1, 2)), Some((2, 1))]);
     assert_eq!((c.other, c.total()), (2, 5));
-}
-
-#[test]
-fn the_line_counts_what_found_no_row() {
     let mut tally = Tally::NEW;
     for native in 0..9 {
-        tally.step(t(0), &Input::Submitted(Err(Failure { kind: FailureKind::Busy, native })), &quiet(), false);
+        tally.failure(Failure { kind: FailureKind::Busy, native });
     }
-    assert!(line(&tally).contains(" busy/07 x1 other x1; phone hang-ups none; "));
+    assert!(line(&tally, 0).contains(" busy/07 x1 other x1; phone hang-ups none; "));
 }
 
+/// The core's phone link, however it came: a link a resync adopted is counted like any other.
 #[test]
-fn only_the_phones_hang_ups_count() {
+fn the_phones_hang_ups_follow_the_cores_link() {
     let mut tally = Tally::NEW;
-    feed(&mut tally, 0, up(sensor(), LeConnRole::Central));
-    feed(&mut tally, 1, down(sensor(), 0x08));
-    feed(&mut tally, 2, up(phone(), LeConnRole::Peripheral));
-    feed(&mut tally, 3, down(phone(), 0x13));
-    feed(&mut tally, 4, down(phone(), 0x13));
+    tally.step(t(0), &Input::Tick, &with_phone(false), false);
+    tally.step(t(100), &down(0x13), &quiet(), false);
+    tally.step(t(200), &down(0x13), &quiet(), false);
+    tally.step(t(300), &Input::Radio(RadioEvent::LinkDown { link: sensor(), reason: Status::new(0x08) }), &quiet(), false);
     assert_eq!(tally.hang_ups.rows[0], Some((0x13, 1)));
     assert_eq!(tally.hang_ups.total(), 1);
 }
@@ -92,95 +89,199 @@ fn only_the_phones_hang_ups_count() {
 #[test]
 fn a_hang_up_soon_after_encrypting_is_early() {
     let mut tally = Tally::NEW;
-    let edge = EARLY_END.0 as u64;
+    let edge = u64::from(EARLY_END.0);
     for (start, after, reason) in [(0, edge, 0x08), (100_000, edge + 1, 0x16)] {
-        feed(&mut tally, start, up(phone(), LeConnRole::Peripheral));
-        feed(&mut tally, start + 100, RadioEvent::Encryption { link: phone(), on: true });
-        feed(&mut tally, start + 100 + after, down(phone(), reason));
+        tally.step(t(start), &Input::Tick, &with_phone(false), false);
+        tally.step(t(start + 100), &Input::Tick, &with_phone(true), false);
+        tally.step(t(start + 100 + after), &down(reason), &quiet(), false);
     }
-    feed(&mut tally, 200_000, up(phone(), LeConnRole::Peripheral));
-    feed(&mut tally, 200_100, down(phone(), 0x3E));
-    assert_eq!(tally.early_ends.rows[0], Some((0x08, 1)));
-    assert_eq!(tally.early_ends.total(), 1);
+    tally.step(t(200_000), &Input::Tick, &with_phone(false), false);
+    tally.step(t(200_100), &down(0x3E), &quiet(), false);
+    assert_eq!(tally.early_ends.rows, [Some((0x08, 1)), None, None, None]);
     assert_eq!(tally.hang_ups.total(), 3);
 }
 
 #[test]
-fn encryption_turned_off_is_no_longer_encrypted() {
+fn a_new_link_on_the_same_handle_is_not_the_old_ones_encryption() {
     let mut tally = Tally::NEW;
-    feed(&mut tally, 0, up(phone(), LeConnRole::Peripheral));
-    feed(&mut tally, 100, RadioEvent::Encryption { link: phone(), on: true });
-    feed(&mut tally, 200, RadioEvent::Encryption { link: phone(), on: false });
-    feed(&mut tally, 300, down(phone(), 0x08));
+    tally.step(t(0), &Input::Tick, &with_phone(true), false);
+    tally.step(t(100), &Input::Tick, &quiet(), false);
+    tally.step(t(200), &Input::Tick, &with_phone(false), false);
+    tally.step(t(300), &down(0x08), &quiet(), false);
     assert_eq!(tally.early_ends.total(), 0);
 }
 
 #[test]
-fn pairings_are_counted_with_the_last_failure_and_its_peer() {
+fn pairings_on_the_phones_link_are_counted_with_the_last_failure() {
     let mut tally = Tally::NEW;
-    let pair = |step| RadioEvent::Pairing(PairingEvent { link: phone(), step });
-    feed(&mut tally, 0, pair(PairingStep::Complete));
-    feed(&mut tally, 0, up(phone(), LeConnRole::Peripheral));
-    feed(&mut tally, 1, pair(PairingStep::Numeric(1)));
-    feed(&mut tally, 2, pair(PairingStep::Complete));
-    feed(&mut tally, 3, pair(PairingStep::Failed));
-    feed(&mut tally, 4, pair(PairingStep::LocalKeyMissing));
-    feed(&mut tally, 5, pair(PairingStep::PeerKeyMissing));
+    let pair = |step| Input::Radio(RadioEvent::Pairing(PairingEvent { link: phone(), step }));
+    tally.step(t(0), &pair(PairingStep::Complete), &quiet(), false);
+    let up = Input::Radio(RadioEvent::LinkUp { link: phone(), role: LeConnRole::Peripheral, peer: peer(), params: None });
+    tally.step(t(0), &up, &with_phone(false), false);
+    for (i, step) in [PairingStep::Numeric(1), PairingStep::Complete, PairingStep::Failed, PairingStep::LocalKeyMissing, PairingStep::PeerKeyMissing]
+        .into_iter()
+        .enumerate()
+    {
+        tally.step(t(i as u64 + 1), &pair(step), &with_phone(false), false);
+    }
     assert_eq!(tally.pairings_ok, 1);
-    assert_eq!(tally.pairing_failures.total(), 3);
-    assert!(line(&tally).contains(
+    assert!(line(&tally, 10).contains(
         "; pairings ok 1 failed failed x1 local-key-missing x1 peer-key-missing x1 (last peer-key-missing from 06:05:04:03:02:01); "
     ));
 }
 
 #[test]
-fn a_chip_reset_is_counted_and_ends_the_link() {
+fn a_failure_on_a_link_whose_start_went_unseen_has_no_peer() {
     let mut tally = Tally::NEW;
-    feed(&mut tally, 0, up(phone(), LeConnRole::Peripheral));
-    feed(&mut tally, 1, RadioEvent::ChipReset(ResetCause::Watchdog));
-    feed(&mut tally, 2, down(phone(), 0x08));
-    feed(&mut tally, 3, up(phone(), LeConnRole::Peripheral));
-    feed(&mut tally, 4, RadioEvent::Ready(INFO));
-    feed(&mut tally, 5, down(phone(), 0x08));
-    assert_eq!(tally.chip_resets.rows[0], Some((ResetCause::Watchdog, 1)));
-    assert_eq!(tally.hang_ups.total(), 0);
-    assert!(line(&tally).contains("; chip resets watchdog x1; "));
+    let failed = Input::Radio(RadioEvent::Pairing(PairingEvent { link: phone(), step: PairingStep::Failed }));
+    tally.step(t(0), &Input::Tick, &with_phone(false), false);
+    tally.step(t(1), &failed, &with_phone(false), false);
+    assert!(line(&tally, 2).contains("failed failed x1 (last failed); "));
 }
 
 #[test]
-fn the_peak_is_the_most_operations_in_one_window() {
+fn restarts_are_named() {
     let mut tally = Tally::NEW;
-    let window = COMMAND_WINDOW.0 as u64;
-    for at in [0, 10, 20, window, window + 10] {
-        tally.step(t(at), &Input::Tick, &quiet(), true);
-    }
-    tally.step(t(window + 20), &Input::Tick, &quiet(), false);
-    assert_eq!(tally.commands_peak, 3);
-    for at in [2 * window, 2 * window + 1, 2 * window + 2, 2 * window + 3] {
-        tally.step(t(at), &Input::Tick, &quiet(), true);
-    }
-    assert_eq!(tally.commands_peak, 4);
+    tally.restart(Restart::Reset(ResetCause::Watchdog));
+    tally.restart(Restart::StartFailed);
+    assert!(line(&tally, 0).contains("; chip restarts reset-watchdog x1 start-failed x1; "));
 }
 
 #[test]
-fn unreachable_time_is_kept_now_and_at_its_worst() {
+fn the_peak_is_the_most_operations_in_any_window() {
+    let mut tally = Tally::NEW;
+    let window = u64::from(COMMAND_WINDOW.0);
+    for i in 0..20 {
+        tally.step(t(30_000 + i * 1_000), &Input::Tick, &quiet(), true);
+    }
+    for i in 0..20 {
+        tally.step(t(window + i * 1_000), &Input::Tick, &quiet(), true);
+    }
+    assert_eq!(tally.commands_peak, 40);
+    for i in 0..PEAK_KEPT as u64 + 5 {
+        tally.step(t(10 * window + i), &Input::Tick, &quiet(), true);
+    }
+    assert_eq!(tally.commands_peak as usize, PEAK_KEPT);
+    assert!(line(&tally, 0).contains(&format!("at most at least {PEAK_KEPT};")));
+}
+
+#[test]
+fn an_unreachable_spell_is_measured_to_now_and_kept_at_its_worst() {
     let mut tally = Tally::NEW;
     let mut gap = ready(t(0));
     gap.phone_verdict = Verdict::Busy(Conflict::Scan);
-    tally.step(t(7_000), &Input::Tick, &gap, false);
-    assert_eq!((tally.unreachable_now, tally.unreachable_worst), (Millis::secs(7), Millis::secs(7)));
-    tally.step(t(8_000), &Input::Tick, &quiet(), false);
-    assert_eq!((tally.unreachable_now, tally.unreachable_worst), (Millis(0), Millis::secs(7)));
-    assert!(line(&tally).contains("unreachable now 0 s, worst 7 s"));
+    tally.step(t(4_000), &Input::Tick, &gap, false);
+    assert!(line(&tally, 60_000).contains("unreachable now 60 s, worst 60 s"));
+    tally.step(t(9_000), &Input::Tick, &quiet(), false);
+    assert!(line(&tally, 60_000).contains("unreachable now 0 s, worst 9 s"));
+    gap.phone_verdict = Verdict::NotWanted;
+    tally.step(t(100_000), &Input::Tick, &gap, false);
+    assert!(line(&tally, 200_000).contains("unreachable now 0 s, worst 9 s"));
 }
 
 #[test]
-fn drift_is_kept_at_its_worst() {
+fn drift_is_measured_to_now_and_kept_at_its_worst() {
     let mut tally = Tally::NEW;
     let mut drifting = quiet();
     drifting.drift_since = Some(t(1_000));
-    tally.step(t(5_000), &Input::Tick, &drifting, false);
+    tally.step(t(2_000), &Input::Tick, &drifting, false);
+    assert!(line(&tally, 30_000).ends_with("plan drift now 29 s, worst 29 s"));
     tally.step(t(6_000), &Input::Tick, &quiet(), false);
-    assert_eq!(tally.drift_worst, Millis::secs(4));
-    assert!(line(&tally).ends_with("plan drift worst 4 s"));
+    assert!(line(&tally, 30_000).ends_with("plan drift now 0 s, worst 5 s"));
+}
+
+fn core_with_phone() -> Core<'static> {
+    let mut core = Core::new(&CAPABILITIES, &Scheduler, &MENU);
+    let g = Goals { radio_on: true, phone: PhoneGoal { discoverable: true, pairing_open: true }, power: Power::Battery, ..Goals::OFF };
+    core.step(t(0), Input::Goals(g));
+    let start = core.state.chip.starting().expect("a start");
+    assert!(matches!(core.step(t(0), Input::Started(start, Ok(INFO))).op, Some(Op::Advertise(_))));
+    core.step(t(0), Input::Submitted(Ok(OpId(1))));
+    core.step(t(0), Input::Radio(RadioEvent::Done(OpId(1), Ok(Outcome::Done))));
+    let peer = PeerAddr { kind: AddrKind::RANDOM, addr: BdAddr::new([9, 9, 9, 9, 9, 0xC0]) };
+    let params = LinkParams { interval: Duration::from_u16(24), latency: 0, timeout: Duration::from_u16(500) };
+    core.step(t(100), Input::Radio(RadioEvent::LinkUp { link: phone(), role: LeConnRole::Peripheral, peer, params: Some(params) }));
+    core
+}
+
+/// The driver's end of an operation the core already let go with its link is not a failure.
+#[test]
+fn an_operation_ended_by_its_links_end_is_no_failure() {
+    let mut core = core_with_phone();
+    assert_eq!(core.step(t(10_000), Input::Tick).op, Some(Op::RequestSecurity(phone())));
+    core.step(t(10_000), Input::Submitted(Ok(OpId(2))));
+    core.step(t(10_100), down(0x13));
+    core.step(t(10_200), Input::Radio(RadioEvent::Done(OpId(2), Err(Failure { kind: FailureKind::NotConnected, native: 0 }))));
+    assert_eq!((core.tally.failures.total(), core.tally.hang_ups.total()), (0, 1));
+}
+
+/// An ask the chip refuses busy is held for the central's answer: ordinary work, not a failure.
+#[test]
+fn an_ask_held_for_the_centrals_answer_is_no_failure() {
+    let mut core = core_with_phone();
+    let asked = core.step(t(1_000), Input::Radio(RadioEvent::Encryption { link: phone(), on: true })).op;
+    assert!(matches!(asked, Some(Op::UpdateParams { .. })), "{asked:?}");
+    let ms = 1_000;
+    core.step(t(ms), Input::Submitted(Err(Failure { kind: FailureKind::Busy, native: 0x46 })));
+    assert_eq!((core.counters.refused, core.tally.failures.total()), (1, 0));
+}
+
+/// A refusal the core counts as a failure is in the tally too.
+#[test]
+fn a_refusal_the_core_backs_off_from_is_a_failure() {
+    let mut core = core_with_phone();
+    assert_eq!(core.step(t(10_000), Input::Tick).op, Some(Op::RequestSecurity(phone())));
+    core.step(t(10_000), Input::Submitted(Err(Failure { kind: FailureKind::Busy, native: 0x0C })));
+    assert_eq!(core.tally.failures.rows[0], Some(((FailureKind::Busy, 0x0C), 1)));
+}
+
+/// A chip that comes up again by itself is a restart the core counts, and the tally with it.
+#[test]
+fn a_restart_is_counted_where_the_core_counts_it() {
+    let mut core = core_with_phone();
+    core.step(t(20_000), Input::Radio(RadioEvent::Ready(INFO)));
+    assert_eq!((core.counters.resets, core.tally.restarts.total()), (1, 1));
+}
+
+#[test]
+fn restarts_are_named_by_what_the_core_was_told() {
+    use wrist_ble::policy::chip::Event;
+    assert_eq!(Restart::of(Event::Reset(ResetCause::Crash)), Restart::Reset(ResetCause::Crash));
+    assert_eq!(Restart::of(Event::StartFailed), Restart::StartFailed);
+    assert_eq!(Restart::of(Event::BaselineRefused), Restart::BaselineRefused);
+    assert_eq!(Restart::of(Event::Tick), Restart::Deadline);
+    assert_eq!(Restart::of(Event::RadioOn), Restart::Other);
+}
+
+/// The peak can show I2 broken: more operations than I2 allows are told apart.
+#[test]
+fn the_peak_tells_a_breach_of_i2_apart() {
+    use wrist_ble::policy::invariants::COMMANDS_PER_MINUTE;
+    assert!(PEAK_KEPT > COMMANDS_PER_MINUTE as usize);
+    let mut tally = Tally::NEW;
+    for i in 0..=u64::from(COMMANDS_PER_MINUTE) {
+        tally.step(t(i * 100), &Input::Tick, &quiet(), true);
+    }
+    assert_eq!(tally.commands_peak, COMMANDS_PER_MINUTE + 1);
+}
+
+#[test]
+fn operations_a_whole_window_apart_are_not_in_one_window() {
+    let mut tally = Tally::NEW;
+    tally.step(t(0), &Input::Tick, &quiet(), true);
+    tally.step(t(u64::from(COMMAND_WINDOW.0)), &Input::Tick, &quiet(), true);
+    assert_eq!(tally.commands_peak, 1);
+}
+
+#[test]
+fn another_links_start_is_not_the_phones_peer() {
+    let mut tally = Tally::NEW;
+    let up = |link, last| {
+        let peer = PeerAddr { kind: AddrKind::PUBLIC, addr: BdAddr::new([last, 0, 0, 0, 0, 0]) };
+        Input::Radio(RadioEvent::LinkUp { link, role: LeConnRole::Peripheral, peer, params: None })
+    };
+    tally.step(t(0), &up(phone(), 0xAA), &with_phone(false), false);
+    tally.step(t(1), &up(sensor(), 0xBB), &with_phone(false), false);
+    tally.step(t(2), &Input::Radio(RadioEvent::Pairing(PairingEvent { link: phone(), step: PairingStep::Failed })), &with_phone(false), false);
+    assert!(line(&tally, 3).contains("(last failed from 00:00:00:00:00:AA)"));
 }

@@ -74,8 +74,10 @@ BUILD_CHAR = rb'[0-9A-Za-z._-]'
 STATUS = r'\[ble\] .*, timing '
 HANG_UP = re.compile(r'\[ble\] disconnected, reason (\w+)')
 COUNTS = r'\[ble\] counts: '
-# The counts that a soak's ordinary work leaves alone.
-STILL_COUNTS = ('failures', 'pairings', 'hung up within', 'chip resets')
+# The counts that a soak's ordinary work leaves alone; a hang-up within this many seconds of
+# encrypting is counted as early, as a soak's own are when it holds each link no longer.
+STILL_COUNTS = ('failures', 'pairings', 'hung up within', 'chip restarts')
+EARLY_END_S = 10
 CONNECTED = re.compile(r'\[ble\] connected\s*$')
 
 
@@ -573,12 +575,14 @@ def counters(status):
     return found
 
 
-def counts_moved(before, after):
-    """The parts of the `ble` counts line, of those a soak should leave alone, that differ."""
+def counts_moved(before, after, hold):
+    """The parts of the `ble` counts line, of those a soak holding each link `hold` seconds should
+    leave alone, that differ."""
     def parts(line):
         return {k: p for p in line.partition('counts: ')[2].split('; ') for k in STILL_COUNTS if p.startswith(k)}
     b, a = parts(before), parts(after)
-    return [k for k in STILL_COUNTS if b.get(k) != a.get(k)]
+    still = [k for k in STILL_COUNTS if k != 'hung up within' or hold > EARLY_END_S]
+    return [k for k in still if b.get(k) != a.get(k)]
 
 
 def unheld(before, after, lines):
@@ -813,7 +817,7 @@ async def soak(s, usb, phone, build, a):
     s.check(cycles and not failures, f'{cycles} phone cycles: attached, console answered for {a.hold} s, reason 13 '
             f'(failed: {failures or "none"})')
     s.check(before and after and not grew, f'the `ble` counters did not move ({grew or "none moved"})')
-    moved = counts_moved(counts_before, counts_after)
+    moved = counts_moved(counts_before, counts_after, a.hold)
     s.check(counts_before and counts_after and not moved, f'no failure, pairing, early hang-up or chip reset counted ({moved or "none"})')
     if air:
         print('  no executor-latency probe: its timer would keep the core out of Stop 2', flush=True)
