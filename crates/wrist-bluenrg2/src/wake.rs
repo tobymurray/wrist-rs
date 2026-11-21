@@ -165,7 +165,9 @@ pub mod ble {
     /// Console output for the mirror, held until its line ends so that the line goes into
     /// the sink whole or not at all: what the central reads never runs one line into
     /// another. A line longer than `N` goes in `N`-byte pieces; when a piece does not fit,
-    /// the rest of that line is dropped and the next line starts on a new one.
+    /// the rest of that line is dropped. The next line to go starts on a new one, after
+    /// [`LOST`] if a line was lost.
+    #[allow(clippy::struct_excessive_bools)]
     pub struct Lines<const N: usize> {
         buf: [u8; N],
         len: usize,
@@ -175,6 +177,8 @@ pub mod ble {
         dropping: bool,
         /// The sink ends in a line that was cut short: a `\r\n` goes before what follows.
         open: bool,
+        /// A line was lost since the last that went.
+        lost: bool,
     }
 
     impl<const N: usize> Default for Lines<N> {
@@ -186,7 +190,7 @@ pub mod ble {
     impl<const N: usize> Lines<N> {
         #[must_use]
         pub const fn new() -> Self {
-            Self { buf: [0; N], len: 0, partial: false, dropping: false, open: false }
+            Self { buf: [0; N], len: 0, partial: false, dropping: false, open: false, lost: false }
         }
 
         /// Forgets the line in hand, as when the sink is emptied.
@@ -205,6 +209,7 @@ pub mod ble {
                 while !self.dropping && !piece.is_empty() {
                     if self.len == N && !self.put(sink) {
                         self.dropping = true;
+                        self.lost = true;
                         lost += 1;
                         break;
                     }
@@ -217,6 +222,7 @@ pub mod ble {
                 let end_only = self.partial && self.buf[..self.len].iter().all(|&b| b == b'\r' || b == b'\n');
                 if ends && !self.dropping && !self.put(sink) {
                     self.dropping = true;
+                    self.lost |= !end_only;
                     lost += u32::from(!end_only);
                 }
                 if ends {
@@ -232,7 +238,12 @@ pub mod ble {
         fn put(&mut self, sink: &mut impl Sink) -> bool {
             let held = &self.buf[..self.len];
             self.len = 0;
-            let lead: &[u8] = if self.open { b"\r\n" } else { b"" };
+            let lead: &[u8] = match (self.lost, self.open) {
+                (true, true) => LOST,
+                (true, false) => &LOST[2..],
+                (false, true) => &LOST[..2],
+                (false, false) => b"",
+            };
             if lead.len() + held.len() > sink.free() {
                 return false;
             }
@@ -245,6 +256,7 @@ pub mod ble {
                 }
             }
             self.open = false;
+            self.lost = false;
             self.partial = true;
             true
         }
@@ -262,7 +274,8 @@ pub mod ble {
         Idle,
         /// Sent and unanswered; `cleared` once what was queued is discarded meanwhile.
         InFlight { cleared: bool, refusals: u8 },
-        Held { refusals: u8 },
+        /// `pool`: refused for want of TX buffers, and the chip has not said it has some since.
+        Held { refusals: u8, pool: bool },
     }
 
     /// Console output to a subscribed central, a chunk at a time; one that may have gone, or
@@ -290,6 +303,19 @@ pub mod ble {
             matches!(self.state, Chunk::Held { .. }) || !self.owed.is_empty()
         }
 
+        /// The held chunk waits for `ACI_GATT_TX_POOL_AVAILABLE` rather than a timer.
+        #[must_use]
+        pub fn waits_for_pool(&self) -> bool {
+            matches!(self.state, Chunk::Held { pool: true, .. })
+        }
+
+        /// The chip has TX buffers again.
+        pub fn pool_available(&mut self) {
+            if let Chunk::Held { refusals, .. } = self.state {
+                self.state = Chunk::Held { refusals, pool: false };
+            }
+        }
+
         /// What was queued is gone, a held chunk with it, and what follows starts on a new
         /// line; a chunk in flight counts when it is answered.
         pub fn clear(&mut self) {
@@ -312,7 +338,7 @@ pub mod ble {
         /// The held chunk, else what is owed and then `read`'s bytes, `most` in all; empty when
         /// there is nothing to send.
         pub fn next(&mut self, most: usize, read: impl FnOnce(&mut [u8]) -> usize) -> &[u8] {
-            let refusals = if let Chunk::Held { refusals } = self.state {
+            let refusals = if let Chunk::Held { refusals, .. } = self.state {
                 refusals
             } else {
                 let most = most.min(N);
@@ -350,13 +376,41 @@ pub mod ble {
                 self.cut = inside;
                 return false;
             }
-            let refusals = refusals + u8::from(status != Ok(bluenrg2::BleStatus::INSUFFICIENT_RESOURCES));
+            let pool = status == Ok(bluenrg2::BleStatus::INSUFFICIENT_RESOURCES);
+            let refusals = refusals + u8::from(!pool);
             if refusals > RESENDS {
                 self.owe_loss();
                 return true;
             }
-            self.state = Chunk::Held { refusals };
+            self.state = Chunk::Held { refusals, pool };
             false
+        }
+    }
+
+    /// A write to the console's RX beside the one before it.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Write {
+        New,
+        /// The same bytes within `within` of [`Writes::arrived`].
+        Doubled,
+        /// The same bytes later, in a write longer than a default-MTU one.
+        Again,
+    }
+
+    /// The console's last write, as a CRC and when it came.
+    #[derive(Clone, Copy, Debug, Default)]
+    pub struct Writes {
+        last: Option<(u32, u64)>,
+    }
+
+    impl Writes {
+        pub fn arrived(&mut self, crc: u32, long: bool, at: u64, within: u64) -> Write {
+            let last = self.last.replace((crc, at));
+            match last {
+                Some((c, then)) if c == crc && at.saturating_sub(then) < within => Write::Doubled,
+                Some((c, _)) if c == crc && long => Write::Again,
+                _ => Write::New,
+            }
         }
     }
 

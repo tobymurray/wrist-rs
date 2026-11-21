@@ -171,6 +171,8 @@ fn each_line_carries_the_uptime_it_began_at() {
     log.record(1_234_567, b"ected\r\n[pwr] 3900 mV\r\n");
     log.record(60_000, b"tail");
     assert_eq!(read_all(&log, 0, 256).0, b"0.005 [ble] connected\n1234.567 [pwr] 3900 mV\n60.000 tail");
+    let mut buf = [0u8; 256];
+    assert_eq!(log.read(0, log.end(), &mut buf).len as u64, log.end(), "to the end asked, a line in progress too");
 }
 
 #[test]
@@ -225,4 +227,97 @@ fn nothing_past_the_end_or_the_snapshot() {
     assert_eq!(&buf[..r.len], b"0.000 x\n");
     assert_eq!(log.read(until, until, &mut buf), Read { from: until, len: 0 });
     assert_eq!(log.read(500, 9999, &mut buf).len, 0);
+}
+
+#[test]
+fn a_stamp_keeps_its_milliseconds_past_the_32_bit_count() {
+    let mut log = Log::<64>::new();
+    log.record(u64::from(u32::MAX), b"late\n");
+    assert_eq!(read_all(&log, 0, 64).0, b"4294967.295 late\n");
+}
+
+#[test]
+fn a_replay_to_the_last_line_end_leaves_a_line_in_progress_for_the_next() {
+    let mut log = Log::<256>::new();
+    log.record(0, b"done\r\n[ble] bonded devices: 1");
+    let end = log.line_end();
+    let mut buf = [0u8; 256];
+    let r = log.read(0, end, &mut buf);
+    assert_eq!(&buf[..r.len], b"0.000 done\n");
+    log.record(0, b" AA:BB\r\n");
+    assert_eq!(log.line_end(), log.end());
+    let r = log.read(end, log.line_end(), &mut buf);
+    assert_eq!(&buf[..r.len], b"0.000 [ble] bonded devices: 1 AA:BB\n");
+}
+
+struct Pipe {
+    buf: Vec<u8>,
+    cap: usize,
+}
+
+impl wrist_logic::console::Sink for Pipe {
+    fn write(&mut self, bytes: &[u8]) -> usize {
+        let n = bytes.len().min(self.cap - self.buf.len());
+        self.buf.extend(&bytes[..n]);
+        n
+    }
+}
+
+#[test]
+fn a_line_cut_short_drops_its_rest_and_the_next_starts_on_its_own() {
+    let mut cut = wrist_logic::console::Cut::new();
+    let mut pipe = Pipe { buf: Vec::new(), cap: 16 };
+    assert_eq!(cut.feed(b"[hb] 1\r\n[hb] ", &mut pipe), 0);
+    assert_eq!(cut.feed(b"2  uptime 9 s\r\n", &mut pipe), 12);
+    assert_eq!(cut.feed(b"tail of nothing", &mut pipe), 15, "no room for the new line's lead");
+    pipe.buf.clear();
+    assert_eq!(cut.feed(b"\r\n[hb] 3\r\n", &mut pipe), 2);
+    assert_eq!(pipe.buf, b"\r\n[hb] 3\r\n");
+    pipe.buf.clear();
+    assert_eq!(cut.feed(b"whole\r\n", &mut pipe), 0);
+    assert_eq!(pipe.buf, b"whole\r\n");
+}
+
+#[test]
+fn a_line_cut_short_at_its_end_still_ends_before_the_next() {
+    let mut cut = wrist_logic::console::Cut::new();
+    let mut pipe = Pipe { buf: Vec::new(), cap: 6 };
+    assert_eq!(cut.feed(b"[hb] 1\r\n", &mut pipe), 2);
+    pipe.cap = 64;
+    assert_eq!(cut.feed(b"[hb] 2\r\n", &mut pipe), 0);
+    assert_eq!(pipe.buf, b"[hb] 1\r\n[hb] 2\r\n");
+}
+
+#[test]
+fn a_line_refused_whole_needs_no_lead() {
+    let mut cut = wrist_logic::console::Cut::new();
+    let mut pipe = Pipe { buf: b"x\r\n".to_vec(), cap: 4 };
+    assert_eq!(cut.feed(b"", &mut pipe), 0);
+    pipe.cap = 3;
+    assert_eq!(cut.feed(b"[hb] 4\r\n", &mut pipe), 8);
+    pipe.cap = 64;
+    assert_eq!(cut.feed(b"[hb] 5\r\n", &mut pipe), 0);
+    assert_eq!(pipe.buf, b"x\r\n[hb] 5\r\n");
+}
+
+#[test]
+fn whole_lines_end_at_the_last_line_end() {
+    use wrist_logic::console::whole_lines;
+    assert_eq!(whole_lines(b"a\nb\nc"), 4);
+    assert_eq!(whole_lines(b"abc"), 3);
+    assert_eq!(whole_lines(b"a\n"), 2);
+    assert_eq!(whole_lines(b""), 0);
+}
+
+#[test]
+fn a_write_longer_than_the_log_keeps_its_end() {
+    let mut log = Log::<16>::new();
+    log.record(0, b"x\r\n");
+    let text: Vec<u8> = (0..40u8).map(|i| b'a' + i % 26).chain(*b"\r\n").collect();
+    log.record(0, &text);
+    assert_eq!(log.end(), 8 + 6 + 41);
+    assert_eq!(log.line_end(), log.end());
+    let mut buf = [0u8; 16];
+    let r = log.read(log.start(), log.end(), &mut buf);
+    assert_eq!(&buf[..r.len], b"zabcdefghijklmn\n");
 }

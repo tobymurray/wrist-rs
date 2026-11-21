@@ -185,6 +185,7 @@ pub async fn dump(uart: Uart) {
                 *b = ring.buf[(start + done + i) % SIZE];
             }
         });
+        let n = if done + n < len { wrist_logic::console::whole_lines(&piece[..n]) } else { n };
         uart.write_bytes(&piece[..n]);
         done += n;
         crate::console::make_room().await;

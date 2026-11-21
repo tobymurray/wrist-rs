@@ -145,6 +145,27 @@ fn a_chunk_refused_for_want_of_buffers_goes_again_first() {
 }
 
 #[test]
+fn a_chunk_refused_for_want_of_buffers_waits_for_the_pool() {
+    let mut out = Outbox::<8>::default();
+    assert_eq!(next_with(&mut out, 4, b"pong"), b"pong");
+    assert!(!out.sent(BUFFERS));
+    assert!(out.waits_for_pool());
+    out.pool_available();
+    assert!(!out.waits_for_pool());
+    assert!(out.pending());
+    assert_eq!(out.next(4, |_| panic!("the held chunk goes first")), b"pong");
+    assert!(!out.sent(Ok(0x46)));
+    assert!(!out.waits_for_pool(), "a definite refusal goes again on the timer");
+    out.next(4, |_| panic!("held"));
+    assert!(!out.sent(BUFFERS));
+    out.clear();
+    assert!(!out.waits_for_pool());
+    // Nothing held: no pool to wait for.
+    out.pool_available();
+    assert!(!out.pending());
+}
+
+#[test]
 fn a_definite_refusal_sends_the_chunk_again() {
     let refusals = [Ok(0x0C), Ok(0x41), Ok(0x46), Ok(0x47), Err(Unanswered::NotTaken), Err(Unanswered::Restarted), Err(Unanswered::TooLong)];
     for refused in refusals {
@@ -390,16 +411,33 @@ fn a_full_pipe_drops_whole_lines_and_counts_them() {
     }
     read.extend(ring.read(64));
     let text = String::from_utf8(read).unwrap();
-    let got: Vec<&str> = text.split_terminator("\r\n").collect();
+    let marker = core::str::from_utf8(&LOST[2..LOST.len() - 2]).unwrap();
     assert!(lost > 0, "the pipe never filled");
-    assert_eq!(got.len() + lost as usize, 200);
-    let mut previous = None;
-    for line in got {
+    let (mut previous, mut flagged, mut got) = (None, false, 0);
+    for line in text.split_terminator("\r\n") {
+        if line == marker {
+            flagged = true;
+            continue;
+        }
         let beat: u32 = line.strip_prefix("[hb] ").and_then(|l| l.split(' ').next()).unwrap().parse().unwrap();
         assert_eq!(line, format!("[hb] {beat}  uptime {} s", beat * 2), "spliced");
-        assert!(previous < Some(beat));
+        assert_eq!(flagged, previous.map_or(beat > 0, |p| beat > p + 1), "beat {beat}: a loss unmarked, or a mark with none");
         previous = Some(beat);
+        flagged = false;
+        got += 1;
     }
+    assert_eq!(got + lost as usize, 200);
+}
+
+#[test]
+fn a_line_dropped_for_want_of_room_is_marked_before_the_next() {
+    let mut ring = Ring::<64>::new();
+    let mut lines = wrist_bluenrg2::wake::ble::Lines::<64>::default();
+    ring.end = 40;
+    assert_eq!(lines.feed(b"[report] a line of thirty bytes\r\n", &mut ring), 1);
+    ring.read(64);
+    assert_eq!(lines.feed(b"next\r\n", &mut ring), 0);
+    assert_eq!(ring.read(64), [&LOST[2..], b"next\r\n"].concat());
 }
 
 #[test]
@@ -411,7 +449,7 @@ fn a_line_longer_than_the_holder_cut_short_ends_before_the_next() {
     assert_eq!(lines.feed(b"yy\r\n", &mut ring), 0);
     assert_eq!(ring.read(64), [b'x'; 64]);
     assert_eq!(lines.feed(b"next\r\n", &mut ring), 0);
-    assert_eq!(ring.read(64), b"\r\nnext\r\n");
+    assert_eq!(ring.read(64), [LOST, b"next\r\n"].concat());
 }
 
 #[test]
@@ -495,4 +533,17 @@ fn scanning_listens_less_on_battery() {
         let (scan, adv) = (u32::from(scan(power).interval), u32::from(timing(power, false).advertise));
         assert!(scan * 10 >= adv * 9 && scan * 10 <= adv * 11, "{power:?}");
     }
+}
+
+#[test]
+fn a_write_reported_twice_within_an_interval_is_doubled() {
+    use wrist_bluenrg2::wake::ble::{Write, Writes};
+    let mut w = Writes::default();
+    assert_eq!(w.arrived(7, false, 100, 30), Write::New);
+    assert_eq!(w.arrived(7, false, 102, 30), Write::Doubled);
+    assert_eq!(w.arrived(7, false, 140, 30), Write::New, "a short command sent again");
+    assert_eq!(w.arrived(7, false, 170, 30), Write::New, "at one interval a central can follow it");
+    assert_eq!(w.arrived(8, true, 171, 30), Write::New);
+    assert_eq!(w.arrived(8, true, 400, 30), Write::Again);
+    assert_eq!(w.arrived(8, true, 401, 30), Write::Doubled);
 }

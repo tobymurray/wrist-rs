@@ -95,7 +95,7 @@ static TX: Mutex<CriticalSectionRawMutex, RefCell<Ring>> = Mutex::new(RefCell::n
 
 /// Queued output held from [`Uart::hold`] until [`Uart::release_line`] lets it out.
 static HOLDING: AtomicBool = AtomicBool::new(false);
-static UNRECORDED: AtomicBool = AtomicBool::new(false);
+static REPLAYING: AtomicBool = AtomicBool::new(false);
 static HELD: Mutex<CriticalSectionRawMutex, RefCell<Held<4096>>> = Mutex::new(RefCell::new(Held::new()));
 
 #[no_mangle]
@@ -284,10 +284,7 @@ impl Uart {
         if bytes.is_empty() {
             return;
         }
-        if !UNRECORDED.load(Ordering::Relaxed) {
-            crate::journal::record(bytes);
-        }
-        if self.0 == Mode::Queued && HOLDING.load(Ordering::Relaxed) {
+        if self.0 == Mode::Queued && HOLDING.load(Ordering::Relaxed) && !REPLAYING.load(Ordering::Relaxed) {
             if HELD.lock(|h| h.try_borrow_mut().is_ok_and(|mut h| h.hold(bytes))) {
                 return;
             }
@@ -302,6 +299,10 @@ impl Uart {
         if bytes.is_empty() {
             return;
         }
+        let replaying = REPLAYING.load(Ordering::Relaxed);
+        if !replaying {
+            crate::journal::record(bytes);
+        }
         // On battery no cable hears it (`power.rs`), and draining it would
         // keep the core out of Stop2.
         if self.0 == Mode::Queued && crate::power::on_battery() {
@@ -310,6 +311,9 @@ impl Uart {
             return;
         }
         crate::console::tee(bytes);
+        if replaying && self.0 == Mode::Queued {
+            return;
+        }
         match self.0 {
             Mode::Queued => {
                 let lost = TX.lock(|ring| bytes.len() - ring.borrow_mut().push_all(bytes));
@@ -380,11 +384,12 @@ impl Uart {
         Lines { uart: self, buf: [0; LINE], n: 0 }
     }
 
-    /// Runs `write` without keeping its output in the log (`journal.rs`).
-    pub fn unrecorded(self, write: impl FnOnce()) {
-        UNRECORDED.store(true, Ordering::Relaxed);
+    /// Runs `write` as a replay of the log (`journal.rs`): not kept in it again, not held, and
+    /// not on the UART, whose reader had it the first time.
+    pub fn replay(self, write: impl FnOnce()) {
+        REPLAYING.store(true, Ordering::Relaxed);
         write();
-        UNRECORDED.store(false, Ordering::Relaxed);
+        REPLAYING.store(false, Ordering::Relaxed);
     }
 
     /// Holds queued output from here on, or stops, for [`Uart::release_line`] to let out.

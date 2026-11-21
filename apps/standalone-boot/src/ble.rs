@@ -82,7 +82,7 @@ use wrist_bluenrg2::start::{Setup, Start, Starting, Step};
 use wrist_bluenrg2::transport::{self, Counts};
 use wrist_logic::pages::{OldKey, Pairing, Prompt};
 use wrist_bluenrg2::wake::ble::restart::{self, Boot};
-use wrist_bluenrg2::wake::ble::{server, Lines, Outbox, Power, Radio, Scan, Sink};
+use wrist_bluenrg2::wake::ble::{server, Lines, Outbox, Power, Radio, Scan, Sink, Write, Writes};
 
 use crate::console::Target;
 use crate::uart::Uart;
@@ -129,6 +129,11 @@ const DEFAULT_MTU: usize = bluenrg2::ATT_DEFAULT_MTU;
 const DEFAULT_VALUE_LEN: usize = DEFAULT_MTU - ATT_HEADER_LEN;
 /// Console notifications at most this often.
 const CONSOLE_PACE: Duration = Duration::from_millis(10);
+/// The shortest connection interval (Core 6.B 4.5.1); a write repeated sooner may be one the chip
+/// reported twice.
+const DOUBLED_WITHIN: Duration = Duration::from_micros(7500);
+/// The longest a chunk refused for want of TX buffers waits for the chip to say it has some.
+const POOL_WAIT: Duration = Duration::from_secs(1);
 /// The core's operations carried out in one pass of the loop, at most.
 const ISSUED_PER_PASS: usize = 4;
 
@@ -319,6 +324,11 @@ pub async fn room(len: usize) {
             return;
         }
     }
+}
+
+/// Lines the mirror has dropped for want of room, this boot.
+pub fn lines_dropped() -> u32 {
+    LINES_DROPPED.load(Ordering::Relaxed)
 }
 
 /// Console output, mirrored to a subscribed central over an encrypted link. Never blocks:
@@ -755,8 +765,8 @@ struct Link<'d> {
     chip: Chip<'d>,
     uart: Uart,
     flash: &'static FlashMutex,
-    /// CRC of the last console write, to spot one delivered twice.
-    last_rx: u32,
+    /// The last console write, to spot one delivered twice.
+    writes: Writes,
     /// Deferred work raised by events, done from the main loop.
     passkey_for: Option<u16>,
     recount_bonds: bool,
@@ -798,7 +808,7 @@ impl<'d> Link<'d> {
             chip,
             uart,
             flash,
-            last_rx: 0,
+            writes: Writes::default(),
             passkey_for: None,
             recount_bonds: false,
             line: ([0; 192], 0),
@@ -1214,8 +1224,9 @@ impl Link<'_> {
             Some(c) => self.exchange(c.opcode, c.params()).await.map(|r| r.status),
             None => Err(Unanswered::TooLong),
         };
-        self.console_at = Instant::now() + CONSOLE_PACE;
-        if self.outbox.sent(answer) {
+        let lost = self.outbox.sent(answer);
+        self.console_at = Instant::now() + if self.outbox.waits_for_pool() { POOL_WAIT } else { CONSOLE_PACE };
+        if lost {
             self.uart.write_line("[ble] a console notification was lost");
         }
     }
@@ -1334,13 +1345,14 @@ impl Link<'_> {
                 BONDED.store(params[0], Ordering::Relaxed);
                 BONDED_READ.store(true, Ordering::Relaxed);
                 redraw();
-                self.uart.write_str("[ble] bonded devices: ");
-                self.uart.write_u32(u32::from(params[0]));
+                let mut line = self.uart.lines();
+                line.write_str("[ble] bonded devices: ");
+                line.write_u32(u32::from(params[0]));
                 for bond in bluenrg2::bonded_devices(params) {
-                    self.uart.write_str(" ");
-                    write_address(self.uart, bond);
+                    line.write_str(" ");
+                    line.write_str(wrist_bluenrg2::console::address(bond).as_str());
                 }
-                self.uart.write_line("");
+                line.write_line("");
                 if after_pairing && self.peer.is_some_and(|peer| wrist_bluenrg2::bonds::bond_kept(params, before, peer)) {
                     self.uart.write_line("[ble] bonded");
                 }
@@ -1880,13 +1892,13 @@ impl Link<'_> {
             FRAGMENTS.fetch_add(1, Ordering::Relaxed);
         }
         let crc = wrist_flash::plan::crc32(data);
-        if data.len() > DEFAULT_VALUE_LEN && crc == self.last_rx {
+        let write = self.writes.arrived(crc, data.len() > DEFAULT_VALUE_LEN, Instant::now().as_ticks(), DOUBLED_WITHIN.as_ticks());
+        if write != Write::New {
             REPEATS.fetch_add(1, Ordering::Relaxed);
-            self.uart.write_str("[ble] console write repeated, events ");
+            self.uart.write_str(if write == Write::Doubled { "[ble] console write repeated within 7.5 ms, events " } else { "[ble] console write repeated, events " });
             self.uart.write_u32(TRANSPORT.reads.load(Ordering::Relaxed));
             self.uart.write_line("");
         }
-        self.last_rx = crc;
         self.console_bytes(data);
     }
 
@@ -1929,6 +1941,10 @@ impl Link<'_> {
                 self.uart.write_u32(u32::try_from(self.mtu).unwrap_or(0));
                 self.uart.write_line("");
             }
+            VendorEvent::TxPoolAvailable { .. } if self.outbox.waits_for_pool() => {
+                self.outbox.pool_available();
+                self.console_at = Instant::now();
+            }
             VendorEvent::TxPoolAvailable { .. } | VendorEvent::AttributeModified { .. } | VendorEvent::BondLost => {}
             VendorEvent::L2capUpdateResponse { accepted, .. } => {
                 if !accepted {
@@ -1967,15 +1983,7 @@ fn redraw() {
 }
 
 fn write_address(uart: Uart, a: bluenrg2::Address) {
-    use core::fmt::Write;
-    struct Out(Uart);
-    impl Write for Out {
-        fn write_str(&mut self, s: &str) -> core::fmt::Result {
-            self.0.write_str(s);
-            Ok(())
-        }
-    }
-    let _ = write!(Out(uart), "{}", wrist_bluenrg2::console::address(a));
+    uart.write_str(wrist_bluenrg2::console::address(a).as_str());
 }
 
 fn clear_prompt() {

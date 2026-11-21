@@ -1,11 +1,13 @@
 //! The USB CDC-ACM console: the UART's output mirrored to a host, and commands
 //! from it (`HARDWARE.md`, "USB device").
 
+use core::cell::RefCell;
 use core::sync::atomic::{AtomicBool, Ordering};
 use embassy_futures::select::{select4, Either4};
 use embassy_stm32::usb::{self, Driver};
 use embassy_stm32::{bind_interrupts, peripherals, Peri};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::pipe::Pipe;
 use embassy_sync::signal::Signal;
 use embassy_time::{Instant, Timer};
@@ -13,6 +15,7 @@ use embassy_usb::driver::EndpointError;
 use embassy_usb::class::cdc_acm::device::{CdcAcmClass, Receiver, Sender, State};
 use embassy_usb::{Builder, Handler};
 use static_cell::ConstStaticCell;
+use wrist_logic::console::{Cut, Sink};
 
 use crate::mmio::{
     modify32, read32, PWR_SVMSR, PWR_VOSR, RCC_AHB2ENR1, RCC_AHB2ENR1_OTGEN, SYSCFG_OTGHSPHYCR, SYSCFG_OTGHSPHYTUNER2,
@@ -177,25 +180,36 @@ impl Handler for LinkWatcher {
 }
 
 static OUT: Pipe<CriticalSectionRawMutex, 8192> = Pipe::new();
+/// What goes into [`OUT`]; a fault handler that finds it borrowed queues nothing.
+static CUT: Mutex<CriticalSectionRawMutex, RefCell<Cut>> = Mutex::new(RefCell::new(Cut::new()));
 
-/// Queues what fits of `bytes` and drops the rest, which it returns.
-pub fn tee(bytes: &[u8]) -> &[u8] {
+struct OutSink;
+
+impl Sink for OutSink {
+    fn write(&mut self, bytes: &[u8]) -> usize {
+        OUT.try_write(bytes).unwrap_or(0)
+    }
+}
+
+/// Queues what fits of `bytes` and drops the rest; whether all of it went.
+pub fn tee(bytes: &[u8]) -> bool {
     #[cfg(feature = "ble")]
     crate::ble::tee(bytes);
-    let mut rest = bytes;
-    while let Ok(n @ 1..) = OUT.try_write(rest) {
-        rest = &rest[n..];
-    }
-    rest
+    usb_only(bytes)
 }
 
 /// Queues what fits of `bytes` for the USB host alone: not the UART, nor the Bluetooth mirror.
-#[cfg(feature = "ble-trace")]
-pub fn usb_only(bytes: &[u8]) {
-    let mut rest = bytes;
-    while let Ok(n @ 1..) = OUT.try_write(rest) {
-        rest = &rest[n..];
-    }
+pub fn usb_only(bytes: &[u8]) -> bool {
+    CUT.lock(|c| c.try_borrow_mut().is_ok_and(|mut c| c.feed(bytes, &mut OutSink) == 0))
+}
+
+fn clear_out() {
+    CUT.lock(|c| {
+        OUT.clear();
+        if let Ok(mut c) = c.try_borrow_mut() {
+            *c = Cut::new();
+        }
+    });
 }
 
 /// Wait, boundedly, for the pipe to be half empty, so long output written in
@@ -220,7 +234,7 @@ pub async fn write_whole(line: &[u8]) -> bool {
             return false;
         }
         if OUT.capacity() - OUT.len() >= line.len() + HEADROOM {
-            return tee(line).is_empty();
+            return tee(line);
         }
         Timer::after_millis(5).await;
     }
@@ -390,7 +404,7 @@ async fn pump<'d>(mut tx: Sender<'d, Usb<'d>>) -> ! {
     let mut buf = [0u8; BULK_PACKET as usize];
     loop {
         tx.wait_connection().await;
-        OUT.clear();
+        clear_out();
         TERMINAL_OPEN.store(true, Ordering::Relaxed);
         uart.write_line("[usb] console attached; 'help' lists commands");
         loop {

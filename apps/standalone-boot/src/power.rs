@@ -152,7 +152,8 @@ impl Sampler {
                 let mut r = r.borrow_mut();
                 if code == BATTERY {
                     r.0 = Some(BatteryRun::new(now));
-                } else if let Some(run) = r.0.take() {
+                } else if let Some(mut run) = r.0.take() {
+                    run.end(now);
                     r.1 = Some(run);
                 }
             });
@@ -215,7 +216,8 @@ pub async fn command(args: &[u8], uart: Uart) {
     uart.write_line("");
     uart.pace().await;
     let (now, last) = RUNS.lock(|r| *r.borrow());
-    if let Some(run) = now {
+    if let Some(mut run) = now {
+        run.end(Instant::now().as_millis());
         write_run(uart, "[power] on battery now: ", &run);
     }
     match last {
