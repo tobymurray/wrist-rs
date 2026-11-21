@@ -2097,7 +2097,6 @@ impl core::fmt::Write for Words {
     }
 }
 
-/// `[ble] status phone=… peers=… radio=… plan=… drift=…s`.
 fn write_status_line(uart: Uart, s: &CoreStatus) {
     struct Out(Uart);
     impl core::fmt::Write for Out {

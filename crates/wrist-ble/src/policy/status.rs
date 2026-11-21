@@ -230,13 +230,10 @@ impl Status {
     }
 }
 
-/// The least time between two status lines, so a status that flickers costs at most a line a
-/// second; a change still shows within it (I4).
+/// The least time between two status lines, so a flickering status cannot flood the console.
 pub const LOG_GAP: Millis = Millis::secs(1);
 
-/// When the status next changes with no event, by time alone: a link past
-/// [`ASK_TO_PAIR_AFTER`] unencrypted, a planned gap in advertising past [`REACHABLE_GAP`], and
-/// for a peripheral, a second from now (its readings age).
+/// When the status next changes by time alone, with no event.
 #[must_use]
 pub fn next_change(state: &State, now: Instant) -> Option<Instant> {
     let after = |at: Instant| Some(at + Millis(1)).filter(|&t| t > now);
@@ -281,8 +278,7 @@ impl Status {
         Self { phone, peers, drift: Millis(0), ..*self }
     }
 
-    /// The phone's status in words, without ages, for the `ble` line: `advertising as UNA every
-    /// 100 ms`, `connected, encrypted`, `connected, NOT encrypted`, and so on.
+    /// The phone's status in words, without ages, for the `ble` line.
     ///
     /// # Errors
     ///
@@ -309,8 +305,7 @@ impl Status {
     }
 }
 
-/// Which statuses the console prints: each change of [`Status::shape`], at most one line each
-/// [`LOG_GAP`], the latest shape when a change was held.
+/// Which statuses the console prints: each change of [`Status::shape`], held to [`LOG_GAP`].
 #[derive(Clone, Copy, Debug, Default)]
 pub struct StatusLog {
     shown: Option<Status>,
