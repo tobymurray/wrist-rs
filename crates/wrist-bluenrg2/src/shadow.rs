@@ -3,6 +3,7 @@
 //! ([`Mode::Shadow`]), or handed to the driver to carry out ([`Mode::Drive`]).
 
 pub mod menu;
+pub mod record;
 pub mod trace;
 pub mod verdict;
 

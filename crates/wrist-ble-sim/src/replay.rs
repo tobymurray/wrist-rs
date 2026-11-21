@@ -11,7 +11,7 @@ use wrist_ble::policy::engine::Tell;
 use wrist_ble::policy::goals::{Goals, PhoneGoal, Power};
 use wrist_ble::policy::{status, State};
 use wrist_bluenrg2::shadow::verdict::{Act, Disagreement};
-use wrist_bluenrg2::shadow::{trace, DriverOp, Excuse, Observer, Shadow};
+use wrist_bluenrg2::shadow::{record, trace, DriverOp, Excuse, Observer, Shadow};
 use wrist_bluenrg2::INFO;
 
 use crate::capture::{self, command, stamped, Command, Profile};
@@ -369,6 +369,26 @@ impl Replay {
             // (none when it failed), as a driven core was told them.
             "m" => self.shadow.driven(bytes == [1]),
             "l" => self.shadow.lost_read(at),
+            // The flight recorder's inputs beside the chip's: the core's goals and timing, the
+            // radio, and the operator's answer, ask and hang-up.
+            "G" => match record::decode_goals(&bytes) {
+                Some(g) => self.shadow.set_goals(at, g),
+                None => self.shadow.observer.report.unknown_events += 1,
+            },
+            "g" => {
+                if let &[power, transfer] = bytes.as_slice() {
+                    self.transfer = transfer == 1;
+                    self.shadow.timing(at, if power == 1 { Power::Battery } else { Power::Cable }, self.transfer);
+                }
+            }
+            "o" => self.shadow.radio(at, bytes == [1]),
+            "a" => self.shadow.answer(at, bytes == [1]),
+            "i" => {
+                if let &[a, b, c, d] = bytes.as_slice() {
+                    self.shadow.interval_now(at, u16::from_le_bytes([a, b]), u16::from_le_bytes([c, d]));
+                }
+            }
+            "d" => self.shadow.operator_disconnect(at),
             "s" => {
                 let snapshot = if bytes.is_empty() {
                     Err(Fault::Silent)

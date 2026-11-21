@@ -102,7 +102,7 @@ const HEADER: usize = 128;
 /// Writes part of the replay once the mirror has room for `len` bytes, or at once for 0; how many
 /// lines it dropped.
 #[cfg_attr(not(feature = "ble"), allow(clippy::unused_async))]
-async fn replay(uart: Uart, len: usize, write: impl FnOnce()) -> u32 {
+pub(crate) async fn replay(uart: Uart, len: usize, write: impl FnOnce()) -> u32 {
     #[cfg(feature = "ble")]
     if len > 0 {
         crate::ble::room(len).await;

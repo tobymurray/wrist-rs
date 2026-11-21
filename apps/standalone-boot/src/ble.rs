@@ -38,8 +38,7 @@
 
 #[cfg(feature = "ble-probe")]
 mod probe;
-#[cfg(feature = "ble-trace")]
-mod trace;
+pub(crate) mod trace;
 mod scan;
 
 use core::cell::{Cell, RefCell};
@@ -816,6 +815,8 @@ struct Link<'d> {
     shown: Option<Radio>,
     /// Which of the core's statuses have gone out as lines.
     status_log: StatusLog,
+    /// The core's timing as the recorder last kept it.
+    timing: Option<(goals::Power, bool)>,
     shadow: &'d mut Shadow<Said>,
     /// `ble probe refuse`: the core's next command answered with this status, unsent.
     #[cfg(feature = "ble-probe")]
@@ -851,6 +852,7 @@ impl<'d> Link<'d> {
             boot: None,
             shown: None,
             status_log: StatusLog::NEW,
+            timing: None,
             shadow,
             #[cfg(feature = "ble-probe")]
             refuse_next: None,
@@ -899,7 +901,12 @@ impl Link<'_> {
             self.packets().await;
             self.deferred().await;
             self.scan_tick().await;
-            self.shadow.timing(now_ms(), shadow_power(), self.transfer.is_some());
+            let timing = (shadow_power(), self.transfer.is_some());
+            if self.timing != Some(timing) {
+                self.timing = Some(timing);
+                trace::packet(trace::Dir::Timing, &[u8::from(timing.0 == goals::Power::Battery), u8::from(timing.1)]);
+            }
+            self.shadow.timing(now_ms(), timing.0, timing.1);
             self.console_tick().await;
             self.resync().await;
             self.drive().await;
@@ -991,6 +998,9 @@ impl Link<'_> {
             Request::Disconnect => self.terminate().await,
             Request::IntervalNow(min, max) => {
                 if STATE.load(Ordering::Relaxed) == STATE_CONNECTED {
+                    let [a, b] = min.to_le_bytes();
+                    let [c, d] = max.to_le_bytes();
+                    trace::packet(trace::Dir::IntervalNow, &[a, b, c, d]);
                     self.shadow.interval_now(now_ms(), min, max);
                 } else {
                     self.uart.write_line("[ble] interval now: not connected");
@@ -1094,6 +1104,7 @@ impl Link<'_> {
         });
         // Unanswered, the digits only stop: the core answers at its own deadline.
         if let Some(yes) = owed.filter(|&yes| prompt == Prompt::Answered(yes)) {
+            trace::packet(trace::Dir::Answer, &[u8::from(yes)]);
             self.shadow.answer(now_ms(), yes);
         }
     }
@@ -1119,6 +1130,7 @@ impl Link<'_> {
 
     /// Bring the chip up, and again if it restarts meanwhile; whether it is up.
     async fn start(&mut self) -> bool {
+        trace::goals(&shadow_goals());
         self.shadow.set_goals(now_ms(), shadow_goals());
         // The start this bring-up answers.
         let _ = self.shadow.chip_action();
@@ -1129,6 +1141,7 @@ impl Link<'_> {
     /// The radio off as the shadow's core takes it, everything it still holds judged, and a
     /// snapshot it asked for of this chip dropped.
     fn shadow_off(&mut self) {
+        trace::packet(trace::Dir::Radio, &[0]);
         self.shadow.radio(now_ms(), false);
         self.shadow.finish();
         let _ = self.shadow.take_snapshot();
@@ -1153,7 +1166,6 @@ impl Link<'_> {
         self.shown = Some(Radio::Starting);
         self.show();
         clear_prompt();
-        #[cfg(feature = "ble-trace")]
         {
             trace::packet(trace::Dir::Reset, &[]);
             trace::packet(trace::Dir::Mode, &[1]);
@@ -1442,6 +1454,7 @@ impl Link<'_> {
     }
 
     async fn terminate(&mut self) {
+        trace::packet(trace::Dir::Disconnect, &[]);
         self.shadow.operator_disconnect(now_ms());
         let _ = self.submit(Op::Disconnect(link(), DisconnectReason::RemoteUserTerminatedConn)).await;
     }
@@ -1536,7 +1549,6 @@ impl Link<'_> {
                         }
                         Err(_) => self.uart.write_line("[ble] resync: the chip gave no snapshot"),
                     }
-                    #[cfg(feature = "ble-trace")]
                     trace::snapshot(r.as_ref().ok());
                     self.shadow.snapshotted(now_ms(), r);
                 }
@@ -1662,7 +1674,9 @@ impl Link<'_> {
     /// Advertising on or off for a scan, as the core's goal.
     fn want_discoverable(&mut self, on: bool) {
         let g = self.shadow.goals();
-        self.shadow.set_goals(now_ms(), Goals { phone: PhoneGoal { discoverable: on, ..g.phone }, ..g });
+        let goals = Goals { phone: PhoneGoal { discoverable: on, ..g.phone }, ..g };
+        trace::goals(&goals);
+        self.shadow.set_goals(now_ms(), goals);
     }
 
     /// The radio and the phone's link as the core's record has them, for the `ble` line and the page.
@@ -1738,7 +1752,6 @@ impl Link<'_> {
             }
         }
         if let Got::Packet { len, .. } | Got::Boot { len, .. } = got {
-            #[cfg(feature = "ble-trace")]
             trace::packet(trace::Dir::FromChip, &packet[..len]);
             self.shadow.event(now_ms(), &packet[..len]);
         }
@@ -1762,7 +1775,6 @@ impl Link<'_> {
 
     /// The driver's lost read, for the core and the trace.
     fn lost_read(&mut self) {
-        #[cfg(feature = "ble-trace")]
         trace::packet(trace::Dir::Lost, &[]);
         self.shadow.reported(now_ms(), RadioEvent::EventsLost);
     }
@@ -2080,14 +2092,10 @@ fn unanswered(why: Unanswered) -> &'static str {
 }
 
 /// `ble-trace`: a command as it goes to the chip.
-#[cfg_attr(not(feature = "ble-trace"), allow(unused_variables))]
 fn trace_command(opcode: u16, params: &[u8]) {
-    #[cfg(feature = "ble-trace")]
-    {
-        let mut packet = [0u8; bluenrg2::MAX_COMMAND];
-        if let Some(n) = bluenrg2::command(opcode, &[params], &mut packet) {
-            trace::packet(trace::Dir::ToChip, &packet[..n]);
-        }
+    let mut packet = [0u8; bluenrg2::MAX_COMMAND];
+    if let Some(n) = bluenrg2::command(opcode, &[params], &mut packet) {
+        trace::packet(trace::Dir::ToChip, &packet[..n]);
     }
 }
 
