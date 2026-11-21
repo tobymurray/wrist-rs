@@ -447,3 +447,15 @@ fn a_chip_that_keeps_restarting_is_held_by_the_cores_budget() {
     assert_eq!(s.chip_action(), Some(Action::Hold));
     assert_eq!(Radio::of(s.state()), Radio::Failed);
 }
+
+/// A start the core asks for waits, seen by `chip_acting`, until the driver takes it.
+#[test]
+fn a_chip_action_waits_until_taken() {
+    const WATCHDOG: &[u8] = &[0x04, 0xFF, 0x03, 0x01, 0x00, 0x05];
+    let mut s = driving();
+    assert!(!s.chip_acting());
+    s.event(Instant(1_000), WATCHDOG);
+    assert!(s.chip_acting());
+    assert!(s.chip_action().is_some());
+    assert!(!s.chip_acting());
+}

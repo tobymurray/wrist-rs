@@ -972,7 +972,7 @@ impl Link<'_> {
         let one = Duration::from_ticks(1);
         let state = State {
             now: tick(Instant::now()),
-            work: self.shadow.issuing() || self.shadow.snapshot_wanted() || self.finish_transfer || self.recount_bonds || self.passkey_for.is_some() || self.storming(),
+            work: self.shadow.issuing() || self.shadow.snapshot_wanted() || self.finish_transfer || self.recount_bonds || self.passkey_for.is_some() || self.storming() || self.shadow.chip_acting(),
             confirm_by: PROMPT.lock(Cell::get).owed().map(|(at, _)| tick(Instant::from_millis(at))),
             transfer: match &self.transfer {
                 None => Transfer::None,
