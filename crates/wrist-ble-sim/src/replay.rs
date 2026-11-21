@@ -475,5 +475,7 @@ fn comes_up(t: &capture::Trace<'_>) -> bool {
     let started = |p: &[u8]| {
         matches!(bluenrg2::parse(p), bluenrg2::Event::Vendor(bluenrg2::VendorEvent::BlueInitialized { reason: Some(bluenrg2::BootReason::STARTED), .. }))
     };
-    t.kind == "r" || (t.kind == "e" && t.packet.as_deref().is_some_and(started))
+    // A dump from the watch's start opens with the goals its bring-up is given, then the reset.
+    let bring_up = |p: &[u8]| record::decode_goals(p).is_some_and(|g| g.radio_on);
+    t.kind == "r" || (t.kind == "e" && t.packet.as_deref().is_some_and(started)) || (t.kind == "G" && t.packet.as_deref().is_some_and(bring_up))
 }

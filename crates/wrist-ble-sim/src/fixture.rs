@@ -25,8 +25,15 @@ pub fn fixture(capture: &str) -> String {
 /// the replay acts on, and scenario marks and `[update]` lines with their addresses replaced.
 #[must_use]
 pub fn keep(line: &str) -> Option<String> {
-    let line = stamped(line)?;
-    let (stamp, text) = (line.stamp, line.text.trim());
+    // A `ble dump` line has no host stamp: the watch's own milliseconds stand in for it.
+    let dumped;
+    let (stamp, text) = if let Some(l) = stamped(line) {
+        (l.stamp, l.text.trim())
+    } else {
+        let t = trace(line.trim())?;
+        dumped = format!("{}.{:03}", t.ms / 1000, t.ms % 1000);
+        (dumped.as_str(), line.trim())
+    };
     if text.starts_with("== ") || text.starts_with("[update] ") {
         return Some(format!("{stamp} {}", scrub_addresses(text)));
     }
@@ -36,6 +43,10 @@ pub fn keep(line: &str) -> Option<String> {
     let t = trace(text)?;
     if matches!(t.kind, "r" | "l") || (t.kind == "s" && t.packet.is_none()) {
         return Some(format!("{stamp} [trace] {} {}", t.ms, t.kind));
+    }
+    // The recorder's goals, timing, radio, answer, ask and hang-up: no address in any.
+    if matches!(t.kind, "G" | "g" | "o" | "a" | "i" | "d") {
+        return Some(format!("{stamp} {text}"));
     }
     let packet = t.packet?;
     let packet = match t.kind {
