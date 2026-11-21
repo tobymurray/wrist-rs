@@ -76,7 +76,7 @@ HANG_UP = re.compile(r'\[ble\] disconnected, reason (\w+)')
 COUNTS = r'\[ble\] counts: '
 # The counts that a soak's ordinary work leaves alone; its own hang-ups count as early (the
 # watch's `tally::EARLY_END`) when it holds each link not much longer than this.
-STILL_COUNTS = ('failures', 'pairings failed', 'hung up within', 'chip restarts')
+STILL_COUNTS = ('failures', 'pairings failed', 'hung up within', 'chip restarts', 'alarms')
 EARLY_END_S = 12
 CONNECTED = re.compile(r'\[ble\] connected\s*$')
 

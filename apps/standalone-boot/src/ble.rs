@@ -72,6 +72,7 @@ use wrist_ble::{
     ServiceDecl, ATT_MAX_MTU,
 };
 use wrist_ble::policy::goals::{self, Goals, PhoneGoal};
+use wrist_ble::policy::invariants::Invariant;
 use wrist_ble::policy::status::{next_change, status, Status as CoreStatus, StatusLog};
 use wrist_ble::policy::tally::Tally;
 use wrist_bluenrg2::shadow::verdict::Disagreement;
@@ -165,6 +166,9 @@ enum Request {
     /// `ble probe lose link`: the next connection withheld from the core, a lost read reported.
     #[cfg(feature = "ble-probe")]
     ProbeLoseLink,
+    /// `ble probe alarm`: discoverability toggled until the core has asked too much (I2).
+    #[cfg(feature = "ble-probe")]
+    ProbeAlarm,
     #[cfg(feature = "ble-probe")]
     Probe,
     /// `ble probe gatt services|records|values`: fill the GATT table until the chip refuses.
@@ -395,6 +399,8 @@ pub fn command(args: &[u8], uart: Uart) {
         b"probe stop" => Request::ProbeStop,
         #[cfg(feature = "ble-probe")]
         b"probe lose link" => Request::ProbeLoseLink,
+        #[cfg(feature = "ble-probe")]
+        b"probe alarm" => Request::ProbeAlarm,
         #[cfg(feature = "ble-probe")]
         b"probe snapshot" => Request::ProbeSnapshot,
         #[cfg(feature = "ble-probe")]
@@ -683,7 +689,8 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
                 | Request::ProbeSecurity
                 | Request::ProbeRefuse(_)
                 | Request::ProbeRefuseScan(_)
-                | Request::ProbeLoseLink => {
+                | Request::ProbeLoseLink
+                | Request::ProbeAlarm => {
                     uart.write_line("[ble] off; `ble on` starts it");
                 }
                 Request::Off => {
@@ -821,6 +828,9 @@ struct Link<'d> {
     /// `ble probe refuse`: the core's next command answered with this status, unsent.
     #[cfg(feature = "ble-probe")]
     refuse_next: Option<u8>,
+    /// `ble probe alarm`: discoverability changes still to make.
+    #[cfg(feature = "ble-probe")]
+    storm: u8,
     /// `ble probe refuse scan`: the next scan's start answered with this status, unsent.
     #[cfg(feature = "ble-probe")]
     refuse_scan: Option<u8>,
@@ -856,6 +866,8 @@ impl<'d> Link<'d> {
             shadow,
             #[cfg(feature = "ble-probe")]
             refuse_next: None,
+            #[cfg(feature = "ble-probe")]
+            storm: 0,
             #[cfg(feature = "ble-probe")]
             refuse_scan: None,
             #[cfg(feature = "ble-probe")]
@@ -909,6 +921,11 @@ impl Link<'_> {
             self.shadow.timing(now_ms(), timing.0, timing.1);
             self.console_tick().await;
             self.resync().await;
+            #[cfg(feature = "ble-probe")]
+            if self.storm > 0 && !self.shadow.issuing() {
+                self.storm -= 1;
+                self.want_discoverable(self.storm.is_multiple_of(2));
+            }
             self.drive().await;
             self.publish();
             let due = self.due();
@@ -955,7 +972,7 @@ impl Link<'_> {
         let one = Duration::from_ticks(1);
         let state = State {
             now: tick(Instant::now()),
-            work: self.shadow.issuing() || self.shadow.snapshot_wanted() || self.finish_transfer || self.recount_bonds || self.passkey_for.is_some(),
+            work: self.shadow.issuing() || self.shadow.snapshot_wanted() || self.finish_transfer || self.recount_bonds || self.passkey_for.is_some() || self.storming(),
             confirm_by: PROMPT.lock(Cell::get).owed().map(|(at, _)| tick(Instant::from_millis(at))),
             transfer: match &self.transfer {
                 None => Transfer::None,
@@ -1029,6 +1046,11 @@ impl Link<'_> {
                 self.uart.write_str("[ble] the core's next command goes unsent, answered with status ");
                 self.uart.write_hex8(status);
                 self.uart.write_line("");
+            }
+            #[cfg(feature = "ble-probe")]
+            Request::ProbeAlarm => {
+                self.storm = 64;
+                self.uart.write_line("[ble] probe alarm: discoverability toggled 64 times as fast as the core asks");
             }
             #[cfg(feature = "ble-probe")]
             Request::ProbeLoseLink => {
@@ -1687,6 +1709,15 @@ impl Link<'_> {
         LATENCY.store(params.map_or(0, |p| p.latency), Ordering::Relaxed);
     }
 
+    /// Whether `ble probe alarm` has changes still to make.
+    #[cfg_attr(not(feature = "ble-probe"), allow(clippy::unused_self))]
+    fn storming(&self) -> bool {
+        #[cfg(feature = "ble-probe")]
+        return self.storm > 0;
+        #[cfg(not(feature = "ble-probe"))]
+        false
+    }
+
     /// A status line for the core's status as the task lets the radio go, if it has changed.
     fn last_status(&mut self) {
         let now = self.shadow.now();
@@ -2174,6 +2205,17 @@ impl Observer for Said {
     fn lost(&mut self, _: wrist_ble::Instant) {
         SHADOW.fetch_add(1, Ordering::Relaxed);
         self.0.write_line("[ble] shadow: an answer owed to the core found no room");
+    }
+
+    fn tell(&mut self, _: wrist_ble::Instant, t: wrist_ble::policy::engine::Tell) {
+        let wrist_ble::policy::engine::Tell::Alarm(broken) = t else { return };
+        self.0.write_str("[ble] alarm: ");
+        self.0.write_str(wrist_ble::policy::tally::invariant_name(broken));
+        self.0.write_line(match broken {
+            Invariant::Reachable => ", no phone can find the watch; re-reading the chip, then restarting it if this lasts",
+            Invariant::BoundedEffort => ", too many operations in a minute; re-reading the chip, then restarting it if this lasts",
+            _ => ", the radio is not where the plan wants it; re-reading the chip, then restarting it if this lasts",
+        });
     }
 }
 
