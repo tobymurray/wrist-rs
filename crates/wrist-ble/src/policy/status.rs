@@ -248,10 +248,7 @@ pub fn next_change(state: &State, now: Instant) -> Option<Instant> {
         }
         _ => None,
     };
-    let ages = |p: &crate::policy::Peer| {
-        !matches!(peer_state(&p.machine, p.want.profile, now), PeerState::Off | PeerState::Stopped(_) | PeerState::Incompatible)
-    };
-    let peers = state.peers.iter().flatten().any(ages).then(|| now + LOG_GAP);
+    let peers = state.peers.iter().flatten().any(|p| matches!(p.machine.stage, Stage::Live { .. })).then(|| now + LOG_GAP);
     [phone, peers].into_iter().flatten().min()
 }
 

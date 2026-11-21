@@ -705,8 +705,16 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
         );
         // A start, or a restart's recovery, that failed.
         if !(link.start().await && link.serve(&mut changes).await) {
-            link.last_status();
+            // The core's own fault, before the radio goes off; a step the driver failed is not the
+            // core's to show, so the radio as it goes off.
+            let core_gave_up = link.shown.is_none();
+            if core_gave_up {
+                link.last_status();
+            }
             link.shadow_off();
+            if !core_gave_up {
+                link.last_status();
+            }
             set_state(STATE_FAILED);
             old_key(OldKey::clear);
             link.chip.hold();
@@ -1656,8 +1664,7 @@ impl Link<'_> {
         LATENCY.store(params.map_or(0, |p| p.latency), Ordering::Relaxed);
     }
 
-    /// A status line for the core's status as the task lets the radio go, if it has changed: on a
-    /// failure, before the radio is turned off, so the line shows the fault.
+    /// A status line for the core's status as the task lets the radio go, if it has changed.
     fn last_status(&mut self) {
         let now = self.shadow.now();
         let s = status(self.shadow.state(), now);

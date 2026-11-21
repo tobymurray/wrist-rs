@@ -148,8 +148,14 @@ fn the_shape_drops_a_peripherals_ages_and_the_drift() {
     assert_eq!(early.shape(), late.shape());
 }
 
+/// Only a live peripheral's readings age; a search moves on its own deadlines.
 #[test]
 fn a_peripheral_that_cannot_change_by_time_wakes_nothing() {
-    let state = with_peer(ready(t(0)), &HR, wrist_ble::policy::peripheral::Peripheral::default());
-    assert_eq!(next_change(&state, t(5_000)), None);
+    use wrist_ble::policy::peripheral::{Event, Peripheral};
+    let ctx = ctx(&HR);
+    for machine in [Peripheral::default(), Peripheral::default().step(&ctx, t(0), Event::Want)] {
+        let state = with_peer(ready(t(0)), &HR, machine);
+        assert_eq!(next_change(&state, t(5_000)), None);
+        assert_eq!(status(&state, t(5_000)).shape(), status(&state, t(600_000)).shape());
+    }
 }
