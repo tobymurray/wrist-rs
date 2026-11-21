@@ -278,31 +278,6 @@ impl Status {
         Self { phone, peers, drift: Millis(0), ..*self }
     }
 
-    /// The phone's status in words, without ages, for the `ble` line.
-    ///
-    /// # Errors
-    ///
-    /// Only those of `w`.
-    pub fn write_words<W: Write>(&self, w: &mut W) -> fmt::Result {
-        match self.phone {
-            PhoneStatus::Off => w.write_str("off"),
-            PhoneStatus::Fault { cause: c, .. } => write!(w, "radio fault ({}), retrying", cause(c)),
-            PhoneStatus::Pairing { value, .. } => write!(w, "connected, pairing: compare {value:06}"),
-            PhoneStatus::Connected => w.write_str("connected, encrypted"),
-            PhoneStatus::Securing => w.write_str("connected, securing"),
-            PhoneStatus::Unsecured { .. } => w.write_str("connected, NOT encrypted"),
-            PhoneStatus::Discoverable { interval_ms: Some(ms) } => write!(w, "advertising as UNA every {ms} ms"),
-            PhoneStatus::Discoverable { interval_ms: None } => w.write_str("advertising as UNA, between intervals"),
-            PhoneStatus::Unreachable { reason: Unreachable::Starting, .. } => w.write_str("starting"),
-            PhoneStatus::Unreachable { reason: Unreachable::Hidden, .. } => w.write_str("up, not advertising (hidden)"),
-            PhoneStatus::Unreachable { reason: Unreachable::Busy(c), .. } => {
-                write!(w, "up, not advertising (busy: {})", conflict(c))
-            }
-            PhoneStatus::Unreachable { reason: Unreachable::NotConverged, .. } => {
-                w.write_str("up, not advertising (not yet where the plan wants)")
-            }
-        }
-    }
 }
 
 /// Which statuses the console prints: each change of [`Status::shape`], held to [`LOG_GAP`].
@@ -331,6 +306,12 @@ impl StatusLog {
         self.at = Some(now);
         self.held = false;
         true
+    }
+
+    /// Whether to print `s`, the last status for a while: any change, whatever the gap.
+    pub fn last(&mut self, now: Instant, s: &Status) -> bool {
+        self.at = None;
+        self.due(now, s)
     }
 
     /// When a held change may be printed.

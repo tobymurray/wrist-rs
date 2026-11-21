@@ -1,12 +1,11 @@
-//! The status on the console: when it changes by time alone, which changes print a line, and
-//! the `ble` line's words.
+//! The status on the console: when it changes by time alone, and which changes print a line.
 
 mod common;
 
 use common::*;
 use wrist_ble::policy::phone;
 use wrist_ble::policy::plan::{Conflict, Verdict};
-use wrist_ble::policy::status::{next_change, status, PhoneStatus, Status, StatusLog, Unreachable, LOG_GAP};
+use wrist_ble::policy::status::{next_change, status, PhoneStatus, Status, StatusLog, LOG_GAP};
 use wrist_ble::policy::State;
 use wrist_ble::{Millis, PairingStep};
 
@@ -116,31 +115,14 @@ fn a_change_undone_within_the_gap_prints_nothing() {
     assert!(!log.due(t(1_000), &advertising()));
 }
 
-fn words(s: &Status) -> String {
-    let mut w = String::new();
-    s.write_words(&mut w).unwrap();
-    w
-}
-
+/// The status as the radio goes is printed even within the gap, and holds nothing back.
 #[test]
-fn the_ble_line_keeps_the_words_the_tools_match() {
-    assert_eq!(words(&advertising()), "advertising as UNA every 995 ms");
-    assert_eq!(words(&securing()), "connected, securing");
-    let mut state = ready(t(0));
-    phone_up(&mut state, t(0));
-    assert_eq!(words(&status(&state, t(6_000))), "connected, NOT encrypted");
-    state.phone = state.phone.step(t(1_000), phone::Event::Pairing(phone(), PairingStep::Numeric(42))).0;
-    assert_eq!(words(&status(&state, t(2_000))), "connected, pairing: compare 000042");
-    assert_eq!(words(&status(&State::OFF, t(0))), "off");
-    let mut gap = ready(t(0));
-    assert_eq!(words(&status(&gap, t(1_000))), "advertising as UNA, between intervals");
-    gap.phone_verdict = Verdict::NotWanted;
-    assert_eq!(words(&status(&gap, t(4_000))), "up, not advertising (hidden)");
-    gap.phone_verdict = Verdict::Busy(Conflict::Transfer);
-    assert_eq!(words(&status(&gap, t(4_000))), "up, not advertising (busy: transfer)");
-    gap.phone_verdict = Verdict::Fits;
-    assert_eq!(words(&status(&gap, t(4_000))), "up, not advertising (not yet where the plan wants)");
-    assert!(matches!(status(&gap, t(4_000)).phone, PhoneStatus::Unreachable { reason: Unreachable::NotConverged, .. }));
+fn the_last_status_is_printed_whatever_the_gap() {
+    let mut log = StatusLog::NEW;
+    assert!(log.due(t(0), &advertising()));
+    assert!(log.last(t(200), &securing()));
+    assert_eq!(log.next(), None);
+    assert!(!log.last(t(300), &securing()));
 }
 
 #[test]
@@ -149,7 +131,7 @@ fn an_encrypted_link_changes_by_no_time() {
     phone_up(&mut state, t(0));
     state.phone = state.phone.step(t(800), phone::Event::Encryption(phone(), true)).0;
     assert_eq!(next_change(&state, t(1_000)), None);
-    assert_eq!(words(&status(&state, t(1_000))), "connected, encrypted");
+    assert_eq!(status(&state, t(1_000)).phone, PhoneStatus::Connected);
 }
 
 #[test]

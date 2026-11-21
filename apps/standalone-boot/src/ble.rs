@@ -448,7 +448,7 @@ pub fn command(args: &[u8], uart: Uart) {
         },
         _ => {
             return uart.write_line(
-                "[ble] usage: ble [on|off|version|yes|no|bonds|forget [address]|disconnect|profile auto|cable|battery|interval now <min> <max>|scan [s [interval window]]]",
+                "[ble] usage: ble [on|off|version|yes|no|bonds|status|forget [address]|disconnect|profile auto|cable|battery|interval now <min> <max>|scan [s [interval window]]]",
             )
         }
     };
@@ -460,18 +460,16 @@ pub fn command(args: &[u8], uart: Uart) {
 #[allow(clippy::too_many_lines)]
 pub async fn write_status(uart: Uart) {
     uart.write_str("[ble] ");
-    // While the task holds the chip off, starting or failed, its own words; otherwise the core's
-    // status.
-    match STATE.load(Ordering::Relaxed) {
-        STATE_OFF => uart.write_str("off (chip in reset)"),
-        STATE_STARTING => uart.write_str("starting"),
-        STATE_IDLE | STATE_ADVERTISING | STATE_CONNECTED => {
-            let words = WORDS.lock(Cell::get);
-            uart.write_str(words.as_str());
-        }
-        _ => uart.write_str("failed to start (see the log; `ble on` retries)"),
-    }
+    uart.write_str(match STATE.load(Ordering::Relaxed) {
+        STATE_OFF => "off (chip in reset)",
+        STATE_STARTING => "starting",
+        STATE_IDLE => "up, not advertising",
+        STATE_ADVERTISING => "advertising as UNA",
+        STATE_CONNECTED => "connected",
+        _ => "failed to start (see the log; `ble on` retries)",
+    });
     if STATE.load(Ordering::Relaxed) == STATE_CONNECTED {
+        uart.write_str(if ENCRYPTED.load(Ordering::Relaxed) { ", encrypted" } else { ", NOT encrypted" });
         match INTERVAL.load(Ordering::Relaxed) {
             0 => uart.write_str(", interval unknown"),
             units => {
@@ -708,6 +706,7 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
         // A start, or a restart's recovery, that failed.
         if !(link.start().await && link.serve(&mut changes).await) {
             link.shadow_off();
+            link.last_status();
             set_state(STATE_FAILED);
             old_key(OldKey::clear);
             link.chip.hold();
@@ -717,6 +716,7 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
         }
         // `ble off`: the chip in reset first, then SPI1, CS and IRQ dropped back to analog.
         link.shadow_off();
+        link.last_status();
         link.chip.hold();
         drop(link);
         MIRROR.store(false, Ordering::Relaxed);
@@ -1656,15 +1656,21 @@ impl Link<'_> {
         LATENCY.store(params.map_or(0, |p| p.latency), Ordering::Relaxed);
     }
 
-    /// The core's counters, the radio and its status onto the `ble` line, and a status line when
-    /// the status has changed.
+    /// A status line for the core's status as the task lets the radio go, if it has changed.
+    fn last_status(&mut self) {
+        let now = self.shadow.now();
+        let s = status(self.shadow.state(), now);
+        if self.status_log.last(now, &s) {
+            write_status_line(self.uart, &s);
+        }
+    }
+
+    /// The core's counters and the radio onto the `ble` line, and a status line when the status
+    /// has changed.
     fn publish(&mut self) {
         self.show();
         let now = self.shadow.now();
         let s = status(self.shadow.state(), now);
-        let mut words = Words::EMPTY;
-        let _ = s.write_words(&mut words);
-        WORDS.lock(|w| w.set(words));
         if self.status_log.due(now, &s) {
             write_status_line(self.uart, &s);
         }
@@ -2068,35 +2074,6 @@ fn trace_command(opcode: u16, params: &[u8]) {
 }
 
 /// The clock the shadow keeps, as the trace stamps packets.
-/// The core's status in words for the `ble` line, as the ble task last rendered it.
-static WORDS: Mutex<CriticalSectionRawMutex, Cell<Words>> = Mutex::new(Cell::new(Words::EMPTY));
-
-/// [`Status::write_words`]'s text, cut at its capacity.
-#[derive(Clone, Copy)]
-struct Words {
-    bytes: [u8; 64],
-    len: u8,
-}
-
-impl Words {
-    const EMPTY: Self = Self { bytes: [0; 64], len: 0 };
-
-    fn as_str(&self) -> &str {
-        core::str::from_utf8(&self.bytes[..usize::from(self.len)]).unwrap_or("")
-    }
-}
-
-impl core::fmt::Write for Words {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        for &b in s.as_bytes() {
-            let Some(slot) = self.bytes.get_mut(usize::from(self.len)) else { break };
-            *slot = b;
-            self.len += 1;
-        }
-        Ok(())
-    }
-}
-
 fn write_status_line(uart: Uart, s: &CoreStatus) {
     struct Out(Uart);
     impl core::fmt::Write for Out {
