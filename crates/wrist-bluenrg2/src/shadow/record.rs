@@ -99,8 +99,12 @@ impl<const N: usize> Ring<N> {
     pub fn push(&mut self, ms: u64, kind: u8, bytes: &[u8]) {
         let kept = bytes.len().min(KEPT);
         let len = HEADER + kept;
-        while self.end + len as u64 - self.start > N as u64 {
-            self.start += u64::from(self.byte(self.start));
+        // Bounded by the ring's size, so a corrupt length cannot hold the task.
+        for _ in 0..N {
+            if self.end + len as u64 - self.start <= N as u64 {
+                break;
+            }
+            self.start += u64::from(self.byte(self.start)).max(1);
         }
         let total = u16::try_from(bytes.len()).unwrap_or(u16::MAX);
         let mut header = [0; HEADER];
@@ -124,8 +128,11 @@ impl<const N: usize> Ring<N> {
     #[must_use]
     pub fn align(&self, at: u64) -> u64 {
         let mut p = self.start;
-        while p < at && p < self.end {
-            p += u64::from(self.byte(p));
+        for _ in 0..N {
+            if p >= at || p >= self.end {
+                break;
+            }
+            p += u64::from(self.byte(p)).max(1);
         }
         p.min(self.end)
     }
@@ -149,8 +156,9 @@ impl<const N: usize> Ring<N> {
         for (i, b) in header.iter_mut().enumerate() {
             *b = self.byte(at + i as u64);
         }
+        let kept = len - HEADER;
         let mut bytes = [0; KEPT];
-        for (i, b) in bytes.iter_mut().take(len - HEADER).enumerate() {
+        for (i, b) in bytes.iter_mut().take(kept).enumerate() {
             *b = self.byte(at + (HEADER + i) as u64);
         }
         let record = Record {
@@ -158,7 +166,7 @@ impl<const N: usize> Ring<N> {
             kind,
             total: u16::from_le_bytes([header[6], header[7]]),
             bytes,
-            kept: u8::try_from(len - HEADER).unwrap_or(0),
+            kept: u8::try_from(kept).unwrap_or(0),
         };
         Next::Record(record, at + len as u64)
     }
@@ -169,7 +177,7 @@ impl<const N: usize> Ring<N> {
 #[must_use]
 pub fn encode_goals(g: &Goals, out: &mut [u8; 5]) -> usize {
     let bits = [g.radio_on, g.phone.discoverable, g.phone.pairing_open, g.transfer, g.power == Power::Battery, g.workout, g.scan.is_some()];
-    out[0] = bits.iter().enumerate().fold(0, |acc, (i, &b)| acc | (u8::from(b) << i));
+    out[0] = bits.iter().enumerate().map(|(i, &b)| u8::from(b) << i).sum();
     match g.scan {
         Some(s) => {
             out[1..5].copy_from_slice(&s.duration.0.to_le_bytes());

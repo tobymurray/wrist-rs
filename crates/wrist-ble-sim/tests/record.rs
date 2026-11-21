@@ -28,7 +28,7 @@ fn trace_lines(text: &str) -> Vec<&str> {
 fn read_all<const N: usize>(ring: &Ring<N>, mut at: u64) -> (Vec<String>, u64) {
     let mut out = Vec::new();
     let mut lost = 0;
-    loop {
+    for _ in 0..1 << 16 {
         match ring.next(at) {
             Next::Record(r, after) => {
                 let mut s = String::new();
@@ -43,6 +43,7 @@ fn read_all<const N: usize>(ring: &Ring<N>, mut at: u64) -> (Vec<String>, u64) {
             Next::End => return (out, lost),
         }
     }
+    panic!("no end to the ring");
 }
 
 /// Every capture's records, kept and read back, are the lines the capture held.
@@ -167,4 +168,50 @@ fn the_recorders_goal_records_drive_the_core_as_the_commands_did() {
         checked += 1;
     }
     assert!(checked > 0);
+}
+
+#[test]
+fn records_that_exactly_fill_the_ring_are_all_kept() {
+    let mut ring = Ring::<54>::NEW;
+    for i in 0..3u8 {
+        ring.push(u64::from(i), b'e', &[i; 10]);
+    }
+    assert_eq!(read_all(&ring, 0), (vec![
+        "[trace] 0 e 00000000000000000000".to_string(),
+        "[trace] 1 e 01010101010101010101".to_string(),
+        "[trace] 2 e 02020202020202020202".to_string(),
+    ], 0));
+}
+
+/// Read from where no record starts, bytes that do not make a whole record are no record.
+#[test]
+fn bytes_that_are_no_whole_record_read_as_the_end() {
+    // A length too short, a kind no record has, and a length past the newest byte.
+    for (at_len, at_kind, bytes) in [(4u8, b'e', 0usize), (12, b'Z', 0), (40, b'e', 0)] {
+        let mut ring = Ring::<256>::NEW;
+        let mut payload = [0u8; 20];
+        payload[0] = at_len;
+        payload[5] = at_kind;
+        ring.push(1, b'e', &payload[..20 - bytes]);
+        assert_eq!(ring.next(8), Next::End, "{at_len} {at_kind}");
+    }
+    let mut ring = Ring::<256>::NEW;
+    let mut payload = [0u8; 20];
+    payload[0] = 12;
+    payload[5] = b'e';
+    ring.push(1, b'e', &payload);
+    assert!(matches!(ring.next(8), Next::Record(r, 20) if r.bytes().len() == 4));
+}
+
+#[test]
+fn a_length_longer_than_any_record_is_no_record() {
+    let mut ring = Ring::<256>::NEW;
+    let mut payload = [0u8; 20];
+    payload[0] = 60;
+    payload[5] = b'e';
+    ring.push(1, b'e', &payload);
+    for _ in 0..4 {
+        ring.push(2, b'e', &[0; 30]);
+    }
+    assert_eq!(ring.next(8), Next::End);
 }
