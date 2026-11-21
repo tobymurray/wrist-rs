@@ -12,7 +12,7 @@ use wrist_bluenrg2::shadow::record::{self, Next, Record, Ring};
 
 use crate::uart::Uart;
 
-/// The ring's size: on battery, an hour or more of a quiet link.
+/// The ring's size in bytes.
 const RING: usize = 32 * 1024;
 
 static RECORDS: Mutex<CriticalSectionRawMutex, RefCell<Ring<RING>>> = Mutex::new(RefCell::new(Ring::NEW));
