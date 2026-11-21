@@ -67,26 +67,26 @@ pub enum Restart {
     Reset(ResetCause),
     StartFailed,
     BaselineRefused,
-    /// A start or a fault's deadline passed.
+    /// A start's deadline passed.
     Deadline,
-    Other,
 }
 
 impl Restart {
+    /// Why, from the event that restarted a chip starting or up: only a reset, a failed start, a
+    /// refused baseline or a deadline does.
     #[must_use]
     pub fn of(e: chip::Event) -> Self {
         match e {
             chip::Event::Reset(c) => Self::Reset(c),
             chip::Event::StartFailed => Self::StartFailed,
             chip::Event::BaselineRefused => Self::BaselineRefused,
-            chip::Event::Tick => Self::Deadline,
-            _ => Self::Other,
+            _ => Self::Deadline,
         }
     }
 }
 
 /// When a spell started, and the longest one that has ended.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Spell {
     from: Option<Instant>,
     worst: Millis,
@@ -131,11 +131,14 @@ pub struct Tally {
     pub restarts: Counts<Restart, 4>,
     /// The most operations the core asked for in any [`COMMAND_WINDOW`], up to [`PEAK_KEPT`].
     pub commands_peak: u32,
-    asked: [u32; PEAK_KEPT],
+    asked: [Option<Instant>; PEAK_KEPT],
     asked_next: usize,
     /// The phone unreachable for a reason other than being hidden.
     pub unreachable: Spell,
     pub drift: Spell,
+    /// Hidden at the last step: an unreachable spell after it starts then, not where advertising
+    /// stopped.
+    hidden: bool,
     phone: Option<ConnHandle>,
     phone_peer: Option<PeerAddr>,
     secure_since: Option<Instant>,
@@ -151,10 +154,11 @@ impl Tally {
         early_ends: Counts::NEW,
         restarts: Counts::NEW,
         commands_peak: 0,
-        asked: [u32::MAX; PEAK_KEPT],
+        asked: [None; PEAK_KEPT],
         asked_next: 0,
         unreachable: Spell { from: None, worst: Millis(0) },
         drift: Spell { from: None, worst: Millis(0) },
+        hidden: false,
         phone: None,
         phone_peer: None,
         secure_since: None,
@@ -183,16 +187,21 @@ impl Tally {
         if link != self.phone {
             self.phone = link;
             self.secure_since = None;
-            if link.is_none() {
-                self.phone_peer = None;
+            self.phone_peer = None;
+        }
+        if let Input::Radio(RadioEvent::LinkUp { link: up, role: LeConnRole::Peripheral, peer, .. }) = *input {
+            if Some(up) == link {
+                self.phone_peer = Some(peer);
             }
         }
         let secure = matches!(state.phone, Phone::Up(l) if l.security == Security::Secure);
         self.secure_since = if secure { self.secure_since.or(Some(now)) } else { None };
-        let unreachable = match status(state, now).phone {
-            PhoneStatus::Unreachable { reason, since } if reason != Unreachable::Hidden => Some(now - since),
-            _ => None,
+        let (unreachable, hidden) = match status(state, now).phone {
+            PhoneStatus::Unreachable { reason: Unreachable::Hidden, .. } => (None, true),
+            PhoneStatus::Unreachable { since, .. } => (Some(if self.hidden { now } else { now - since }), false),
+            _ => (None, false),
         };
+        self.hidden = hidden;
         self.unreachable.track(now, unreachable);
         self.drift.track(now, state.drift_since);
     }
@@ -200,11 +209,6 @@ impl Tally {
     /// The core's phone link as it stood before this step's event.
     fn event(&mut self, now: Instant, e: RadioEvent) {
         match e {
-            RadioEvent::LinkUp { link, role: LeConnRole::Peripheral, peer, .. } => {
-                if self.phone.is_none() || self.phone == Some(link) {
-                    self.phone_peer = Some(peer);
-                }
-            }
             RadioEvent::LinkDown { link, reason } if self.phone == Some(link) => {
                 let reason = reason.into_inner();
                 self.hang_ups.add(reason);
@@ -227,10 +231,9 @@ impl Tally {
     /// One operation asked at `now`; the peak is the most within any window ending at an ask.
     #[allow(clippy::cast_possible_truncation)]
     fn ask(&mut self, now: Instant) {
-        let at = now.0 as u32;
-        self.asked[self.asked_next] = at;
+        self.asked[self.asked_next] = Some(now);
         self.asked_next = (self.asked_next + 1) % PEAK_KEPT;
-        let within = self.asked.iter().filter(|&&t| t != u32::MAX && at.wrapping_sub(t) < COMMAND_WINDOW.0).count();
+        let within = self.asked.iter().flatten().filter(|&&t| now.since(t) < COMMAND_WINDOW).count();
         self.commands_peak = self.commands_peak.max(within as u32);
     }
 
@@ -320,7 +323,6 @@ fn restart_name(r: Restart) -> &'static str {
         Restart::StartFailed => "start-failed",
         Restart::BaselineRefused => "baseline-refused",
         Restart::Deadline => "deadline",
-        Restart::Other => "other",
     }
 }
 

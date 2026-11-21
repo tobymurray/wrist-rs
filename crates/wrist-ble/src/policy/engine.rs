@@ -587,7 +587,10 @@ impl<'a> Core<'a> {
                     }
                     self.security_refused(now, &op, f, out);
                     if !self.hold_busy_ask(now, &op, f) {
-                        self.tally.failure(f);
+                        // A refusal for a link that went before the answer is the link's end.
+                        if op.link().is_none_or(|l| self.holds(l)) {
+                            self.tally.failure(f);
+                        }
                         self.back_off(now, op.kind());
                     }
                 }
@@ -689,6 +692,7 @@ impl<'a> Core<'a> {
         if let Some(p) = self.pending.filter(|p| now >= p.deadline + GRACE) {
             self.pending = None;
             self.counters.timed_out += 1;
+            self.tally.failure(Failure { kind: FailureKind::Timeout, native: 0 });
             self.advertising_unknown |= p.op.kind() == OpKind::Advertise;
             self.back_off(now, p.op.kind());
         }
@@ -973,6 +977,12 @@ impl Bucket {
             _ => Some(now),
         };
         Self { tokens: tokens.saturating_sub(1), since }
+    }
+}
+
+impl Core<'_> {
+    fn holds(&self, link: ConnHandle) -> bool {
+        self.state.phone.link() == Some(link) || self.state.peers.iter().flatten().any(|p| linked(&p.machine) == Some(link))
     }
 }
 

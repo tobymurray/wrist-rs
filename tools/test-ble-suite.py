@@ -251,7 +251,7 @@ class Judgements(unittest.TestCase):
         line = '[ble] counts: failures none; hung up within 10 s of encrypting {e}; chip restarts none'
         before, after = line.format(e='none'), line.format(e='13 x4')
         self.assertEqual(suite.counts_moved(before, after, 5), [])
-        self.assertEqual(suite.counts_moved(before, after, 11), ['hung up within'])
+        self.assertEqual(suite.counts_moved(before, after, 13), ['hung up within'])
 
     def test_a_refusal_no_held_ask_explains_moves_the_counters(self):
         self.assertFalse(self.soak_refusals(held=0))

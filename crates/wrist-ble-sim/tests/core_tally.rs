@@ -250,7 +250,6 @@ fn restarts_are_named_by_what_the_core_was_told() {
     assert_eq!(Restart::of(Event::StartFailed), Restart::StartFailed);
     assert_eq!(Restart::of(Event::BaselineRefused), Restart::BaselineRefused);
     assert_eq!(Restart::of(Event::Tick), Restart::Deadline);
-    assert_eq!(Restart::of(Event::RadioOn), Restart::Other);
 }
 
 /// The peak can show I2 broken: more operations than I2 allows are told apart.
@@ -284,4 +283,82 @@ fn another_links_start_is_not_the_phones_peer() {
     tally.step(t(1), &up(sensor(), 0xBB), &with_phone(false), false);
     tally.step(t(2), &Input::Radio(RadioEvent::Pairing(PairingEvent { link: phone(), step: PairingStep::Failed })), &with_phone(false), false);
     assert!(line(&tally, 3).contains("(last failed from 00:00:00:00:00:AA)"));
+}
+
+/// The core's own timeout of an operation is a failure.
+#[test]
+fn an_operation_the_core_times_out_is_a_failure() {
+    let mut core = core_with_phone();
+    assert_eq!(core.step(t(10_000), Input::Tick).op, Some(Op::RequestSecurity(phone())));
+    core.step(t(10_000), Input::Submitted(Ok(OpId(2))));
+    core.step(t(400_000), Input::Tick);
+    assert_eq!(core.counters.timed_out, 1);
+    assert_eq!(core.tally.failures.rows[0], Some(((FailureKind::Timeout, 0), 1)));
+}
+
+/// A refusal for a link that ended before the answer came is the link's end, not a failure.
+#[test]
+fn a_refusal_for_a_link_already_gone_is_no_failure() {
+    let mut core = core_with_phone();
+    assert_eq!(core.step(t(10_000), Input::Tick).op, Some(Op::RequestSecurity(phone())));
+    core.step(t(10_050), down(0x13));
+    core.step(t(10_100), Input::Submitted(Err(Failure { kind: FailureKind::NotConnected, native: 0x02 })));
+    assert_eq!((core.tally.failures.total(), core.tally.hang_ups.total()), (0, 1));
+}
+
+/// Time hidden is chosen: an unreachable spell after it starts where hiding ended.
+#[test]
+fn a_spell_after_hiding_starts_where_hiding_ended() {
+    let mut tally = Tally::NEW;
+    let mut gap = ready(t(0));
+    gap.phone_verdict = Verdict::NotWanted;
+    tally.step(t(3_600_000), &Input::Tick, &gap, false);
+    gap.phone_verdict = Verdict::Fits;
+    tally.step(t(3_601_000), &Input::Tick, &gap, false);
+    assert!(line(&tally, 3_602_000).contains("unreachable now 1 s, worst 1 s"));
+}
+
+/// Asks a whole wrap of a 32-bit millisecond count apart are not in one window.
+#[test]
+fn asks_days_apart_are_not_in_one_window() {
+    let mut tally = Tally::NEW;
+    for i in 0..30 {
+        tally.step(t(i), &Input::Tick, &quiet(), true);
+    }
+    for i in 0..30 {
+        tally.step(t((1 << 32) + i), &Input::Tick, &quiet(), true);
+    }
+    assert_eq!(tally.commands_peak, 30);
+}
+
+/// A link a resync puts in the old one's place has neither its peer nor its encryption time.
+#[test]
+fn a_link_swapped_by_a_resync_starts_afresh() {
+    let mut tally = Tally::NEW;
+    let up = Input::Radio(RadioEvent::LinkUp { link: phone(), role: LeConnRole::Peripheral, peer: peer(), params: None });
+    tally.step(t(0), &up, &with_phone(false), false);
+    tally.step(t(100), &Input::Tick, &with_phone(true), false);
+    let mut swapped = quiet();
+    swapped.phone = swapped.phone.step(t(200), phone::Event::LinkUp(sensor())).0;
+    tally.step(t(200), &Input::Tick, &swapped, false);
+    let failed = Input::Radio(RadioEvent::Pairing(PairingEvent { link: sensor(), step: PairingStep::Failed }));
+    tally.step(t(300), &failed, &swapped, false);
+    tally.step(t(400), &Input::Radio(RadioEvent::LinkDown { link: sensor(), reason: Status::new(0x08) }), &quiet(), false);
+    assert!(line(&tally, 500).contains("(last failed); "));
+    assert_eq!((tally.hang_ups.total(), tally.early_ends.total()), (1, 0));
+}
+
+/// An operation that ends in failure, and a refusal the model did not predict, are failures.
+#[test]
+fn a_failed_operation_and_a_divergence_are_failures() {
+    let mut core = core_with_phone();
+    assert_eq!(core.step(t(10_000), Input::Tick).op, Some(Op::RequestSecurity(phone())));
+    core.step(t(10_000), Input::Submitted(Ok(OpId(2))));
+    core.step(t(10_100), Input::Radio(RadioEvent::Done(OpId(2), Err(Failure { kind: FailureKind::PeerRejected, native: 0x05 }))));
+    assert_eq!(core.tally.failures.rows[0], Some(((FailureKind::PeerRejected, 0x05), 1)));
+    let mut core = core_with_phone();
+    let advertise = core.step(t(100), Input::Radio(RadioEvent::LinkDown { link: phone(), reason: Status::new(0x13) })).op;
+    assert!(matches!(advertise, Some(Op::Advertise(Some(_)))), "{advertise:?}");
+    core.step(t(100), Input::Submitted(Err(Failure { kind: FailureKind::ModeExclusion, native: 0x0C })));
+    assert_eq!((core.counters.divergences, core.tally.failures.rows[0]), (1, Some(((FailureKind::ModeExclusion, 0x0C), 1))));
 }

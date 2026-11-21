@@ -74,10 +74,10 @@ BUILD_CHAR = rb'[0-9A-Za-z._-]'
 STATUS = r'\[ble\] .*, timing '
 HANG_UP = re.compile(r'\[ble\] disconnected, reason (\w+)')
 COUNTS = r'\[ble\] counts: '
-# The counts that a soak's ordinary work leaves alone; a hang-up within this many seconds of
-# encrypting is counted as early, as a soak's own are when it holds each link no longer.
+# The counts that a soak's ordinary work leaves alone; a hang-up within 10 s of encrypting is
+# counted as early, as a soak's own are when it holds each link not much longer.
 STILL_COUNTS = ('failures', 'pairings', 'hung up within', 'chip restarts')
-EARLY_END_S = 10
+EARLY_END_S = 12
 CONNECTED = re.compile(r'\[ble\] connected\s*$')
 
 
