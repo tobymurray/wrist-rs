@@ -228,3 +228,59 @@ fn a_console_notification_keeps_only_its_header() {
     ring.push_kept(5, b'c', &notify, kept(b'c', &notify));
     assert_eq!(read_all(&ring, 0).0, ["[trace] 5 c 0106FD2013001600 +4"]);
 }
+
+/// A dump that begins mid-session with a scan's goals is no start: the core catches up as for any
+/// capture that begins with the chip up.
+#[test]
+fn a_dump_that_begins_with_a_scans_goals_is_caught_up() {
+    let fixture = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/traces/watch-dump-cable.log")).unwrap();
+    let mut cut = String::from("33.100 [trace] 33100 G 07\n");
+    for line in fixture.lines() {
+        if capture::stamped(line).is_some_and(|s| s.ms >= 33_113) {
+            writeln!(cut, "{line}").unwrap();
+        }
+    }
+    let r = replay(&cut);
+    assert!(r.seeded.is_some());
+    assert_eq!(r.found, vec![]);
+}
+
+#[test]
+fn a_held_ring_keeps_what_it_has_and_counts_what_it_refused() {
+    let mut ring = Ring::<64>::NEW;
+    for i in 0..3u8 {
+        ring.push(u64::from(i), b'e', &[i; 10]);
+    }
+    assert_eq!(ring.hold(true), 0);
+    ring.push(3, b'e', &[3; 10]);
+    ring.push(4, b'e', &[4; 10]);
+    let (back, lost) = read_all(&ring, 0);
+    assert_eq!((back.len(), lost), (3, 0));
+    assert_eq!(ring.hold(false), 2);
+    ring.push(5, b'e', &[5; 10]);
+    assert_eq!(read_all(&ring, 0).0.last().map(String::as_str), Some("[trace] 5 e 05050505050505050505"));
+}
+
+/// Held, a ring with room for a record, to its last byte, still keeps it.
+#[test]
+fn a_held_ring_with_room_keeps_new_records() {
+    let mut ring = Ring::<54>::NEW;
+    ring.hold(true);
+    for i in 0..3u8 {
+        ring.push(u64::from(i), b'e', &[i; 10]);
+    }
+    assert_eq!(read_all(&ring, 0).0.len(), 3);
+    assert_eq!(ring.hold(false), 0);
+}
+
+#[test]
+fn a_held_ring_past_its_first_records_measures_room_from_its_oldest() {
+    let mut ring = Ring::<62>::NEW;
+    for i in 0..4u8 {
+        ring.push(u64::from(i), b'e', &[i; 10]);
+    }
+    ring.hold(true);
+    ring.push(9, b'r', &[]);
+    assert_eq!(read_all(&ring, 0).0.last().map(String::as_str), Some("[trace] 9 r"));
+    assert_eq!(ring.hold(false), 0);
+}

@@ -84,7 +84,8 @@ pub(super) fn packet(dir: Dir, p: &[u8]) {
 }
 
 /// `ble dump [since <n>]`: the records from position `n` (0, the oldest kept), at the mirror's
-/// pace, unrecorded themselves, then `[ble] dump next <n>`.
+/// pace, unrecorded themselves, then `[ble] dump next <n> at <uptime>`. The records are held
+/// while they go out, so the dump's own notifications cannot push them out.
 pub async fn dump(args: &[u8], uart: Uart) {
     let text = core::str::from_utf8(args).unwrap_or("").trim();
     let since = match text.strip_prefix("since") {
@@ -95,6 +96,7 @@ pub async fn dump(args: &[u8], uart: Uart) {
     let Some(mut at) = since else {
         return uart.write_line("[ble] usage: ble dump [since <n>]");
     };
+    RECORDS.lock(|r| r.borrow_mut().hold(true));
     let end = RECORDS.lock(|r| r.borrow().end());
     if at > end {
         at = 0;
@@ -106,35 +108,46 @@ pub async fn dump(args: &[u8], uart: Uart) {
         at = from;
         lost
     });
+    let mut dropped = 0;
     while at < end {
         let next = RECORDS.lock(|r| r.borrow().next(at));
         match next {
             Next::Record(r, after) => {
-                write_record(uart, &r).await;
+                dropped += write_record(uart, &r).await;
                 at = after;
             }
             Next::Lost(from) => {
-                lost += from - at;
+                lost += from.min(end) - at;
                 at = from;
             }
             Next::End => break,
         }
     }
+    let refused = RECORDS.lock(|r| r.borrow_mut().hold(false));
+    let ms = Instant::now().as_millis();
     let mut line = Line::new();
-    let _ = write!(line, "[ble] dump next {at}");
+    let _ = write!(line, "[ble] dump next {at} at {}.{:03}", ms / 1000, ms % 1000);
     if lost > 0 {
         let _ = write!(line, ", {lost} bytes lost");
+    }
+    if refused > 0 {
+        let _ = write!(line, ", {refused} records not kept while dumping");
+    }
+    if dropped > 0 {
+        let _ = write!(line, ", {dropped} lines dropped on the way");
     }
     line.push(b"\r\n");
     crate::journal::replay(uart, line.len, || uart.write_bytes(line.bytes())).await;
 }
 
-async fn write_record(uart: Uart, r: &Record) {
+/// One record's line; how many lines the mirror dropped meanwhile.
+async fn write_record(uart: Uart, r: &Record) -> u32 {
     let mut line = Line::new();
     let _ = r.write(&mut line);
     line.push(b"\r\n");
-    crate::journal::replay(uart, line.len, || uart.write_bytes(line.bytes())).await;
+    let dropped = crate::journal::replay(uart, line.len, || uart.write_bytes(line.bytes())).await;
     uart.pace().await;
+    dropped
 }
 
 struct Line {

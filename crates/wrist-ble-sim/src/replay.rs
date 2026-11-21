@@ -428,6 +428,7 @@ pub fn replay(capture: &str) -> Report {
     // Driven until a start's `m` says otherwise.
     r.shadow.driven(true);
     let mut started = false;
+    let mut goals_first = false;
     let mut offset: Option<i64> = None;
     for line in capture.lines() {
         let (host, text) = stamped(line).map_or((None, line), |s| (i64::try_from(s.ms).ok(), s.text));
@@ -458,9 +459,17 @@ pub fn replay(capture: &str) -> Report {
                 let goals = r.shadow.goals();
                 r.shadow.set_goals(Instant(ms), goals);
                 started = true;
-                if !trace.as_ref().is_some_and(comes_up) {
+                // A dump from the watch's start opens with its bring-up's goals, then the reset:
+                // which it is, the record after a first `G` says.
+                goals_first = trace.as_ref().is_some_and(|t| t.kind == "G");
+                if !goals_first && !trace.as_ref().is_some_and(comes_up) {
                     r.seed();
                 }
+            }
+        } else if goals_first && traced.is_some() {
+            goals_first = false;
+            if !trace.as_ref().is_some_and(comes_up) {
+                r.seed();
             }
         }
         r.line(text);
@@ -475,7 +484,5 @@ fn comes_up(t: &capture::Trace<'_>) -> bool {
     let started = |p: &[u8]| {
         matches!(bluenrg2::parse(p), bluenrg2::Event::Vendor(bluenrg2::VendorEvent::BlueInitialized { reason: Some(bluenrg2::BootReason::STARTED), .. }))
     };
-    // A dump from the watch's start opens with the goals its bring-up is given, then the reset.
-    let bring_up = |p: &[u8]| record::decode_goals(p).is_some_and(|g| g.radio_on);
-    t.kind == "r" || (t.kind == "e" && t.packet.as_deref().is_some_and(started)) || (t.kind == "G" && t.packet.as_deref().is_some_and(bring_up))
+    t.kind == "r" || (t.kind == "e" && t.packet.as_deref().is_some_and(started))
 }

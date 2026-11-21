@@ -86,11 +86,22 @@ pub struct Ring<const N: usize> {
     buf: [u8; N],
     start: u64,
     end: u64,
+    /// Held while a reader goes through it: a record that would push out an older one is not
+    /// kept, and counted.
+    held: bool,
+    refused: u32,
 }
 
 impl<const N: usize> Ring<N> {
     #[allow(clippy::large_stack_arrays)]
-    pub const NEW: Self = Self { buf: [0; N], start: 0, end: 0 };
+    pub const NEW: Self = Self { buf: [0; N], start: 0, end: 0, held: false, refused: 0 };
+
+    /// Hold the records kept, for a reader going through them, or let them go again; how many
+    /// records were not kept while held.
+    pub fn hold(&mut self, held: bool) -> u32 {
+        self.held = held;
+        core::mem::take(&mut self.refused)
+    }
 
     /// Where the next record will be written.
     #[must_use]
@@ -108,6 +119,10 @@ impl<const N: usize> Ring<N> {
     pub fn push_kept(&mut self, ms: u64, kind: u8, bytes: &[u8], keep: usize) {
         let kept = bytes.len().min(keep).min(KEPT);
         let len = HEADER + kept;
+        if self.held && self.end + len as u64 - self.start > N as u64 {
+            self.refused += 1;
+            return;
+        }
         // Bounded by the ring's size, so a corrupt length cannot hold the task.
         for _ in 0..N {
             if self.end + len as u64 - self.start <= N as u64 {
