@@ -4,6 +4,7 @@ use core::fmt::{self, Write};
 
 use crate::policy::chip;
 use crate::policy::engine::Input;
+use crate::policy::invariants::Invariant;
 use crate::policy::phone::{Phone, Security};
 use crate::policy::status::{status, PhoneStatus, Unreachable};
 use crate::policy::State;
@@ -130,6 +131,8 @@ pub struct Tally {
     /// Ends of the phone link within [`EARLY_END`] of its encrypting, by reason.
     pub early_ends: Counts<u8, 4>,
     pub restarts: Counts<Restart, 4>,
+    /// Alarms raised, by the invariant broken.
+    pub alarms: Counts<Invariant, 3>,
     /// The most operations the core asked for in any [`COMMAND_WINDOW`], up to [`PEAK_KEPT`].
     pub commands_peak: u32,
     asked: [Option<Instant>; PEAK_KEPT],
@@ -154,6 +157,7 @@ impl Tally {
         last_pairing_failure: None,
         early_ends: Counts::NEW,
         restarts: Counts::NEW,
+        alarms: Counts::NEW,
         commands_peak: 0,
         asked: [None; PEAK_KEPT],
         asked_next: 0,
@@ -173,6 +177,18 @@ impl Tally {
     /// A start the core asked for that cut short a chip starting or up.
     pub fn restart(&mut self, why: Restart) {
         self.restarts.add(why);
+    }
+
+    /// An alarm the core raised.
+    pub fn alarm(&mut self, broken: Invariant) {
+        self.alarms.add(broken);
+    }
+
+    /// The operations asked within the [`COMMAND_WINDOW`] ending at `now`.
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation)]
+    pub fn commands_within(&self, now: Instant) -> u32 {
+        self.asked.iter().flatten().filter(|&&t| now.since(t) < COMMAND_WINDOW).count() as u32
     }
 
     /// The end of one of the core's steps: what it was told, the state it reached, and whether it
@@ -265,6 +281,8 @@ impl Tally {
         self.early_ends.write(w, |w, r| write!(w, "{r:02X}"))?;
         w.write_str("; chip restarts")?;
         self.restarts.write(w, |w, r| w.write_str(restart_name(r)))?;
+        w.write_str("; alarms")?;
+        self.alarms.write(w, |w, i| w.write_str(invariant_name(i)))?;
         let at_least = if self.commands_peak as usize >= PEAK_KEPT { "at least " } else { "" };
         write!(
             w,
@@ -309,6 +327,21 @@ fn step_name(s: PairingStep) -> &'static str {
         PairingStep::LocalKeyMissing => "local-key-missing",
         PairingStep::PeerKeyMissing => "peer-key-missing",
         _ => "failed",
+    }
+}
+
+#[must_use]
+pub fn invariant_name(i: Invariant) -> &'static str {
+    match i {
+        Invariant::Reachable => "reachable",
+        Invariant::BoundedEffort => "bounded-effort",
+        Invariant::Converges => "converges",
+        Invariant::TruthfulStatus => "truthful-status",
+        Invariant::SecurityOrder => "security-order",
+        Invariant::PhoneFirst => "phone-first",
+        Invariant::NothingSilent => "nothing-silent",
+        Invariant::NoExecutorHolds => "no-executor-holds",
+        Invariant::PeripheralsEnd => "peripherals-end",
     }
 }
 

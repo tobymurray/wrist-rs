@@ -46,7 +46,7 @@ fn nothing_counted_says_so() {
     assert_eq!(
         line(&Tally::NEW, 0),
         "[ble] counts: failures none; phone hang-ups none; pairings and bonded reconnects ok 0, pairings failed none; hung up within 10 s of encrypting none; \
-         chip restarts none; operations in a minute at most 0; unreachable now 0 s, worst 0 s; plan drift now 0 s, worst 0 s"
+         chip restarts none; alarms none; operations in a minute at most 0; unreachable now 0 s, worst 0 s; plan drift now 0 s, worst 0 s"
     );
 }
 

@@ -254,6 +254,12 @@ impl<O: Observer> Shadow<O> {
         self.chip_action.take()
     }
 
+    /// Whether [`Self::chip_action`] has an action waiting.
+    #[must_use]
+    pub fn chip_acting(&self) -> bool {
+        self.chip_action.is_some()
+    }
+
     /// Whether the core asked for a snapshot, in [`Mode::Drive`], that [`Self::take_snapshot`]
     /// has yet to take.
     #[must_use]

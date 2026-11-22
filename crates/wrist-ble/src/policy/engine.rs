@@ -7,7 +7,7 @@ use crate::{
 
 use crate::policy::chip::{self, Chip, StartId};
 use crate::policy::goals::{Goals, Power, MAX_PERIPHERALS};
-use crate::policy::invariants::REACHABLE_GAP;
+use crate::policy::invariants::{self, Invariant, REACHABLE_GAP};
 use crate::policy::peripheral::{self, Ctx, Peripheral, Stage, StopReason, Then};
 use crate::policy::phone::{self, Phone, Security, ASK_TO_PAIR_AFTER};
 use crate::policy::plan::{fingerprint, Fingerprint, Menu, MenuPlanner, Pending, PlanHealth, PlanInput, Planner, Refused, Target, Verdict};
@@ -49,6 +49,8 @@ pub enum Tell {
     Divergence { kind: OpKind, native: u16 },
     /// A peer's request for new parameters was refused.
     RefusedPeerRequest(ConnHandle),
+    /// An invariant broke ([`invariants::WATCHED`]).
+    Alarm(Invariant),
 }
 
 /// Why the core asks the phone for nothing.
@@ -81,9 +83,12 @@ pub struct Outputs {
 
 impl Outputs {
     fn tell(&mut self, t: Tell) {
-        if let Some(slot) = self.tell.iter_mut().find(|s| s.is_none()) {
-            *slot = Some(t);
-        }
+        self.try_tell(t);
+    }
+
+    /// Whether `t` found a slot.
+    fn try_tell(&mut self, t: Tell) -> bool {
+        self.tell.iter_mut().find(|s| s.is_none()).map(|slot| *slot = Some(t)).is_some()
     }
 }
 
@@ -172,6 +177,8 @@ pub struct Core<'a> {
     asked_unknown: bool,
     /// When goals or power last changed, or the chip came up.
     pub settled_since: Instant,
+    /// Which of [`invariants::WATCHED`] have their alarm told and still broken.
+    alarms: [bool; invariants::WATCHED.len()],
 }
 
 impl<'a> Core<'a> {
@@ -208,6 +215,7 @@ impl<'a> Core<'a> {
             advertising_unknown: false,
             asked_unknown: false,
             settled_since: Instant(0),
+            alarms: [false; invariants::WATCHED.len()],
         }
     }
 
@@ -281,7 +289,42 @@ impl<'a> Core<'a> {
         self.reconcile(now, &mut out);
         out.next = self.deadline(now);
         self.tally.step(now, &input, &self.state, out.op.is_some());
+        // Judged after the reconciler, against the plan for this step's state, and with this
+        // step's operation counted.
+        self.watch(now, &mut out);
         out
+    }
+
+    /// The core's record as I1–I3 are judged on it.
+    #[must_use]
+    pub fn record(&self, now: Instant) -> invariants::Record {
+        invariants::Record {
+            ready: matches!(self.state.chip.state, Chip::Ready(_)) && self.state.plan == PlanHealth::Ok,
+            radio_on: self.goals.radio_on,
+            phone_linked: self.state.phone.link().is_some(),
+            planned: self.target.activities.advertising,
+            observed: self.state.radio.advertising,
+            silent_since: self.state.silent_since,
+            settled_since: self.settled_since,
+            commands: self.tally.commands_within(now),
+        }
+    }
+
+    /// An alarm when an invariant of [`invariants::WATCHED`] breaks: told once and counted, each
+    /// on its own, and again only after it has cleared. Nothing more: a burst of operations from
+    /// outside is no fault of the chip, and a chip that is stuck is restarted by the busy budget,
+    /// a refused baseline and the start deadline.
+    fn watch(&mut self, now: Instant, out: &mut Outputs) {
+        let record = self.record(now);
+        for (told, watched) in self.alarms.iter_mut().zip(invariants::WATCHED) {
+            let broken = record.broken(watched, now, *told);
+            // Told when its tell finds a slot; this step's others may have taken both.
+            if broken && !*told && out.try_tell(Tell::Alarm(watched)) {
+                self.tally.alarm(watched);
+                *told = true;
+            }
+            *told &= broken;
+        }
     }
 
     fn set_goals(&mut self, now: Instant, g: Goals, out: &mut Outputs) {
