@@ -32,6 +32,8 @@ pub(super) enum Dir {
     IntervalNow,
     Disconnect,
     Gap,
+    StartFailed,
+    Retry,
 }
 
 impl Dir {
@@ -50,6 +52,8 @@ impl Dir {
             Dir::IntervalNow => record::INTERVAL_NOW,
             Dir::Disconnect => record::DISCONNECT,
             Dir::Gap => record::GAP,
+            Dir::StartFailed => record::START_FAILED,
+            Dir::Retry => record::RETRY,
         }
     }
 }

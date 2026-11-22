@@ -414,6 +414,27 @@ impl<O: Observer> Shadow<O> {
         self.feed(Input::Answer(yes));
     }
 
+    /// The driver's bring-up stopped short of the chip being up.
+    pub fn start_failed(&mut self, at: Instant) {
+        self.advance(at);
+        self.feed(Input::StartFailed);
+    }
+
+    /// The user asked for the radio again after the core gave up on the chip.
+    pub fn retry_radio(&mut self, at: Instant) {
+        self.advance(at);
+        self.feed(Input::RetryRadio);
+    }
+
+    /// When the core, having given up on the chip, tries it again by itself.
+    #[must_use]
+    pub fn retry_at(&self) -> Option<Instant> {
+        match self.core.state.chip.state {
+            wrist_ble::policy::chip::Chip::Fault { retry_at, .. } => Some(retry_at),
+            _ => None,
+        }
+    }
+
     /// A hang-up the operator asked for (`ble disconnect`, `ble forget`), which the core has no
     /// goal for.
     pub fn operator_disconnect(&mut self, at: Instant) {

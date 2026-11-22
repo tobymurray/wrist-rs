@@ -44,7 +44,7 @@ mod scan;
 use core::cell::{Cell, RefCell};
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU8, Ordering};
 
-use embassy_futures::select::{select, select4, Either4};
+use embassy_futures::select::{select, select4, Either, Either4};
 use embassy_stm32::exti::{self, ExtiInput};
 use embassy_stm32::gpio::{Level, Output, Pull, Speed};
 use embassy_stm32::mode::Async;
@@ -400,6 +400,8 @@ pub fn command(args: &[u8], uart: Uart) {
         #[cfg(feature = "ble-probe")]
         b"probe lose link" => Request::ProbeLoseLink,
         #[cfg(feature = "ble-probe")]
+        rest if rest.starts_with(b"probe fail starts ") => return fail_starts(&rest[18..], uart),
+        #[cfg(feature = "ble-probe")]
         b"probe alarm" => Request::ProbeAlarm,
         #[cfg(feature = "ble-probe")]
         b"probe snapshot" => Request::ProbeSnapshot,
@@ -577,6 +579,40 @@ async fn write_radio(uart: Uart) {
     uart.write_line("");
 }
 
+/// `ble probe fail starts <n>`: bring-ups still to fail at their last step.
+#[cfg(feature = "ble-probe")]
+static PROBE_FAILED_STARTS: AtomicU8 = AtomicU8::new(0);
+
+/// `ble probe fail starts <n>`: the next `n` bring-ups fail at their last step.
+#[cfg(feature = "ble-probe")]
+fn fail_starts(arg: &[u8], uart: Uart) {
+    let Some(n) = core::str::from_utf8(arg).ok().and_then(|n| n.trim().parse::<u8>().ok()) else {
+        return uart.write_line("[ble] usage: ble probe fail starts <n>");
+    };
+    PROBE_FAILED_STARTS.store(n, Ordering::Relaxed);
+    uart.write_str("[ble] probe: the next ");
+    uart.write_u32(u32::from(n));
+    uart.write_line(" bring-ups fail at their last step");
+}
+
+/// When the core, having given up on the chip, tries it again, in seconds of uptime; 0 for none.
+static RETRY_AT_S: AtomicU32 = AtomicU32::new(0);
+
+/// The face's pointer to the Bluetooth page: a central refused for an old key, or the radio held
+/// after a fault.
+pub fn see_page() -> bool {
+    has_old_key() || STATE.load(Ordering::Relaxed) == STATE_FAILED
+}
+
+/// The local time the core tries the chip again, while it is held after a fault.
+fn retry_clock() -> Option<wrist_display::l10n::Clock> {
+    let at = RETRY_AT_S.load(Ordering::Relaxed);
+    let now = crate::rtc::now_civil()?;
+    let wait = u64::from(at).checked_sub(Instant::now().as_secs()).filter(|_| at > 0)?;
+    let s = (u64::from(now.hour) * 3600 + u64::from(now.minute) * 60 + u64::from(now.second) + wait) % 86_400;
+    Some(wrist_display::l10n::Clock { h: u8::try_from(s / 3600).ok()?, m: u8::try_from(s / 60 % 60).ok()?, s: 0 })
+}
+
 /// What the Bluetooth page shows.
 pub fn page() -> wrist_display::glass::pages::Bluetooth {
     use wrist_display::glass::pages::{Bluetooth, Prompt as Digits, Radio as Shown};
@@ -594,7 +630,8 @@ pub fn page() -> wrist_display::glass::pages::Bluetooth {
         Pairing::Compare => Digits::Compare(value),
     });
     let old_key = OLD_KEY.lock(Cell::get).central().is_some();
-    Bluetooth { radio, prompt, bonded: BONDED_READ.load(Ordering::Relaxed).then(|| BONDED.load(Ordering::Relaxed)), old_key }
+    let retry = (radio == Shown::Failed).then(retry_clock).flatten();
+    Bluetooth { radio, prompt, bonded: BONDED_READ.load(Ordering::Relaxed).then(|| BONDED.load(Ordering::Relaxed)), old_key, retry }
 }
 
 /// A central refused for a key the watch has lost.
@@ -718,24 +755,18 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
             flash,
             &mut *shadow,
         );
-        // A start, or a restart's recovery, that failed.
+        // The core gave up on the chip: held in reset until it tries again, or is asked to.
         if !(link.start().await && link.serve(&mut changes).await) {
-            // The core's own fault, before the radio goes off; a step the driver failed is not the
-            // core's to show, so the radio as it goes off.
-            let core_gave_up = Radio::of(link.shadow.state()) == Radio::Failed;
-            if core_gave_up {
-                link.last_status();
-            }
-            link.shadow_off();
-            if !core_gave_up {
-                link.last_status();
-            }
+            link.last_status();
             set_state(STATE_FAILED);
             old_key(OldKey::clear);
             link.chip.hold();
-            uart.write_line("[ble] start failed: chip held in reset; `ble on` retries");
-            on = false;
-            continue;
+            uart.write_line("[ble] chip held in reset after a fault; it is tried again later, or now with `ble on` or Select");
+            let again = link.faulted().await;
+            RETRY_AT_S.store(0, Ordering::Relaxed);
+            if again {
+                continue;
+            }
         }
         // `ble off`: the chip in reset first, then SPI1, CS and IRQ dropped back to analog.
         link.shadow_off();
@@ -1169,18 +1200,56 @@ impl Link<'_> {
         let _ = self.shadow.take_snapshot();
     }
 
-    /// Bring up again a chip that restarted by itself since the driver last reset it, unless the
-    /// core gave up on it; whether it is up.
+    /// Bring the chip up again after a bring-up that stopped short or a restart of its own, as
+    /// the core asks, until it is up or the core gives up on it; whether it is up.
     async fn recover(&mut self) -> bool {
-        while self.chip.restarted() {
+        loop {
+            if self.shown.is_some() {
+                trace::packet(trace::Dir::StartFailed, &[]);
+                self.shadow.start_failed(now_ms());
+            } else if !self.chip.restarted() {
+                return true;
+            }
+            let _ = self.shadow.chip_action();
             if Radio::of(self.shadow.state()) == Radio::Failed {
-                let _ = self.shadow.chip_action();
-                self.uart.write_line("[ble] the core gave up on the chip: too many resets in an hour");
+                self.uart.write_line("[ble] the core gave up on the chip for now");
                 return false;
             }
+            self.uart.write_line("[ble] the core starts the chip again");
             self.bring_up().await;
         }
-        self.shown.is_none()
+    }
+
+    /// The chip held after the core gave up on it, until the core tries again by itself, the
+    /// user asks (`ble on`, or Select on the page), or the radio is turned off; whether to try.
+    async fn faulted(&mut self) -> bool {
+        loop {
+            let retry = self.shadow.retry_at();
+            RETRY_AT_S.store(retry.map_or(0, |t| u32::try_from(t.0 / 1_000).unwrap_or(u32::MAX).max(1)), Ordering::Relaxed);
+            redraw();
+            let timer = async {
+                match retry {
+                    Some(t) => Timer::at(Instant::from_millis(t.0)).await,
+                    None => core::future::pending::<()>().await,
+                }
+            };
+            match select(REQUESTS.receive(), timer).await {
+                Either::First(Request::On) => {
+                    trace::packet(trace::Dir::Retry, &[]);
+                    self.shadow.retry_radio(now_ms());
+                    break true;
+                }
+                Either::First(Request::Off) => break false,
+                Either::First(Request::Status) => write_status_line(self.uart, &status(self.shadow.state(), self.shadow.now())),
+                Either::First(_) => self.uart.write_line("[ble] the chip is held after a fault: `ble on` or Select tries again now, `ble off` turns it off"),
+                Either::Second(()) => {
+                    self.shadow.advance(now_ms());
+                    if self.shadow.retry_at().is_none() {
+                        break true;
+                    }
+                }
+            }
+        }
     }
 
     /// The driver's start.
@@ -1246,6 +1315,11 @@ impl Link<'_> {
         };
         if handles.get(server::RX).is_none() || handles.get(server::TX).is_none() {
             return self.fail("finding the console in the server");
+        }
+        #[cfg(feature = "ble-probe")]
+        if PROBE_FAILED_STARTS.load(Ordering::Relaxed) > 0 {
+            PROBE_FAILED_STARTS.fetch_sub(1, Ordering::Relaxed);
+            return self.fail("a step `ble probe fail starts` failed");
         }
         self.chip.serve(handles);
         self.uart.write_str("[ble] up: ST stack, address ");
@@ -2055,8 +2129,12 @@ impl Link<'_> {
 }
 
 fn set_state(state: u8) {
-    if STATE.swap(state, Ordering::Relaxed) != state {
+    let was = STATE.swap(state, Ordering::Relaxed);
+    if was != state {
         redraw();
+        if (was == STATE_FAILED) != (state == STATE_FAILED) {
+            crate::redraw(wrist_logic::pages::Page::Face);
+        }
     }
 }
 

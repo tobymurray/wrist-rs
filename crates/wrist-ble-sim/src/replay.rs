@@ -419,6 +419,8 @@ impl Replay {
                 }
             }
             "d" => self.shadow.operator_disconnect(at),
+            "f" => self.shadow.start_failed(at),
+            "y" => self.shadow.retry_radio(at),
             "x" => match <[u8; 4]>::try_from(bytes.as_slice()) {
                 Ok(count) => self.shadow.observer.report.not_kept += u32::from_le_bytes(count),
                 Err(_) => self.shadow.observer.report.unknown_events += 1,

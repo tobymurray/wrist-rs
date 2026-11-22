@@ -57,8 +57,13 @@ fn main() {
                 _ => panic!("compare:NNNNNN or passkey:NNNNNN"),
             });
             let old_key = bonded == "old-key";
-            let bonded = arg(bonded).filter(|_| !old_key).map(|n| n.parse().expect("a count"));
-            compose_bluetooth(&Bluetooth { radio, prompt, bonded, old_key }, &EN_GB, FACES)
+            // A held radio's retry, `retry:HH:MM`, in place of the count.
+            let retry = bonded.strip_prefix("retry:").map(|t| {
+                let (h, m) = t.split_once(':').expect("retry:HH:MM");
+                wrist_display::l10n::Clock { h: h.parse().expect("hours"), m: m.parse().expect("minutes"), s: 0 }
+            });
+            let bonded = arg(bonded).filter(|_| !old_key && retry.is_none()).map(|n| n.parse().expect("a count"));
+            compose_bluetooth(&Bluetooth { radio, prompt, bonded, old_key, retry }, &EN_GB, FACES)
         }
         [time, date, soc, _] | [time, date, soc, _, _] => {
             let nums = |s: &str, sep| -> Vec<u16> { s.split(sep).map(|n| n.parse().expect("a number")).collect() };

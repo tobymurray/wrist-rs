@@ -103,7 +103,8 @@ impl ChipMachine {
                 self.state = Chip::Ready(info);
                 None
             }
-            (Chip::Starting { .. }, Event::StartFailed) => Some(self.escalate(now, FaultCause::StartFailed)),
+            // A start the driver failed after the chip's boot had answered it, as up.
+            (Chip::Starting { .. } | Chip::Ready(_), Event::StartFailed) => Some(self.escalate(now, FaultCause::StartFailed)),
             (Chip::Starting { since }, Event::Tick) if now >= since + caps.start_within => Some(self.escalate(now, FaultCause::StartFailed)),
             (Chip::Ready(_), Event::BaselineRefused) => Some(self.escalate(now, FaultCause::BaselineRefused)),
             (Chip::Ready(_), Event::BusySpent) => Some(self.escalate(now, FaultCause::KeptBusy)),

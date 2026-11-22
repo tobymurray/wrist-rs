@@ -31,6 +31,9 @@ pub enum Input {
     Retry(usize),
     /// The user asked for the radio again after a fault.
     RetryRadio,
+    /// The driver's bring-up stopped at a step after the chip had booted, or the chip never
+    /// answered: the start failed, though the chip's boot told the core it was up.
+    StartFailed,
     /// The console's ask of the phone's link (`ble interval now`), in place of the menu's until that
     /// link ends, a resync finds it, or the menu's ask changes; ignored with no phone link or unless
     /// [`phone::askable`].
@@ -272,6 +275,7 @@ impl<'a> Core<'a> {
                 }
             }
             Input::RetryRadio => self.chip(now, chip::Event::Retry, &mut out),
+            Input::StartFailed => self.chip(now, chip::Event::StartFailed, &mut out),
             Input::IntervalNow(p) => {
                 if let Some(link) = self.state.phone.link().filter(|_| phone::askable(&p)) {
                     self.console = Some((link, p));

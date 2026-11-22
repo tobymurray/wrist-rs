@@ -35,8 +35,11 @@ pub const DISCONNECT: u8 = b'd';
 /// Records the ring refused while a dump read it, and how many: the core's inputs are not
 /// whole across it.
 pub const GAP: u8 = b'x';
+/// The driver's bring-up stopped short, and the user's ask for the radio again after a fault.
+pub const START_FAILED: u8 = b'f';
+pub const RETRY: u8 = b'y';
 
-const KINDS: [u8; 13] = [COMMAND, EVENT, RESET, MODE, LOST, SNAPSHOT, GOALS, TIMING, RADIO, ANSWER, INTERVAL_NOW, DISCONNECT, GAP];
+const KINDS: [u8; 15] = [COMMAND, EVENT, RESET, MODE, LOST, SNAPSHOT, GOALS, TIMING, RADIO, ANSWER, INTERVAL_NOW, DISCONNECT, GAP, START_FAILED, RETRY];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Record {

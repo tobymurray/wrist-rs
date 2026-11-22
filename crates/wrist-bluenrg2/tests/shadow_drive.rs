@@ -459,3 +459,25 @@ fn a_chip_action_waits_until_taken() {
     assert!(s.chip_action().is_some());
     assert!(!s.chip_acting());
 }
+
+/// A start the driver failed, told to the core: a restart, and past the budget a hold with the
+/// time it is tried again, which the user's retry ends.
+#[test]
+fn a_failed_start_is_the_cores_to_retry() {
+    use wrist_ble::policy::chip::RESETS_PER_HOUR;
+    let mut s = driving();
+    let mut at = 1_000;
+    for _ in 0..RESETS_PER_HOUR {
+        s.start_failed(Instant(at));
+        assert!(matches!(s.chip_action(), Some(Action::Start(_))));
+        s.event(Instant(at + 100), BOOTED);
+        at += 1_000;
+    }
+    assert_eq!(s.retry_at(), None);
+    s.start_failed(Instant(at));
+    assert_eq!(s.chip_action(), Some(Action::Hold));
+    assert!(s.retry_at().is_some_and(|t| t.0 > at));
+    s.retry_radio(Instant(at + 500));
+    assert!(matches!(s.chip_action(), Some(Action::Start(_))));
+    assert_eq!(s.retry_at(), None);
+}
