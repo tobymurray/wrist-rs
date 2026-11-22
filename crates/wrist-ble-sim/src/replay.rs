@@ -229,6 +229,9 @@ struct Replay {
     transfer: bool,
     /// A USB `update` the console took and has not answered, whose image the phone's link does not carry.
     usb_update: Option<UsbUpdate>,
+    /// This epoch began with the chip already up, and the core caught up; and its dumps so far.
+    caught_up: bool,
+    epoch_dumps: u32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -260,6 +263,7 @@ impl Replay {
         }
         self.push(Who::Line, "-- the chip was already up".into());
         self.shadow.observer.report.seeded = Some((self.shadow.now().0, Vec::new()));
+        self.caught_up = true;
         self.shadow.seed();
     }
 
@@ -291,6 +295,8 @@ impl Replay {
         self.last_ms = None;
         self.transfer = false;
         self.usb_update = None;
+        self.caught_up = false;
+        self.epoch_dumps = 0;
         self.shadow.observer.report.resets += 1;
         self.push(Who::Line, "-- the watch reset".into());
         self.shadow.set_goals(self.shadow.now(), boot_goals());
@@ -317,11 +323,13 @@ impl Replay {
             self.update_line(update);
             self.push(Who::Line, text.to_string());
         } else if let Some(rest) = text.strip_prefix("[ble] dump next ") {
-            // The first dump's lost head is caught up from, as any capture's start is; any later
-            // loss is a gap in the core's inputs.
+            // The first dump of a boot the replay caught up from: its lost head is caught up from,
+            // as any capture's start is; any other loss is a gap in the core's inputs.
             let lost = rest.split(", ").find_map(|p| p.strip_suffix(" bytes lost")).and_then(|n| n.parse::<u64>().ok()).unwrap_or_default();
+            let excused = self.caught_up && self.epoch_dumps == 0;
+            self.epoch_dumps += 1;
             let report = &mut self.shadow.observer.report;
-            if report.dumps > 0 || report.seeded.is_none() {
+            if !excused {
                 report.dump_lost += lost;
             }
             report.dumps += 1;
@@ -450,7 +458,7 @@ fn uptime_ms(text: &str) -> Option<u64> {
 /// A watch reset starts the core again, and the host's clock carries the timeline across it.
 #[must_use]
 pub fn replay(capture: &str) -> Report {
-    let mut r = Replay { shadow: Shadow::new(INFO, boot_goals(), Record::default()), base: Some(0), last_ms: None, transfer: false, usb_update: None };
+    let mut r = Replay { shadow: Shadow::new(INFO, boot_goals(), Record::default()), base: Some(0), last_ms: None, transfer: false, usb_update: None, caught_up: false, epoch_dumps: 0 };
     // Driven until a start's `m` says otherwise.
     r.shadow.driven(true);
     let mut started = false;

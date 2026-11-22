@@ -114,9 +114,6 @@ pub struct Counters {
     pub dropped: u32,
 }
 
-/// How many links that have gone the core remembers, for judging their operations' failures.
-const GONE: usize = 4;
-
 /// Waits before an operation kind that failed is tried again: 1 s, doubling to 32 s.
 #[derive(Clone, Copy, Debug, Default)]
 struct Backoff {
@@ -148,9 +145,10 @@ pub struct Core<'a> {
     target: Target,
     /// Asked for, and not yet answered by [`Input::Submitted`].
     asked: Option<Op>,
-    /// Links that have gone, by their end or as a resync found them, since the chip came up (it
-    /// gives no handle twice): an operation's failure on one is the link's end, not a failure.
-    gone: [Option<ConnHandle>; GONE],
+    /// The link of the operation asked, or of the one in flight, went before the chip answered,
+    /// by its end or as a resync found it: its failure is the link's end, not a failure.
+    asked_link_went: bool,
+    pending_link_went: bool,
     pending: Option<Pending>,
     queue: [Option<Op>; QUEUE],
     backoff: [Backoff; KINDS],
@@ -222,7 +220,8 @@ impl<'a> Core<'a> {
             asked_unknown: false,
             settled_since: Instant(0),
             alarms: [false; invariants::WATCHED.len()],
-            gone: [None; GONE],
+            asked_link_went: false,
+            pending_link_went: false,
         }
     }
 
@@ -250,7 +249,7 @@ impl<'a> Core<'a> {
 
     pub fn step(&mut self, now: Instant, input: Input) -> Outputs {
         let mut out = Outputs::default();
-        let held = self.held();
+        let phone = self.state.phone.link();
         match input {
             Input::Radio(e) => self.event(now, e, &mut out),
             Input::Goals(g) => self.set_goals(now, g, &mut out),
@@ -289,10 +288,9 @@ impl<'a> Core<'a> {
                 }
             }
         }
-        // A link a resync found gone has gone as surely as one whose end was seen.
-        if let Input::Snapshot(_) = input {
-            let now_held = self.held();
-            for link in held.into_iter().flatten().filter(|l| !now_held.contains(&Some(*l))) {
+        // A phone link a resync found gone has gone as surely as one whose end was seen.
+        if let (Input::Snapshot(_), Some(link)) = (input, phone) {
+            if self.state.phone.link() != Some(link) {
                 self.went(link);
             }
         }
@@ -342,11 +340,6 @@ impl<'a> Core<'a> {
         }
     }
 
-    /// Whether an operation's failure counts: not when its link has gone.
-    fn counts(&self, op: &Op) -> bool {
-        op.link().is_none_or(|l| !self.gone.contains(&Some(l)))
-    }
-
     /// A link has gone: its queued operations with it, which could only fail, and its asked or
     /// in-flight one's failure is the link's end.
     fn went(&mut self, link: ConnHandle) {
@@ -355,20 +348,7 @@ impl<'a> Core<'a> {
             *slot = Some(*op);
         }
         self.queue = kept;
-        if !self.gone.contains(&Some(link)) {
-            self.gone.rotate_right(1);
-            self.gone[0] = Some(link);
-        }
-    }
-
-    /// The links the core holds: the phone's and each peripheral's.
-    fn held(&self) -> [Option<ConnHandle>; 1 + MAX_PERIPHERALS] {
-        let mut held = [None; 1 + MAX_PERIPHERALS];
-        held[0] = self.state.phone.link();
-        for (slot, p) in held[1..].iter_mut().zip(&self.state.peers) {
-            *slot = p.as_ref().and_then(|p| linked(&p.machine));
-        }
-        held
+        self.asked_link_went |= self.asked.is_some_and(|op| op.link() == Some(link));
     }
 
     fn set_goals(&mut self, now: Instant, g: Goals, out: &mut Outputs) {
@@ -424,7 +404,6 @@ impl<'a> Core<'a> {
 
     /// Every link, operation and refusal goes with the chip.
     fn forget_radio(&mut self, now: Instant) {
-        self.gone = [None; GONE];
         if let Some(link) = self.state.phone.link() {
             self.state.phone = self.state.phone.step(now, phone::Event::LinkDown(link)).0;
         }
@@ -621,7 +600,7 @@ impl<'a> Core<'a> {
                 }
                 self.security_refused(now, &p.op, f, out);
                 if !self.hold_busy_ask(now, &p.op, f) {
-                    if self.counts(&p.op) {
+                    if !self.pending_link_went {
                         self.tally.failure(f);
                     }
                     self.back_off(now, p.op.kind());
@@ -646,6 +625,7 @@ impl<'a> Core<'a> {
                 if self.pending.is_none() {
                     let deadline = now + (self.caps.op_deadline)(op.kind());
                     self.pending = Some(Pending { id, op, deadline });
+                    self.pending_link_went = self.asked_link_went;
                 }
             }
             Err(f) => {
@@ -678,7 +658,7 @@ impl<'a> Core<'a> {
                     }
                     self.security_refused(now, &op, f, out);
                     if !self.hold_busy_ask(now, &op, f) {
-                        if self.counts(&op) {
+                        if !self.asked_link_went {
                             self.tally.failure(f);
                         }
                         self.back_off(now, op.kind());
@@ -782,7 +762,7 @@ impl<'a> Core<'a> {
         if let Some(p) = self.pending.filter(|p| now >= p.deadline + GRACE) {
             self.pending = None;
             self.counters.timed_out += 1;
-            if self.counts(&p.op) {
+            if !self.pending_link_went {
                 self.tally.failure(Failure { kind: FailureKind::Timeout, native: 0 });
             }
             self.advertising_unknown |= p.op.kind() == OpKind::Advertise;
@@ -870,6 +850,7 @@ impl<'a> Core<'a> {
         if let Some(op) = op {
             self.counters.submitted += 1;
             self.asked = Some(op);
+            self.asked_link_went = false;
             self.asked_unknown = self.advertising_unknown;
             out.op = Some(op);
         }

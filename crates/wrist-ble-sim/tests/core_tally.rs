@@ -487,3 +487,21 @@ fn another_links_queued_operation_stays() {
     let next = core.step(t(10_100), Input::Submitted(Ok(OpId(2)))).op;
     assert!(matches!(next, Some(op @ Op::AnswerParamRequest { .. }) if op.link() == Some(staying)), "{next:?}");
 }
+
+/// However many other links come and go before the chip answers, the asked operation's link went.
+#[test]
+fn an_asked_operations_link_that_went_is_remembered_however_many_follow() {
+    use wrist_ble::ConnHandle;
+    let mut core = core_with_phone();
+    assert_eq!(core.step(t(10_000), Input::Tick).op, Some(Op::RequestSecurity(phone())));
+    core.step(t(10_005), down(0x13));
+    let peer = PeerAddr { kind: AddrKind::RANDOM, addr: BdAddr::new([8, 8, 8, 8, 8, 0xC0]) };
+    for (i, handle) in (0x802..0x808).enumerate() {
+        let link = ConnHandle::new(handle);
+        let at = 10_010 + 10 * i as u64;
+        core.step(t(at), Input::Radio(RadioEvent::LinkUp { link, role: LeConnRole::Peripheral, peer, params: None }));
+        core.step(t(at + 5), Input::Radio(RadioEvent::LinkDown { link, reason: Status::new(0x13) }));
+    }
+    core.step(t(10_100), Input::Submitted(Err(Failure { kind: FailureKind::NotConnected, native: 0x02 })));
+    assert_eq!(core.tally.failures.total(), 0);
+}

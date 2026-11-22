@@ -319,3 +319,18 @@ fn only_the_first_dumps_lost_head_is_caught_up_from() {
     let second = format!("{first}[ble] dump next 20000 at 80.000, 100 bytes lost\n");
     assert_eq!(replay(&second).dump_lost, 100);
 }
+
+/// A dump in a later boot than the one caught up from is no lost head to excuse.
+#[test]
+fn a_later_boots_dump_loss_is_reported() {
+    let fixture = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/traces/watch-dump-cable.log")).unwrap();
+    let mut late = String::new();
+    for line in fixture.lines() {
+        if capture::stamped(line).is_some_and(|s| s.ms >= 33_113) {
+            writeln!(late, "{line}").unwrap();
+        }
+    }
+    let capture = format!("{late}[trace] 100 r\n[ble] dump next 18751 at 70.000, 4096 bytes lost\n");
+    let r = replay(&capture);
+    assert_eq!((r.resets, r.dump_lost), (1, 4096));
+}
