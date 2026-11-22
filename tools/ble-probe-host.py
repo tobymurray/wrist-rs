@@ -24,12 +24,14 @@
             reconnect <n>|last       connect again and encrypt with the keys kept from its bond
             fill <n> [options]       bond n, n+1, ... until `losses=` loss events (1) or `max=` (16)
             restart                  `ble restart`: the chip reset through its pin
+            offon                    `ble off`, then `ble on`
             list | wait <s>
         Options: dist=default|none|noid|sign (the keys the central offers and asks for), subscribe
         (to every notification and indication after encrypting), hold=<s> (the link kept, listed
         every 5 s), hangup=central|watch|restart. `--scenario` names a list (SCENARIOS). The
         throwaway bonds are forgotten at the end unless `--keep`. Runs on Bumble, which takes the
-        adapter from BlueZ: as root (the step does `btmgmt power off` first and `power on` after).
+        adapter from BlueZ: as root (the step does `btmgmt power off` first and `power on` after). A
+        chip the firmware holds after a fault stops the run (exit 3).
 
 The watch is on USB (`--port`, else found by its USB ID) and reached over Bluetooth by `--name`.
 Needs bleak and pyserial; `bonds` needs bumble.
@@ -38,6 +40,7 @@ import argparse
 import asyncio
 from pathlib import Path
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -66,6 +69,8 @@ class Lines:
     def __init__(self, port):
         self.s = wrist_port.open_console(port, timeout=0.2)
         self.part = b''
+        # The firmware's own fault hold (`ble on` lifts it): every line after it would be void.
+        self.held = False
 
     def send(self, text):
         wrist_port.write_command(self.s, text)
@@ -78,6 +83,7 @@ class Lines:
                 line, self.part = self.part.split(b'\n', 1)
                 text = line.decode('utf-8', 'replace').rstrip('\r')
                 if text and not text.startswith('[hb]'):
+                    self.held = self.held or any(h in text for h in HELD)
                     return text
                 continue
             self.part += self.s.read(max(1, self.s.in_waiting))
@@ -218,6 +224,13 @@ async def link_layer_run(args):
     return 0
 
 
+HELD = ('held in reset after a fault', 'gave up on the chip', 'held after a fault')
+
+
+class Held(Exception):
+    """The firmware held the chip after a fault: the run stops, its later steps void."""
+
+
 BOND = re.compile(r'([0-9A-F]{2}(?::[0-9A-F]{2}){5})( \(random\))?')
 TEST = 'C0:B0:4D:00:00:'
 
@@ -229,12 +242,24 @@ SCENARIOS = {
     'middle': 'clear; bond 1; bond 2; bond 3; bond 4; forget 2; fill 5 losses=2 max=14',
     # The oldest bond used again before the overflow: dropped by bonding time, or by use?
     'reuse': 'clear; bond 1; bond 2; bond 3; bond 4; reconnect 1; fill 5 losses=2 max=14',
+    # The oldest bond used again just before the overflow: dropped by bonding time, or by use?
+    'reuse-last': 'clear; bond 1; bond 2; bond 3; bond 4; bond 5; reconnect 1; fill 6 losses=2 max=6',
+    # Two middle bonds forgotten: do forgotten records count toward the overflow, and go in it?
+    'forget-two': 'clear; bond 1; bond 2; bond 3; bond 4; forget 2; forget 3; fill 5 losses=2 max=8',
+    # A forgotten record across `ble off`/`ble on`, and across a chip reset (`restart`).
+    'forget-offon': 'clear; bond 1; bond 2; bond 3; bond 4; forget 2; offon; fill 5 losses=1 max=6',
+    'forget-restart': 'clear; bond 1; bond 2; bond 3; bond 4; forget 2; restart; fill 5 losses=1 max=6',
+    # Subscribed bonds first, then plain ones: does the overflow come sooner?
+    'subscribed-first': 'clear; bond 1 subscribe; bond 2 subscribe; bond 3 subscribe; fill 4 losses=1 max=6',
     # Each link held 10 s, listed as it goes: whether a loss waits for the hang-up.
     'hold': 'clear; fill 1 hold=10 max=16',
     # The watch hangs up instead of the central.
     'watch-hangs-up': 'clear; fill 1 hangup=watch max=16',
-    # The chip reset under each link, so no disconnect is processed; then one ordinary link.
-    'restart-linked': 'clear; fill 1 hangup=restart max=10; list; reconnect last',
+    # The overflowing bond's link ended by a chip reset, so no disconnect is processed; then that
+    # central reconnects and hangs up, then one more bond. One reset: the firmware holds the chip
+    # after 3 in an hour.
+    'restart-linked': 'clear; bond 1; bond 2; bond 3; bond 4; bond 5; bond 6 hangup=restart; list; '
+                      'reconnect 6; bond 7',
     # What each central distributes, and its subscriptions: does the overflow move?
     'keys-none': 'clear; fill 1 dist=none max=16',
     'keys-noid': 'clear; fill 1 dist=noid max=16',
@@ -245,7 +270,7 @@ SCENARIOS = {
             'reconnect 3 subscribe; reconnect 4 subscribe; reconnect 5 subscribe; list',
     # Do forgotten bonds still take room? Fill, forget one by one, fill again; then after a chip
     # reset; then after clearing the whole database.
-    'history': 'clear; fill 1; forget test; fill 33; forget test; fill 65; forget test; restart; fill 97; '
+    'history': 'clear; fill 1; forget test; fill 33; forget test; fill 65; forget test; offon; fill 97; '
                'clear; fill 129',
 }
 DISTRIBUTIONS = ('default', 'none', 'noid', 'sign')
@@ -284,7 +309,7 @@ def parse_steps(text):
                 arg = int(arg, 0)
                 if not 1 <= arg <= 0xFF:
                     raise ValueError(f'{part.strip()!r}: centrals are 1-255')
-        elif word not in ('clear', 'restart', 'list'):
+        elif word not in ('clear', 'restart', 'offon', 'list'):
             raise ValueError(f'{part.strip()!r}: unknown step')
         options = {}
         for r in rest:
@@ -413,6 +438,9 @@ class BondRun:
         log(f'STEP {what} {name} {" ".join(f"{k}={v}" for k, v in options.items())}')
         device = self.device(n, options.get('dist', 'default'))
         await device.power_on()
+        # Holding the watch's IRK, Bumble would scan for an address that resolves to it before
+        # connecting; the watch advertises its identity address, so that scan never ends.
+        device.address_resolver = None
         watch = hci.Address(self.watch, hci.Address.RANDOM_DEVICE_ADDRESS)
         connection = None
         for attempt in range(2):
@@ -504,7 +532,20 @@ class BondRun:
         await lines_until(self.usb, lambda t: 'forg' in t, 5)
         self.expected = [b for b in self.expected if b != bond]
 
+    async def preflight(self):
+        """Refuse a held chip; end a link a killed run left up."""
+        await self.drain()
+        self.usb.send('ble status')
+        status = await lines_until(self.usb, lambda t: 'status phone=' in t, 5) or ''
+        if self.usb.held or 'fault' in status or not status:
+            raise Held(status or 'no status line')
+        if 'phone=connected' in status or 'phone=securing' in status or 'phone=pairing' in status:
+            self.usb.send('ble disconnect')
+            await lines_until(self.usb, lambda t: 'advertising as' in t, 10)
+
     async def step(self, word, arg, options):
+        if self.usb.held:
+            raise Held('before ' + word)
         if word == 'clear':
             log('STEP clear')
             await self.drain()
@@ -518,6 +559,14 @@ class BondRun:
             for b in [b for b in now if b.startswith(TEST)] if arg == 'test' else [test_bond(arg)]:
                 await self.forget(b)
             await self.listing('forgotten')
+        elif word == 'offon':
+            log('STEP offon')
+            await self.drain()
+            self.usb.send('ble off')
+            await lines_until(self.usb, lambda t: '[ble] off' in t, 10)
+            self.usb.send('ble on')
+            await lines_until(self.usb, lambda t: 'advertising as' in t, 20)
+            await self.listing('off and on')
         elif word == 'restart':
             log('STEP restart')
             await self.drain()
@@ -539,6 +588,8 @@ class BondRun:
             failures, n = 0, arg
             log(f'STEP fill from {TEST}{arg:02X}: until {stop - self.loss_events} losses or {most} bonds')
             while n < arg + most and n <= 0xFF and self.loss_events < stop and failures < 3:
+                if self.usb.held:
+                    raise Held(f'in the fill, before {TEST}{n:02X}')
                 outcome = await self.link(n, options, True)
                 failures = 0 if outcome == 'paired' else failures + 1
                 n += 1
@@ -559,9 +610,14 @@ async def bonds(args):
     try:
         async with await open_transport(args.transport) as (source, sink):
             run = BondRun(usb, args.watch, source, sink)
-            await run.listing('before')
-            for word, arg, options in steps:
-                await run.step(word, arg, options)
+            try:
+                await run.preflight()
+                await run.listing('before')
+                for word, arg, options in steps:
+                    await run.step(word, arg, options)
+            except Held as e:
+                log(f'RADIO HELD: {e}; the run stops (`ble on` lifts it)')
+                return 3
             if not args.keep:
                 for b in [b for b in await run.listing('at the end') if b.startswith(TEST)]:
                     await run.forget(b)
@@ -570,6 +626,10 @@ async def bonds(args):
     finally:
         subprocess.run(['btmgmt', '--index', '0', 'power', 'on'], capture_output=True)
     return 0
+
+
+def interrupted(_signum, _frame):
+    raise KeyboardInterrupt
 
 
 def main():
@@ -593,6 +653,8 @@ def main():
     b.add_argument('--keep', action='store_true', help='leave the throwaway bonds on the watch at the end')
     args = ap.parse_args()
     run = {'matrix': matrix, 'll': link_layer, 'bonds': bonds}[args.what]
+    # A `timeout` or kill ends the run through its `finally`, which gives the adapter back to BlueZ.
+    signal.signal(signal.SIGTERM, interrupted)
     return asyncio.run(run(args))
 
 
