@@ -12,13 +12,24 @@
         answer this computer's ATT requests, or do they reach the watch as ACL data? The watch's
         packets are printed as they come; BlueZ's entry for the probe's address is removed after.
 
-    ble-probe-host.py bonds --watch D9:5B:7A:EB:29:82 [--transport hci-socket:0] [--most 40]
-        Pair from one throwaway static random address after another (`C0:B0:4D:00:00:01` up),
-        answering the watch's comparison over USB, until the watch's `ble bonds` count stops
-        growing: the size of its bond database. Each throwaway bond is forgotten after, by `ble
-        forget`, and the bonds the watch had before are checked to be there still. Runs on Bumble,
-        which takes the adapter from BlueZ: as root, with BlueZ's adapter powered off (the step
-        does `btmgmt power off` first and `btmgmt power on` after).
+    ble-probe-host.py bonds --watch D9:5B:7A:EB:29:82 [--transport hci-socket:0]
+            [--scenario NAME | --steps STEPS] [--log FILE] [--keep]
+        Pair throwaway static random centrals (`C0:B0:4D:00:00:<n>`, n in hex), answering the
+        watch's comparison over USB, and list the watch's `ble bonds` after each link's connect,
+        pairing or encryption, hang-up and 2 s later, naming each bond that went (LOSS). The steps,
+        `;` between them:
+            clear                    `ble forget`: the whole bond database
+            forget <n>|test          `ble forget` one throwaway bond, or every one listed
+            bond <n> [options]       pair central n, then hang up
+            reconnect <n>|last       connect again and encrypt with the keys kept from its bond
+            fill <n> [options]       bond n, n+1, ... until `losses=` loss events (1) or `max=` (16)
+            restart                  `ble restart`: the chip reset through its pin
+            list | wait <s>
+        Options: dist=default|none|noid|sign (the keys the central offers and asks for), subscribe
+        (to every notification and indication after encrypting), hold=<s> (the link kept, listed
+        every 5 s), hangup=central|watch|restart. `--scenario` names a list (SCENARIOS). The
+        throwaway bonds are forgotten at the end unless `--keep`. Runs on Bumble, which takes the
+        adapter from BlueZ: as root (the step does `btmgmt power off` first and `power on` after).
 
 The watch is on USB (`--port`, else found by its USB ID) and reached over Bluetooth by `--name`.
 Needs bleak and pyserial; `bonds` needs bumble.
@@ -94,13 +105,6 @@ def destination(out, start, cells):
     """Where a run's cells go, and whether it was a whole run: only a whole run replaces `out`."""
     whole = start == 0 and len(cells) == 60
     return (out if whole else out + '.partial'), whole
-
-
-def pairing_config(delegate):
-    """The throwaway address as the identity, never the adapter's own."""
-    from bumble.pairing import PairingConfig
-    return PairingConfig(sc=True, mitm=True, bonding=True, delegate=delegate,
-                         identity_address_type=PairingConfig.AddressType.RANDOM)
 
 
 async def hold_link(name):
@@ -215,95 +219,356 @@ async def link_layer_run(args):
 
 
 BOND = re.compile(r'([0-9A-F]{2}(?::[0-9A-F]{2}){5})( \(random\))?')
+TEST = 'C0:B0:4D:00:00:'
+
+# The bond steps' scenarios, by name (`bonds --scenario`); `--steps` takes the same language.
+SCENARIOS = {
+    # From an empty database, bond until a loss, and on past it: where it overflows, and again.
+    'fill': 'clear; fill 1 losses=3 max=16',
+    # A middle bond forgotten, so that age and list position differ for the bonds after it.
+    'middle': 'clear; bond 1; bond 2; bond 3; bond 4; forget 2; fill 5 losses=2 max=14',
+    # The oldest bond used again before the overflow: dropped by bonding time, or by use?
+    'reuse': 'clear; bond 1; bond 2; bond 3; bond 4; reconnect 1; fill 5 losses=2 max=14',
+    # Each link held 10 s, listed as it goes: whether a loss waits for the hang-up.
+    'hold': 'clear; fill 1 hold=10 max=16',
+    # The watch hangs up instead of the central.
+    'watch-hangs-up': 'clear; fill 1 hangup=watch max=16',
+    # The chip reset under each link, so no disconnect is processed; then one ordinary link.
+    'restart-linked': 'clear; fill 1 hangup=restart max=10; list; reconnect last',
+    # What each central distributes, and its subscriptions: does the overflow move?
+    'keys-none': 'clear; fill 1 dist=none max=16',
+    'keys-noid': 'clear; fill 1 dist=noid max=16',
+    'keys-sign': 'clear; fill 1 dist=sign max=16',
+    'subscribe': 'clear; fill 1 subscribe max=16',
+    # Bonds that held, made larger by subscribing at a reconnect, with no new bond.
+    'grow': 'clear; bond 1; bond 2; bond 3; bond 4; bond 5; reconnect 1 subscribe; reconnect 2 subscribe; '
+            'reconnect 3 subscribe; reconnect 4 subscribe; reconnect 5 subscribe; list',
+    # Do forgotten bonds still take room? Fill, forget one by one, fill again; then after a chip
+    # reset; then after clearing the whole database.
+    'history': 'clear; fill 1; forget test; fill 33; forget test; fill 65; forget test; restart; fill 97; '
+               'clear; fill 129',
+}
+DISTRIBUTIONS = ('default', 'none', 'noid', 'sign')
+HANGUPS = ('central', 'watch', 'restart')
+OPTIONS = {'dist', 'subscribe', 'hold', 'hangup', 'max', 'losses'}
 
 
-async def bond_list(usb):
-    """`ble bonds`' addresses, each as `ble forget` takes it."""
-    usb.send('ble bonds')
-    text = await lines_until(usb, lambda t: 'bonded devices' in t or 'no bonded' in t, 10) or ''
-    listed = text.split('bonded devices:', 1)[-1] if 'bonded devices:' in text else ''
-    return [a + (r or '') for a, r in BOND.findall(listed)]
+def listed(text):
+    """The addresses on a `bonded devices:` line, each as `ble forget` takes it; None for another line."""
+    if 'bonded devices:' not in text:
+        return None
+    return [a + (r or '') for a, r in BOND.findall(text.split('bonded devices:', 1)[1])]
+
+
+def test_bond(n):
+    """The `n`th throwaway central's static random address, as `ble bonds` lists it."""
+    return f'{TEST}{n:02X} (random)'
+
+
+def parse_steps(text):
+    """`--steps` as (word, argument, options) each; a ValueError names the first bad step."""
+    steps = []
+    for part in text.split(';'):
+        words = part.split()
+        if not words:
+            continue
+        word, rest = words[0], words[1:]
+        arg = None
+        if word in ('bond', 'fill', 'reconnect', 'forget', 'wait'):
+            if not rest:
+                raise ValueError(f'{part.strip()!r}: {word} takes an argument')
+            arg = rest.pop(0)
+            if word == 'wait':
+                arg = float(arg)
+            elif not (arg == 'last' and word == 'reconnect') and not (arg == 'test' and word == 'forget'):
+                arg = int(arg, 0)
+                if not 1 <= arg <= 0xFF:
+                    raise ValueError(f'{part.strip()!r}: centrals are 1-255')
+        elif word not in ('clear', 'restart', 'list'):
+            raise ValueError(f'{part.strip()!r}: unknown step')
+        options = {}
+        for r in rest:
+            k, eq, v = r.partition('=')
+            if k not in OPTIONS:
+                raise ValueError(f'{part.strip()!r}: unknown option {k}')
+            options[k] = v if eq else 'yes'
+        if options.get('dist', 'default') not in DISTRIBUTIONS or options.get('hangup', 'central') not in HANGUPS:
+            raise ValueError(f'{part.strip()!r}: dist is one of {DISTRIBUTIONS}, hangup one of {HANGUPS}')
+        steps.append((word, arg, options))
+    return steps
+
+
+def fresh(path):
+    """`path`, or `path` numbered past every log already there: a run never overwrites one."""
+    p = Path(path)
+    n = 2
+    while p.exists():
+        p = Path(path).with_name(f'{Path(path).stem}-{n}{Path(path).suffix}')
+        n += 1
+    return p
+
+
+def losses(expected, now):
+    """The bonds expected that `now` lacks, and those it has unexpected."""
+    return [b for b in expected if b not in now], [b for b in now if b not in expected]
+
+
+class Tee:
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, text):
+        for s in self.streams:
+            s.write(text)
+
+    def flush(self):
+        for s in self.streams:
+            s.flush()
+
+
+def pairing_config(delegate):
+    """The throwaway address as the identity, never the adapter's own."""
+    from bumble.pairing import PairingConfig
+    return PairingConfig(sc=True, mitm=True, bonding=True, delegate=delegate,
+                         identity_address_type=PairingConfig.AddressType.RANDOM)
+
+
+def key_distribution(dist):
+    """What the central offers and asks for, by `dist=`."""
+    from bumble.pairing import PairingDelegate
+    k = PairingDelegate.KeyDistribution
+    return {
+        'default': PairingDelegate.DEFAULT_KEY_DISTRIBUTION,
+        'none': k(0),
+        'noid': k.DISTRIBUTE_ENCRYPTION_KEY,
+        'sign': k.DISTRIBUTE_ENCRYPTION_KEY | k.DISTRIBUTE_IDENTITY_KEY | k.DISTRIBUTE_SIGNING_KEY,
+    }[dist]
+
+
+class BondRun:
+    """`bonds`' steps against the watch: Bumble the centrals, the USB console the watch's side."""
+
+    def __init__(self, usb, watch, source, sink):
+        from bumble.keys import MemoryKeyStore
+        self.usb, self.watch, self.source, self.sink = usb, watch, source, sink
+        self.stores = {}
+        self.new_store = MemoryKeyStore
+        self.expected = []
+        self.loss_events = 0
+        self.last = None
+
+    async def drain(self):
+        while await lines_until(self.usb, lambda _t: True, 0.3) is not None:
+            pass
+
+    async def listing(self, stage):
+        """`ble bonds` now, checked against what should be there."""
+        await self.drain()
+        self.usb.send('ble bonds')
+        text = await lines_until(self.usb, lambda t: listed(t) is not None or 'no bonded' in t, 10) or ''
+        now = listed(text) or []
+        gone, extra = losses(self.expected, now)
+        log(f'LIST {stage}: {len(now)} {" ".join(now)}')
+        if gone:
+            self.loss_events += 1
+            log(f'LOSS {stage}: {len(gone)} gone: {" ".join(gone)}')
+            self.expected = [b for b in self.expected if b not in gone]
+        if extra:
+            log(f'NEW {stage}: {" ".join(extra)}')
+            self.expected += extra
+        return now
+
+    def device(self, n, dist):
+        from bumble import hci
+        from bumble.device import Device, DeviceConfiguration
+        from bumble.pairing import PairingDelegate
+
+        offered = key_distribution(dist)
+
+        class Yes(PairingDelegate):
+            def __init__(self):
+                super().__init__(io_capability=PairingDelegate.IoCapability.DISPLAY_OUTPUT_AND_YES_NO_INPUT,
+                                 local_initiator_key_distribution=offered,
+                                 local_responder_key_distribution=offered)
+
+            async def compare_numbers(self, number, digits):
+                return True
+
+            async def confirm(self, auto=False):
+                return True
+
+        address = hci.Address(f'{TEST}{n:02X}', hci.Address.RANDOM_DEVICE_ADDRESS)
+        config = DeviceConfiguration(name='bond-probe', address=address, irk=bytes([n]) * 16)
+        device = Device.from_config_with_hci(config, self.source, self.sink)
+        device.keystore = self.stores.setdefault(n, self.new_store())
+        device.pairing_config_factory = lambda _c: pairing_config(Yes())
+        return device
+
+    async def link(self, n, options, new):
+        """Bond central `n` (`new`), or reconnect and encrypt it, then hang up as `options` say."""
+        from bumble import hci
+        from bumble.core import BT_LE_TRANSPORT
+        name = f'{TEST}{n:02X}'
+        what = 'bond' if new else 'reconnect'
+        log(f'STEP {what} {name} {" ".join(f"{k}={v}" for k, v in options.items())}')
+        device = self.device(n, options.get('dist', 'default'))
+        await device.power_on()
+        watch = hci.Address(self.watch, hci.Address.RANDOM_DEVICE_ADDRESS)
+        connection = None
+        for attempt in range(2):
+            try:
+                connection = await asyncio.wait_for(device.connect(
+                    watch, transport=BT_LE_TRANSPORT, own_address_type=hci.OwnAddressType.RANDOM, timeout=15), 20)
+                break
+            except Exception as e:
+                log(f'{name}: connect: {e!r}')
+                await asyncio.sleep(3)
+        if connection is None:
+            return 'no link'
+        await lines_until(self.usb, lambda t: '[ble] connected' in t, 5)
+        await self.listing(f'{name} linked')
+        if new:
+            pairing = asyncio.ensure_future(connection.pair())
+            shown = await lines_until(self.usb, lambda t: 'the central shows a number' in t or 'pairing failed' in t, 20)
+            if shown and 'shows a number' in shown:
+                self.usb.send('ble yes')
+            try:
+                await asyncio.wait_for(pairing, 30)
+                outcome = 'paired'
+            except Exception as e:
+                outcome = f'pairing failed: {e!r}'
+            await lines_until(self.usb, lambda t: t.startswith('[ble] bonded') or 'pairing failed' in t, 5)
+        else:
+            try:
+                await asyncio.wait_for(connection.encrypt(), 15)
+                outcome = 'encrypted'
+            except Exception as e:
+                outcome = f'encryption failed: {e!r}'
+            await lines_until(self.usb, lambda t: 'link encrypted' in t or 'disconnected' in t, 5)
+        log(f'{name}: {outcome}')
+        now = await self.listing(f'{name} {outcome.split(":")[0]}')
+        if new and outcome == 'paired':
+            self.last = n
+            if test_bond(n) not in now:
+                log(f'OWN BOND NOT LISTED: {test_bond(n)}')
+            elif test_bond(n) not in self.expected:
+                self.expected.append(test_bond(n))
+        if 'yes' == options.get('subscribe') and outcome in ('paired', 'encrypted'):
+            await self.subscribe(connection, name)
+            await self.listing(f'{name} subscribed')
+        hold = float(options.get('hold', 0))
+        for held in range(5, int(hold) + 1, 5):
+            await asyncio.sleep(5)
+            await self.listing(f'{name} held {held} s')
+        hangup = options.get('hangup', 'central')
+        if hangup == 'central':
+            try:
+                await connection.disconnect()
+            except Exception as e:
+                log(f'{name}: disconnect: {e!r}')
+            await lines_until(self.usb, lambda t: 'disconnected' in t, 10)
+        elif hangup == 'watch':
+            await self.drain()
+            self.usb.send('ble disconnect')
+            await lines_until(self.usb, lambda t: 'disconnected' in t, 10)
+        else:
+            await self.drain()
+            self.usb.send('ble restart')
+            await lines_until(self.usb, lambda t: 'advertising as' in t, 20)
+        await self.listing(f'{name} after the {hangup} hang-up')
+        await asyncio.sleep(2)
+        await self.listing(f'{name} 2 s later')
+        await device.power_off()
+        return outcome
+
+    async def subscribe(self, connection, name):
+        from bumble.device import Peer
+        from bumble.gatt import Characteristic
+        wanted = Characteristic.Properties.NOTIFY | Characteristic.Properties.INDICATE
+        count = 0
+        try:
+            peer = Peer(connection)
+            await asyncio.wait_for(peer.discover_all(), 20)
+            for service in peer.services:
+                for c in service.characteristics:
+                    if c.properties & wanted:
+                        await asyncio.wait_for(peer.subscribe(c, lambda _v: None), 10)
+                        count += 1
+            log(f'{name}: subscribed to {count} characteristics')
+        except Exception as e:
+            log(f'{name}: subscribing, after {count}: {e!r}')
+
+    async def forget(self, bond):
+        await self.drain()
+        self.usb.send(f'ble forget {bond}')
+        await lines_until(self.usb, lambda t: 'forg' in t, 5)
+        self.expected = [b for b in self.expected if b != bond]
+
+    async def step(self, word, arg, options):
+        if word == 'clear':
+            log('STEP clear')
+            await self.drain()
+            self.usb.send('ble forget')
+            await lines_until(self.usb, lambda t: 'cleared' in t or 'forget' in t, 5)
+            self.expected = []
+            await self.listing('cleared')
+        elif word == 'forget':
+            log(f'STEP forget {arg}')
+            now = await self.listing('before the forget')
+            for b in [b for b in now if b.startswith(TEST)] if arg == 'test' else [test_bond(arg)]:
+                await self.forget(b)
+            await self.listing('forgotten')
+        elif word == 'restart':
+            log('STEP restart')
+            await self.drain()
+            self.usb.send('ble restart')
+            await lines_until(self.usb, lambda t: 'advertising as' in t, 20)
+            await self.listing('restarted')
+        elif word == 'list':
+            await self.listing('list')
+        elif word == 'wait':
+            await asyncio.sleep(arg)
+        elif word == 'bond':
+            await self.link(arg, options, True)
+        elif word == 'reconnect':
+            if arg == 'last' and self.last is None:
+                return log('STEP reconnect last: nothing bonded')
+            await self.link(self.last if arg == 'last' else arg, options, False)
+        elif word == 'fill':
+            most, stop = int(options.get('max', 16)), self.loss_events + int(options.get('losses', 1))
+            failures, n = 0, arg
+            log(f'STEP fill from {TEST}{arg:02X}: until {stop - self.loss_events} losses or {most} bonds')
+            while n < arg + most and n <= 0xFF and self.loss_events < stop and failures < 3:
+                outcome = await self.link(n, options, True)
+                failures = 0 if outcome == 'paired' else failures + 1
+                n += 1
+            log(f'FILL END: {n - arg} centrals, {len(self.expected)} bonds expected')
 
 
 async def bonds(args):
-    from bumble import hci
-    from bumble.core import BT_LE_TRANSPORT
-    from bumble.device import Device, DeviceConfiguration
-    from bumble.keys import MemoryKeyStore
-    from bumble.pairing import PairingDelegate
     from bumble.transport import open_transport
-
-    class Yes(PairingDelegate):
-        def __init__(self):
-            super().__init__(io_capability=PairingDelegate.IoCapability.DISPLAY_OUTPUT_AND_YES_NO_INPUT)
-
-        async def compare_numbers(self, number, digits):
-            return True
-
-        async def confirm(self, auto=False):
-            return True
-
+    steps = parse_steps(SCENARIOS[args.scenario] if args.scenario else args.steps)
+    if args.log:
+        out = fresh(args.log)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        sys.stdout = Tee(sys.__stdout__, open(out, 'w'))
+        log(f'log {out}')
+    log(f'scenario {args.scenario or "-"}: {args.scenario and SCENARIOS[args.scenario] or args.steps}')
     usb = Lines(args.port)
-    before = await bond_list(usb)
-    log(f'bonded before: {len(before)} {" ".join(before)}')
-    watch = hci.Address(args.watch, hci.Address.RANDOM_DEVICE_ADDRESS)
     subprocess.run(['btmgmt', '--index', '0', 'power', 'off'], capture_output=True)
-    counts, misses = [], 0
     try:
         async with await open_transport(args.transport) as (source, sink):
-            for i in range(1, args.most + 1):
-                address = f'C0:B0:4D:00:00:{i:02X}'
-                config = DeviceConfiguration(name='bond-probe', address=hci.Address(address, hci.Address.RANDOM_DEVICE_ADDRESS), irk=bytes([i]) * 16)
-                device = Device.from_config_with_hci(config, source, sink)
-                device.keystore = MemoryKeyStore()
-                device.pairing_config_factory = lambda _c: pairing_config(Yes())
-                await device.power_on()
-                outcome = 'no link'
-                try:
-                    connection = await device.connect(watch, transport=BT_LE_TRANSPORT, own_address_type=hci.OwnAddressType.RANDOM, timeout=15)
-                    pairing = asyncio.ensure_future(connection.pair())
-                    shown = await lines_until(usb, lambda t: 'the central shows a number' in t or 'pairing failed' in t, 20)
-                    if shown and 'shows a number' in shown:
-                        usb.send('ble yes')
-                    try:
-                        await asyncio.wait_for(pairing, 30)
-                        outcome = 'paired'
-                    except Exception as e:
-                        outcome = f'pairing failed: {e!r}'
-                    await lines_until(usb, lambda t: t.startswith('[ble] bonded') or 'pairing failed' in t, 5)
-                    try:
-                        await connection.disconnect()
-                    except Exception:
-                        pass
-                    await lines_until(usb, lambda t: 'disconnected' in t, 10)
-                except Exception as e:
-                    outcome = f'connect: {e!r}'
-                now = await bond_list(usb)
-                counts.append(len(now))
-                log(f'{address}: {outcome}; the watch lists {len(now)} bonds')
-                lost = [b for b in before if b not in now]
-                if lost:
-                    log(f'STOPPED: bonds from before gone: {" ".join(lost)}')
-                    break
-                if f'{address} (random)' not in now and len(counts) == 1:
-                    log(f'STOPPED: the first throwaway bond is not listed as {address} (random)')
-                    break
-                grew = len(counts) < 2 or counts[-1] > counts[-2]
-                misses = 0 if grew else misses + 1
-                if misses >= 2:
-                    break
+            run = BondRun(usb, args.watch, source, sink)
+            await run.listing('before')
+            for word, arg, options in steps:
+                await run.step(word, arg, options)
+            if not args.keep:
+                for b in [b for b in await run.listing('at the end') if b.startswith(TEST)]:
+                    await run.forget(b)
+            final = await run.listing('final')
+            log(f'END: {run.loss_events} loss events; {len(final)} bonds left')
     finally:
         subprocess.run(['btmgmt', '--index', '0', 'power', 'on'], capture_output=True)
-        after = await bond_list(usb)
-        for b in after:
-            if b.startswith('C0:B0:4D:00:00:'):
-                usb.send(f'ble forget {b}')
-                await lines_until(usb, lambda t: 'forg' in t, 5)
-        final = await bond_list(usb)
-        log(f'most bonds listed: {max(counts, default=0)}; after the forgets: {len(final)} {" ".join(final)}')
-        missing = [b for b in before if b not in final]
-        if missing:
-            log(f'NOT BACK: {" ".join(missing)}: pair them again')
     return 0
 
 
@@ -321,7 +586,11 @@ def main():
     b = sub.add_parser('bonds')
     b.add_argument('--watch', required=True, help="the watch's address, as `ble` prints it")
     b.add_argument('--transport', default='hci-socket:0')
-    b.add_argument('--most', type=int, default=40)
+    which = b.add_mutually_exclusive_group()
+    which.add_argument('--scenario', choices=SCENARIOS, help='a named list of steps (SCENARIOS)')
+    which.add_argument('--steps', default='fill 1', help='steps, `;` between them (the module docstring)')
+    b.add_argument('--log', help='also write the run here; an existing log is never overwritten')
+    b.add_argument('--keep', action='store_true', help='leave the throwaway bonds on the watch at the end')
     args = ap.parse_args()
     run = {'matrix': matrix, 'll': link_layer, 'bonds': bonds}[args.what]
     return asyncio.run(run(args))
