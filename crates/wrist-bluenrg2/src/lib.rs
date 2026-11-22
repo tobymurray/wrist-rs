@@ -41,8 +41,9 @@ pub const CAPABILITIES: Capabilities = Capabilities {
     guard: Micros(1_500),
     discovery_max: Some(Millis(10_200)),
     peer_param_requests: ParamAnswer::RejectOnly,
-    // ST's DTM_config.h; the 8 services measured by `ble probe gatt` (HARDWARE.md).
-    gatt: GattLimits { services: 8, attributes: 68, mtu: 220 },
+    // 8 services, as ST's DTM_config.h says; 73 attribute handles in all, where it says 68 (both
+    // measured by `ble probe gatt`, HARDWARE.md).
+    gatt: GattLimits { services: 8, attributes: 73, mtu: 220 },
     op_deadline,
     exclusions: &[Exclusion::NoAdvertiseWhileInitiating, Exclusion::NoInitiateWhileInitiating],
     encryption_quiet: Millis(1_500),

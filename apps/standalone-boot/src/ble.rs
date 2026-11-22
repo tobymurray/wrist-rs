@@ -171,6 +171,13 @@ enum Request {
     ProbeAlarm,
     #[cfg(feature = "ble-probe")]
     Probe,
+    /// `ble probe matrix [from <n>]`: advertising beside the link at each interval, both orders.
+    #[cfg(feature = "ble-probe")]
+    ProbeMatrix(u8),
+    /// `ble probe ll [control]`: one boot in link-layer-only mode, advertising for a host to
+    /// connect; with `control`, the same boot with the chip's host kept.
+    #[cfg(feature = "ble-probe")]
+    ProbeLinkLayer(bool),
     /// `ble probe gatt services|records|values`: fill the GATT table until the chip refuses.
     #[cfg(feature = "ble-probe")]
     ProbeGatt(probe::Gatt),
@@ -364,6 +371,7 @@ fn power() -> Power {
 }
 
 /// `ble on|off|version|yes|no|bonds|status|forget [address]|disconnect|profile auto|cable|battery|interval now <min> <max>|scan [s [interval window]]`.
+#[allow(clippy::too_many_lines, reason = "one arm a command")]
 pub fn command(args: &[u8], uart: Uart) {
     let request = match args {
         b"on" => Request::On,
@@ -383,6 +391,19 @@ pub fn command(args: &[u8], uart: Uart) {
         b"disconnect" => Request::Disconnect,
         #[cfg(feature = "ble-probe")]
         b"probe" => Request::Probe,
+        #[cfg(feature = "ble-probe")]
+        b"probe matrix" => Request::ProbeMatrix(0),
+        #[cfg(feature = "ble-probe")]
+        rest if rest.starts_with(b"probe matrix from ") => {
+            match core::str::from_utf8(&rest[18..]).ok().and_then(|t| t.trim().parse::<u8>().ok()).filter(|&n| n < probe::CELLS) {
+                Some(n) => Request::ProbeMatrix(n),
+                None => return uart.write_line("[ble] usage: ble probe matrix [from <cell, 0-59>]"),
+            }
+        }
+        #[cfg(feature = "ble-probe")]
+        b"probe ll" => Request::ProbeLinkLayer(false),
+        #[cfg(feature = "ble-probe")]
+        b"probe ll control" => Request::ProbeLinkLayer(true),
         #[cfg(feature = "ble-probe")]
         b"probe gatt services" => Request::ProbeGatt(probe::Gatt::Services),
         #[cfg(feature = "ble-probe")]
@@ -718,6 +739,8 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
                 }
                 #[cfg(feature = "ble-probe")]
                 Request::Probe
+                | Request::ProbeMatrix(_)
+                | Request::ProbeLinkLayer(_)
                 | Request::ProbeGatt(_)
                 | Request::Restart(_)
                 | Request::ProbeAdvertising
@@ -870,6 +893,9 @@ struct Link<'d> {
     /// `ble probe lose link`: the next connection withheld from the core.
     #[cfg(feature = "ble-probe")]
     withhold_connection: bool,
+    /// `ble probe matrix`: what came of the link's last update.
+    #[cfg(feature = "ble-probe")]
+    update_seen: wrist_bluenrg2::probe::Update,
 }
 
 impl<'d> Link<'d> {
@@ -905,6 +931,8 @@ impl<'d> Link<'d> {
             refuse_scan: None,
             #[cfg(feature = "ble-probe")]
             withhold_connection: false,
+            #[cfg(feature = "ble-probe")]
+            update_seen: wrist_bluenrg2::probe::Update::default(),
         }
     }
 }
@@ -1059,6 +1087,10 @@ impl Link<'_> {
             Request::Scan(seconds, duty) => self.scan_request(seconds, duty).await,
             #[cfg(feature = "ble-probe")]
             Request::Probe => self.probe().await,
+            #[cfg(feature = "ble-probe")]
+            Request::ProbeMatrix(from) => self.probe_matrix(from).await,
+            #[cfg(feature = "ble-probe")]
+            Request::ProbeLinkLayer(control) => self.probe_link_layer(control).await,
             #[cfg(feature = "ble-probe")]
             Request::ProbeGatt(what) => self.probe_gatt(what).await,
             #[cfg(feature = "ble-probe")]
@@ -1896,6 +1928,8 @@ impl Link<'_> {
 
     /// One packet from the chip: capture a reply, act on an event.
     fn handle(&mut self, p: &[u8], event: Option<RadioEvent>) {
+        #[cfg(feature = "ble-probe")]
+        self.saw_update(p);
         match event {
             Some(RadioEvent::DataLength { tx, rx, tx_time, rx_time, .. }) => return self.data_length((tx, tx_time), (rx, rx_time)),
             Some(RadioEvent::ServerWrite { attr: server::RX, offset, more, data, .. }) => return self.console_write(offset != 0 || more, data.as_slice()),

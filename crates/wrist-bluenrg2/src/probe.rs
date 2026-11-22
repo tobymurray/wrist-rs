@@ -149,3 +149,148 @@ impl fmt::Display for Taken<'_> {
         }
     }
 }
+
+/// `ble probe matrix`'s advertising intervals, each asked as min = max (DESIGN.md §5.2). The
+/// chip advertises 5 ms longer than asked (PM0257 §4.2.3), so all but 975 ms make a round period.
+pub const MATRIX_ADVERTISING_MS: [u16; 6] = [95, 100, 495, 995, 2495, 975];
+
+/// The intervals `ble probe matrix` asks of the central for the link, min = max.
+pub const MATRIX_LINK_MS: [u16; 5] = [35, 50, 100, 250, 500];
+
+/// The supervision timeout each update asks for: long enough for the longest interval.
+pub const MATRIX_TIMEOUT_MS: u16 = 5_000;
+
+/// Which of a cell's two changes comes first; the other is made beside it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Order {
+    /// The link re-timed, then advertising started beside it.
+    LinkFirst,
+    /// Advertising started, then the link re-timed beside it.
+    AdvertisingFirst,
+}
+
+/// One cell of the matrix.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Cell {
+    pub index: u8,
+    pub order: Order,
+    pub adv_ms: u16,
+    pub link_ms: u16,
+}
+
+impl Cell {
+    /// Every cell, both orders.
+    #[allow(clippy::cast_possible_truncation, reason = "6 x 5 x 2")]
+    pub const COUNT: u8 = (MATRIX_ADVERTISING_MS.len() * MATRIX_LINK_MS.len() * 2) as u8;
+
+    /// The `index`th cell: the order outermost, the link's interval innermost, so that no cell
+    /// asks for the interval the link already has.
+    #[must_use]
+    pub fn nth(index: u8) -> Option<Self> {
+        let i = usize::from(index);
+        let per_order = MATRIX_ADVERTISING_MS.len() * MATRIX_LINK_MS.len();
+        let order = match i / per_order {
+            0 => Order::LinkFirst,
+            1 => Order::AdvertisingFirst,
+            _ => return None,
+        };
+        let i = i % per_order;
+        Some(Self { index, order, adv_ms: MATRIX_ADVERTISING_MS[i / MATRIX_LINK_MS.len()], link_ms: MATRIX_LINK_MS[i % MATRIX_LINK_MS.len()] })
+    }
+
+    /// The advertising interval in 0.625 ms units.
+    #[must_use]
+    pub const fn adv_units(self) -> u16 {
+        self.adv_ms * 8 / 5
+    }
+
+    /// The link's interval in 1.25 ms units.
+    #[must_use]
+    pub const fn link_units(self) -> u16 {
+        self.link_ms * 4 / 5
+    }
+}
+
+/// What came of asking the central for the cell's interval.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Update {
+    /// `ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_REQ`'s status; `None` when it had no reply.
+    pub status: Option<u8>,
+    /// The central's answer.
+    pub accepted: Option<bool>,
+    /// LE Connection Update Complete: its status, and on success the interval (1.25 ms units)
+    /// and latency.
+    pub done: Option<(u8, u16, u16)>,
+}
+
+/// One cell's line: each change's outcome in the order made, the anchor period read after each,
+/// and whether the link was still up at the end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Matrix<'a> {
+    pub cell: Cell,
+    pub update: Update,
+    /// `ACI_GAP_SET_DISCOVERABLE`'s status; `None` when it had no reply.
+    pub advertising: Option<u8>,
+    /// `ACI_HAL_GET_ANCHOR_PERIOD`'s reply after the first change and after the second.
+    pub anchors: [Option<(u8, &'a [u8])>; 2],
+    pub link_up: bool,
+}
+
+impl fmt::Display for Matrix<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let c = self.cell;
+        let order = match c.order {
+            Order::LinkFirst => "link-first",
+            Order::AdvertisingFirst => "adv-first",
+        };
+        write!(f, "probe matrix cell={} order={order} adv_ms={} link_ms={}", c.index, c.adv_ms, c.link_ms)?;
+        let update = |f: &mut fmt::Formatter<'_>| -> fmt::Result {
+            let u = &self.update;
+            match u.status {
+                Some(s) => write!(f, " update=0x{s:02x}")?,
+                None => f.write_str(" update=none")?,
+            }
+            match u.accepted {
+                Some(true) => f.write_str(" answer=accepted")?,
+                Some(false) => f.write_str(" answer=rejected")?,
+                None => f.write_str(" answer=none")?,
+            }
+            match u.done {
+                Some((0, interval, latency)) => write!(f, " done=0x00 interval_us={} latency={latency}", u64::from(interval) * CONN_UNIT_US),
+                Some((s, ..)) => write!(f, " done=0x{s:02x}"),
+                None => f.write_str(" done=none"),
+            }
+        };
+        let advertising = |f: &mut fmt::Formatter<'_>| match self.advertising {
+            Some(s) => write!(f, " adv=0x{s:02x}"),
+            None => f.write_str(" adv=none"),
+        };
+        let anchor = |f: &mut fmt::Formatter<'_>, n: usize| match self.anchors[n - 1] {
+            Some((0, p)) => match AnchorPeriod::decode(p) {
+                Some(a) => write!(
+                    f,
+                    " anchor{n}_us={} free{n}_us={}",
+                    u64::from(a.anchor_period) * SLOT_US,
+                    u64::from(a.max_free_slot) * SLOT_US
+                ),
+                None => write!(f, " anchor{n}=short"),
+            },
+            Some((s, _)) => write!(f, " anchor{n}=0x{s:02x}"),
+            None => write!(f, " anchor{n}=none"),
+        };
+        match c.order {
+            Order::LinkFirst => {
+                update(f)?;
+                anchor(f, 1)?;
+                advertising(f)?;
+            }
+            Order::AdvertisingFirst => {
+                advertising(f)?;
+                anchor(f, 1)?;
+                update(f)?;
+            }
+        }
+        anchor(f, 2)?;
+        f.write_str(if self.link_up { " link=up" } else { " link=lost" })
+    }
+}
