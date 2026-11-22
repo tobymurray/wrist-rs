@@ -101,7 +101,8 @@ fn pages(faces: &Faces) -> Vec<(String, (Glass, Short))> {
     for radio in radios {
         for (name, prompt) in [("idle", None), ("compare", Some(Prompt::Compare(888_888))), ("passkey", Some(Prompt::Passkey(0)))] {
             for old_key in [false, true] {
-                let bt = Bluetooth { radio, prompt, bonded: Some(u8::MAX), old_key };
+                let retry = (radio == Radio::Failed).then_some(wrist_display::l10n::Clock { h: 23, m: 59, s: 0 });
+                let bt = Bluetooth { radio, prompt, bonded: Some(u8::MAX), old_key, retry };
                 let old = if old_key { "-old-key" } else { "" };
                 all.push((format!("bluetooth-{radio:?}-{name}{old}"), compose_bluetooth(&bt, &EN_GB, faces)));
             }
@@ -334,7 +335,7 @@ fn previews() {
 #[test]
 fn the_bluetooth_page_shows_six_digits_with_leading_zeros() {
     for prompt in [Prompt::Compare(42), Prompt::Passkey(42)] {
-        let (glass, _) = compose_bluetooth(&Bluetooth { radio: Radio::Connected, prompt: Some(prompt), bonded: Some(1), old_key: false }, &EN_GB, &ATKINSON);
+        let (glass, _) = compose_bluetooth(&Bluetooth { radio: Radio::Connected, prompt: Some(prompt), bonded: Some(1), old_key: false, retry: None }, &EN_GB, &ATKINSON);
         assert!(texts(&glass).contains(&"000042"), "{:?}", texts(&glass));
     }
 }
@@ -344,23 +345,23 @@ fn the_bluetooth_page_stands_its_switch_where_the_radio_is() {
     use wrist_display::glass::switch::Switch;
     for (radio, switch) in [
         (Radio::Off, Switch::Off),
-        (Radio::Failed, Switch::Off),
+        (Radio::Failed, Switch::On),
         (Radio::Starting, Switch::Moving),
         (Radio::On, Switch::On),
         (Radio::Discoverable, Switch::On),
         (Radio::Connected, Switch::On),
         (Radio::Secure, Switch::On),
     ] {
-        let (glass, _) = compose_bluetooth(&Bluetooth { radio, prompt: None, bonded: Some(2), old_key: false }, &EN_GB, &ATKINSON);
+        let (glass, _) = compose_bluetooth(&Bluetooth { radio, prompt: None, bonded: Some(2), old_key: false, retry: None }, &EN_GB, &ATKINSON);
         assert_eq!(glass.switch(), Some(switch), "{radio:?}");
         assert!(texts(&glass).contains(&"2 bonded"));
     }
-    let (glass, _) = compose_bluetooth(&Bluetooth { radio: Radio::Secure, prompt: Some(Prompt::Compare(1)), bonded: Some(2), old_key: false }, &EN_GB, &ATKINSON);
+    let (glass, _) = compose_bluetooth(&Bluetooth { radio: Radio::Secure, prompt: Some(Prompt::Compare(1)), bonded: Some(2), old_key: false, retry: None }, &EN_GB, &ATKINSON);
     assert_eq!(glass.switch(), None);
     assert_eq!(texts(&glass)[3..], ["select: it matches", "back: no match"]);
-    let (glass, _) = compose_bluetooth(&Bluetooth { radio: Radio::Off, prompt: None, bonded: None, old_key: false }, &EN_GB, &ATKINSON);
+    let (glass, _) = compose_bluetooth(&Bluetooth { radio: Radio::Off, prompt: None, bonded: None, old_key: false, retry: None }, &EN_GB, &ATKINSON);
     assert!(!texts(&glass).iter().any(|t| t.contains("bonded")), "{:?}", texts(&glass));
-    let (glass, _) = compose_bluetooth(&Bluetooth { radio: Radio::Discoverable, prompt: None, bonded: Some(2), old_key: true }, &EN_GB, &ATKINSON);
+    let (glass, _) = compose_bluetooth(&Bluetooth { radio: Radio::Discoverable, prompt: None, bonded: Some(2), old_key: true, retry: None }, &EN_GB, &ATKINSON);
     assert_eq!(texts(&glass)[1..], ["discoverable", "forget & pair"]);
 }
 
@@ -390,4 +391,21 @@ fn the_backdrop_painted_box_by_box_is_the_backdrop() {
             assert!(whole == boxes, "{switch:?} in boxes of {bw} by {bh}");
         }
     }
+}
+
+/// A radio held after a fault says when it is tried again, in place of the count; with the clock
+/// unset, the count.
+#[test]
+fn the_bluetooth_page_says_when_a_held_radio_is_tried_again() {
+    let at = wrist_display::l10n::Clock { h: 14, m: 5, s: 0 };
+    let bt = Bluetooth { radio: Radio::Failed, prompt: None, bonded: Some(2), old_key: false, retry: Some(at) };
+    let (glass, _) = compose_bluetooth(&bt, &EN_GB, &ATKINSON);
+    let shown = texts(&glass);
+    assert!(shown.contains(&"failed"), "{shown:?}");
+    assert!(shown.iter().any(|t| t.starts_with("retry") && t.contains("14")), "{shown:?}");
+    assert!(!shown.contains(&"2 bonded"), "{shown:?}");
+    let (glass, _) = compose_bluetooth(&Bluetooth { retry: None, ..bt }, &EN_GB, &ATKINSON);
+    assert!(texts(&glass).contains(&"2 bonded"));
+    let (glass, _) = compose_bluetooth(&Bluetooth { radio: Radio::On, ..bt }, &EN_GB, &ATKINSON);
+    assert!(texts(&glass).contains(&"2 bonded"), "only a held radio has a retry");
 }

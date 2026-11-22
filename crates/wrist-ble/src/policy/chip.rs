@@ -90,11 +90,18 @@ impl ChipMachine {
                 self.state = Chip::Off;
                 Some(Action::Hold)
             }
-            (Chip::Off, Event::RadioOn) => {
+            // The radio on, or the user asking again after a fault: a fresh start with the whole
+            // hour's budget.
+            (Chip::Off, Event::RadioOn) | (Chip::Fault { .. }, Event::Retry) => {
                 self.resets = [None; RESETS_PER_HOUR];
                 Some(self.begin(now))
             }
-            (Chip::Fault { .. }, Event::Retry) => Some(self.begin(now)),
+            // The user's ask, in the instant the fault's own retry started the chip: the start
+            // stands, with the whole budget.
+            (Chip::Starting { .. }, Event::Retry) => {
+                self.resets = [None; RESETS_PER_HOUR];
+                None
+            }
             (Chip::Fault { retry_at, .. }, Event::Tick) if now >= retry_at => {
                 self.resets = [Some(now + RETRY_PROVEN - HOUR); RESETS_PER_HOUR];
                 Some(self.begin(now))
@@ -103,7 +110,8 @@ impl ChipMachine {
                 self.state = Chip::Ready(info);
                 None
             }
-            (Chip::Starting { .. }, Event::StartFailed) => Some(self.escalate(now, FaultCause::StartFailed)),
+            // A start the driver failed after the chip's boot had answered it, as up.
+            (Chip::Starting { .. } | Chip::Ready(_), Event::StartFailed) => Some(self.escalate(now, FaultCause::StartFailed)),
             (Chip::Starting { since }, Event::Tick) if now >= since + caps.start_within => Some(self.escalate(now, FaultCause::StartFailed)),
             (Chip::Ready(_), Event::BaselineRefused) => Some(self.escalate(now, FaultCause::BaselineRefused)),
             (Chip::Ready(_), Event::BusySpent) => Some(self.escalate(now, FaultCause::KeptBusy)),

@@ -88,7 +88,7 @@ pub fn status(soc_pct: Option<u8>) -> Status {
 
 fn old_key() -> bool {
     #[cfg(feature = "ble")]
-    return crate::ble::has_old_key();
+    return crate::ble::see_page();
     #[cfg(not(feature = "ble"))]
     false
 }

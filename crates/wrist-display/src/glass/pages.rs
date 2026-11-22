@@ -207,6 +207,8 @@ pub struct Bluetooth {
     pub bonded: Option<u8>,
     /// A central refused for a key the watch has lost: a notice in place of the count.
     pub old_key: bool,
+    /// The radio held after a fault: when it is tried again by itself, if the clock is set.
+    pub retry: Option<Clock>,
 }
 
 /// The radio, as the Bluetooth page names it.
@@ -271,13 +273,20 @@ pub fn compose_bluetooth(bt: &Bluetooth, locale: &Locale, faces: &Faces) -> (Gla
         }
         None => {
             b.glass.set_switch(match bt.radio {
-                Radio::Off | Radio::Failed => Switch::Off,
+                Radio::Off => Switch::Off,
                 Radio::Starting => Switch::Moving,
-                Radio::On | Radio::Discoverable | Radio::Connected | Radio::Secure => Switch::On,
+                // Held after a fault, the radio is still wanted: Select turns it off.
+                Radio::On | Radio::Discoverable | Radio::Connected | Radio::Secure | Radio::Failed => Switch::On,
             });
             b.at(faces.words, BT_TITLE, |l| locale.message(l, Msg::BluetoothTitle));
             b.at(faces.words, crate::glass::switch::BELOW, |l| locale.message(l, state));
-            if bt.old_key {
+            if let Some(at) = bt.retry.filter(|_| bt.radio == Radio::Failed) {
+                b.at(faces.id, BT_BONDED, |l| {
+                    locale.message(l, Msg::BluetoothRetry)?;
+                    l.push_verbatim(" ")?;
+                    locale.time(l, at)
+                });
+            } else if bt.old_key {
                 b.at(faces.id, BT_BONDED, |l| locale.message(l, Msg::BluetoothOldKey));
             } else if let Some(n) = bt.bonded {
                 b.at(faces.id, BT_BONDED, |l| locale.message(l, Msg::BluetoothBonded { n: u32::from(n) }));

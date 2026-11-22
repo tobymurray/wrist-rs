@@ -62,5 +62,8 @@ bluetooth-back-no-match = back: no match
 bluetooth-type-passkey = type on the phone
 # On the Bluetooth page, for a phone or computer refused for a pairing key the watch no longer has.
 bluetooth-old-key = forget & pair
-# On the face, for the same.
+# On the face, for the same, and for the radio held after a fault.
 bluetooth-see-page = see Bluetooth
+# The radio held after a fault: before the time of day it is tried again by itself. Select, on
+# the switch, turns it off; again, starts it afresh.
+bluetooth-retry = retry
