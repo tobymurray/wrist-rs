@@ -93,3 +93,26 @@ fn the_users_retry_starts_with_a_fresh_budget() {
     let out = core.step(t(at + 600_000), Input::Radio(RadioEvent::ChipReset(ResetCause::Watchdog)));
     assert!(matches!(out.chip, Some(Action::Start(_))), "{out:?}");
 }
+
+/// The user's ask in the same instant the fault's own retry started the chip: the start stands,
+/// with the whole budget.
+#[test]
+fn the_users_retry_as_the_hours_retry_starts_keeps_the_fresh_budget() {
+    use wrist_ble::{RadioEvent, ResetCause};
+    let mut core = booted();
+    let mut at = 1_000;
+    while !matches!(core.state.chip.state, Chip::Fault { .. }) {
+        core.step(t(at), Input::StartFailed);
+        if let Some(start) = core.state.chip.starting() {
+            core.step(t(at), Input::Started(start, Ok(INFO)));
+        }
+        at += 3_000;
+    }
+    let Chip::Fault { retry_at, .. } = core.state.chip.state else { unreachable!() };
+    assert!(matches!(core.step(retry_at, Input::Tick).chip, Some(Action::Start(_))));
+    assert_eq!(core.step(retry_at, Input::RetryRadio).chip, None);
+    let start = core.state.chip.starting().expect("the hour's start stands");
+    core.step(retry_at, Input::Started(start, Ok(INFO)));
+    let out = core.step(retry_at + wrist_ble::Millis::secs(180), Input::Radio(RadioEvent::ChipReset(ResetCause::Watchdog)));
+    assert!(matches!(out.chip, Some(Action::Start(_))), "{out:?}");
+}

@@ -273,9 +273,10 @@ pub fn compose_bluetooth(bt: &Bluetooth, locale: &Locale, faces: &Faces) -> (Gla
         }
         None => {
             b.glass.set_switch(match bt.radio {
-                Radio::Off | Radio::Failed => Switch::Off,
+                Radio::Off => Switch::Off,
                 Radio::Starting => Switch::Moving,
-                Radio::On | Radio::Discoverable | Radio::Connected | Radio::Secure => Switch::On,
+                // Held after a fault, the radio is still wanted: Select turns it off.
+                Radio::On | Radio::Discoverable | Radio::Connected | Radio::Secure | Radio::Failed => Switch::On,
             });
             b.at(faces.words, BT_TITLE, |l| locale.message(l, Msg::BluetoothTitle));
             b.at(faces.words, crate::glass::switch::BELOW, |l| locale.message(l, state));

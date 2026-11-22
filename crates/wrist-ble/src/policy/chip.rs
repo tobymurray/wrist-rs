@@ -96,6 +96,12 @@ impl ChipMachine {
                 self.resets = [None; RESETS_PER_HOUR];
                 Some(self.begin(now))
             }
+            // The user's ask, in the instant the fault's own retry started the chip: the start
+            // stands, with the whole budget.
+            (Chip::Starting { .. }, Event::Retry) => {
+                self.resets = [None; RESETS_PER_HOUR];
+                None
+            }
             (Chip::Fault { retry_at, .. }, Event::Tick) if now >= retry_at => {
                 self.resets = [Some(now + RETRY_PROVEN - HOUR); RESETS_PER_HOUR];
                 Some(self.begin(now))

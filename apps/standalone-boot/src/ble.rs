@@ -759,7 +759,7 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
         // The core gave up on the chip: held in reset until it tries again, or is asked to.
         if !(link.start().await && link.serve(&mut changes).await) {
             link.last_status();
-            link.release();
+            link.chip_gone();
             set_state(STATE_FAILED);
             old_key(OldKey::clear);
             link.chip.hold();
@@ -1251,7 +1251,7 @@ impl Link<'_> {
                         break true;
                     }
                 }
-                Either::First(_) => self.uart.write_line("[ble] the chip is held after a fault: `ble on` or Select tries again now, `ble off` turns it off"),
+                Either::First(_) => self.uart.write_line("[ble] the chip is held after a fault: `ble on` tries again now, `ble off` or Select turns it off"),
                 Either::Second(()) => {
                     self.shadow.advance(now_ms());
                     if self.shadow.retry_at().is_none() {
@@ -2024,19 +2024,6 @@ impl Link<'_> {
     }
 
     /// The chip is starting again: nothing of its link or the work it left survives.
-    /// Everything that needs a chip let go as it is held after a fault: a transfer ended, the
-    /// console's mirror off, the link's encryption and the pairing prompt forgotten.
-    fn release(&mut self) {
-        if let Some(session) = self.transfer.take() {
-            crate::update::abort(session);
-        }
-        self.chip_gone();
-        MIRROR.store(false, Ordering::Relaxed);
-        ROOM.signal(());
-        set_encrypted(false);
-        clear_prompt();
-    }
-
     fn chip_gone(&mut self) {
         self.link_gone();
         clear_out();

@@ -345,7 +345,7 @@ fn the_bluetooth_page_stands_its_switch_where_the_radio_is() {
     use wrist_display::glass::switch::Switch;
     for (radio, switch) in [
         (Radio::Off, Switch::Off),
-        (Radio::Failed, Switch::Off),
+        (Radio::Failed, Switch::On),
         (Radio::Starting, Switch::Moving),
         (Radio::On, Switch::On),
         (Radio::Discoverable, Switch::On),
