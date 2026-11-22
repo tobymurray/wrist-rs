@@ -40,9 +40,6 @@ pub(super) const CELLS: u8 = Cell::COUNT;
 /// longest interval, with room.
 const UPDATE_WITHIN_MS: u64 = 15_000;
 
-/// How long the matrix waits before its first cell.
-const SETTLE_MS: u64 = 5_000;
-
 /// How long a cell holds both changes before its last reading, for at least one event of the
 /// longest advertising interval.
 const HOLD_MS: u64 = 3_000;
@@ -447,14 +444,14 @@ impl Link<'_> {
         if self.shadow.issuing() || self.chip.due().is_some() {
             return self.uart.write_line("[ble] probe matrix: the core has an operation in flight; try again");
         }
-        let link = self.shadow.state().phone.link().map(|l| l.raw());
-        if link.is_none() || link != Some(CONN_HANDLE.load(Ordering::Relaxed)) {
+        let newest = CONN_HANDLE.load(Ordering::Relaxed);
+        let Some(link) = self.shadow.state().phone.link().map(|l| l.raw()).filter(|&l| l == newest) else {
             return self.uart.write_line("[ble] probe matrix: the core's link is not the newest; one central only");
-        }
-        self.matrix_handle = link.unwrap_or(0);
+        };
+        self.matrix_handle = link;
         let _ = self.command(ACI_GAP_SET_NON_DISCOVERABLE, &[]).await;
         // An update the core's last ask began lands before the first cell's.
-        self.events_for(SETTLE_MS, |_| false).await;
+        self.events_for(UPDATE_WITHIN_MS, |_| false).await;
         let mut index = from;
         while let Some(cell) = Cell::nth(index) {
             if self.transfer.is_some() {

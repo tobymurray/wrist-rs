@@ -38,10 +38,10 @@ FIXTURE = Path(__file__).resolve().parent.parent / 'crates/wrist-bluenrg2/tests/
 CELL = re.compile(r'\[ble\] (probe matrix cell=\d+ .*)$')
 WENT = re.compile(r'the link went in cell (\d+)')
 LL_ADDRESS = 'C0:2C:00:00:00:01'
-# Longer than any cell takes (`UPDATE_WITHIN_MS` and `HOLD_MS`, apps/standalone-boot/src/ble/probe.rs).
+# Longer than any cell takes, or the wait before the first (`UPDATE_WITHIN_MS`, `HOLD_MS`, apps/standalone-boot/src/ble/probe.rs).
 CELL_WITHIN_S = 40
 # What the watch prints for a matrix it won't run.
-REFUSED = ('probe matrix:', '[ble] off', 'held after a fault', 'unknown command', 'not queued', '[ble] usage:')
+REFUSED = ('probe matrix:', '[ble] off', 'held after a fault', 'unknown command', 'not queued')
 BUSY = 'operation in flight'
 
 
@@ -129,12 +129,12 @@ async def matrix(args):
             failures += 1
             await asyncio.sleep(5)
             continue
-        # The link's own start (encryption, the core's first ask) over before the first cell.
+        # The link's own start (encryption) over before the first cell.
         await asyncio.sleep(args.settle)
         usb.send(f'ble probe matrix from {start}' if start else 'ble probe matrix')
         resume = None
         while True:
-            text = await lines_until(usb, lambda t: any(r in t for r in ('probe matrix',) + REFUSED), CELL_WITHIN_S)
+            text = await lines_until(usb, lambda t: 'probe matrix' in t or any(r in t for r in REFUSED), CELL_WITHIN_S)
             if text is None:
                 log('no line from the matrix in time')
                 break
@@ -159,7 +159,7 @@ async def matrix(args):
             pass
         if resume is None:
             break
-        resumes += resume != start
+        resumes += 1
         start = resume
         await asyncio.sleep(3)
     header = [
@@ -314,7 +314,7 @@ def main():
     sub = ap.add_subparsers(dest='what', required=True)
     m = sub.add_parser('matrix')
     m.add_argument('--out', default=str(FIXTURE))
-    m.add_argument('--from', dest='start', type=int, default=0)
+    m.add_argument('--from', dest='start', type=int, default=0, choices=range(60), metavar='0-59')
     m.add_argument('--settle', type=float, default=8, help='seconds between connecting and the first cell')
     ll = sub.add_parser('ll')
     ll.add_argument('--control', action='store_true', help="the same boot with the chip's host kept (0x2C written 0)")
