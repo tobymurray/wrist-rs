@@ -896,6 +896,9 @@ struct Link<'d> {
     /// `ble probe matrix`: what came of the link's last update.
     #[cfg(feature = "ble-probe")]
     update_seen: wrist_bluenrg2::probe::Update,
+    /// `ble probe matrix`: the link it re-times, as its run began.
+    #[cfg(feature = "ble-probe")]
+    matrix_handle: u16,
 }
 
 impl<'d> Link<'d> {
@@ -933,6 +936,8 @@ impl<'d> Link<'d> {
             withhold_connection: false,
             #[cfg(feature = "ble-probe")]
             update_seen: wrist_bluenrg2::probe::Update::default(),
+            #[cfg(feature = "ble-probe")]
+            matrix_handle: 0,
         }
     }
 }
@@ -1929,7 +1934,7 @@ impl Link<'_> {
     /// One packet from the chip: capture a reply, act on an event.
     fn handle(&mut self, p: &[u8], event: Option<RadioEvent>) {
         #[cfg(feature = "ble-probe")]
-        self.saw_update(p);
+        self.update_seen.saw(self.matrix_handle, p);
         match event {
             Some(RadioEvent::DataLength { tx, rx, tx_time, rx_time, .. }) => return self.data_length((tx, tx_time), (rx, rx_time)),
             Some(RadioEvent::ServerWrite { attr: server::RX, offset, more, data, .. }) => return self.console_write(offset != 0 || more, data.as_slice()),

@@ -49,6 +49,30 @@ fn a_cell_line_names_each_change_in_the_order_made() {
     );
 }
 
+/// LE Connection Update Complete on `handle`: success, the interval in 1.25 ms units, latency 0.
+fn update_complete(handle: u16, interval: u16) -> Vec<u8> {
+    let [h0, h1] = handle.to_le_bytes();
+    let [i0, i1] = interval.to_le_bytes();
+    vec![0x04, 0x3E, 0x0A, 0x03, 0x00, h0, h1, i0, i1, 0, 0, 0xF4, 0x01]
+}
+
+/// `ACI_L2CAP_CONNECTION_UPDATE_RESP_EVENT` on `handle`, accepted.
+fn l2cap_accepted(handle: u16) -> Vec<u8> {
+    let [h0, h1] = handle.to_le_bytes();
+    vec![0x04, 0xFF, 0x06, 0x00, 0x08, h0, h1, 0x00, 0x00]
+}
+
+#[test]
+fn another_links_update_is_not_the_cells() {
+    let mut u = Update { status: Some(0), ..Update::default() };
+    u.saw(0x0801, &update_complete(0x0802, 36));
+    u.saw(0x0801, &l2cap_accepted(0x0802));
+    assert_eq!((u.accepted, u.done), (None, None));
+    u.saw(0x0801, &l2cap_accepted(0x0801));
+    u.saw(0x0801, &update_complete(0x0801, 28));
+    assert_eq!((u.accepted, u.done), (Some(true), Some((0, 28, 0))));
+}
+
 fn adv(ms: u16) -> AdvParams {
     let units = Duration::from_u16(ms * 8 / 5);
     AdvParams { interval_min: units, interval_max: units, connectable: true }

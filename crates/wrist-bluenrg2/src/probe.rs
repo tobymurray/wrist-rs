@@ -4,6 +4,7 @@ use core::fmt;
 
 use bluenrg2::opcode;
 use bluenrg2::hal::{updater_version, AnchorPeriod, FirmwareDetails};
+use bluenrg2::{Event, VendorEvent};
 use wrist_ble::{AddrKind, Fault, LeConnRole, LinkStatus, Snapshot};
 
 /// Microseconds in the 0.625 ms unit of the anchor period and advertising intervals.
@@ -220,6 +221,20 @@ pub struct Update {
     /// LE Connection Update Complete: its status, and on success the interval (1.25 ms units)
     /// and latency.
     pub done: Option<(u8, u16, u16)>,
+}
+
+impl Update {
+    /// `packet` taken into the update of `link`; another link's events are not its own.
+    pub fn saw(&mut self, link: u16, packet: &[u8]) {
+        match bluenrg2::parse(packet) {
+            Event::LeConnectionUpdateComplete { handle, conn_interval, peripheral_latency, .. } if handle.raw() == link => {
+                self.done = Some((0, conn_interval.as_u16(), peripheral_latency));
+            }
+            Event::LeConnectionUpdateFailed { handle, status, .. } if handle.raw() == link => self.done = Some((status.into_inner(), 0, 0)),
+            Event::Vendor(VendorEvent::L2capUpdateResponse { handle, accepted, .. }) if handle.raw() == link => self.accepted = Some(accepted),
+            _ => {}
+        }
+    }
 }
 
 /// One cell's line: each change's outcome in the order made, the anchor period read after each,

@@ -12,7 +12,7 @@ use bluenrg2::opcode::{
     ACI_GAP_SET_NON_DISCOVERABLE, ACI_GAP_TERMINATE, ACI_GATT_ADD_CHAR, ACI_GATT_ADD_SERVICE, ACI_HAL_GET_ANCHOR_PERIOD,
     ACI_GATT_INIT, ACI_HAL_WRITE_CONFIG_DATA, ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_REQ, ACI_UPDATER_START, HCI_SET_EVENT_MASK,
 };
-use bluenrg2::{enc_key_size, evt_mask, permission, props, service_type, uuid_type, value_length, Event, VendorEvent};
+use bluenrg2::{enc_key_size, evt_mask, permission, props, service_type, uuid_type, value_length, Event};
 use wrist_bluenrg2::driver::{Got, Reply, RESET_MS};
 use wrist_bluenrg2::probe::{Beside, Cell, Line, Matrix, Order, Probe, Taken, Update, MATRIX_TIMEOUT_MS};
 use wrist_bluenrg2::snapshot::{Snap, Snapping};
@@ -174,25 +174,27 @@ impl Link<'_> {
         self.uart.write_str(" records, larger refused with status ");
         self.uart.write_hex8(first.unwrap_or(0));
         self.uart.write_line("");
-        let (mut n, mut last) = (0u32, service);
-        let status = loop {
-            match self.probe_char(service, PROBE_UUID + 1 + u16::try_from(n).unwrap_or(0), 1).await {
-                Ok(h) if n < 200 => {
+        let (mut n, mut last) = (0u16, None);
+        let mut status = 0;
+        while n < 200 {
+            match self.probe_char(service, PROBE_UUID + 1 + n, 1).await {
+                Ok(h) => {
                     n += 1;
-                    last = h;
+                    last = Some(h);
                 }
-                Ok(_) => break 0,
-                Err(s) => break s,
+                Err(s) => {
+                    status = s;
+                    break;
+                }
             }
-        };
-        self.uart.write_str("[ble] probe gatt records: ");
-        self.uart.write_u32(n);
-        self.uart.write_str(" one-byte characteristics (two records each) in it, then status ");
-        self.uart.write_hex8(status);
-        self.uart.write_line("");
-        // A characteristic's value follows its declaration's handle.
+        }
+        let after = self.probe_service(PROBE_UUID + 0x100, 1).await.err().unwrap_or(0);
         let mut t = Text(self.uart);
-        let _ = write!(t, "[ble] probe gatt records: service handle=0x{service:04x} last value handle=0x{:04x}", last.saturating_add(1));
+        let _ = write!(t, "[ble] probe gatt records: {n} one-byte characteristics (two records each) in it, then status {status:02X}; service handle=0x{service:04x}");
+        if let Some(h) = last {
+            let _ = write!(t, " last characteristic handle=0x{h:04x}");
+        }
+        let _ = write!(t, "; a one-record service after it: status {after:02X}");
         self.uart.write_line("");
     }
 
@@ -431,9 +433,13 @@ fn connected() -> bool {
 impl Link<'_> {
     /// Each cell from `from`, one line per cell, until the link goes.
     pub(super) async fn probe_matrix(&mut self, from: u8) {
-        if !connected() || self.scanner.until().is_some() {
-            return self.uart.write_line("[ble] probe matrix: needs a central's link and no scan (tools/ble-probe-host.py holds one)");
+        if !connected() || self.scanner.until().is_some() || self.transfer.is_some() {
+            return self.uart.write_line("[ble] probe matrix: needs a central's link, no scan and no update (tools/ble-probe-host.py holds one)");
         }
+        if self.shadow.issuing() || self.chip.due().is_some() {
+            return self.uart.write_line("[ble] probe matrix: the core has an operation in flight; try again");
+        }
+        self.matrix_handle = CONN_HANDLE.load(Ordering::Relaxed);
         let _ = self.command(ACI_GAP_SET_NON_DISCOVERABLE, &[]).await;
         let mut index = from;
         while let Some(cell) = Cell::nth(index) {
@@ -468,7 +474,7 @@ impl Link<'_> {
         };
         self.events_for(HOLD_MS, |_| false).await;
         let second = self.anchor_reply().await;
-        let link_up = connected();
+        let link_up = connected() && CONN_HANDLE.load(Ordering::Relaxed) == self.matrix_handle;
         write(self.uart, Matrix { cell, update, advertising, anchors: [params(first.as_ref()), params(second.as_ref())], link_up });
         if advertising == Some(0) {
             let _ = self.command(ACI_GAP_SET_NON_DISCOVERABLE, &[]).await;
@@ -479,7 +485,7 @@ impl Link<'_> {
     /// The link's interval asked of the central, and what came of it.
     async fn matrix_update(&mut self, cell: Cell) -> Update {
         self.update_seen = Update::default();
-        let h = CONN_HANDLE.load(Ordering::Relaxed).to_le_bytes();
+        let h = self.matrix_handle.to_le_bytes();
         let i = cell.link_units().to_le_bytes();
         let to = (MATRIX_TIMEOUT_MS / 10).to_le_bytes();
         let status = self.command(ACI_L2CAP_CONNECTION_PARAMETER_UPDATE_REQ, &[h[0], h[1], i[0], i[1], i[0], i[1], 0, 0, to[0], to[1]]).await;
@@ -505,23 +511,11 @@ impl Link<'_> {
         }
     }
 
-    /// The link's update as the chip reports it, for `ble probe matrix`.
-    pub(super) fn saw_update(&mut self, p: &[u8]) {
-        match bluenrg2::parse(p) {
-            Event::LeConnectionUpdateComplete { conn_interval, peripheral_latency, .. } => {
-                self.update_seen.done = Some((0, conn_interval.as_u16(), peripheral_latency));
-            }
-            Event::LeConnectionUpdateFailed { status, .. } => self.update_seen.done = Some((status.into_inner(), 0, 0)),
-            Event::Vendor(VendorEvent::L2capUpdateResponse { accepted, .. }) => self.update_seen.accepted = Some(accepted),
-            _ => {}
-        }
-    }
-
     /// One boot with `0x2C` written (0 for `control`), advertising by HCI commands as `UNA-LL` and
     /// printing every packet from the chip, then the chip reset for the driver to bring back.
     pub(super) async fn probe_link_layer(&mut self, control: bool) {
-        if connected() || self.scanner.until().is_some() {
-            return self.uart.write_line("[ble] probe ll: end the link and any scan first");
+        if connected() || self.scanner.until().is_some() || self.transfer.is_some() {
+            return self.uart.write_line("[ble] probe ll: end the link, any scan and any update first");
         }
         self.uart.write_line("[ble] probe ll: the chip reset for one boot without its host");
         self.chip.reset().await;

@@ -3,9 +3,9 @@
 
     ble-probe-host.py matrix [--out FILE] [--from N]
         Hold a link to the watch from this computer (BlueZ accepts each interval the watch asks
-        for) while `ble probe matrix` runs over USB; reconnect and resume if the link goes. Each
-        cell's line goes to FILE, the fixture `crates/wrist-bluenrg2/tests/fixtures/bluenrg2-probe.txt`
-        by default.
+        for) while `ble probe matrix` runs over USB; reconnect and resume if the link goes. A
+        whole run's cells go to FILE, the fixture `crates/wrist-bluenrg2/tests/fixtures/bluenrg2-probe.txt`
+        by default; a run that stops short, to FILE.partial.
 
     ble-probe-host.py ll [--control]
         Run `ble probe ll` (`ble probe ll control`) over USB, then find `UNA-LL` and connect to it: does the chip's own host
@@ -40,6 +40,8 @@ WENT = re.compile(r'the link went in cell (\d+)')
 LL_ADDRESS = 'C0:2C:00:00:00:01'
 # Longer than any cell takes (`UPDATE_WITHIN_MS` and `HOLD_MS`, apps/standalone-boot/src/ble/probe.rs).
 CELL_WITHIN_S = 40
+# What the watch prints for a matrix it won't run.
+REFUSED = ('probe matrix:', '[ble] off', 'held after a fault', 'unknown command')
 
 
 def log(text):
@@ -81,6 +83,27 @@ async def lines_until(usb, done, seconds):
             return text
 
 
+def kept(text):
+    """The cell's line in `text` for the fixture; None for any other line, and for a cell the link
+    went in, which runs again on the resume."""
+    m = CELL.search(text)
+    return m.group(1) if m and not text.endswith('link=lost') else None
+
+
+def destination(out, start, cells):
+    """Where a run's cells go, and whether it was a whole run: only a whole run replaces `out`."""
+    whole = start == 0 and len(cells) == 60
+    return (out if whole else out + '.partial'), whole
+
+
+def pairing_config(delegate):
+    """Pairing as a phone would, the throwaway address as the identity too, never the adapter's own
+    (a real bond)."""
+    from bumble.pairing import PairingConfig
+    return PairingConfig(sc=True, mitm=True, bonding=True, delegate=delegate,
+                         identity_address_type=PairingConfig.AddressType.RANDOM)
+
+
 async def hold_link(name):
     from bleak import BleakClient, BleakScanner
     device = await BleakScanner.find_device_by_name(name, timeout=20)
@@ -95,14 +118,16 @@ async def matrix(args):
     usb = Lines(args.port)
     cells = []
     start = args.start
-    for attempt in range(5):
-        log(f'connecting to {args.name}, attempt {attempt + 1}')
+    failures = 0
+    while failures < 5:
+        log(f'connecting to {args.name}')
         try:
             client = await hold_link(args.name)
         except Exception as e:
             log(f'connect: {e!r}')
             client = None
         if client is None:
+            failures += 1
             await asyncio.sleep(5)
             continue
         # The link's own start (encryption, the core's first ask) over before the first cell.
@@ -110,18 +135,19 @@ async def matrix(args):
         usb.send(f'ble probe matrix from {start}' if start else 'ble probe matrix')
         resume = None
         while True:
-            text = await lines_until(usb, lambda t: 'probe matrix' in t, CELL_WITHIN_S)
+            text = await lines_until(usb, lambda t: 'probe matrix' in t or any(r in t for r in REFUSED), CELL_WITHIN_S)
             if text is None:
                 log('no line from the matrix in time')
                 break
-            if m := CELL.search(text):
-                cells.append(m.group(1))
+            if CELL.search(text):
+                if line := kept(text):
+                    cells.append(line)
             elif m := WENT.search(text):
                 resume = int(m.group(1))
                 break
             elif 'probe matrix: done' in text:
                 break
-            elif 'probe matrix:' in text:
+            elif any(r in text for r in REFUSED):
                 log(f'the watch refused: {text}')
                 break
         try:
@@ -136,12 +162,20 @@ async def matrix(args):
         '# `ble probe matrix` on the watch, the Linux host the central (tools/ble-probe-host.py matrix).',
         f'# {time.strftime("%Y-%m-%d")}; one line per cell: each change in the order made, the anchor period after each.',
     ]
-    Path(args.out).write_text('\n'.join(header + cells) + '\n')
-    log(f'{len(cells)} cells written to {args.out}')
-    return 0 if len(cells) == 60 else 1
+    out, whole = destination(args.out, args.start, cells)
+    Path(out).write_text('\n'.join(header + cells) + '\n')
+    log(f'{len(cells)} cells written to {out}')
+    return 0 if whole else 1
 
 
 async def link_layer(args):
+    try:
+        return await link_layer_run(args)
+    finally:
+        subprocess.run(['timeout', '10', 'bluetoothctl', 'remove', LL_ADDRESS], capture_output=True)
+
+
+async def link_layer_run(args):
     from bleak import BleakClient, BleakScanner
     usb = Lines(args.port)
     usb.send('ble probe ll control' if args.control else 'ble probe ll')
@@ -156,7 +190,8 @@ async def link_layer(args):
         log('UNA-LL not seen')
     else:
         log(f'found {device.address}; connecting')
-        client = BleakClient(device, timeout=25)
+        # Longer than BlueZ's own 30 s ATT timeout, so that the link ends as BlueZ ends it.
+        client = BleakClient(device, timeout=45)
         try:
             await client.connect()
             log('connected; services as discovered:')
@@ -172,7 +207,6 @@ async def link_layer(args):
             pass
     await lines_until(usb, lambda t: 'probe ll: the chip reset' in t, 90)
     await lines_until(usb, lambda t: 'advertising' in t, 20)
-    subprocess.run(['timeout', '10', 'bluetoothctl', 'remove', LL_ADDRESS], capture_output=True)
     return 0
 
 
@@ -192,7 +226,7 @@ async def bonds(args):
     from bumble.core import BT_LE_TRANSPORT
     from bumble.device import Device, DeviceConfiguration
     from bumble.keys import MemoryKeyStore
-    from bumble.pairing import PairingConfig, PairingDelegate
+    from bumble.pairing import PairingDelegate
     from bumble.transport import open_transport
 
     class Yes(PairingDelegate):
@@ -218,7 +252,7 @@ async def bonds(args):
                 config = DeviceConfiguration(name='bond-probe', address=hci.Address(address, hci.Address.RANDOM_DEVICE_ADDRESS), irk=bytes([i]) * 16)
                 device = Device.from_config_with_hci(config, source, sink)
                 device.keystore = MemoryKeyStore()
-                device.pairing_config_factory = lambda _c: PairingConfig(sc=True, mitm=True, bonding=True, delegate=Yes())
+                device.pairing_config_factory = lambda _c: pairing_config(Yes())
                 await device.power_on()
                 outcome = 'no link'
                 try:
@@ -245,7 +279,11 @@ async def bonds(args):
                 log(f'{address}: {outcome}; the watch lists {len(now)} bonds')
                 lost = [b for b in before if b not in now]
                 if lost:
-                    log(f'bonds from before gone: {" ".join(lost)}')
+                    log(f'STOPPED: bonds from before gone: {" ".join(lost)}')
+                    break
+                if f'{address} (random)' not in now and len(counts) == 1:
+                    log(f'STOPPED: the first throwaway bond is not listed as {address} (random)')
+                    break
                 grew = len(counts) < 2 or counts[-1] > counts[-2]
                 misses = 0 if grew else misses + 1
                 if misses >= 2:
