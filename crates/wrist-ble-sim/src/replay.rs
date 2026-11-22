@@ -66,6 +66,10 @@ pub struct Report {
     pub unanswered_snapshots: u32,
     /// Records the watch did not keep while a dump read its ring: inputs the core missed there.
     pub not_kept: u32,
+    /// Bytes a dump said it had lost to the ring wrapping: the core's inputs are not whole.
+    pub dump_lost: u64,
+    /// `ble dump` reads seen.
+    pub dumps: u32,
 }
 
 impl Report {
@@ -111,6 +115,9 @@ impl Report {
         }
         if self.unasked_snapshots > 0 {
             out.push(format!("{} snapshots of the driver's the core never asked for", self.unasked_snapshots));
+        }
+        if self.dump_lost > 0 {
+            out.push(format!("{} bytes the watch's dump had lost: the core missed inputs before them", self.dump_lost));
         }
         if self.not_kept > 0 {
             out.push(format!("{} records the watch did not keep while dumping: the core missed inputs there", self.not_kept));
@@ -222,6 +229,9 @@ struct Replay {
     transfer: bool,
     /// A USB `update` the console took and has not answered, whose image the phone's link does not carry.
     usb_update: Option<UsbUpdate>,
+    /// This epoch began with the chip already up, and the core caught up; and its dumps so far.
+    caught_up: bool,
+    epoch_dumps: u32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -253,6 +263,7 @@ impl Replay {
         }
         self.push(Who::Line, "-- the chip was already up".into());
         self.shadow.observer.report.seeded = Some((self.shadow.now().0, Vec::new()));
+        self.caught_up = true;
         self.shadow.seed();
     }
 
@@ -284,6 +295,8 @@ impl Replay {
         self.last_ms = None;
         self.transfer = false;
         self.usb_update = None;
+        self.caught_up = false;
+        self.epoch_dumps = 0;
         self.shadow.observer.report.resets += 1;
         self.push(Who::Line, "-- the watch reset".into());
         self.shadow.set_goals(self.shadow.now(), boot_goals());
@@ -308,6 +321,18 @@ impl Replay {
             self.push(Who::Line, format!(">> {cmd}"));
         } else if let Some(update) = text.strip_prefix("[update] ") {
             self.update_line(update);
+            self.push(Who::Line, text.to_string());
+        } else if let Some(rest) = text.strip_prefix("[ble] dump next ") {
+            // The first dump of a boot the replay caught up from: its lost head is caught up from,
+            // as any capture's start is; any other loss is a gap in the core's inputs.
+            let lost = rest.split(", ").find_map(|p| p.strip_suffix(" bytes lost")).and_then(|n| n.parse::<u64>().ok()).unwrap_or_default();
+            let excused = self.caught_up && self.epoch_dumps == 0;
+            self.epoch_dumps += 1;
+            let report = &mut self.shadow.observer.report;
+            if !excused {
+                report.dump_lost += lost;
+            }
+            report.dumps += 1;
             self.push(Who::Line, text.to_string());
         } else if text.starts_with("[ble]") || text.starts_with("== ") {
             self.push(Who::Line, text.to_string());
@@ -394,11 +419,10 @@ impl Replay {
                 }
             }
             "d" => self.shadow.operator_disconnect(at),
-            "x" => {
-                if let &[a, b, c, d] = bytes.as_slice() {
-                    self.shadow.observer.report.not_kept += u32::from_le_bytes([a, b, c, d]);
-                }
-            }
+            "x" => match <[u8; 4]>::try_from(bytes.as_slice()) {
+                Ok(count) => self.shadow.observer.report.not_kept += u32::from_le_bytes(count),
+                Err(_) => self.shadow.observer.report.unknown_events += 1,
+            },
             "s" => {
                 let snapshot = if bytes.is_empty() {
                     Err(Fault::Silent)
@@ -434,7 +458,7 @@ fn uptime_ms(text: &str) -> Option<u64> {
 /// A watch reset starts the core again, and the host's clock carries the timeline across it.
 #[must_use]
 pub fn replay(capture: &str) -> Report {
-    let mut r = Replay { shadow: Shadow::new(INFO, boot_goals(), Record::default()), base: Some(0), last_ms: None, transfer: false, usb_update: None };
+    let mut r = Replay { shadow: Shadow::new(INFO, boot_goals(), Record::default()), base: Some(0), last_ms: None, transfer: false, usb_update: None, caught_up: false, epoch_dumps: 0 };
     // Driven until a start's `m` says otherwise.
     r.shadow.driven(true);
     let mut started = false;

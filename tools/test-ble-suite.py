@@ -247,6 +247,19 @@ class Judgements(unittest.TestCase):
         self.assertEqual(suite.counts_moved(before, line.format(h=9, e='none', r='deadline x1', o=7), 30), ['chip restarts'])
         self.assertEqual(suite.counts_moved(before, '', 30), ['failures', 'pairings failed', 'hung up within', 'chip restarts', 'alarms'])
 
+    def test_over_the_air_only_the_centrals_own_early_hang_ups_are_the_soaks(self):
+        line = '[ble] counts: failures none; hung up within 10 s of encrypting {e}; chip restarts none'
+        before = line.format(e='13 x2')
+        self.assertEqual(suite.counts_moved(before, line.format(e='13 x9'), 30, own_hang_ups=True), [])
+        self.assertEqual(suite.counts_moved(before, line.format(e='13 x9 08 x1'), 30, own_hang_ups=True), ['hung up within'])
+        self.assertEqual(suite.counts_moved(line.format(e='none'), line.format(e='13 x4'), 30, own_hang_ups=True), [])
+        self.assertEqual(suite.counts_moved(before, line.format(e='13 x9 08 x1'), 5, own_hang_ups=True), ['hung up within'])
+
+    def test_a_link_a_resync_found_gone_moves_the_counts(self):
+        line = '[ble] counts: failures none; phone hang-ups 13 x1{g}; chip restarts none'
+        self.assertEqual(suite.counts_moved(line.format(g=''), line.format(g='; phone links found gone by a resync 1'), 30),
+                         ['phone links found gone'])
+
     def test_a_soak_holding_links_briefly_leaves_early_hang_ups_alone(self):
         line = '[ble] counts: failures none; hung up within 10 s of encrypting {e}; chip restarts none'
         before, after = line.format(e='none'), line.format(e='13 x4')

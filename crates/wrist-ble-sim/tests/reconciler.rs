@@ -459,6 +459,7 @@ fn a_chip_that_stays_busy_is_restarted() {
         }
         assert_eq!(refusals, usize::from(BUSY_BUDGET), "{kind:?}");
         assert_eq!(b.core.counters.busy_spent, 1, "{kind:?}");
+        assert_eq!(b.core.tally.restarts.rows[0], Some((wrist_ble::policy::tally::Restart::Busy, 1)), "{kind:?}");
         assert!(restarted.is_some_and(|t| t.0 < 150_000), "{kind:?}: {restarted:?}");
     }
 }

@@ -62,6 +62,10 @@ pub async fn command(args: &[u8], uart: Uart) {
         if next <= at {
             break;
         }
+        // The USB pipe drops what does not fit, and a replay outruns it; never inside a line.
+        if !mid_line {
+            crate::console::make_room().await;
+        }
         // The rest of a line goes at once, so that no other output lands inside it.
         dropped += replay(uart, if mid_line { 0 } else { r.len }, || uart.write_bytes(&piece[..r.len])).await;
         mid_line = piece[..r.len].last() != Some(&b'\n');
