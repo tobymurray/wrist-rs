@@ -40,6 +40,9 @@ pub(super) const CELLS: u8 = Cell::COUNT;
 /// longest interval, with room.
 const UPDATE_WITHIN_MS: u64 = 15_000;
 
+/// How long the matrix waits before its first cell.
+const SETTLE_MS: u64 = 5_000;
+
 /// How long a cell holds both changes before its last reading, for at least one event of the
 /// longest advertising interval.
 const HOLD_MS: u64 = 3_000;
@@ -188,9 +191,14 @@ impl Link<'_> {
                 }
             }
         }
+        self.uart.write_str("[ble] probe gatt records: ");
+        self.uart.write_u32(u32::from(n));
+        self.uart.write_str(" one-byte characteristics (two records each) in it, then status ");
+        self.uart.write_hex8(status);
+        self.uart.write_line("");
         let after = self.probe_service(PROBE_UUID + 0x100, 1).await.err().unwrap_or(0);
         let mut t = Text(self.uart);
-        let _ = write!(t, "[ble] probe gatt records: {n} one-byte characteristics (two records each) in it, then status {status:02X}; service handle=0x{service:04x}");
+        let _ = write!(t, "[ble] probe gatt records: service handle=0x{service:04x}");
         if let Some(h) = last {
             let _ = write!(t, " last characteristic handle=0x{h:04x}");
         }
@@ -439,10 +447,19 @@ impl Link<'_> {
         if self.shadow.issuing() || self.chip.due().is_some() {
             return self.uart.write_line("[ble] probe matrix: the core has an operation in flight; try again");
         }
-        self.matrix_handle = CONN_HANDLE.load(Ordering::Relaxed);
+        let link = self.shadow.state().phone.link().map(|l| l.raw());
+        if link.is_none() || link != Some(CONN_HANDLE.load(Ordering::Relaxed)) {
+            return self.uart.write_line("[ble] probe matrix: the core's link is not the newest; one central only");
+        }
+        self.matrix_handle = link.unwrap_or(0);
         let _ = self.command(ACI_GAP_SET_NON_DISCOVERABLE, &[]).await;
+        // An update the core's last ask began lands before the first cell's.
+        self.events_for(SETTLE_MS, |_| false).await;
         let mut index = from;
         while let Some(cell) = Cell::nth(index) {
+            if self.transfer.is_some() {
+                return self.uart.write_line("[ble] probe matrix: an update began; stopped");
+            }
             if !self.matrix_cell(cell).await {
                 let mut t = Text(self.uart);
                 let _ = write!(t, "[ble] probe matrix: the link went in cell {index}; connect again and `ble probe matrix from {index}`");
@@ -514,8 +531,8 @@ impl Link<'_> {
     /// One boot with `0x2C` written (0 for `control`), advertising by HCI commands as `UNA-LL` and
     /// printing every packet from the chip, then the chip reset for the driver to bring back.
     pub(super) async fn probe_link_layer(&mut self, control: bool) {
-        if connected() || self.scanner.until().is_some() || self.transfer.is_some() {
-            return self.uart.write_line("[ble] probe ll: end the link, any scan and any update first");
+        if connected() || self.scanner.until().is_some() {
+            return self.uart.write_line("[ble] probe ll: end the link and any scan first");
         }
         self.uart.write_line("[ble] probe ll: the chip reset for one boot without its host");
         self.chip.reset().await;

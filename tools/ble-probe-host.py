@@ -41,7 +41,8 @@ LL_ADDRESS = 'C0:2C:00:00:00:01'
 # Longer than any cell takes (`UPDATE_WITHIN_MS` and `HOLD_MS`, apps/standalone-boot/src/ble/probe.rs).
 CELL_WITHIN_S = 40
 # What the watch prints for a matrix it won't run.
-REFUSED = ('probe matrix:', '[ble] off', 'held after a fault', 'unknown command')
+REFUSED = ('probe matrix:', '[ble] off', 'held after a fault', 'unknown command', 'not queued', '[ble] usage:')
+BUSY = 'operation in flight'
 
 
 def log(text):
@@ -84,8 +85,7 @@ async def lines_until(usb, done, seconds):
 
 
 def kept(text):
-    """The cell's line in `text` for the fixture; None for any other line, and for a cell the link
-    went in, which runs again on the resume."""
+    """The cell's line for the fixture, or None."""
     m = CELL.search(text)
     return m.group(1) if m and not text.endswith('link=lost') else None
 
@@ -97,8 +97,7 @@ def destination(out, start, cells):
 
 
 def pairing_config(delegate):
-    """Pairing as a phone would, the throwaway address as the identity too, never the adapter's own
-    (a real bond)."""
+    """The throwaway address as the identity, never the adapter's own."""
     from bumble.pairing import PairingConfig
     return PairingConfig(sc=True, mitm=True, bonding=True, delegate=delegate,
                          identity_address_type=PairingConfig.AddressType.RANDOM)
@@ -118,8 +117,8 @@ async def matrix(args):
     usb = Lines(args.port)
     cells = []
     start = args.start
-    failures = 0
-    while failures < 5:
+    failures = resumes = busy = 0
+    while failures < 5 and resumes < 10 and busy < 5:
         log(f'connecting to {args.name}')
         try:
             client = await hold_link(args.name)
@@ -135,7 +134,7 @@ async def matrix(args):
         usb.send(f'ble probe matrix from {start}' if start else 'ble probe matrix')
         resume = None
         while True:
-            text = await lines_until(usb, lambda t: 'probe matrix' in t or any(r in t for r in REFUSED), CELL_WITHIN_S)
+            text = await lines_until(usb, lambda t: any(r in t for r in ('probe matrix',) + REFUSED), CELL_WITHIN_S)
             if text is None:
                 log('no line from the matrix in time')
                 break
@@ -147,6 +146,10 @@ async def matrix(args):
                 break
             elif 'probe matrix: done' in text:
                 break
+            elif BUSY in text:
+                busy += 1
+                resume = start
+                break
             elif any(r in text for r in REFUSED):
                 log(f'the watch refused: {text}')
                 break
@@ -156,6 +159,7 @@ async def matrix(args):
             pass
         if resume is None:
             break
+        resumes += resume != start
         start = resume
         await asyncio.sleep(3)
     header = [
@@ -190,7 +194,7 @@ async def link_layer_run(args):
         log('UNA-LL not seen')
     else:
         log(f'found {device.address}; connecting')
-        # Longer than BlueZ's own 30 s ATT timeout, so that the link ends as BlueZ ends it.
+        # Outlasts BlueZ's own ATT timeout.
         client = BleakClient(device, timeout=45)
         try:
             await client.connect()

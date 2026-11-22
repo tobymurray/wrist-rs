@@ -49,7 +49,7 @@ fn a_cell_line_names_each_change_in_the_order_made() {
     );
 }
 
-/// LE Connection Update Complete on `handle`: success, the interval in 1.25 ms units, latency 0.
+/// LE Connection Update Complete on `handle`.
 fn update_complete(handle: u16, interval: u16) -> Vec<u8> {
     let [h0, h1] = handle.to_le_bytes();
     let [i0, i1] = interval.to_le_bytes();
