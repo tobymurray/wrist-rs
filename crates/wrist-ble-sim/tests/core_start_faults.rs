@@ -73,3 +73,23 @@ fn the_records_of_a_failed_start_and_a_retry_are_kept_for_the_replay() {
     assert_eq!(keep("[trace] 5000 f").as_deref(), Some("5.000 [trace] 5000 f"));
     assert_eq!(keep("[trace] 9000 y").as_deref(), Some("9.000 [trace] 9000 y"));
 }
+
+/// The user's retry has the hour's whole budget: a reset soon after is restarted, not held.
+#[test]
+fn the_users_retry_starts_with_a_fresh_budget() {
+    use wrist_ble::{RadioEvent, ResetCause};
+    let mut core = booted();
+    let mut at = 1_000;
+    while !matches!(core.state.chip.state, Chip::Fault { .. }) {
+        core.step(t(at), Input::StartFailed);
+        if let Some(start) = core.state.chip.starting() {
+            core.step(t(at), Input::Started(start, Ok(INFO)));
+        }
+        at += 3_000;
+    }
+    core.step(t(at), Input::RetryRadio);
+    let start = core.state.chip.starting().expect("a start");
+    core.step(t(at), Input::Started(start, Ok(INFO)));
+    let out = core.step(t(at + 600_000), Input::Radio(RadioEvent::ChipReset(ResetCause::Watchdog)));
+    assert!(matches!(out.chip, Some(Action::Start(_))), "{out:?}");
+}

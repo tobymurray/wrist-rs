@@ -84,7 +84,7 @@ pub enum Msg {
     // On the face, for the same, and for the radio held after a fault.
     /// `see Bluetooth`
     BluetoothSeePage,
-    // The radio held after a fault: before the time of day it is tried again by itself. Select, on the switch, tries it now.
+    // The radio held after a fault: before the time of day it is tried again by itself. Select, on the switch, turns it off; again, starts it afresh.
     /// `retry`
     BluetoothRetry,
 }

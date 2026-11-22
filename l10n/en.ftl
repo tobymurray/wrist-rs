@@ -65,5 +65,5 @@ bluetooth-old-key = forget & pair
 # On the face, for the same, and for the radio held after a fault.
 bluetooth-see-page = see Bluetooth
 # The radio held after a fault: before the time of day it is tried again by itself. Select, on
-# the switch, tries it now.
+# the switch, turns it off; again, starts it afresh.
 bluetooth-retry = retry

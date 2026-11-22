@@ -668,9 +668,10 @@ fn waiting() -> Option<(Pairing, u32)> {
     PROMPT.lock(Cell::get).waiting(Instant::now().as_millis())
 }
 
-/// The radio off if it is on or starting, on otherwise.
+/// The radio off if it is on, starting or held after a fault, on otherwise: twice on a held
+/// radio, a fresh start.
 pub fn toggle() {
-    let off = matches!(Radio::from_u8(STATE.load(Ordering::Relaxed)), Radio::Off | Radio::Failed);
+    let off = matches!(Radio::from_u8(STATE.load(Ordering::Relaxed)), Radio::Off);
     let _ = REQUESTS.try_send(if off { Request::On } else { Request::Off });
 }
 
@@ -758,10 +759,11 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
         // The core gave up on the chip: held in reset until it tries again, or is asked to.
         if !(link.start().await && link.serve(&mut changes).await) {
             link.last_status();
+            link.release();
             set_state(STATE_FAILED);
             old_key(OldKey::clear);
             link.chip.hold();
-            uart.write_line("[ble] chip held in reset after a fault; it is tried again later, or now with `ble on` or Select");
+            uart.write_line("[ble] chip held in reset after a fault; it is tried again later, or now with `ble on`; `ble off` or Select turns it off");
             let again = link.faulted().await;
             RETRY_AT_S.store(0, Ordering::Relaxed);
             if again {
@@ -1221,15 +1223,17 @@ impl Link<'_> {
     }
 
     /// The chip held after the core gave up on it, until the core tries again by itself, the
-    /// user asks (`ble on`, or Select on the page), or the radio is turned off; whether to try.
+    /// user asks (`ble on`), or the radio is turned off (`ble off`, or Select on the page);
+    /// whether to try.
     async fn faulted(&mut self) -> bool {
         loop {
             let retry = self.shadow.retry_at();
             RETRY_AT_S.store(retry.map_or(0, |t| u32::try_from(t.0 / 1_000).unwrap_or(u32::MAX).max(1)), Ordering::Relaxed);
             redraw();
+            // The first tick at which `now_ms` reaches it, as `due` rounds.
             let timer = async {
                 match retry {
-                    Some(t) => Timer::at(Instant::from_millis(t.0)).await,
+                    Some(t) => Timer::at(Instant::from_ticks((t.0 * embassy_time::TICK_HZ).div_ceil(1000))).await,
                     None => core::future::pending::<()>().await,
                 }
             };
@@ -1240,7 +1244,13 @@ impl Link<'_> {
                     break true;
                 }
                 Either::First(Request::Off) => break false,
-                Either::First(Request::Status) => write_status_line(self.uart, &status(self.shadow.state(), self.shadow.now())),
+                Either::First(Request::Status) => {
+                    self.shadow.advance(now_ms());
+                    write_status_line(self.uart, &status(self.shadow.state(), self.shadow.now()));
+                    if self.shadow.retry_at().is_none() {
+                        break true;
+                    }
+                }
                 Either::First(_) => self.uart.write_line("[ble] the chip is held after a fault: `ble on` or Select tries again now, `ble off` turns it off"),
                 Either::Second(()) => {
                     self.shadow.advance(now_ms());
@@ -2014,6 +2024,19 @@ impl Link<'_> {
     }
 
     /// The chip is starting again: nothing of its link or the work it left survives.
+    /// Everything that needs a chip let go as it is held after a fault: a transfer ended, the
+    /// console's mirror off, the link's encryption and the pairing prompt forgotten.
+    fn release(&mut self) {
+        if let Some(session) = self.transfer.take() {
+            crate::update::abort(session);
+        }
+        self.chip_gone();
+        MIRROR.store(false, Ordering::Relaxed);
+        ROOM.signal(());
+        set_encrypted(false);
+        clear_prompt();
+    }
+
     fn chip_gone(&mut self) {
         self.link_gone();
         clear_out();
