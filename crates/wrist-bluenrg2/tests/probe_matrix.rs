@@ -65,9 +65,15 @@ fn l2cap_accepted(handle: u16) -> Vec<u8> {
 #[test]
 fn another_links_update_is_not_the_cells() {
     let mut u = Update { status: Some(0), ..Update::default() };
+    let mut failed = update_complete(0x0802, 36);
+    failed[4] = 0x3B;
     u.saw(0x0801, &update_complete(0x0802, 36));
+    u.saw(0x0801, &failed);
     u.saw(0x0801, &l2cap_accepted(0x0802));
     assert_eq!((u.accepted, u.done), (None, None));
+    failed[5] = 0x01;
+    u.saw(0x0801, &failed);
+    assert_eq!(u.done, Some((0x3B, 0, 0)));
     u.saw(0x0801, &l2cap_accepted(0x0801));
     u.saw(0x0801, &update_complete(0x0801, 28));
     assert_eq!((u.accepted, u.done), (Some(true), Some((0, 28, 0))));
