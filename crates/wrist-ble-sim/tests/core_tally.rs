@@ -393,3 +393,97 @@ fn a_refusal_on_a_peripherals_link_is_a_failure() {
     core.step(t(ms), Input::Submitted(Err(Failure { kind: FailureKind::NoResources, native: 0x07 })));
     assert_eq!(core.tally.failures.rows[0], Some(((FailureKind::NoResources, 0x07), 1)));
 }
+
+/// A second central the core never adopted is no link that went: a refused answer to its
+/// request is a failure like any other.
+#[test]
+fn a_refused_answer_to_an_unadopted_central_is_a_failure() {
+    use wrist_ble::{ConnHandle, ParamRange};
+    let mut core = core_with_phone();
+    let second = ConnHandle::new(0x802);
+    let peer = PeerAddr { kind: AddrKind::RANDOM, addr: BdAddr::new([8, 8, 8, 8, 8, 0xC0]) };
+    core.step(t(200), Input::Radio(RadioEvent::LinkUp { link: second, role: LeConnRole::Peripheral, peer, params: None }));
+    let range = ParamRange { interval_min: Duration::from_u16(80), interval_max: Duration::from_u16(160), latency: 0, timeout: Duration::from_u16(600) };
+    let op = core.step(t(300), Input::Radio(RadioEvent::PeerParamRequest { link: second, range })).op;
+    assert!(matches!(op, Some(Op::AnswerParamRequest { .. })), "{op:?}");
+    core.step(t(300), Input::Submitted(Err(Failure { kind: FailureKind::Busy, native: 0x0C })));
+    assert_eq!(core.tally.failures.rows[0], Some(((FailureKind::Busy, 0x0C), 1)));
+}
+
+/// A phone link a resync finds gone, whose end the core was never told, is counted.
+#[test]
+fn a_phone_link_a_resync_finds_gone_is_counted() {
+    let mut tally = Tally::NEW;
+    tally.step(t(0), &Input::Tick, &with_phone(true), false);
+    tally.step(t(100), &Input::Snapshot(Err(wrist_ble::Fault::Silent)), &quiet(), false);
+    assert_eq!(tally.vanished, 1);
+    assert!(line(&tally, 200).contains("; phone hang-ups none; phone links found gone by a resync 1; "));
+    tally.step(t(300), &Input::Tick, &with_phone(false), false);
+    tally.step(t(400), &down(0x13), &quiet(), false);
+    assert_eq!(tally.vanished, 1);
+}
+
+#[test]
+fn a_busy_restart_is_named() {
+    use wrist_ble::policy::chip::Event;
+    assert_eq!(Restart::of(Event::BusySpent), Restart::Busy);
+    let mut tally = Tally::NEW;
+    tally.restart(Restart::Busy);
+    assert!(line(&tally, 0).contains("; chip restarts busy x1; "));
+}
+
+
+/// A phone link a resync found gone has gone: an operation asked on it, refused, is its end.
+#[test]
+fn an_operation_on_a_link_a_resync_found_gone_is_no_failure() {
+    let mut core = core_with_phone();
+    assert_eq!(core.step(t(10_000), Input::Tick).op, Some(Op::RequestSecurity(phone())));
+    core.step(t(10_010), Input::Radio(RadioEvent::EventsLost));
+    let none = wrist_ble::Snapshot { at: t(10_020), links: [None; wrist_ble::MAX_LINKS], advertising: true, scanning: false, initiating: false, anchor: None };
+    core.step(t(10_020), Input::Snapshot(Ok(none)));
+    core.step(t(10_030), Input::Submitted(Err(Failure { kind: FailureKind::NotConnected, native: 0x02 })));
+    assert_eq!(core.tally.failures.total(), 0);
+}
+
+
+/// However many links come and go meanwhile, an operation queued for one that went never reaches
+/// the chip.
+#[test]
+fn a_queued_operation_for_a_gone_link_goes_with_it() {
+    use wrist_ble::{ConnHandle, ParamRange};
+    let mut core = core_with_phone();
+    assert_eq!(core.step(t(10_000), Input::Tick).op, Some(Op::RequestSecurity(phone())));
+    let peer = PeerAddr { kind: AddrKind::RANDOM, addr: BdAddr::new([8, 8, 8, 8, 8, 0xC0]) };
+    let range = ParamRange { interval_min: Duration::from_u16(80), interval_max: Duration::from_u16(160), latency: 0, timeout: Duration::from_u16(600) };
+    for (i, handle) in (0x802..0x808).enumerate() {
+        let link = ConnHandle::new(handle);
+        let at = 10_010 + 10 * i as u64;
+        core.step(t(at), Input::Radio(RadioEvent::LinkUp { link, role: LeConnRole::Peripheral, peer, params: None }));
+        if i == 0 {
+            core.step(t(at), Input::Radio(RadioEvent::PeerParamRequest { link, range }));
+        }
+        core.step(t(at + 5), Input::Radio(RadioEvent::LinkDown { link, reason: Status::new(0x13) }));
+    }
+    let next = core.step(t(10_100), Input::Submitted(Ok(OpId(2)))).op;
+    assert!(!matches!(next, Some(Op::AnswerParamRequest { .. })), "{next:?}");
+    assert_eq!(core.tally.failures.total(), 0);
+}
+
+/// A link's end takes its own queued operations only: another link's still go out.
+#[test]
+fn another_links_queued_operation_stays() {
+    use wrist_ble::{ConnHandle, ParamRange};
+    let mut core = core_with_phone();
+    assert_eq!(core.step(t(10_000), Input::Tick).op, Some(Op::RequestSecurity(phone())));
+    let peer = PeerAddr { kind: AddrKind::RANDOM, addr: BdAddr::new([8, 8, 8, 8, 8, 0xC0]) };
+    let range = ParamRange { interval_min: Duration::from_u16(80), interval_max: Duration::from_u16(160), latency: 0, timeout: Duration::from_u16(600) };
+    let (going, staying) = (ConnHandle::new(0x802), ConnHandle::new(0x803));
+    for (i, link) in [going, staying].into_iter().enumerate() {
+        let at = 10_010 + 10 * i as u64;
+        core.step(t(at), Input::Radio(RadioEvent::LinkUp { link, role: LeConnRole::Peripheral, peer, params: None }));
+        core.step(t(at), Input::Radio(RadioEvent::PeerParamRequest { link, range }));
+    }
+    core.step(t(10_050), Input::Radio(RadioEvent::LinkDown { link: going, reason: Status::new(0x13) }));
+    let next = core.step(t(10_100), Input::Submitted(Ok(OpId(2)))).op;
+    assert!(matches!(next, Some(op @ Op::AnswerParamRequest { .. }) if op.link() == Some(staying)), "{next:?}");
+}

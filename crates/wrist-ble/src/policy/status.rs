@@ -387,6 +387,7 @@ fn cause(c: FaultCause) -> &'static str {
         FaultCause::StartFailed => "start-failed",
         FaultCause::BaselineRefused => "baseline-refused",
         FaultCause::KeptResetting => "kept-resetting",
+        FaultCause::KeptBusy => "kept-busy",
     }
 }
 

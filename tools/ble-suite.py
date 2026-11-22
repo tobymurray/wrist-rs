@@ -76,7 +76,7 @@ HANG_UP = re.compile(r'\[ble\] disconnected, reason (\w+)')
 COUNTS = r'\[ble\] counts: '
 # The counts that a soak's ordinary work leaves alone; its own hang-ups count as early (the
 # watch's `tally::EARLY_END`) when it holds each link not much longer than this.
-STILL_COUNTS = ('failures', 'pairings failed', 'hung up within', 'chip restarts', 'alarms')
+STILL_COUNTS = ('failures', 'pairings failed', 'hung up within', 'chip restarts', 'alarms', 'phone links found gone')
 EARLY_END_S = 12
 CONNECTED = re.compile(r'\[ble\] connected\s*$')
 
@@ -575,13 +575,17 @@ def counters(status):
     return found
 
 
-def counts_moved(before, after, hold):
+def counts_moved(before, after, hold, own_hang_ups=False):
     """The parts of the `ble` counts line, of those a soak holding each link `hold` seconds should
-    leave alone, that differ."""
+    leave alone, that differ; `own_hang_ups`: early hang-ups by the central (13) are the soak's."""
     def parts(line):
-        return {k: p[p.find(k):] for p in line.partition('counts: ')[2].split('; ') for k in STILL_COUNTS if k in p}
+        found = {k: p[p.find(k):] for p in line.partition('counts: ')[2].split('; ') for k in STILL_COUNTS if k in p}
+        if own_hang_ups and 'hung up within' in found:
+            others = re.sub(r' 13 x\d+', '', found['hung up within'])
+            found['hung up within'] = others if re.search(r' x\d+', others) else re.sub(r' none$', '', others) + ' none'
+        return found
     b, a = parts(before), parts(after)
-    still = [k for k in STILL_COUNTS if k != 'hung up within' or hold > EARLY_END_S]
+    still = [k for k in STILL_COUNTS if k != 'hung up within' or hold > EARLY_END_S or own_hang_ups]
     return [k for k in still if b.get(k) != a.get(k)]
 
 
@@ -817,7 +821,8 @@ async def soak(s, usb, phone, build, a):
     s.check(cycles and not failures, f'{cycles} phone cycles: attached, console answered for {a.hold} s, reason 13 '
             f'(failed: {failures or "none"})')
     s.check(before and after and not grew, f'the `ble` counters did not move ({grew or "none moved"})')
-    moved = counts_moved(counts_before, counts_after, a.hold)
+    # Over the air the suite reads the watch on short links of its own, each an early hang-up.
+    moved = counts_moved(counts_before, counts_after, a.hold, own_hang_ups=air)
     s.check(counts_before and counts_after and not moved, f'no failure, pairing, early hang-up or chip reset counted ({moved or "none"})')
     if air:
         print('  no executor-latency probe: its timer would keep the core out of Stop 2', flush=True)

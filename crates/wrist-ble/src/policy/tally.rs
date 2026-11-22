@@ -70,6 +70,8 @@ pub enum Restart {
     BaselineRefused,
     /// A start's deadline passed.
     Deadline,
+    /// The busy budget ran out.
+    Busy,
 }
 
 impl Restart {
@@ -81,6 +83,7 @@ impl Restart {
             chip::Event::Reset(c) => Self::Reset(c),
             chip::Event::StartFailed => Self::StartFailed,
             chip::Event::BaselineRefused => Self::BaselineRefused,
+            chip::Event::BusySpent => Self::Busy,
             _ => Self::Deadline,
         }
     }
@@ -128,6 +131,8 @@ pub struct Tally {
     pub pairing_failures: Counts<PairingStep, 3>,
     /// The step of the last pairing that failed, and its peer when its link's start was seen.
     pub last_pairing_failure: Option<(Option<PeerAddr>, PairingStep)>,
+    /// Phone links a resync found gone, whose end the core was never told.
+    pub vanished: u32,
     /// Ends of the phone link within [`EARLY_END`] of its encrypting, by reason.
     pub early_ends: Counts<u8, 4>,
     pub restarts: Counts<Restart, 4>,
@@ -156,6 +161,7 @@ impl Tally {
         pairing_failures: Counts::NEW,
         last_pairing_failure: None,
         early_ends: Counts::NEW,
+        vanished: 0,
         restarts: Counts::NEW,
         alarms: Counts::NEW,
         commands_peak: 0,
@@ -201,6 +207,9 @@ impl Tally {
             self.ask(now);
         }
         let link = state.phone.link();
+        if matches!(input, Input::Snapshot(_)) && self.phone.is_some() && link != self.phone {
+            self.vanished += 1;
+        }
         if link != self.phone {
             self.phone = link;
             self.secure_since = None;
@@ -267,6 +276,9 @@ impl Tally {
         })?;
         w.write_str("; phone hang-ups")?;
         self.hang_ups.write(w, |w, r| write!(w, "{r:02X}"))?;
+        if self.vanished > 0 {
+            write!(w, "; phone links found gone by a resync {}", self.vanished)?;
+        }
         write!(w, "; pairings and bonded reconnects ok {}, pairings failed", self.pairings_ok)?;
         self.pairing_failures.write(w, |w, s| w.write_str(step_name(s)))?;
         if let Some((peer, step)) = self.last_pairing_failure {
@@ -357,6 +369,7 @@ fn restart_name(r: Restart) -> &'static str {
         Restart::StartFailed => "start-failed",
         Restart::BaselineRefused => "baseline-refused",
         Restart::Deadline => "deadline",
+        Restart::Busy => "busy",
     }
 }
 

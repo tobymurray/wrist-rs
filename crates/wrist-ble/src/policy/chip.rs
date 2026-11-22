@@ -35,6 +35,8 @@ pub enum FaultCause {
     BaselineRefused,
     /// The chip reset itself more often than the budget allows.
     KeptResetting,
+    /// The chip answered busy through every restart the budget allows.
+    KeptBusy,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -45,6 +47,8 @@ pub enum Event {
     Reset(ResetCause),
     StartFailed,
     BaselineRefused,
+    /// The chip kept answering busy until the busy budget ran out.
+    BusySpent,
     /// The user asked for the radio again.
     Retry,
     Tick,
@@ -102,6 +106,7 @@ impl ChipMachine {
             (Chip::Starting { .. }, Event::StartFailed) => Some(self.escalate(now, FaultCause::StartFailed)),
             (Chip::Starting { since }, Event::Tick) if now >= since + caps.start_within => Some(self.escalate(now, FaultCause::StartFailed)),
             (Chip::Ready(_), Event::BaselineRefused) => Some(self.escalate(now, FaultCause::BaselineRefused)),
+            (Chip::Ready(_), Event::BusySpent) => Some(self.escalate(now, FaultCause::KeptBusy)),
             // Only a power-on reset during a start is that start's own boot.
             (Chip::Starting { .. }, Event::Reset(cause)) if cause != ResetCause::PowerOn => Some(self.escalate(now, FaultCause::KeptResetting)),
             (Chip::Ready(_), Event::Reset(_)) => Some(self.escalate(now, FaultCause::KeptResetting)),

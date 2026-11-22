@@ -294,3 +294,28 @@ fn records_not_kept_while_dumping_are_reported() {
     assert_eq!(r.not_kept, 3);
     assert!(wrist_ble_sim::fixture::keep("[trace] 69300 x 03000000").is_some());
 }
+
+/// A dump's own word on the bytes it lost, and a gap record that cannot be read, are reported.
+#[test]
+fn a_dumps_losses_and_a_bad_gap_record_are_reported() {
+    let fixture = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/traces/watch-dump-cable.log")).unwrap();
+    let capture = format!("{fixture}69.300 [trace] 69300 x 0300\n[ble] dump next 18751 at 125.119, 4096 bytes lost\n");
+    let r = replay(&capture);
+    assert_eq!((r.dump_lost, r.not_kept, r.unknown_events), (4096, 0, 1));
+}
+
+/// A capture caught up from its first dump's lost head reports only the losses after it.
+#[test]
+fn only_the_first_dumps_lost_head_is_caught_up_from() {
+    let fixture = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/traces/watch-dump-cable.log")).unwrap();
+    let mut late = String::new();
+    for line in fixture.lines() {
+        if capture::stamped(line).is_some_and(|s| s.ms >= 33_113) {
+            writeln!(late, "{line}").unwrap();
+        }
+    }
+    let first = format!("{late}[ble] dump next 18751 at 70.000, 4096 bytes lost\n");
+    assert_eq!(replay(&first).dump_lost, 0);
+    let second = format!("{first}[ble] dump next 20000 at 80.000, 100 bytes lost\n");
+    assert_eq!(replay(&second).dump_lost, 100);
+}

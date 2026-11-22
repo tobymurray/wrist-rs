@@ -66,6 +66,10 @@ pub struct Report {
     pub unanswered_snapshots: u32,
     /// Records the watch did not keep while a dump read its ring: inputs the core missed there.
     pub not_kept: u32,
+    /// Bytes a dump said it had lost to the ring wrapping: the core's inputs are not whole.
+    pub dump_lost: u64,
+    /// `ble dump` reads seen.
+    pub dumps: u32,
 }
 
 impl Report {
@@ -111,6 +115,9 @@ impl Report {
         }
         if self.unasked_snapshots > 0 {
             out.push(format!("{} snapshots of the driver's the core never asked for", self.unasked_snapshots));
+        }
+        if self.dump_lost > 0 {
+            out.push(format!("{} bytes the watch's dump had lost: the core missed inputs before them", self.dump_lost));
         }
         if self.not_kept > 0 {
             out.push(format!("{} records the watch did not keep while dumping: the core missed inputs there", self.not_kept));
@@ -309,6 +316,16 @@ impl Replay {
         } else if let Some(update) = text.strip_prefix("[update] ") {
             self.update_line(update);
             self.push(Who::Line, text.to_string());
+        } else if let Some(rest) = text.strip_prefix("[ble] dump next ") {
+            // The first dump's lost head is caught up from, as any capture's start is; any later
+            // loss is a gap in the core's inputs.
+            let lost = rest.split(", ").find_map(|p| p.strip_suffix(" bytes lost")).and_then(|n| n.parse::<u64>().ok()).unwrap_or_default();
+            let report = &mut self.shadow.observer.report;
+            if report.dumps > 0 || report.seeded.is_none() {
+                report.dump_lost += lost;
+            }
+            report.dumps += 1;
+            self.push(Who::Line, text.to_string());
         } else if text.starts_with("[ble]") || text.starts_with("== ") {
             self.push(Who::Line, text.to_string());
         }
@@ -394,11 +411,10 @@ impl Replay {
                 }
             }
             "d" => self.shadow.operator_disconnect(at),
-            "x" => {
-                if let &[a, b, c, d] = bytes.as_slice() {
-                    self.shadow.observer.report.not_kept += u32::from_le_bytes([a, b, c, d]);
-                }
-            }
+            "x" => match <[u8; 4]>::try_from(bytes.as_slice()) {
+                Ok(count) => self.shadow.observer.report.not_kept += u32::from_le_bytes(count),
+                Err(_) => self.shadow.observer.report.unknown_events += 1,
+            },
             "s" => {
                 let snapshot = if bytes.is_empty() {
                     Err(Fault::Silent)
