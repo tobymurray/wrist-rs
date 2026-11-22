@@ -49,7 +49,7 @@ pub enum Tell {
     Divergence { kind: OpKind, native: u16 },
     /// A peer's request for new parameters was refused.
     RefusedPeerRequest(ConnHandle),
-    /// An invariant broke: the core resyncs, then restarts the chip if that does not clear it.
+    /// An invariant broke ([`invariants::WATCHED`]).
     Alarm(Invariant),
 }
 
@@ -83,9 +83,12 @@ pub struct Outputs {
 
 impl Outputs {
     fn tell(&mut self, t: Tell) {
-        if let Some(slot) = self.tell.iter_mut().find(|s| s.is_none()) {
-            *slot = Some(t);
-        }
+        self.try_tell(t);
+    }
+
+    /// Whether `t` found a slot.
+    fn try_tell(&mut self, t: Tell) -> bool {
+        self.tell.iter_mut().find(|s| s.is_none()).map(|slot| *slot = Some(t)).is_some()
     }
 }
 
@@ -284,10 +287,11 @@ impl<'a> Core<'a> {
         }
         self.spend(now, &mut out);
         self.reconcile(now, &mut out);
-        // Judged after the reconciler, against the plan for this step's state.
-        self.watch(now, &mut out);
         out.next = self.deadline(now);
         self.tally.step(now, &input, &self.state, out.op.is_some());
+        // Judged after the reconciler, against the plan for this step's state, and with this
+        // step's operation counted.
+        self.watch(now, &mut out);
         out
     }
 
@@ -302,7 +306,6 @@ impl<'a> Core<'a> {
             observed: self.state.radio.advertising,
             silent_since: self.state.silent_since,
             settled_since: self.settled_since,
-            idle: !self.retrying(),
             commands: self.tally.commands_within(now),
         }
     }
@@ -315,19 +318,13 @@ impl<'a> Core<'a> {
         let record = self.record(now);
         for (told, watched) in self.alarms.iter_mut().zip(invariants::WATCHED) {
             let broken = record.broken(watched, now, *told);
-            if broken && !*told {
-                out.tell(Tell::Alarm(watched));
+            // Told when its tell finds a slot; this step's others may have taken both.
+            if broken && !*told && out.try_tell(Tell::Alarm(watched)) {
                 self.tally.alarm(watched);
+                *told = true;
             }
-            *told = broken;
+            *told &= broken;
         }
-    }
-
-    /// Whether the core waits on an operation of its own: one asked or in flight, which its
-    /// deadline ends, or a refusal or failure to retry, which the busy budget and the refused
-    /// baseline end.
-    fn retrying(&self) -> bool {
-        self.asked.is_some() || self.pending.is_some() || self.backoff.iter().any(|b| b.failures > 0)
     }
 
     fn set_goals(&mut self, now: Instant, g: Goals, out: &mut Outputs) {

@@ -2213,8 +2213,7 @@ impl Observer for Said {
         self.0.write_str(wrist_ble::policy::tally::invariant_name(broken));
         self.0.write_line(match broken {
             Invariant::Reachable => ", no phone can find the watch",
-            Invariant::BoundedEffort => ", too many operations in a minute",
-            _ => ", the radio is not where the plan wants it",
+            _ => ", too many operations in a minute",
         });
     }
 }

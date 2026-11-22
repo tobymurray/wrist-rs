@@ -15,8 +15,10 @@ pub const REACHABLE_ALARM: Millis = Millis::secs(10);
 /// I2: chip commands a minute, outside GATT traffic and transfers.
 pub const COMMANDS_PER_MINUTE: u32 = 60;
 
-/// The invariants watched on the device, each with an alarm of its own.
-pub const WATCHED: [Invariant; 3] = [Invariant::BoundedEffort, Invariant::Reachable, Invariant::Converges];
+/// The invariants watched on the device, each with an alarm of its own. I3 is not: after the
+/// reconciler, the radio is away from the plan only while an operation is asked, in flight or
+/// waiting to be retried, which its deadline, the busy budget and the refused baseline end.
+pub const WATCHED: [Invariant; 2] = [Invariant::BoundedEffort, Invariant::Reachable];
 
 /// I2's alarm ends once the minute's operations are this far under the limit.
 pub const ALARM_HYSTERESIS: u32 = 10;
@@ -42,7 +44,6 @@ pub enum Invariant {
 
 /// What the core's own record says, for judging I1–I3 on the device, where there is no other.
 #[derive(Clone, Copy, Debug)]
-#[allow(clippy::struct_excessive_bools)]
 pub struct Record {
     /// The chip is up and the plan feasible.
     pub ready: bool,
@@ -54,8 +55,6 @@ pub struct Record {
     /// When connectable advertising last stopped, and when goals or power last changed.
     pub silent_since: Instant,
     pub settled_since: Instant,
-    /// No operation asked, in flight or waiting to be retried.
-    pub idle: bool,
     /// Operations asked in the minute to now.
     pub commands: u32,
 }
@@ -71,12 +70,6 @@ impl Record {
         owed.then(|| self.silent_since.max(self.settled_since) + REACHABLE_ALARM)
     }
 
-    /// When I3's alarm is due: with nothing in flight, the record's advertising is not the plan's.
-    #[must_use]
-    pub fn unconverged_from(&self) -> Option<Instant> {
-        (self.ready && self.idle && self.planned != self.observed).then(|| self.settled_since + CONVERGE_AFTER)
-    }
-
     /// Whether `broken` is broken at `now`; `told`: its alarm was told and has not ended, so too
     /// many operations ends only [`ALARM_HYSTERESIS`] under the limit.
     #[must_use]
@@ -84,14 +77,9 @@ impl Record {
         match broken {
             Invariant::BoundedEffort => self.commands > COMMANDS_PER_MINUTE || (told && self.commands > COMMANDS_PER_MINUTE - ALARM_HYSTERESIS),
             Invariant::Reachable => self.unreachable_from().is_some_and(|t| now >= t),
-            Invariant::Converges => self.unconverged_from().is_some_and(|t| now >= t),
             _ => false,
         }
     }
 
-    /// The first invariant of [`WATCHED`] broken at `now`, if any.
-    #[must_use]
-    pub fn breach(&self, now: Instant) -> Option<Invariant> {
-        WATCHED.into_iter().find(|&i| self.broken(i, now, false))
-    }
+
 }

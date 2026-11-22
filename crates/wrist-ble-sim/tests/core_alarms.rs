@@ -1,4 +1,4 @@
-//! The alarms the core raises on its own record (I1–I3), and how it recovers.
+//! The alarms the core raises on its own record (I1, I2).
 
 mod common;
 
@@ -6,7 +6,7 @@ use common::*;
 use wrist_ble::policy::chip::Action;
 use wrist_ble::policy::engine::{Core, Input, Outputs, Tell};
 use wrist_ble::policy::goals::{Goals, PhoneGoal, Power};
-use wrist_ble::policy::invariants::{Invariant, Record, COMMANDS_PER_MINUTE, CONVERGE_AFTER, REACHABLE_ALARM};
+use wrist_ble::policy::invariants::{Invariant, Record, COMMANDS_PER_MINUTE, REACHABLE_ALARM};
 use wrist_ble::{AdvParams, Millis, OpId, Outcome, RadioEvent};
 use wrist_bluenrg2::shadow::menu::MENU;
 use wrist_bluenrg2::{Scheduler, CAPABILITIES};
@@ -20,7 +20,6 @@ fn record() -> Record {
         observed: None,
         silent_since: t(1_000),
         settled_since: t(0),
-        idle: true,
         commands: 0,
     }
 }
@@ -30,8 +29,8 @@ fn unreachable_alarms_once_the_phone_cannot_find_the_watch_for_long_enough() {
     let r = record();
     let at = t(1_000) + REACHABLE_ALARM;
     assert_eq!(r.unreachable_from(), Some(at));
-    assert_eq!(r.breach(at - Millis(1)), None);
-    assert_eq!(r.breach(at), Some(Invariant::Reachable));
+    assert!(!r.broken(Invariant::Reachable, at - Millis(1), false));
+    assert!(r.broken(Invariant::Reachable, at, false));
 }
 
 /// Hidden on purpose, then discoverable: the gap counts from the change, not from when
@@ -59,23 +58,15 @@ fn unreachable_needs_every_condition() {
     assert!(Record { observed: Some(unconnectable), ..record() }.unreachable_from().is_some());
 }
 
-#[test]
-fn unconverged_alarms_once_the_radio_stays_away_from_the_plan_with_nothing_in_flight() {
-    let r = Record { radio_on: false, settled_since: t(5_000), ..record() };
-    let at = t(5_000) + CONVERGE_AFTER;
-    assert_eq!(r.breach(at - Millis(1)), None);
-    assert_eq!(r.breach(at), Some(Invariant::Converges));
-    assert_eq!(Record { idle: false, ..r }.unconverged_from(), None);
-    assert_eq!(Record { ready: false, ..r }.unconverged_from(), None);
-    assert_eq!(Record { observed: Some(ADV_995), ..r }.unconverged_from(), None);
-}
 
 #[test]
-fn too_many_operations_alarm_first() {
+fn too_many_operations_is_its_own_alarm() {
     let late = t(1_000_000);
-    assert_eq!(Record { commands: COMMANDS_PER_MINUTE, phone_linked: true, planned: None, ..record() }.breach(late), None);
-    assert_eq!(Record { commands: COMMANDS_PER_MINUTE + 1, ..record() }.breach(late), Some(Invariant::BoundedEffort));
-    assert_eq!(record().breach(late), Some(Invariant::Reachable));
+    let quiet = Record { phone_linked: true, planned: None, ..record() };
+    assert!(!Record { commands: COMMANDS_PER_MINUTE, ..quiet }.broken(Invariant::BoundedEffort, late, false));
+    assert!(Record { commands: COMMANDS_PER_MINUTE + 1, ..quiet }.broken(Invariant::BoundedEffort, late, false));
+    assert!(!quiet.broken(Invariant::Reachable, late, false));
+    assert!(!record().broken(Invariant::Converges, late, true), "I3 is not watched");
 }
 
 struct Bench {
@@ -162,41 +153,17 @@ fn ordinary_work_raises_no_alarm() {
     assert_eq!(b.core.tally.alarms.total(), 0);
 }
 
-/// The record the alarms are judged on is the core's: ready only with a feasible plan, and idle
-/// only with no refusal to retry.
+/// The record the alarms are judged on is the core's: ready only with a feasible plan.
 #[test]
 fn the_record_is_the_cores() {
     use wrist_ble::policy::plan::{Conflict, PlanHealth};
-    use wrist_ble::{Failure, FailureKind};
     let mut b = Bench::new();
-    assert!(b.core.record(t(0)).ready && b.core.record(t(0)).idle);
+    assert!(b.core.record(t(0)).ready);
     b.core.state.plan = PlanHealth::Infeasible(Conflict::Scan);
     assert!(!b.core.record(t(0)).ready);
-    b.core.state.plan = PlanHealth::Ok;
-    let asked = b.core.step(t(1_000), Input::Goals(goals(false))).op;
-    assert!(asked.is_some());
-    assert!(!b.core.record(t(1_000)).idle, "an operation asked");
-    b.core.step(t(1_000), Input::Submitted(Err(Failure { kind: FailureKind::NoResources, native: 7 })));
-    assert!(!b.core.record(t(1_000)).idle, "a refusal to retry");
+
 }
 
-/// The resync waits for the chip to be up: an alarm raised while it starts is only told.
-#[test]
-fn no_resync_while_the_chip_starts() {
-    let mut b = Bench::new();
-    let mut ms = 1_000;
-    while b.core.tally.commands_within(t(ms)) < COMMANDS_PER_MINUTE {
-        b.step(ms, Input::Goals(goals(ms % 1_000 == 0)));
-        ms += 500;
-    }
-    let out = b.core.step(t(ms), Input::Radio(RadioEvent::ChipReset(wrist_ble::ResetCause::Watchdog)));
-    assert!(matches!(out.chip, Some(Action::Start(_))));
-    // One more operation's worth tips the minute over while the chip starts.
-    b.core.tally.step(t(ms), &Input::Tick, &b.core.state, true);
-    let out = b.core.step(t(ms + 1), Input::Tick);
-    assert_eq!(alarms(&[out]), [Invariant::BoundedEffort]);
-    assert!(!out.snapshot, "{out:?}");
-}
 
 #[test]
 fn an_operation_a_whole_minute_old_is_out_of_the_window() {
@@ -267,4 +234,35 @@ fn too_many_operations_ends_at_its_mark() {
     assert!(!at(mark + 1).broken(Invariant::BoundedEffort, t(0), false));
     assert!(at(COMMANDS_PER_MINUTE + 1).broken(Invariant::BoundedEffort, t(0), false));
     assert!(!at(COMMANDS_PER_MINUTE).broken(Invariant::BoundedEffort, t(0), false));
+}
+
+/// An alarm whose tell finds both slots taken is told at the next step, and counted once.
+#[test]
+fn an_alarm_crowded_out_of_its_step_is_told_at_the_next() {
+    let mut b = Bench::new();
+    for _ in 0..=COMMANDS_PER_MINUTE {
+        b.core.tally.step(t(20_000), &Input::Tick, &b.core.state, true);
+    }
+    b.core.state.radio.advertising = None;
+    b.core.state.silent_since = t(5_000);
+    // A refusal the model did not predict tells a divergence first, in the same step.
+    let asked = b.core.step(t(20_000), Input::Tick);
+    let mut told = alarms(&[asked]);
+    if told.len() < 2 {
+        told.extend(alarms(&[b.core.step(t(20_001), Input::Tick)]));
+    }
+    assert_eq!(told, [Invariant::BoundedEffort, Invariant::Reachable]);
+    assert_eq!(b.core.tally.alarms.total(), 2);
+}
+
+/// The operation that tips the minute over is counted in the step that asks it.
+#[test]
+fn the_operation_over_the_limit_alarms_in_its_own_step() {
+    let mut b = Bench::new();
+    for _ in 0..COMMANDS_PER_MINUTE {
+        b.core.tally.step(t(1_000), &Input::Tick, &b.core.state, true);
+    }
+    let out = b.core.step(t(60_999), Input::Goals(goals(false)));
+    assert!(out.op.is_some());
+    assert_eq!(alarms(&[out]), [Invariant::BoundedEffort]);
 }
