@@ -2,8 +2,8 @@
 //! idle and beside advertising, or beside a central's link. `ble restart [updater]`: the chip
 //! restarted under the driver, to check that the driver finds it and brings the chip back.
 //! `ble probe snapshot`: the driver's snapshot, to check it against what the watch is doing.
-//! `ble probe matrix`: advertising beside a central's link at each interval, in both orders
-//! (DESIGN.md §5.2). `ble probe ll`: one boot of the chip without its own host (§1.6, item 3).
+//! `ble probe matrix`: advertising beside a central's link at each interval, in both orders.
+//! `ble probe ll`: one boot of the chip without its own host.
 
 use core::fmt::{self, Write};
 use core::sync::atomic::Ordering;
@@ -50,8 +50,7 @@ const HCI_LE_SET_ADVERTISING_PARAMETERS: u16 = 0x2006;
 const HCI_LE_SET_ADVERTISING_DATA: u16 = 0x2008;
 const HCI_LE_SET_ADVERTISING_ENABLE: u16 = 0x200A;
 
-/// `ACI_HAL_WRITE_CONFIG_DATA`'s link-layer-only switch (ST's `bluenrg1_hal_aci.h`,
-/// `CONFIG_DATA_LL_WITHOUT_HOST`): taken only as the first command after a reset, which ends it.
+/// `ACI_HAL_WRITE_CONFIG_DATA`'s link-layer-only switch (ST's `bluenrg1_hal_aci.h`, `CONFIG_DATA_LL_WITHOUT_HOST`).
 const LL_WITHOUT_HOST: u8 = 0x2C;
 
 /// `ble probe ll`'s static random address, not the watch's, so that no host's bond meets it.
@@ -430,9 +429,7 @@ fn connected() -> bool {
 }
 
 impl Link<'_> {
-    /// Each cell from `from`: the link re-timed by the central and advertising started, in the
-    /// cell's order, the anchor period read after each, then both held; one line per cell. Ends
-    /// early if the link goes.
+    /// Each cell from `from`, one line per cell, until the link goes.
     pub(super) async fn probe_matrix(&mut self, from: u8) {
         if !connected() || self.scanner.until().is_some() {
             return self.uart.write_line("[ble] probe matrix: needs a central's link and no scan (tools/ble-probe-host.py holds one)");
@@ -520,11 +517,8 @@ impl Link<'_> {
         }
     }
 
-    /// One boot without the chip's host: config `0x2C` first, `ACI_GATT_INIT` (which a chip with
-    /// no host of its own should refuse), then advertising by HCI commands alone as `UNA-LL`,
-    /// every packet from the chip on the console until a host has held a link for
-    /// [`LL_LINK_MS`]. Then the chip reset, which the driver meets as a restart of its own. With
-    /// `control`, `0x2C` is written 0: the same boot with the host kept, to compare.
+    /// One boot with `0x2C` written (0 for `control`), advertising by HCI commands as `UNA-LL` and
+    /// printing every packet from the chip, then the chip reset for the driver to bring back.
     pub(super) async fn probe_link_layer(&mut self, control: bool) {
         if connected() || self.scanner.until().is_some() {
             return self.uart.write_line("[ble] probe ll: end the link and any scan first");

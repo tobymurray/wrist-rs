@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The host's side of the probe build's chip probes (`--features ble-probe`, DESIGN.md §1.6 and §5.2).
+"""The host's side of the probe build's chip probes (`--features ble-probe`).
 
     ble-probe-host.py matrix [--out FILE] [--from N]
         Hold a link to the watch from this computer (BlueZ accepts each interval the watch asks
@@ -38,7 +38,7 @@ FIXTURE = Path(__file__).resolve().parent.parent / 'crates/wrist-bluenrg2/tests/
 CELL = re.compile(r'\[ble\] (probe matrix cell=\d+ .*)$')
 WENT = re.compile(r'the link went in cell (\d+)')
 LL_ADDRESS = 'C0:2C:00:00:00:01'
-# A cell takes at most its update's 15 s and its 3 s hold, and some commands.
+# Longer than any cell takes (`UPDATE_WITHIN_MS` and `HOLD_MS`, apps/standalone-boot/src/ble/probe.rs).
 CELL_WITHIN_S = 40
 
 

@@ -150,8 +150,7 @@ impl fmt::Display for Taken<'_> {
     }
 }
 
-/// `ble probe matrix`'s advertising intervals, each asked as min = max (DESIGN.md §5.2). The
-/// chip advertises 5 ms longer than asked (PM0257 §4.2.3), so all but 975 ms make a round period.
+/// `ble probe matrix`'s advertising intervals, each asked as min = max.
 pub const MATRIX_ADVERTISING_MS: [u16; 6] = [95, 100, 495, 995, 2495, 975];
 
 /// The intervals `ble probe matrix` asks of the central for the link, min = max.

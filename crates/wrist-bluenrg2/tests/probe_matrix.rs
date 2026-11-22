@@ -1,5 +1,4 @@
-//! `ble probe matrix`: its cells, its lines, and the scheduler model against what the chip did in
-//! each cell on the watch (`fixtures/bluenrg2-probe.txt`, DESIGN.md §5.2).
+//! `ble probe matrix`: its cells, its lines, and the scheduler model against the chip's own (`fixtures/bluenrg2-probe.txt`).
 
 use std::collections::HashMap;
 
@@ -66,9 +65,7 @@ fn model_reading(a: &Activities) -> (u32, u32) {
     anchor_reading(a).map_or((0, 0), |r| (r.period.0, r.max_free_slot.0))
 }
 
-/// The chip, as a peripheral of the Linux host: advertising beside the link refused or taken as
-/// the model says, with the same code; the central's interval taken whatever advertises; and the
-/// anchor period the model reads after each change.
+/// Each cell as the chip answered it: the same admission and code, the interval asked, the same anchor readings.
 #[test]
 fn the_model_agrees_with_the_chip_in_every_cell_of_the_matrix() {
     let fixture = include_str!("fixtures/bluenrg2-probe.txt");
