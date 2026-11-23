@@ -27,6 +27,10 @@ A strap (`--strap`) is `hr-sim.py` on a BlueZ adapter, or `bumble:TRANSPORT` for
 refuses a second link between the same two devices, so a scenario with both a strap and a phone needs them on two
 adapters (`--phone-adapter`).
 
+With --btmon, result.json counts what the capture shows of the links with the watch, per adapter: hang-ups by
+reason, failed connection updates and encryption changes, and the L2CAP parameter requests and their answers. These
+are reported, not judged.
+
 --air needs no cable, so the watch sleeps as it does on battery: commands go over a link, and the
 watch's own lines come from its log (`log since`), read whenever a link attaches. A hang-up's
 reason is read on the next link, a last one closing each scenario. The soak runs no latency probe
@@ -728,6 +732,75 @@ def failed_to_establish(path):
     return count
 
 
+MONITOR_EVENT, MONITOR_ACL_TX, MONITOR_ACL_RX = 3, 4, 5
+L2CAP_SIGNALLING = 0x0005
+PARAM_UPDATE_REQUEST, PARAM_UPDATE_RESPONSE = 0x12, 0x13
+
+
+def records(data):
+    """(controller index, opcode, packet) of each record in a btmon capture."""
+    at = 16
+    while at + 24 <= len(data):
+        length = int.from_bytes(data[at + 4:at + 8], 'big')
+        flags = int.from_bytes(data[at + 8:at + 12], 'big')
+        yield flags >> 16, flags & 0xFFFF, data[at + 24:at + 24 + length]
+        at += 24 + length
+
+
+def address(raw):
+    return ':'.join(f'{b:02X}' for b in reversed(raw))
+
+
+def capture_counts(path, watch=None):
+    """What a btmon capture says of the links with `watch` (an address; every link's, without one), per controller:
+    hang-ups by reason, failed connection updates and encryption changes by status, and the L2CAP connection
+    parameter requests each side sent with the answers they got. None if it isn't a btmon capture."""
+    data = Path(path).read_bytes()
+    if data[:8] != b'btsnoop\0' or int.from_bytes(data[12:16], 'big') != 2001:
+        return None
+    peers, found = {}, {}
+
+    def ours(index, handle):
+        return watch is None or peers.get((index, handle)) == watch
+
+    def bump(index, kind, key):
+        tally = found.setdefault(f'hci{index}', {}).setdefault(kind, {})
+        tally[key] = tally.get(key, 0) + 1
+    for index, opcode, p in records(data):
+        if opcode == MONITOR_EVENT and len(p) >= 2:
+            code = p[0]
+            if code == 0x3E and len(p) >= 14 and p[2] in (0x01, 0x0A) and p[3] == 0:
+                peers[(index, int.from_bytes(p[4:6], 'little') & 0x0FFF)] = address(p[8:14])
+            elif code == 0x3E and len(p) >= 6 and p[2] == 0x03 and p[3] != 0 \
+                    and ours(index, int.from_bytes(p[4:6], 'little') & 0x0FFF):
+                bump(index, 'connection updates failed', f'{p[3]:02X}')
+            elif code == 0x05 and len(p) >= 6 and p[2] == 0 and ours(index, int.from_bytes(p[3:5], 'little') & 0x0FFF):
+                bump(index, 'hang-ups', f'{p[5]:02X}')
+            elif code in (0x08, 0x30, 0x59) and len(p) >= 5 and p[2] != 0 \
+                    and ours(index, int.from_bytes(p[3:5], 'little') & 0x0FFF):
+                bump(index, 'encryption failed', f'{p[2]:02X}')
+        elif opcode in (MONITOR_ACL_TX, MONITOR_ACL_RX) and len(p) >= 12:
+            word = int.from_bytes(p[0:2], 'little')
+            # A first or only fragment, on the signalling channel; its command whole within it.
+            if (word >> 12) & 0x3 == 0x1 or int.from_bytes(p[6:8], 'little') != L2CAP_SIGNALLING \
+                    or not ours(index, word & 0x0FFF):
+                continue
+            side = 'host' if opcode == MONITOR_ACL_TX else 'peer'
+            if p[8] == PARAM_UPDATE_REQUEST:
+                bump(index, 'parameter requests', f'from the {side}')
+            elif p[8] == PARAM_UPDATE_RESPONSE and len(p) >= 14:
+                answer = {0: 'accepted', 1: 'rejected'}.get(int.from_bytes(p[12:14], 'little'), 'other')
+                bump(index, 'parameter requests', f'{answer} by the {side}')
+    return found
+
+
+def said_counts(found):
+    if not found:
+        return 'nothing of the watch\'s links'
+    return '; '.join(f'{index}: ' + ', '.join(f'{kind} ' + ' '.join(f'{k} x{n}' for k, n in sorted(v.items()))
+                                             for kind, v in sorted(kinds.items())) for index, kinds in sorted(found.items()))
+
+
 def spread(values):
     return {'min': min(values), 'median': round(statistics.median(values), 3), 'max': max(values)} if values else None
 
@@ -1063,6 +1136,11 @@ async def install(usb, a, image, out):
     return p.returncode == 0, usb
 
 
+def address_of(text):
+    m = re.search(r'\baddress ([0-9A-F]{2}(?::[0-9A-F]{2}){5})\b', text or '')
+    return m[1] if m else None
+
+
 def build_of(text):
     m = re.search(r'standalone-boot \S+ build (\S+)', text or '')
     return m[1] if m else None
@@ -1297,6 +1375,8 @@ async def run(a, out, result):
             lived = died is None
             count = failed_to_establish(path) if lived and path.is_file() and path.stat().st_size else None
             result['failed_to_establish'] = count
+            if count is not None:
+                result['capture_counts'] = capture_counts(path, address_of((result.get('before') or {}).get('ble')))
             result['capture'] = 'ok' if lived and count is not None else 'failed'
             if result['capture'] == 'failed':
                 print(f'-- btmon capture failed{"" if lived else f" (btmon exited {died} during the run)"}; '
@@ -1413,6 +1493,8 @@ def main():
         print('  btmon: the capture failed', flush=True)
     elif result.get('failed_to_establish') is not None:
         print(f'  btmon: {result["failed_to_establish"]} connections failed to establish (0x3E)', flush=True)
+        if 'capture_counts' in result:
+            print(f'  btmon, the watch\'s links: {said_counts(result["capture_counts"])}', flush=True)
     sys.exit(0 if result['passed'] else 1)
 
 

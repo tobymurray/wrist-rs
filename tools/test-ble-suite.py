@@ -316,6 +316,42 @@ class Judgements(unittest.TestCase):
             f.flush()
             self.assertIsNone(suite.failed_to_establish(f.name))
 
+    def test_a_capture_counts_the_watch_s_links_alone(self):
+        def record(opcode, packet, index=0):
+            return struct.pack('>IIIIq', len(packet), len(packet), index << 16 | opcode, 0, 0) + packet
+        watch, other = bytes.fromhex('82 29 EB 7A 5B D9'), bytes.fromhex('01 02 03 04 05 06')
+
+        def connected(handle, peer):
+            return bytes([0x3E, 19, 0x01, 0, handle, 0, 1, 1]) + peer + bytes(7)
+
+        def signal(handle, code, body, pb=0x2):
+            l2cap = struct.pack('<HH', 4 + len(body), 5) + bytes([code, 1]) + struct.pack('<H', len(body)) + body
+            return struct.pack('<HH', handle | pb << 12, len(l2cap)) + l2cap
+        capture = b'btsnoop\0' + struct.pack('>II', 1, 2001) + b''.join([
+            record(3, connected(0x40, watch)), record(3, connected(0x41, other)), record(3, connected(0x40, watch), index=1),
+            record(5, signal(0x40, 0x12, struct.pack('<HHHH', 400, 520, 0, 600))),
+            record(4, signal(0x40, 0x13, struct.pack('<H', 1))),
+            record(4, signal(0x40, 0x13, struct.pack('<H', 0), pb=0x1)),
+            record(4, signal(0x41, 0x13, struct.pack('<H', 0))),
+            record(3, bytes([0x3E, 10, 0x03, 0x3B, 0x40, 0]) + bytes(6)),
+            record(3, bytes([0x08, 4, 0x06, 0x40, 0, 0])), record(3, bytes([0x08, 4, 0x00, 0x40, 0, 1])),
+            record(3, bytes([0x05, 4, 0, 0x40, 0, 0x13])), record(3, bytes([0x05, 4, 0, 0x41, 0, 0x08])),
+            record(3, bytes([0x05, 4, 0, 0x40, 0, 0x3E]), index=1)])
+        with tempfile.NamedTemporaryFile() as f:
+            f.write(capture)
+            f.flush()
+            found = suite.capture_counts(f.name, 'D9:5B:7A:EB:29:82')
+            everyone = suite.capture_counts(f.name)
+        self.assertEqual(found, {
+            'hci0': {'parameter requests': {'from the peer': 1, 'rejected by the host': 1},
+                     'connection updates failed': {'3B': 1}, 'encryption failed': {'06': 1}, 'hang-ups': {'13': 1}},
+            'hci1': {'hang-ups': {'3E': 1}}})
+        self.assertEqual(everyone['hci0']['hang-ups'], {'13': 1, '08': 1})
+        self.assertEqual(everyone['hci0']['parameter requests']['accepted by the host'], 1)
+        self.assertIn('hci1: hang-ups 3E x1', suite.said_counts(found))
+        self.assertEqual(suite.address_of('[ble] advertising as UNA, timing cable, address D9:5B:7A:EB:29:82 (random)'),
+                         'D9:5B:7A:EB:29:82')
+
     def test_a_capture_that_died_counts_nothing(self):
         def record(packet):
             return struct.pack('>IIIIq', len(packet), len(packet), 3, 0, 0) + packet
