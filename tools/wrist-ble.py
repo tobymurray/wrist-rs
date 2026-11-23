@@ -245,6 +245,39 @@ async def answered(attaching):
         return False
 
 
+async def pinged(client, con, tries=3):
+    """Whether `ping` is answered on a link already subscribed."""
+    for _ in range(tries):
+        since = len(con.lines)
+        await asyncio.wait_for(send(client, "ping"), 5)
+        if await con.wait_for(["pong"], 1, since):
+            return True
+    return False
+
+
+async def asked(ask, prompt):
+    """`ask(prompt)` in a thread of its own, which Ctrl-C does not wait for as it waits for the executor's."""
+    import threading
+    loop = asyncio.get_running_loop()
+    reply = loop.create_future()
+
+    def settle(f):
+        try:
+            loop.call_soon_threadsafe(lambda: reply.done() or f())
+        except RuntimeError:  # the run already over
+            pass
+
+    def run():
+        try:
+            got = ask(prompt)
+        except BaseException as e:
+            settle(lambda: reply.set_exception(e))
+        else:
+            settle(lambda: reply.set_result(got))
+    threading.Thread(target=run, daemon=True).start()
+    return await reply
+
+
 NUMBER = r"\[ble\] pairing: the central shows a number; if it is (\d{6})|COMPARE with the central's number, then `ble yes` or `ble no`: (\d{6})"
 OUTCOME = r"^\[ble\] (paired|pairing failed.*)$"
 
@@ -271,7 +304,9 @@ async def pair_by_hand(name, port, watch_answer="ask", ask=input, adapter=None, 
             attached = asyncio.ensure_future(attach(client, con))
             end = time.time() + timeout
             number = None
-            while number is None and not attached.done() and time.time() < end:
+            # A first write that failed may still have started the pairing: its number can come after.
+            while number is None and not (attached.done() and not attached.exception() and attached.result()) \
+                    and time.time() < end:
                 found = await usb.wait(NUMBER, since, 0.2)
                 number = next(filter(None, re.search(NUMBER, found).groups())) if found else None
             if number is None:
@@ -283,8 +318,7 @@ async def pair_by_hand(name, port, watch_answer="ask", ask=input, adapter=None, 
                   f"{number}; cancel it if not.\n", flush=True)
             answer = watch_answer
             if answer == "ask":
-                reply = await asyncio.get_running_loop().run_in_executor(
-                    None, ask, f"   Does the host show {number}? [y/n] ")
+                reply = await asked(ask, f"   Does the host show {number}? [y/n] ")
                 answer = "yes" if reply.strip().lower() in ("y", "yes") else "no"
             if answer != "none":
                 print(f"-- to the watch: ble {answer}", flush=True)
@@ -293,8 +327,9 @@ async def pair_by_hand(name, port, watch_answer="ask", ask=input, adapter=None, 
             print(f"-- {outcome or 'no outcome from the watch'}", flush=True)
             ok = await answered(attached)
             if outcome == "[ble] paired" and not ok:
-                # The first write can wait out the pairing and give up; the bond is there now.
-                ok = await answered(attach(client, con))
+                # The first write can wait out the pairing and give up; the bond is there now, and the
+                # subscription still held.
+                ok = await answered(pinged(client, con))
             if ok:
                 print("-- the console answered over the bonded link", flush=True)
         since = len(usb.lines)

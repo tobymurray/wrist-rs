@@ -186,19 +186,74 @@ class ByHand(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn('pairing failed', out)
 
-    def test_a_first_write_that_gave_up_is_tried_again_once_paired(self):
+    def pair_for_real(self, port, write):
+        """With the real `attach`, a client that notifies as bleak's CoreBluetooth backend does."""
+        from unittest import mock
+        import io
+        started = []
+
+        class Client:
+            def __init__(self, *_args, **_kwargs):
+                self.con = None
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_exc):
+                return False
+
+            async def start_notify(self, _uuid, callback):
+                if started:
+                    raise ValueError('Characteristic notifications already started')
+                started.append(callback)
+
+            async def write_gatt_char(self, _uuid, data, response):
+                await write(started[0], data)
+
+        async def find(_name, timeout=15, adapter=None):
+            return object()
+        with mock.patch.object(wrist_ble.wrist_port, 'open_console', lambda _port: port), \
+                mock.patch.object(wrist_ble, 'find', find), mock.patch.object(wrist_ble, 'BleakClient', Client), \
+                mock.patch('sys.stdout', io.StringIO()) as out:
+            code = asyncio.run(asyncio.wait_for(wrist_ble.pair_by_hand('UNA', None, 'yes', timeout=5), 15))
+        return code, out.getvalue()
+
+    def test_a_write_that_waited_out_the_pairing_is_tried_again_on_the_same_link(self):
         port = Port({'ble': ['[ble] advertising as UNA, timing cable'], 'ble yes': ['[ble] paired'],
                      'ble bonds': ['[ble] bonded devices: 1 80:D1:CE:10:81:FD']})
-        tries = []
 
-        async def attach(_client, _con):
-            tries.append(1)
-            if len(tries) == 1:
+        async def write(notify, data):
+            if 'ble yes' not in port.sent:
                 port.say("[ble] pairing: the central shows a number; if it is 012345, `ble yes` on the USB console")
+                raise asyncio.TimeoutError()
+            notify(None, b'[usb] pong\n')
+        code, out = self.pair_for_real(port, write)
+        self.assertEqual(code, 0, out)
+
+    def test_a_number_after_a_failed_first_write_is_still_answered(self):
+        port = Port({'ble': ['[ble] advertising as UNA, timing cable'], 'ble yes': ['[ble] paired'],
+                     'ble bonds': ['[ble] bonded devices: 1']})
+
+        async def write(notify, data):
+            if 'ble yes' not in port.sent:
+                async def later():
+                    await asyncio.sleep(0.5)
+                    port.say("[ble] pairing: the central shows a number; if it is 012345, `ble yes` on the USB console")
+                asyncio.ensure_future(later())
                 raise RuntimeError('Insufficient authentication')
-            return True
-        code, asked, _ = self.pair(port, attach, answer='yes')
-        self.assertEqual((code, asked, len(tries)), (0, [], 2))
+            notify(None, b'[usb] pong\n')
+        code, out = self.pair_for_real(port, write)
+        self.assertEqual(code, 0, out)
+
+    def test_the_operator_is_asked_in_a_thread_of_its_own(self):
+        import threading
+        seen = []
+
+        def ask(prompt):
+            seen.append((prompt, threading.current_thread().daemon))
+            return 'y'
+        self.assertEqual(asyncio.run(wrist_ble.asked(ask, 'same? ')), 'y')
+        self.assertEqual(seen, [('same? ', True)])
 
     def test_already_bonded_needs_no_number(self):
         port = Port({'ble': ['[ble] advertising as UNA, timing cable'], 'ble bonds': ['[ble] bonded devices: 1']})
