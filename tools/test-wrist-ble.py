@@ -64,7 +64,7 @@ class FastAnswers(unittest.TestCase):
             async def __aexit__(self, *_exc):
                 return False
 
-        async def find(_name, timeout):
+        async def find(_name, timeout, adapter=None):
             return object()
 
         real_sleep = asyncio.sleep

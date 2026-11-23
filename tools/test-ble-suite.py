@@ -114,6 +114,7 @@ def snap(build, ble=True):
 
 def suite_args(**kw):
     base = dict(port=None, install=None, restore=None, image=None, btmon=False, name='UNA', scenarios=['console'], sessions=1,
+                phone_adapter=None,
                 restart_radio=False, profile=None, air=False)
     base.update(kw)
     return argparse.Namespace(**base)
@@ -1157,8 +1158,148 @@ class Replayable(unittest.TestCase):
             self.assertRegex(suite.seconds(1000.0) + ' [trace] 5 e 04', r'^\s*\d+\.\d{3} ')
 
 
+FAKE_STRAP = textwrap.dedent('''
+    import signal, sys, time
+    print('-- advertising HR-SIM (0x180D); Ctrl-C stops', flush=True)
+    if 'exit' in sys.argv:
+        sys.exit(1)
+    try:
+        while True:
+            time.sleep(0.05)
+    except KeyboardInterrupt:
+        print('-- 12:00:03 stopped after 3 notifications', flush=True)
+    ''')
+
+
+class Straps(unittest.TestCase):
+    def test_a_scan_s_lines_give_the_advertisers_heard_with_the_name_and_the_service(self):
+        lines = ['[ble] seen 11:22:33:44:55:66 -60 dBm 180D', '[ble] seen 11:22:33:44:55:66 -58 dBm (scan response) "HR-SIM"',
+                 '[ble] seen AA:BB:CC:DD:EE:FF -70 dBm "HR-SIM"', '[ble] seen 01:02:03:04:05:06 -40 dBm "Polar H10" 180D 180F',
+                 '[ble] seen 0A:0B:0C:0D:0E:0F -41 dBm "HR-SIM" 180F 0000180D-0000-1000-8000-00805F9B34FB',
+                 '>> usb ble scan 5']
+        self.assertEqual(suite.heard(lines), {'11:22:33:44:55:66': -60})
+        self.assertEqual(suite.heard(lines, 'Polar H10'), {'01:02:03:04:05:06': -40})
+        self.assertEqual(suite.heard(lines[2:3]), {})
+
+    def test_a_strap_is_either_simulator(self):
+        self.assertEqual(suite.Strap('hci1').argv()[1:], [str(suite.ROOT / 'tools/hr-sim.py'), '--adapter', 'hci1'])
+        self.assertEqual(suite.Strap('bumble:usb:0', ['--att-delay', '3']).argv()[1:],
+                         [str(suite.ROOT / 'tools/hr-sim-bumble.py'), 'usb:0', '--att-delay', '3'])
+
+    def test_a_strap_starts_once_it_advertises_and_stops_as_ctrl_c_does(self):
+        with tempfile.TemporaryDirectory() as d:
+            strap = suite.Strap('hci0', log=Path(d, 'strap.log'))
+            with mock.patch.object(strap, 'argv', lambda: [sys.executable, '-c', FAKE_STRAP]):
+                self.assertTrue(asyncio.run(strap.start()))
+                self.assertEqual(asyncio.run(strap.stop()), 3)
+            self.assertEqual([w for _, w in strap.said('')], ['advertising HR-SIM (0x180D); Ctrl-C stops',
+                                                              'stopped after 3 notifications'])
+            self.assertIn('stopped after 3', Path(d, 'strap.log').read_text())
+        strap = suite.Strap('hci0')
+        with mock.patch.object(strap, 'argv', lambda: [sys.executable, '-c', 'print("!! no adapter hci0")']):
+            self.assertFalse(asyncio.run(strap.start()))
+        self.assertEqual(strap.last(), '!! no adapter hci0')
+        self.assertIsNone(asyncio.run(suite.Strap('hci0').stop()))
+
+    def test_the_scan_scenario_hears_the_strap_and_the_radio_back(self):
+        found = ['[ble] scanning for 5 s, listening 50% of the time (50 ms in every 100 ms)',
+                 '[ble] seen 11:22:33:44:55:66 -60 dBm "HR-SIM" 180D', '[ble] scan done: 9 reports, 1 advertisers printed']
+        usb = Console({'ble scan 5': found, 'ble': ['[ble] advertising as UNA, timing cable']})
+
+        class Strap(suite.Strap):
+            async def start(self):
+                self.lines.append((time.time(), '-- advertising HR-SIM (0x180D); Ctrl-C stops'))
+                return True
+
+            async def stop(self):
+                return 0
+        with mock.patch.object(suite, 'Strap', Strap):
+            self.assertTrue(run(suite.scan, usb, None, 'b', strap='hci0', strap_flags=[], strap_log=None, scan_seconds=5))
+            usb = Console({'ble scan 5': found[:1] + found[2:], 'ble': ['[ble] advertising as UNA, timing cable']})
+            self.assertFalse(run(suite.scan, usb, None, 'b', strap='hci0', strap_flags=[], strap_log=None, scan_seconds=5))
+
+    def test_the_phone_and_its_update_use_the_adapter_named(self):
+        asked = []
+
+        async def find(name, timeout=15, adapter=None):
+            asked.append(('find', adapter))
+            return 'device'
+
+        class Client:
+            def __init__(self, device, timeout, **kw):
+                asked.append(('client', kw))
+
+            async def connect(self):
+                raise RuntimeError('no link')
+
+            async def disconnect(self):
+                pass
+
+        async def update(name, update=None, adapter=None):
+            asked.append(('update', adapter))
+            return 0
+        with mock.patch.object(suite.wrist_ble, 'find', find), mock.patch.object(suite.wrist_ble, 'BleakClient', Client), \
+                mock.patch.object(suite.wrist_ble, 'run', update), mock.patch('sys.stdout', io.StringIO()):
+            phone = suite.BleakPhone('UNA', 'hci1')
+            self.assertIsNone(asyncio.run(phone.connect()))
+            self.assertTrue(asyncio.run(phone.update('app.bin')))
+            asyncio.run(suite.BleakPhone('UNA').connect())
+        self.assertEqual(asked, [('find', 'hci1'), ('client', {'adapter': 'hci1'}), ('update', 'hci1'), ('find', None), ('client', {})])
+
+    def test_strap_flags_need_bumble_and_the_scan_is_not_run_by_default(self):
+        with mock.patch.object(sys, 'argv', ['ble-suite.py', '--strap-flags', '--att-delay 3']), \
+                mock.patch('sys.stderr', io.StringIO()) as err:
+            with self.assertRaises(SystemExit):
+                suite.main()
+        self.assertIn('--strap bumble:TRANSPORT', err.getvalue())
+        self.assertNotIn('scan', suite.PHONE_SCENARIOS)
+
+
 @unittest.skipUnless(importlib.util.find_spec('dbus_fast'), 'hr-sim.py needs dbus-fast (Linux)')
 class Consume(unittest.TestCase):
+    def test_a_connect_still_in_flight_is_cancelled_at_exit(self):
+        hr_sim = load('hr-sim')
+        Variant = hr_sim.Variant
+        dev_path = '/org/bluez/hci0/dev_02_80_E1_00_00_01'
+        calls = []
+
+        class Bus:
+            async def introspect(self, name, path):
+                return None
+
+            def get_proxy_object(self, name, path, intro):
+                return self
+
+            def get_interface(self, name):
+                return self
+
+            async def call_get_managed_objects(self):
+                return {dev_path: {'org.bluez.Device1': {'Connected': Variant('b', False),
+                                                         'ServicesResolved': Variant('b', False)}}}
+
+            async def call_connect(self):
+                calls.append('connect')
+                await asyncio.Event().wait()
+
+            async def call_disconnect(self):
+                calls.append('disconnect')
+
+        async def go():
+            link, stop = {}, asyncio.Event()
+            task = asyncio.create_task(hr_sim.consume(Bus(), 'hci0', '02:80:E1:00:00:01', True, stop, link))
+            while 'connect' not in calls:
+                await asyncio.sleep(0)
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            self.assertTrue(link['connecting'])
+            self.assertFalse(link.get('opened'))
+            await hr_sim.disconnect(Bus(), 'hci0', '02:80:E1:00:00:01', 'the connect still in flight')
+        with mock.patch('sys.stdout', io.StringIO()) as out:
+            asyncio.run(go())
+        self.assertEqual(calls, ['connect', 'disconnect'])
+        self.assertIn('consume: connecting to the watch', out.getvalue())
+        self.assertIn('disconnected the connect still in flight', out.getvalue())
+
     def test_each_state_once_a_loud_subscribe_and_the_link_closed(self):
         hr_sim = load('hr-sim')
         Variant = hr_sim.Variant
@@ -1222,11 +1363,13 @@ class Consume(unittest.TestCase):
         self.assertEqual(said, [
             "waiting for the watch to connect (BlueZ hasn't seen it)",
             "waiting for the watch to connect (it isn't connected)",
+            'connecting to the watch',
             'connect failed: le-connection-abort-by-local',
             'the watch is connected but shows no Heart Rate Measurement',
             f"subscribed to the watch's heart rate ({dev_path}/service1/char2)",
             "the watch's link is down",
             "waiting for the watch to connect (it isn't connected)",
+            'connecting to the watch',
             'disconnected the link it opened'])
         self.assertIn("FAILED to subscribe to the watch's heart rate", err.getvalue())
         self.assertTrue(link['opened'])

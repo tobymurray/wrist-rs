@@ -165,7 +165,8 @@ async def consume(bus, adapter, address, connect, stop, link):
     what it sends. BlueZ is this host's GATT client on a link in either role, so when the
     watch connects to the simulated strap, the host reads the watch's heart rate back over
     that same link (two links between the same two devices are refused). With `connect`,
-    the host opens the link itself, as a rower or a bike would, and `link["opened"]` says so."""
+    the host opens the link itself, as a rower or a bike would: `link["opened"]` says it did,
+    `link["connecting"]` that an attempt is still in flight."""
     dev_path = f"/org/bluez/{adapter}/dev_{address.upper().replace(':', '_')}"
     root = bus.get_proxy_object("org.bluez", "/", await bus.introspect("org.bluez", "/"))
     manager = root.get_interface("org.freedesktop.DBus.ObjectManager")
@@ -188,6 +189,9 @@ async def consume(bus, adapter, address, connect, stop, link):
             if connect and not asked:
                 asked = True
                 obj = bus.get_proxy_object("org.bluez", dev_path, await bus.introspect("org.bluez", dev_path))
+                if failed is None:
+                    say("connecting to the watch")
+                link["connecting"] = True
                 try:
                     await obj.get_interface("org.bluez.Device1").call_connect()
                     link["opened"], failed = True, None
@@ -195,6 +199,7 @@ async def consume(bus, adapter, address, connect, stop, link):
                     failed = f"connect failed: {e}"
                     say(failed)
                     asked = False
+                link["connecting"] = False
             await asyncio.sleep(1)
             continue
         chars = [path for path, ifaces in objects.items()
@@ -234,14 +239,16 @@ async def consume(bus, adapter, address, connect, stop, link):
                 break
 
 
-async def disconnect(bus, adapter, address):
+async def disconnect(bus, adapter, address, what="the link it opened"):
+    """Hang up the link this tool opened, or cancel its connect still in flight, which BlueZ would
+    otherwise carry on past our exit (the next run's connect then fails `In Progress`)."""
     dev_path = f"/org/bluez/{adapter}/dev_{address.upper().replace(':', '_')}"
     try:
         obj = bus.get_proxy_object("org.bluez", dev_path, await bus.introspect("org.bluez", dev_path))
         await obj.get_interface("org.bluez.Device1").call_disconnect()
-        print(f"-- {time.strftime('%H:%M:%S')} consume: disconnected the link it opened", flush=True)
+        print(f"-- {time.strftime('%H:%M:%S')} consume: disconnected {what}", flush=True)
     except Exception as e:
-        print(f"!! {time.strftime('%H:%M:%S')} consume: disconnecting the link it opened failed: {e}", file=sys.stderr, flush=True)
+        print(f"!! {time.strftime('%H:%M:%S')} consume: disconnecting {what} failed: {e}", file=sys.stderr, flush=True)
 
 
 async def main():
@@ -289,7 +296,9 @@ async def main():
         if task:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
-        if link.get("opened"):
+        if link.get("connecting"):
+            await disconnect(bus, args.adapter, args.consume, "the connect still in flight")
+        elif link.get("opened"):
             await disconnect(bus, args.adapter, args.consume)
         print(f"-- stopped after {sent} notifications", flush=True)
     if task and not task.cancelled() and task.exception():
