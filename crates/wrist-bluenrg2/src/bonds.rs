@@ -43,6 +43,21 @@ impl Listing {
         self.count() < MOST || peer.is_some_and(|peer| listed(self.params(), peer))
     }
 
+    /// This listing less `bond`, as the next read should list it once `bond` is forgotten.
+    #[must_use]
+    pub fn without(&self, bond: Address) -> Self {
+        let mut l = Self::EMPTY;
+        let mut n = 0;
+        for (listed, entry) in bonded_devices(self.params()).zip(self.params()[1..].as_chunks::<7>().0) {
+            if listed != bond {
+                l.bytes[1 + 7 * n..=7 * (n + 1)].copy_from_slice(entry);
+                n += 1;
+            }
+        }
+        l.bytes[0] = u8::try_from(n).unwrap_or(0);
+        l
+    }
+
     /// The bond listed with these address bytes, of either type.
     #[must_use]
     pub fn bond_at(&self, addr: BdAddr) -> Option<Address> {
@@ -117,9 +132,10 @@ pub fn another_bond(params: &[u8], forgotten: Address, peer: Address) -> bool {
     peer != forgotten && listed(params, peer)
 }
 
-/// Whether a pairing with `peer` provably kept a bond: the reply read after it lists `peer`, or
-/// holds more bonds than the `before` count read ahead of it.
+/// Whether a pairing with `peer` provably kept a bond: the reply read after it lists `peer` or
+/// the `identity` its private address resolved to, or holds more bonds than the `before` count
+/// read ahead of it.
 #[must_use]
-pub fn bond_kept(params: &[u8], before: Option<u8>, peer: Address) -> bool {
-    before.zip(params.first()).is_some_and(|(before, &now)| now > before) || listed(params, peer)
+pub fn bond_kept(params: &[u8], before: Option<u8>, peer: Address, identity: Option<Address>) -> bool {
+    before.zip(params.first()).is_some_and(|(before, &now)| now > before) || listed(params, peer) || identity.is_some_and(|i| listed(params, i))
 }

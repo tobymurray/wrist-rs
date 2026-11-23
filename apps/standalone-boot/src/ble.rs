@@ -1545,11 +1545,11 @@ impl Link<'_> {
         self.uart.write_line("");
     }
 
-    /// The bonds as the chip lists them now, printed unless a disconnect changed nothing; after a
-    /// pairing or a disconnect, any the chip dropped is named.
+    /// The bonds as the chip lists them now, printed unless a disconnect changed nothing; any the
+    /// chip dropped since the last read is named.
     async fn list_bonds(&mut self, why: Listed) {
         let Ok(r) = self.command(ACI_GAP_GET_BONDED_DEVICES, &[]).await else { return };
-        if r.len < 1 {
+        if r.status != 0 || r.len < 1 {
             return;
         }
         let params = &r.params[..r.len.min(r.params.len())];
@@ -1559,15 +1559,13 @@ impl Link<'_> {
         BONDED.store(params[0], Ordering::Relaxed);
         BONDED_READ.store(true, Ordering::Relaxed);
         redraw();
-        if why != Listed::Asked {
-            for bond in listed_before.iter().flat_map(|b| b.dropped(&now)) {
-                self.uart.write_str("[ble] the chip dropped the bond of ");
-                write_address(self.uart, bond);
-                self.uart.write_line(", its store full; pair it again");
-            }
-            if why == Listed::Disconnected && listed_before == Some(now) {
-                return;
-            }
+        for bond in listed_before.iter().flat_map(|b| b.dropped(&now)) {
+            self.uart.write_str("[ble] the chip dropped the bond of ");
+            write_address(self.uart, bond);
+            self.uart.write_line(", its store full; pair it again");
+        }
+        if why == Listed::Disconnected && listed_before == Some(now) {
+            return;
         }
         let mut line = self.uart.lines();
         line.write_str("[ble] bonded devices: ");
@@ -1582,15 +1580,15 @@ impl Link<'_> {
             self.uart.write_u32(u32::from(bonds::MOST));
             self.uart.write_line(" the chip keeps safely: a disconnect may drop the earliest; `ble forget <address>` some");
         }
-        if why == Listed::Paired && self.peer.is_some_and(|peer| bonds::bond_kept(params, before, peer)) {
+        if why == Listed::Paired && self.peer.is_some_and(|peer| bonds::bond_kept(params, before, peer, self.identity)) {
             self.uart.write_line("[ble] bonded");
         }
     }
 
-    /// Whether a pairing with the central linked now keeps the bonds within [`bonds::MOST`]; yes
+    /// Whether a pairing with the central linked now keeps the bonds within [`bonds::MOST`]; no
     /// while they are unread.
     fn room_for_bond(&self) -> bool {
-        self.bonds.is_none_or(|b| b.room_for(self.peer) || self.identity.is_some_and(|i| b.room_for(Some(i))))
+        self.bonds.is_some_and(|b| b.room_for(self.peer) || self.identity.is_some_and(|i| b.room_for(Some(i))))
     }
 
     /// The bond whose key resolves the linked central's private address, if any, so that its
@@ -1627,7 +1625,12 @@ impl Link<'_> {
         }
     }
 
-    fn refuse_pairing(&self) {
+    fn refuse_pairing(&mut self) {
+        if self.bonds.is_none() {
+            // Read again, for the next try.
+            self.check_bonds = true;
+            return self.uart.write_line("[ble] pairing refused: the bonds could not be read; pair again");
+        }
         self.uart.write_str("[ble] pairing refused: ");
         self.uart.write_u32(u32::from(bonds::MOST));
         self.uart.write_line(" bonds already, the most the chip keeps safely; `ble forget <address>` one (`ble bonds` lists them), then pair again");
@@ -1649,7 +1652,7 @@ impl Link<'_> {
             }
             return self.uart.write_line("");
         }
-        let keep = self.peer.is_some_and(|peer| bonds::another_bond(params, addr, peer));
+        let keep = self.peer.into_iter().chain(self.identity).any(|peer| bonds::another_bond(params, addr, peer));
         let mut p = [0u8; 7];
         p[0] = addr.kind.as_raw();
         p[1..].copy_from_slice(addr.addr.raw());
@@ -1658,6 +1661,7 @@ impl Link<'_> {
                 self.uart.write_str("[ble] forgot ");
                 write_address(self.uart, addr);
                 self.uart.write_line("; forget the watch on that central too");
+                self.bonds = self.bonds.map(|b| b.without(addr));
                 if !keep {
                     self.end_forgotten_link().await;
                 }
@@ -2012,6 +2016,9 @@ impl Link<'_> {
             }
             Got::Event(RadioEvent::EventsLost) => {
                 self.uart.write_line("[ble] the driver lost events");
+                // A link may have ended or begun unseen: its identity no longer admits a pairing.
+                self.identity = None;
+                self.check_bonds = true;
                 self.lost_read();
             }
             Got::Event(e) => self.shadow.reported(now_ms(), e),
