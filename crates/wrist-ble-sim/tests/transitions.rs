@@ -1,5 +1,4 @@
-//! Changes of plan taken a step at a time (DESIGN.md §2.3), and §5.3's exhaustive check of every
-//! transition between the plans the menu reaches.
+//! Changes of plan taken a step at a time, and every transition between the plans the menu reaches.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -15,7 +14,7 @@ fn adv(units: u16) -> AdvParams {
     AdvParams { interval_min: Duration::from_u16(units), interval_max: Duration::from_u16(units), connectable: true }
 }
 
-/// 100 ms, 500 ms (the cable's beside a central link) and 1 s.
+/// 100 ms, 500 ms and 1 s.
 const FAST: u16 = 160;
 const BESIDE: u16 = 792;
 const SLOW: u16 = 1_592;
@@ -82,10 +81,8 @@ fn a_scan_is_stopped_before_it_starts_again() {
     assert_eq!(end.activities.scanning, Some(scan(320)));
 }
 
-/// From 100 ms the first central link cannot join (105 ms has no 50 ms divisor on the 1.25 ms
-/// grid), so advertising stops first. With no phone linked, advertising comes back at 500 ms before
-/// the link opens, since it may not start while the chip initiates (I1); with one, the
-/// steps go in the order they are tried.
+/// A link cannot join 100 ms advertising, and advertising cannot start while the chip initiates:
+/// with no phone linked (I1) advertising comes back before the link opens, with one after it.
 #[test]
 fn a_link_beside_advertising_keeps_the_watch_reachable() {
     let from = advertising(Some(FAST));
@@ -283,11 +280,9 @@ fn reach(from: &Placed, to: Situation) -> Option<(usize, Path, Placed)> {
     to.plans().iter().enumerate().find_map(|(i, plan)| transition(from, plan, &rules_into(to)).map(|(path, end)| (i, path, end)))
 }
 
-/// §5.3: every situation the menu plans is reached from the chip's start, and from each to every
-/// other the planner finds an ordering the chip's scheduler admits at every step, within I1's
-/// allowance when no phone is linked, and opening no link while the phone's settles. Where the
-/// preferred plan has none, a less preferred one does, and the preferred is reached from it next.
-/// The phone's own coming and going is its, not a step.
+/// Every situation the menu plans is reached from the chip's start, and every other from it, by an
+/// ordering admitted at each step, within I1 and opening no link while the phone settles; through
+/// a less preferred plan at most once.
 #[test]
 fn every_plan_reaches_every_other_a_step_at_a_time() {
     let all = Situation::all();

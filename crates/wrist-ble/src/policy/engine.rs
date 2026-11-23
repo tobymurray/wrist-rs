@@ -154,11 +154,9 @@ pub struct Core<'a> {
     /// by its end or as a resync found it: its failure is the link's end, not a failure.
     asked_link_went: bool,
     pending_link_went: bool,
-    /// The operation in flight that holds the radio: the reconciler asks for nothing else until it
-    /// ends, but answers and security requests [`may_pass`] it.
+    /// The operation in flight that holds the radio; only what [`may_pass`] goes out beside it.
     pending: Option<Pending>,
-    /// Operations that went out past [`Self::pending`], each until its outcome or deadline, with
-    /// whether its link went before the chip answered.
+    /// Operations that went out past [`Self::pending`], with whether their link went first.
     passed: [Option<(Pending, bool)>; QUEUE],
     queue: [Option<Op>; QUEUE],
     backoff: [Backoff; KINDS],
@@ -600,10 +598,8 @@ impl<'a> Core<'a> {
 
     /// The chip takes another request once the central answers, and only then (HARDWARE.md): the
     /// answer ends the ask, and the chip having taken it clears its backoff.
-    ///
     /// A refusal while the link's parameters are unknown, as a resync leaves them, is asked again
-    /// after the backoff within the want's budget: without it they stay unknown until the phone
-    /// changes them.
+    /// within the want's budget.
     fn answered(&mut self, now: Instant, link: ConnHandle, accepted: bool) {
         let phone = self.state.phone.link() == Some(link);
         if phone {
@@ -973,8 +969,7 @@ impl<'a> Core<'a> {
         if self.advertising_unknown && self.ready_for(now, OpKind::Advertise) {
             return Some(Op::Advertise(None));
         }
-        // The plan's next step, each its own operation with its own outcome, the plan made again
-        // from what it leaves running.
+        // One step of the plan at a time, the plan made again from what each leaves running.
         if let Some(op) = self.target.path.first().and_then(|c| op_of(&c)).filter(|op| self.ready_for(now, op.kind())) {
             return Some(op);
         }
@@ -1157,8 +1152,7 @@ fn change_of(op: &Op) -> Option<Change> {
     }
 }
 
-/// The operation that takes a step of the plan, for the steps the core takes; the central role
-/// (DESIGN.md §7, PR 7) is not planned yet.
+/// The operation that takes a step of the plan; `None` for the central role's, not planned yet.
 fn op_of(c: &Change) -> Option<Op> {
     match *c {
         Change::Advertise(p) => Some(Op::Advertise(p)),

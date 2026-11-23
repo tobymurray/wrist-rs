@@ -909,7 +909,7 @@ fn no_wake_is_named_for_an_ask_that_cannot_go() {
     assert_eq!(tick(&mut b, at + 2_001).next, None);
 }
 
-/// A security request on air with a rebond's answer gone out past it (F57 R5).
+/// A security request on air with a rebond's answer gone out past it.
 fn answer_passed() -> (Bench, OpId) {
     let mut b = Bench::new(battery());
     b.phone_up(1_000);
@@ -961,8 +961,8 @@ fn an_answer_that_passed_ends_with_its_link() {
     assert_eq!(b.core.counters.failed, failed, "ended already");
 }
 
-/// A phone link whose parameters a resync let go, asked again after each refusal within the
-/// want's budget (F189); one whose parameters are known is not.
+/// A phone link whose parameters a resync let go is asked again after each refusal, within the
+/// want's budget; one whose parameters are known is not.
 #[test]
 fn a_refusal_while_the_parameters_are_unknown_is_asked_again() {
     let refuse = |b: &mut Bench| {

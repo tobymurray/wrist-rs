@@ -1,5 +1,5 @@
 //! A change of plan as single operations, in an order the driver's [`Schedule`] admits at every
-//! step and that keeps the watch reachable (DESIGN.md §2.3).
+//! step and that keeps the watch reachable.
 
 use crate::{Activities, AdvParams, Change, ConnParams, Millis, OpKind, ScanParams, Schedule};
 
@@ -103,7 +103,7 @@ pub struct Rules<'a> {
     /// No phone link: the transition may leave the watch without connectable advertising for at
     /// most [`REACHABLE_GAP`] in all (I1).
     pub reachable: bool,
-    /// No central link starts: the phone's link is settling (DESIGN.md §3.4).
+    /// The phone's link is settling, so no central link starts.
     pub settling: bool,
 }
 
@@ -131,8 +131,7 @@ struct Step {
     link: Option<usize>,
 }
 
-/// The steps a transition is made of, stops first, then re-times, opens and starts: the order
-/// tried first.
+/// The steps a transition is made of, in the order tried first: stops, re-times, opens, starts.
 fn steps(from: &Placed, to: &Plan) -> ([Option<Step>; MAX_STEPS], usize) {
     let mut out = [None; MAX_STEPS];
     let mut n = 0;
@@ -171,8 +170,8 @@ fn steps(from: &Placed, to: &Plan) -> ([Option<Step>; MAX_STEPS], usize) {
     (out, n)
 }
 
-/// A stop takes the radio towards the safe baseline, never away from it: it is never quarantined,
-/// and a refused one is the baseline refused (DESIGN.md §2.4).
+/// A stop leads towards the safe baseline, so it is never quarantined: a refused one is the
+/// baseline refused.
 const fn stops(c: &Change) -> bool {
     matches!(c, Change::Advertise(None) | Change::Scan(None) | Change::Initiate(None) | Change::Close { .. })
 }
@@ -202,8 +201,7 @@ struct Search<'a, 'r> {
 }
 
 impl Search<'_, '_> {
-    /// Depth first from `at`, `done` the steps taken, `gap` the time without connectable
-    /// advertising so far.
+    /// Depth first from `at`, with `done` the steps taken and `gap` the time unreachable so far.
     fn from(&mut self, done: u16, at: &Placed, gap: u32) -> Option<Placed> {
         if usize::try_from(done.count_ones()).ok() == Some(self.steps.len()) {
             return Some(*at);

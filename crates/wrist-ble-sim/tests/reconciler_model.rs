@@ -1,6 +1,5 @@
-//! The reconciler against an abstract radio (DESIGN.md §5.3): the core itself, unchanged, and a
-//! radio that may accept, refuse, time out, lose events, drop the phone's link or reset, within a
-//! budget of faults, after which it behaves.
+//! The core, unchanged, against a radio that may refuse, fail, lose outcomes and events, drop the
+//! phone's link or reset, within a budget of faults, after which it behaves.
 
 use std::hash::{Hash, Hasher};
 
@@ -309,8 +308,7 @@ impl Model for Reconciler {
             Act::Snapshot => {
                 n.snapshot = false;
                 n.unsynced = false;
-                // What the snapshot shows of advertising is the outcome of the starts and stops
-                // on air: none fails after it.
+                // The snapshot shows the advertising operations' outcomes: none fails after it.
                 for o in &mut n.radio.on_air {
                     if o.is_some_and(|(_, op)| op.kind() == OpKind::Advertise) {
                         *o = None;

@@ -102,9 +102,8 @@ pub trait Planner {
     fn plan(&self, input: &PlanInput<'_>) -> Target;
 }
 
-/// Plans the phone's advertising from the menu: the first option reached by a transition checked
-/// a step at a time ([`transition`]) that runs no start the chip has refused. Every wanted
-/// peripheral is told it fits, with no link planned to it.
+/// Plans the phone's advertising as the first menu option a [`transition`] reaches, and tells
+/// every wanted peripheral it fits without planning a link to it.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TransitionPlanner;
 
