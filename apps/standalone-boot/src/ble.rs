@@ -15,7 +15,9 @@
 //! an encrypted link. The loader is never accepted over the air.
 //!
 //! Bonds. Past 4 the chip drops its earliest-bonded at a disconnect without a word (HARDWARE.md),
-//! so a pairing that would add a fifth is refused, and a bond the chip drops anyway is named.
+//! so a pairing that would add a fifth is refused, and a bond the chip drops anyway is named. A
+//! central linked from a resolvable private address is matched to its bond through the chip's
+//! keys, so a bonded phone pairing again replaces its own.
 //!
 //! The loop has no tick: it waits for the chip's IRQ, a request, a signal, a power change or its
 //! earliest deadline (`wrist_bluenrg2::wake::ble::due`).
@@ -864,6 +866,10 @@ struct Link<'d> {
     bonds: Option<Listing>,
     /// A disconnect since the bonds were read last.
     check_bonds: bool,
+    /// The linked central's private address is yet to be resolved.
+    resolve_peer: bool,
+    /// The bond whose key resolved the linked central's private address.
+    identity: Option<bluenrg2::Address>,
     line: Line,
     /// The negotiated ATT MTU; notifications carry `mtu - 3`.
     mtu: usize,
@@ -920,6 +926,8 @@ impl<'d> Link<'d> {
             recount_bonds: false,
             bonds: None,
             check_bonds: false,
+            resolve_peer: false,
+            identity: None,
             line: ([0; 192], 0),
             mtu: DEFAULT_MTU,
             subscribed: false,
@@ -1048,7 +1056,7 @@ impl Link<'_> {
         let one = Duration::from_ticks(1);
         let state = State {
             now: tick(Instant::now()),
-            work: self.shadow.issuing() || self.shadow.snapshot_wanted() || self.finish_transfer || self.recount_bonds || self.check_bonds || self.passkey_for.is_some() || self.storming() || self.shadow.chip_acting(),
+            work: self.shadow.issuing() || self.shadow.snapshot_wanted() || self.finish_transfer || self.recount_bonds || self.check_bonds || self.resolve_peer || self.passkey_for.is_some() || self.storming() || self.shadow.chip_acting(),
             confirm_by: PROMPT.lock(Cell::get).owed().map(|(at, _)| tick(Instant::from_millis(at))),
             transfer: match &self.transfer {
                 None => Transfer::None,
@@ -1189,6 +1197,9 @@ impl Link<'_> {
                 crate::update::abort(session);
             }
             self.uart.write_line("[update] error: no data for 5 s; transfer abandoned");
+        }
+        if core::mem::take(&mut self.resolve_peer) {
+            self.resolve_peer().await;
         }
         if core::mem::take(&mut self.recount_bonds) {
             self.list_bonds(Listed::Paired).await;
@@ -1581,7 +1592,41 @@ impl Link<'_> {
     /// Whether a pairing with the central linked now keeps the bonds within [`bonds::MOST`]; yes
     /// while they are unread.
     fn room_for_bond(&self) -> bool {
-        self.bonds.is_none_or(|b| b.room_for(self.peer))
+        self.bonds.is_none_or(|b| b.room_for(self.peer) || self.identity.is_some_and(|i| b.room_for(Some(i))))
+    }
+
+    /// The bond whose key resolves the linked central's private address, if any, so that its
+    /// pairing again is not taken for a new central's.
+    async fn resolve_peer(&mut self) {
+        let Some(peer) = self.peer else { return };
+        let r = match self.command(bonds::RESOLVE_PRIVATE_ADDR, peer.addr.raw()).await {
+            Ok(r) => r,
+            Err(why) => {
+                self.uart.write_str("[ble] the central's private address: ");
+                return self.uart.write_line(why);
+            }
+        };
+        if r.status != 0 || r.len < 6 {
+            self.uart.write_str("[ble] the central's private address resolves to no bond, status ");
+            self.uart.write_hex8(r.status);
+            return self.uart.write_line("");
+        }
+        let mut addr = [0u8; 6];
+        addr.copy_from_slice(&r.params[..6]);
+        // Still the same link: a disconnect clears `peer`.
+        if self.peer != Some(peer) {
+            return;
+        }
+        self.identity = self.bonds.and_then(|b| b.bond_at(BdAddr(addr)));
+        self.uart.write_str("[ble] the central's private address resolves to ");
+        if let Some(bond) = self.identity {
+            self.uart.write_str("the bond of ");
+            write_address(self.uart, bond);
+            self.uart.write_line("");
+        } else {
+            write_address(self.uart, bluenrg2::Address { kind: AddrKind::PUBLIC, addr: BdAddr(addr) });
+            self.uart.write_line(", not listed");
+        }
     }
 
     fn refuse_pairing(&self) {
@@ -2059,6 +2104,8 @@ impl Link<'_> {
     fn connected(&mut self, link: ConnHandle, peer: wrist_ble::PeerAddr) {
         CONN_HANDLE.store(link.raw(), Ordering::Relaxed);
         self.peer = Some(bluenrg2::Address { kind: peer.kind, addr: peer.addr });
+        self.identity = None;
+        self.resolve_peer = self.peer.is_some_and(bonds::resolvable);
         set_encrypted(false);
         self.subscribed = false;
         self.set_mirror();
@@ -2087,6 +2134,8 @@ impl Link<'_> {
         set_encrypted(false);
         self.subscribed = false;
         self.peer = None;
+        self.identity = None;
+        self.resolve_peer = false;
         self.set_mirror();
         clear_prompt();
         if let Some(session) = self.transfer.take() {

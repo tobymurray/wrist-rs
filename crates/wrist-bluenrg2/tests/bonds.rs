@@ -1,7 +1,7 @@
 //! The watch's pairing and address, and the bond list read for `ble forget` and after a pairing.
 
 use bluenrg2::{AddrKind, Address, BdAddr};
-use wrist_bluenrg2::bonds::{another_bond, bond_kept, forget, static_random_address, Forget, Listing, MOST, PAIRING};
+use wrist_bluenrg2::bonds::{another_bond, bond_kept, forget, resolvable, static_random_address, Forget, Listing, MOST, PAIRING};
 use wrist_bluenrg2::console::{address, parse_address};
 
 #[test]
@@ -143,4 +143,17 @@ fn a_listing_keeps_what_the_reply_holds_and_no_more() {
     assert_eq!(Listing::new(&[]), Listing::EMPTY);
     assert_eq!(Listing::new(&[3, 1, 2]).count(), 0);
     assert_eq!(Listing::EMPTY.params(), [0]);
+}
+
+#[test]
+fn a_private_address_is_resolved_and_matched_by_its_bytes() {
+    let rpa = |top: u8| Address { kind: AddrKind::RANDOM, addr: BdAddr::new([1, 2, 3, 4, 5, top]) };
+    assert!(resolvable(rpa(0x4A)));
+    assert!(resolvable(rpa(0x7F)));
+    assert!(!resolvable(rpa(0xC0)), "static random");
+    assert!(!resolvable(rpa(0x3F)), "non-resolvable private");
+    assert!(!resolvable(Address { kind: AddrKind::PUBLIC, ..rpa(0x4A) }));
+    let four = Listing::new(&reply(&[1, 2, 3, 4]));
+    assert_eq!(four.bond_at(central(3).addr), Some(central(3)));
+    assert_eq!(four.bond_at(central(5).addr), None);
 }

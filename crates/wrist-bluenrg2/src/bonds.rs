@@ -1,6 +1,6 @@
 //! The watch's identity and pairing, and what a `GET_BONDED_DEVICES` reply says about a central.
 
-use bluenrg2::{bonded_devices, static_random, Address, AuthenticationRequirement, FixedPin, IdentityAddress, KeySizes, SecureConnections};
+use bluenrg2::{bonded_devices, static_random, AddrKind, Address, AuthenticationRequirement, BdAddr, FixedPin, IdentityAddress, KeySizes, SecureConnections};
 
 /// The most bonds the chip keeps safely: past them, a disconnect can drop the earliest-bonded
 /// without a word (HARDWARE.md), so a pairing that would add a fifth is refused.
@@ -44,10 +44,28 @@ impl Listing {
         self.count() < MOST || peer.is_some_and(|peer| listed(self.params(), peer))
     }
 
+    /// The bond listed with these address bytes, of either type.
+    #[must_use]
+    pub fn bond_at(&self, addr: BdAddr) -> Option<Address> {
+        bonded_devices(self.params()).find(|bond| bond.addr == addr)
+    }
+
     /// The bonds listed here that `after` no longer lists.
     pub fn dropped<'a>(&'a self, after: &'a Listing) -> impl Iterator<Item = Address> + 'a {
         bonded_devices(self.params()).filter(move |&bond| !listed(after.params(), bond))
     }
+}
+
+/// `ACI_GAP_RESOLVE_PRIVATE_ADDR`: a resolvable private address in, the identity address of the
+/// bond whose key resolves it out (6 bytes, no type), or a nonzero status (ST's
+/// `bluenrg1_gap_aci.h`).
+pub const RESOLVE_PRIVATE_ADDR: u16 = 0xFCA0;
+
+/// Whether `peer` is a resolvable private address: random, its two top bits `01`. With privacy
+/// off the chip reports such a central by it, not by its bond's identity.
+#[must_use]
+pub fn resolvable(peer: Address) -> bool {
+    peer.kind == AddrKind::RANDOM && peer.addr.raw()[5] >> 6 == 0b01
 }
 
 /// The watch's pairing.
