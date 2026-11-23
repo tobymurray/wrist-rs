@@ -3,6 +3,7 @@
 Linux or Mac host. The watch needs a build with the `ble` feature and `ble on`.
 
     wrist-ble.py --pair                     pair and bond, confirmed over the USB console
+    wrist-ble.py --pair (macOS)             pair, the operator comparing the Mac's number with the watch's
     wrist-ble.py "ble;boot"                 send commands, print the answers
     wrist-ble.py --update app.bin           stage, verify, write, reset, wait until kept
     wrist-ble.py --revert                   put back the image the last kept update replaced
@@ -16,7 +17,10 @@ GATT table for a bonded watch; after a build that changes the table, remove the 
 this host (`bluetoothctl remove <address>`) and pair again. --pair (Linux, BlueZ)
 registers a D-Bus agent that displays and confirms, asks BlueZ to pair, and when BlueZ asks
 whether the number matches, reads the watch's own number from its USB console (`ble`), sends
-`ble yes` there if they agree, and accepts. No button on the watch is pressed. For tests,
+`ble yes` there if they agree, and accepts. No button on the watch is pressed. On macOS, where
+no program sees the Mac's number, --pair holds the USB console, connects so that macOS asks to
+pair, shows the watch's number as it comes and asks the operator whether the Mac shows the same:
+the answer goes to the watch, and the operator clicks the Mac's own dialog. For tests,
 --host-answer and --watch-answer give either side's answer (yes, no, none for the watch,
 never or cancel for the host), and --command-file sends the watch's into a logger's command file
 (as `tools/wrist-session.py` reads it) with each step as a `== host` mark.
@@ -192,6 +196,115 @@ def pairing_answers(host_answer, watch_answer, shown, theirs):
     return (f"ble {watch}" if watch else None), host
 
 
+class UsbLines:
+    """The USB console's lines as they come, read by a thread of their own, each shown with `echo`."""
+
+    def __init__(self, s, echo=lambda text: print(f"   usb: {text}", flush=True)):
+        import threading
+        self.s, self.echo, self.lines = s, echo, []
+        self.stopping = threading.Event()
+        self.lock = threading.Lock()
+        self.thread = threading.Thread(target=self._read, daemon=True)
+        self.thread.start()
+
+    def _read(self):
+        buf = b""
+        while not self.stopping.is_set():
+            buf += self.s.read(4096)
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                text = line.decode("utf-8", "replace").rstrip("\r")
+                self.lines.append(text)
+                self.echo(text)
+
+    def send(self, text):
+        with self.lock:
+            wrist_port.write_command(self.s, text)
+
+    async def wait(self, pattern, since, timeout):
+        """The first line from `since` matching `pattern`, or None after `timeout`."""
+        end = time.time() + timeout
+        while time.time() < end:
+            for line in self.lines[since:]:
+                if re.search(pattern, line):
+                    return line
+            await asyncio.sleep(0.05)
+        return None
+
+    def close(self):
+        self.stopping.set()
+        self.thread.join(2)
+
+
+async def answered(attaching):
+    """Whether `attach` found the console answering; False, said why, if it failed."""
+    try:
+        return await attaching
+    except Exception as e:
+        print(f"-- the link: {e!r}", flush=True)
+        return False
+
+
+NUMBER = r"\[ble\] pairing: the central shows a number; if it is (\d{6})|COMPARE with the central's number, then `ble yes` or `ble no`: (\d{6})"
+OUTCOME = r"^\[ble\] (paired|pairing failed.*)$"
+
+
+async def pair_by_hand(name, port, watch_answer="ask", ask=input, adapter=None, timeout=60):
+    """Pair where the host's number can't be read (macOS): connect so that the host asks to pair, show the
+    watch's number as the watch says it, and send the watch the operator's answer (`watch_answer` "ask"), or
+    `yes`, `no`, or nothing ("none")."""
+    usb = UsbLines(wrist_port.open_console(port))
+    try:
+        since = len(usb.lines)
+        usb.send("ble")
+        status = await usb.wait(r"^\[ble\] (advertising|connected|up|off)", since, 3)
+        if not status or not re.match(r"\[ble\] (advertising|connected)", status):
+            print(f"-- the watch's radio is not advertising: {status}", flush=True)
+            return 1
+        device = await find(name, adapter=adapter)
+        if device is None:
+            return 1
+        con = Console()
+        since = len(usb.lines)
+        async with BleakClient(device, timeout=20, **on(adapter)) as client:
+            print("-- connected; the console needs a bond, so the host should now ask to pair", flush=True)
+            attached = asyncio.ensure_future(attach(client, con))
+            end = time.time() + timeout
+            number = None
+            while number is None and not attached.done() and time.time() < end:
+                found = await usb.wait(NUMBER, since, 0.2)
+                number = next(filter(None, re.search(NUMBER, found).groups())) if found else None
+            if number is None:
+                ok = await answered(attached)
+                print("-- already bonded: the console answered" if ok else "-- the watch never showed a number",
+                      flush=True)
+                return 0 if ok else 1
+            print(f"\n   The watch's number is {number}. Click Connect (or Pair) on the host's dialog if it shows "
+                  f"{number}; cancel it if not.\n", flush=True)
+            answer = watch_answer
+            if answer == "ask":
+                reply = await asyncio.get_running_loop().run_in_executor(
+                    None, ask, f"   Does the host show {number}? [y/n] ")
+                answer = "yes" if reply.strip().lower() in ("y", "yes") else "no"
+            if answer != "none":
+                print(f"-- to the watch: ble {answer}", flush=True)
+                usb.send(f"ble {answer}")
+            outcome = await usb.wait(OUTCOME, since, timeout)
+            print(f"-- {outcome or 'no outcome from the watch'}", flush=True)
+            ok = await answered(attached)
+            if outcome == "[ble] paired" and not ok:
+                # The first write can wait out the pairing and give up; the bond is there now.
+                ok = await answered(attach(client, con))
+            if ok:
+                print("-- the console answered over the bonded link", flush=True)
+        since = len(usb.lines)
+        usb.send("ble bonds")
+        print(f"-- {await usb.wait(r'bonded devices', since, 3)}", flush=True)
+        return 0 if ok and outcome == "[ble] paired" else 1
+    finally:
+        usb.close()
+
+
 async def pair(name, port, host_answer="match", watch_answer="match", commands=None, hold=0.0, adapter=None):
     """Pair through BlueZ with an agent of our own. The watch's half goes over USB or, with
     `commands`, into a logger's command file, where every step is also written as a `== host` mark."""
@@ -351,7 +464,8 @@ async def main():
     ap.add_argument("commands", nargs="?", default="", help="commands separated by ;")
     ap.add_argument("--name", default=wrist_port.NAME)
     ap.add_argument("--adapter", help="the host's adapter to use (BlueZ: hci1); the default one otherwise")
-    ap.add_argument("--pair", action="store_true", help="pair and bond (BlueZ), confirmed over USB")
+    ap.add_argument("--pair", action="store_true",
+                    help="pair and bond, confirmed over USB (BlueZ); on macOS the operator compares the numbers")
     ap.add_argument("--port", help="the watch's USB console, for --pair")
     ap.add_argument("--host-answer", choices=["match", "yes", "no", "never", "cancel"], default="match",
                     help="--pair: the host's answer to the number (match: yes when it is the watch's)")
@@ -370,6 +484,11 @@ async def main():
     ap.add_argument("--pace", type=float, default=0.0, help="extra seconds between chunks of a transfer")
     args = ap.parse_args()
 
+    if args.pair and not sys.platform.startswith("linux"):
+        if args.command_file or args.host_answer != "match":
+            ap.error("on this host the operator answers the host's dialog: --command-file and --host-answer are BlueZ's")
+        answer = "ask" if args.watch_answer == "match" else args.watch_answer
+        return await pair_by_hand(args.name, args.port, answer, adapter=args.adapter)
     if args.pair:
         if args.command_file and "match" in (args.host_answer, args.watch_answer):
             ap.error("--command-file can't read the watch's number: give --host-answer and --watch-answer")
