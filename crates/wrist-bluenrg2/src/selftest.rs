@@ -1,10 +1,5 @@
-//! `ble selftest`: the conformance suite's cases that need no peer, against the driver on the
-//! watch. A start, the chip's identity and the GATT table's handles; each advertising interval on
-//! the menu set, then read back from the driver's snapshot; a stop and a restart; a refusal the
-//! model predicts. Each answer is judged against the driver's model ([`Scheduler`],
-//! [`anchor_reading`]) and its declared table. The caller carries out each [`Step`] and answers
-//! it; the restart puts back the advertising the selftest was given, and after a failure what the
-//! selftest changed is undone.
+//! `ble selftest`: the conformance cases that need no peer, each [`Step`] carried out by the caller
+//! and its answer judged against the driver's model ([`Scheduler`], [`anchor_reading`]) and table.
 
 use core::fmt;
 
@@ -236,7 +231,6 @@ pub struct Selftest<'a> {
     /// The advertising the radio had, which the restart puts back.
     restore: AdvParams,
     stage: Stage,
-    /// The handles the start gave.
     handles: Option<Handles>,
     /// The first failure.
     failed: Option<(Case, Why)>,
@@ -310,7 +304,6 @@ impl<'a> Selftest<'a> {
         n
     }
 
-    /// The step to carry out now.
     #[must_use]
     pub fn next(&self) -> Step {
         let advertise = |p| Step::Op(Op::Advertise(p));
@@ -394,9 +387,7 @@ impl<'a> Selftest<'a> {
         }
     }
 
-    /// The first failure kept; then the initiation ended, and advertising stopped and put back
-    /// unless a central's link holds the radio. A start that stopped short leaves the chip to
-    /// the caller.
+    /// The first failure kept, then undone what a central's link or a chip left down does not forbid.
     fn fail(&mut self, why: Why) {
         let case = if why == Why::Handles { Case::Gatt } else { self.case() };
         self.failed = Some((case, why));

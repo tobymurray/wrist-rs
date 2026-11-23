@@ -484,10 +484,8 @@ impl<O: Observer> Shadow<O> {
         self.testing = false;
     }
 
-    /// The driver's selftest takes the chip at `at`, or gives it back. Meanwhile its commands are
-    /// not compared with the core's operations, and the core hears only of links: not of the
-    /// selftest's own start, its operations' ends, its initiation's failure, or anything the
-    /// chip lost. Given back, the core is told of a lost read, so it takes a snapshot.
+    /// The driver's selftest takes the chip at `at`, its commands then compared with nothing and
+    /// only links told to the core, or gives it back with a lost read.
     pub fn testing(&mut self, at: Instant, on: bool) {
         self.advance(at);
         if self.testing == on {

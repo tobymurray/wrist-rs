@@ -97,8 +97,8 @@ pub fn initial(service: u16, char: u16, c: &CharDecl) -> Option<Command> {
     set_value(service, char, value)
 }
 
-/// The first handle the chip gives a service of ours: `ACI_GATT_INIT` and `ACI_GAP_INIT` take
-/// 1–11 for their own services (HARDWARE.md, the GATT table's handles).
+/// The first handle the chip gives a service of ours, after GATT's and GAP's own (HARDWARE.md,
+/// the GATT table's handles).
 pub const FIRST_HANDLE: u16 = 0x000C;
 
 /// Which attribute of a characteristic a handle is.

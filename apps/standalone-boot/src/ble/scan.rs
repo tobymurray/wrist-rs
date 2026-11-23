@@ -104,7 +104,6 @@ impl Scanner {
         *self = Self { available, ..Self::default() };
     }
 
-    /// Whether the chip took the central role.
     pub(super) fn central(&self) -> bool {
         self.available
     }
