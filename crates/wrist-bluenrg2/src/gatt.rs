@@ -1,7 +1,7 @@
 //! A declared GATT server as the chip's commands, and the handles the chip gives it.
 
 use bluenrg2::{enc_key_size, evt_mask, opcode, permission, service_type, uuid_type, value_length};
-use wrist_ble::{BluetoothUuid, Cccd, CharDecl, ConnHandle, Payload, Permission, Props, RadioEvent, ServerAttr, ServiceDecl, ATT_MAX_MTU};
+use wrist_ble::{BluetoothUuid, Cccd, CharDecl, ConnHandle, Payload, Permission, Props, RadioEvent, ServerAttr, ServerTable, ServiceDecl, ATT_MAX_MTU};
 
 use crate::commands::Command;
 
@@ -97,6 +97,10 @@ pub fn initial(service: u16, char: u16, c: &CharDecl) -> Option<Command> {
     set_value(service, char, value)
 }
 
+/// The first handle the chip gives a service of ours: `ACI_GATT_INIT` and `ACI_GAP_INIT` take
+/// 1–11 for their own services (HARDWARE.md, the GATT table's handles).
+pub const FIRST_HANDLE: u16 = 0x000C;
+
 /// Which attribute of a characteristic a handle is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Part {
@@ -121,6 +125,25 @@ impl Handles {
         *slot = (service, declaration, notifies(c));
         self.len += 1;
         true
+    }
+
+    /// The handles the chip gives `server` when its services are added in order from `first`,
+    /// each taking [`records`]; `None` for one with more characteristics than fit.
+    #[must_use]
+    pub fn expected(server: &ServerTable, first: u16) -> Option<Self> {
+        let mut h = Self::default();
+        let mut service = first;
+        for s in server.services {
+            let mut next = service.checked_add(1)?;
+            for c in s.chars {
+                if !h.push(service, next, c) {
+                    return None;
+                }
+                next = next.checked_add(2 + u16::from(notifies(c)))?;
+            }
+            service = next;
+        }
+        Some(h)
     }
 
     /// The service's handle and the characteristic's declaration handle.

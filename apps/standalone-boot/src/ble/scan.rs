@@ -104,6 +104,11 @@ impl Scanner {
         *self = Self { available, ..Self::default() };
     }
 
+    /// Whether the chip took the central role.
+    pub(super) fn central(&self) -> bool {
+        self.available
+    }
+
     pub(super) fn until(&self) -> Option<Instant> {
         self.scan.map(|(until, ..)| until)
     }

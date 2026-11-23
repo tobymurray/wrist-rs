@@ -38,8 +38,10 @@ pub const GAP: u8 = b'x';
 /// The driver's bring-up stopped short, and the user's ask for the radio again after a fault.
 pub const START_FAILED: u8 = b'f';
 pub const RETRY: u8 = b'y';
+/// `ble selftest` takes the chip (1) or gives it back (0): [`crate::shadow::Shadow::testing`].
+pub const SELFTEST: u8 = b't';
 
-const KINDS: [u8; 15] = [COMMAND, EVENT, RESET, MODE, LOST, SNAPSHOT, GOALS, TIMING, RADIO, ANSWER, INTERVAL_NOW, DISCONNECT, GAP, START_FAILED, RETRY];
+const KINDS: [u8; 16] = [COMMAND, EVENT, RESET, MODE, LOST, SNAPSHOT, GOALS, TIMING, RADIO, ANSWER, INTERVAL_NOW, DISCONNECT, GAP, START_FAILED, RETRY, SELFTEST];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Record {

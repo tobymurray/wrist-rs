@@ -3,6 +3,7 @@
 //! Bluetooth without a radio: the boundary a chip driver implements above GAP and GATT, the core
 //! that decides over it ([`policy`]), and sensor profiles as bytes ([`profiles`]).
 
+pub mod conformance;
 mod event;
 mod gatt;
 mod op;

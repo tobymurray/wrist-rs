@@ -481,3 +481,49 @@ fn a_failed_start_is_the_cores_to_retry() {
     assert!(matches!(s.chip_action(), Some(Action::Start(_))));
     assert_eq!(s.retry_at(), None);
 }
+
+/// `ble selftest` holding the chip: its commands compared with nothing, its start's boot, its
+/// operations' ends and its initiation's failure kept from the core, then a snapshot asked for.
+#[test]
+fn a_selftest_holding_the_chip_is_not_the_cores_and_ends_in_a_snapshot() {
+    let mut s = driving();
+    carry_out(&mut s, 100, Ok(OpId(1)));
+    let advertising = s.state().radio.advertising;
+    assert!(advertising.is_some());
+    let done = s.observer.done.len();
+    s.testing(Instant(1_000), true);
+    let stop = sent(&Op::Advertise(None));
+    s.command(Instant(1_000), stop.0, &stop.1);
+    let start = sent(&Op::Advertise(advertising));
+    s.command(Instant(1_010), start.0, &start.1);
+    s.command(Instant(1_020), SECURITY_REQ, &[0x01, 0x08]);
+    s.reported(Instant(1_020), RadioEvent::Done(OpId(7), Ok(Outcome::Done)));
+    s.reported(Instant(1_020), RadioEvent::EventsLost);
+    // The selftest's own start, and its initiation ended with Unknown Connection Identifier.
+    s.event(Instant(1_500), BOOTED);
+    s.event(Instant(1_600), &[0x04, 0x3E, 0x13, 0x01, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    s.advance(Instant(3_000));
+    assert_eq!(s.observer.found, [], "nothing compared");
+    assert_eq!(s.observer.done.len(), done, "no end of the selftest's reached the core");
+    assert_eq!(s.chip_action(), None, "the selftest's start is not a reset to the core");
+    assert!(!s.snapshot_wanted());
+    assert_eq!(s.state().radio.advertising, advertising);
+    s.testing(Instant(3_000), false);
+    assert!(s.snapshot_wanted(), "given back, the core looks");
+    assert!(s.take_snapshot());
+    let snapshot = Snapshot { at: Instant(3_000), links: [None; MAX_LINKS], advertising: true, scanning: false, initiating: false, anchor: None };
+    s.snapshotted(Instant(3_000), Ok(snapshot));
+    s.advance(Instant(10_000));
+    assert_eq!(s.observer.found, []);
+    assert_eq!(s.issue(), None, "advertising as before: nothing to do");
+}
+
+/// A central's link reaches the core while the selftest has the chip.
+#[test]
+fn a_link_reaches_the_core_while_a_selftest_has_the_chip() {
+    let mut s = driving();
+    carry_out(&mut s, 100, Ok(OpId(1)));
+    s.testing(Instant(1_000), true);
+    s.event(Instant(1_100), PHONE);
+    assert_eq!(s.state().phone.link(), Some(link()));
+}

@@ -34,6 +34,7 @@ pub(super) enum Dir {
     Gap,
     StartFailed,
     Retry,
+    Selftest,
 }
 
 impl Dir {
@@ -54,6 +55,7 @@ impl Dir {
             Dir::Gap => record::GAP,
             Dir::StartFailed => record::START_FAILED,
             Dir::Retry => record::RETRY,
+            Dir::Selftest => record::SELFTEST,
         }
     }
 }

@@ -400,7 +400,7 @@ impl Replay {
             "m" => self.shadow.driven(bytes == [1]),
             "l" => self.shadow.lost_read(at),
             // The flight recorder's inputs beside the chip's: the core's goals and timing, the
-            // radio, and the operator's answer, ask and hang-up.
+            // radio, the operator's answer, ask and hang-up, and `ble selftest` holding the chip.
             "G" => match record::decode_goals(&bytes) {
                 Some(g) => self.shadow.set_goals(at, g),
                 None => self.shadow.observer.report.unknown_events += 1,
@@ -421,6 +421,7 @@ impl Replay {
             "d" => self.shadow.operator_disconnect(at),
             "f" => self.shadow.start_failed(at),
             "y" => self.shadow.retry_radio(at),
+            "t" => self.shadow.testing(at, bytes == [1]),
             "x" => match <[u8; 4]>::try_from(bytes.as_slice()) {
                 Ok(count) => self.shadow.observer.report.not_kept += u32::from_le_bytes(count),
                 Err(_) => self.shadow.observer.report.unknown_events += 1,

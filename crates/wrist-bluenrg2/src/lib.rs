@@ -12,6 +12,7 @@ pub mod events;
 pub mod gatt;
 pub mod ops;
 pub mod probe;
+pub mod selftest;
 pub mod shadow;
 pub mod snapshot;
 pub mod start;

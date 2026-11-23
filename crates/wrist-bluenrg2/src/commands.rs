@@ -26,6 +26,14 @@ impl Command {
         &self.params[..self.len]
     }
 
+    /// A command whose parameters fit by their length alone.
+    pub(crate) fn fixed<const N: usize>(opcode: u16, params: [u8; N]) -> Self {
+        const { assert!(N <= MAX_PARAMS) };
+        let mut c = Self { opcode, params: [0; MAX_PARAMS], len: N };
+        c.params[..N].copy_from_slice(&params);
+        c
+    }
+
     pub(crate) fn new(opcode: u16, parts: &[&[u8]]) -> Option<Self> {
         let mut c = Self { opcode, params: [0; MAX_PARAMS], len: 0 };
         for part in parts {

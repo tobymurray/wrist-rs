@@ -43,6 +43,7 @@
 mod probe;
 pub(crate) mod trace;
 mod scan;
+mod selftest;
 
 use core::cell::{Cell, RefCell};
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU8, Ordering};
@@ -153,6 +154,8 @@ enum Request {
     Bonds,
     /// `ble status`: the core's status line, now.
     Status,
+    /// `ble selftest`: the conformance cases that need no peer, against the driver.
+    Selftest,
     Forget,
     /// `ble forget <address>`: one bond, by its address and type.
     ForgetOne(bluenrg2::Address),
@@ -385,6 +388,7 @@ pub fn command(args: &[u8], uart: Uart) {
         b"no" => Request::No,
         b"bonds" => Request::Bonds,
         b"status" => Request::Status,
+        b"selftest" => Request::Selftest,
         b"forget" => Request::Forget,
         rest if rest.starts_with(b"forget ") => {
             match core::str::from_utf8(&rest[7..]).ok().and_then(wrist_bluenrg2::console::parse_address) {
@@ -481,7 +485,7 @@ pub fn command(args: &[u8], uart: Uart) {
         },
         _ => {
             return uart.write_line(
-                "[ble] usage: ble [on|off|version|yes|no|bonds|status|forget [address]|disconnect|profile auto|cable|battery|interval now <min> <max>|scan [s [interval window]]]",
+                "[ble] usage: ble [on|off|version|yes|no|bonds|status|selftest|forget [address]|disconnect|profile auto|cable|battery|interval now <min> <max>|scan [s [interval window]]]",
             )
         }
     };
@@ -734,6 +738,7 @@ pub async fn run(mut pins: Pins, flash: &'static FlashMutex) -> ! {
                 Request::Status => write_status_line(uart, &status(&wrist_ble::policy::State::OFF, now_ms())),
                 Request::Version
                 | Request::Bonds
+                | Request::Selftest
                 | Request::Forget
                 | Request::ForgetOne(..)
                 | Request::Disconnect
@@ -893,6 +898,8 @@ struct Link<'d> {
     /// The core's timing as the recorder last kept it.
     timing: Option<(goals::Power, bool)>,
     shadow: &'d mut Shadow<Said>,
+    /// `ble selftest` under way: it has the chip.
+    test: Option<wrist_bluenrg2::selftest::Selftest<'static>>,
     /// `ble probe refuse`: the core's next command answered with this status, unsent.
     #[cfg(feature = "ble-probe")]
     refuse_next: Option<u8>,
@@ -942,6 +949,7 @@ impl<'d> Link<'d> {
             status_log: StatusLog::NEW,
             timing: None,
             shadow,
+            test: None,
             #[cfg(feature = "ble-probe")]
             refuse_next: None,
             #[cfg(feature = "ble-probe")]
@@ -1085,6 +1093,7 @@ impl Link<'_> {
             }
             Request::Bonds => self.list_bonds(Listed::Asked).await,
             Request::Status => write_status_line(self.uart, &status(self.shadow.state(), self.shadow.now())),
+            Request::Selftest => self.selftest().await,
             Request::Forget => {
                 if self.command(ACI_GAP_CLEAR_SECURITY_DB, &[]).await.is_ok() {
                     BONDED.store(0, Ordering::Relaxed);
@@ -2003,6 +2012,9 @@ impl Link<'_> {
         if let Got::Packet { len, .. } | Got::Boot { len, .. } = got {
             trace::packet(trace::Dir::FromChip, &packet[..len]);
             self.shadow.event(now_ms(), &packet[..len]);
+            if let Some(t) = self.test.as_mut() {
+                t.saw(&packet[..len]);
+            }
         }
         match got {
             Got::Packet { len, event } => self.handle(&packet[..len], event),
@@ -2056,6 +2068,8 @@ impl Link<'_> {
         match bluenrg2::parse(p) {
             // Replies are the driver's.
             Event::CommandComplete { .. } | Event::CommandStatus { .. } => {}
+            // The selftest's own initiation, cancelled, can end so.
+            Event::LeConnectionFailed { .. } if self.test.is_some() => {}
             Event::LeConnectionFailed { .. } => {
                 CONNECT_FAILURES.fetch_add(1, Ordering::Relaxed);
             }
