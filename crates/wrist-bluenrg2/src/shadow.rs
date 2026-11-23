@@ -181,6 +181,10 @@ pub struct Shadow<O> {
     /// The snapshots the core asks for are the driver's: a record showed the driver driving
     /// ([`Self::driven`]) or one of its lost reads ([`Self::lost_read`]).
     driver_snapshots: bool,
+    /// The driver's selftest has the chip ([`Self::testing`]).
+    testing: bool,
+    /// The selftest reset the chip, and its boot is the selftest's own.
+    boot_owed: bool,
     verdict: Verdict,
     pub observer: O,
 }
@@ -210,6 +214,8 @@ impl<O: Observer> Shadow<O> {
             chip_action: None,
             snapshot_wanted: false,
             driver_snapshots: false,
+            testing: false,
+            boot_owed: false,
             verdict: Verdict::new(),
             observer,
         }
@@ -307,7 +313,7 @@ impl<O: Observer> Shadow<O> {
     /// What the driver itself reports, an operation's end or packets it dropped, taken in
     /// [`Mode::Drive`] only, as the shadow's own operations have ids of their own.
     pub fn reported(&mut self, at: Instant, e: RadioEvent) {
-        if let (Mode::Drive, RadioEvent::Done(..) | RadioEvent::EventsLost) = (self.mode, e) {
+        if let (Mode::Drive, false, RadioEvent::Done(..) | RadioEvent::EventsLost) = (self.mode, self.testing, e) {
             self.advance(at);
             self.observer.event(self.now, &e);
             self.feed(Input::Radio(e));
@@ -478,11 +484,34 @@ impl<O: Observer> Shadow<O> {
         self.chip_action = None;
         self.snapshot_wanted = false;
         self.driver_snapshots = false;
+        self.testing = false;
+        self.boot_owed = false;
+    }
+
+    /// The driver reset the chip: while a selftest has it, the boot that follows is the selftest's.
+    pub fn resetting(&mut self) {
+        self.boot_owed = self.testing;
+    }
+
+    /// The driver's selftest takes the chip at `at`, its commands then compared with nothing and
+    /// only links told to the core, or gives it back with a lost read.
+    pub fn testing(&mut self, at: Instant, on: bool) {
+        self.advance(at);
+        self.testing = on;
+        self.boot_owed = false;
+        self.sent = None;
+        // A chip restarting by itself meanwhile is being started again, which a snapshot would only fail.
+        if !on && self.core.state.chip.starting().is_none() {
+            self.lost_read(at);
+        }
     }
 
     /// A command the driver sent the chip.
     pub fn command(&mut self, at: Instant, code: u16, params: &[u8]) {
         self.advance(at);
+        if self.testing {
+            return;
+        }
         let u16_at = |i: usize| params.get(i..i + 2).map_or(0, |v| u16::from_le_bytes([v[0], v[1]]));
         self.sent = driver_op(code).map(|_| (code, u16_at(0)));
         if code == opcode::ACI_GAP_TERMINATE_GAP_PROC {
@@ -546,7 +575,9 @@ impl<O: Observer> Shadow<O> {
     /// A packet from the chip.
     pub fn event(&mut self, at: Instant, packet: &[u8]) {
         self.advance(at);
-        self.refusal(packet);
+        if !self.testing {
+            self.refusal(packet);
+        }
         if matches!(bluenrg2::parse(packet), bluenrg2::Event::Vendor(bluenrg2::VendorEvent::GapProcComplete { procedure: bluenrg2::gap_proc::GENERAL_DISCOVERY, .. })) {
             self.scan_ended();
         }
@@ -556,6 +587,12 @@ impl<O: Observer> Shadow<O> {
             }
         }
         let Some(e) = self.translator.event(packet) else { return };
+        if matches!(e, RadioEvent::Ready(_) | RadioEvent::ChipReset(_)) && core::mem::take(&mut self.boot_owed) {
+            return;
+        }
+        if self.testing && matches!(e, RadioEvent::Unknown { .. } | RadioEvent::EventsLost) {
+            return;
+        }
         match e {
             RadioEvent::LinkUp { link, role: LeConnRole::Peripheral, .. } => {
                 self.phone = Some(link);

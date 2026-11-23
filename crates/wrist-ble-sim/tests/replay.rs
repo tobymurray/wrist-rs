@@ -496,3 +496,41 @@ fn a_start_the_capture_missed_is_taken_as_driven() {
     let r = replay(&after_a_reset(&(first.join("\n") + "\n"), &[], &then.join("\n"), 5_000));
     assert_eq!((r.resets, r.disagreements()), (1, Vec::<String>::new()), "{}", r.render(false));
 }
+
+/// `ble selftest` in a capture: the chip held from `t 01` to `t 00` (stopped, restarted through
+/// the driver's start, advertising again), then the snapshot the core asked for. Without its
+/// records the same packets are the driver acting alone.
+#[test]
+fn a_selftest_holding_the_chip_replays_as_the_cores_lost_read() {
+    let capture = fixture("bluez-cable.log");
+    let advertise = "c 0183FC1100A000A00001000409554E410000000000";
+    let snapshot = wrist_ble::Snapshot {
+        at: wrist_ble::Instant(0),
+        links: [None; wrist_ble::MAX_LINKS],
+        advertising: true,
+        scanning: false,
+        initiating: false,
+        anchor: Some(wrist_ble::Anchor { period: wrist_ble::Micros(105_000), max_free_slot: wrist_ble::Micros(86_875) }),
+    };
+    let mut bytes = [0; wrist_bluenrg2::shadow::trace::SNAPSHOT_MAX];
+    let len = wrist_bluenrg2::shadow::trace::encode(&snapshot, &mut bytes);
+    let hex = bytes[..len].iter().fold(String::new(), |mut h, b| {
+        let _ = write!(h, "{b:02X}");
+        h
+    });
+    let block = [
+        "7.000 [trace] 664000 t 01".to_string(),
+        "7.001 [trace] 664001 c 0181FC00".into(),
+        "7.002 [trace] 664002 r".into(),
+        "7.500 [trace] 664500 e 04FF03010001".into(),
+        format!("7.600 [trace] 664600 {advertise}"),
+        "7.700 [trace] 664700 t 00".into(),
+        format!("7.701 [trace] 664701 s {hex}"),
+    ];
+    let lines: Vec<&str> = capture.lines().collect();
+    let with: Vec<&str> = lines[..8].iter().copied().chain(block.iter().map(String::as_str)).chain(lines[8..].iter().copied()).collect();
+    let r = replay(&with.join("\n"));
+    assert_eq!(r.disagreements(), Vec::<String>::new(), "{}", r.render(false));
+    let without: Vec<&str> = with.iter().copied().filter(|l| !l.contains(" t 0")).collect();
+    assert_ne!(replay(&without.join("\n")).disagreements(), Vec::<String>::new());
+}

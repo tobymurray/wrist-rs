@@ -44,8 +44,8 @@ pub fn keep(line: &str) -> Option<String> {
     if matches!(t.kind, "r" | "l") || (t.kind == "s" && t.packet.is_none()) {
         return Some(format!("{stamp} [trace] {} {}", t.ms, t.kind));
     }
-    // The recorder's goals, timing, radio, answer, ask and hang-up: no address in any.
-    if matches!(t.kind, "G" | "g" | "o" | "a" | "i" | "d" | "x" | "f" | "y") {
+    // The recorder's goals, timing, radio, answer, ask, hang-up and selftest: no address in any.
+    if matches!(t.kind, "G" | "g" | "o" | "a" | "i" | "d" | "x" | "f" | "y" | "t") {
         return Some(format!("{stamp} {text}"));
     }
     let packet = t.packet?;

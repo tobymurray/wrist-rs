@@ -39,7 +39,8 @@ stock version is not supported until they name it.
 - The console, updates and the clock (`wrist-time.py --ble`) over Bluetooth, for a computer it is
   bonded to. The radio stays off until you turn it on, on the Bluetooth page, which also confirms
   a pairing ([INSTALL.md](release/INSTALL.md#bluetooth)). The console's `ble scan` lists the
-  Bluetooth LE devices around it.
+  Bluetooth LE devices around it, and `ble selftest` checks the radio against its driver's model
+  with no device connected.
 - Never writes UNA's bootloader or shared library, so the stock firmware is always one recovery
   away. The installer records its outcome in a page the library leaves blank.
 
