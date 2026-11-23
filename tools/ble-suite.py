@@ -202,8 +202,8 @@ class Linux(Host):
         return [p for p in self.ps() if p.split()[0] in found]
 
     def fuser(self, port):
-        """The pids holding `port`, by `sudo -n fuser`, or None when that can't be asked: sudo is asked first
-        whether it allows it, since a refusal and `fuser` finding nobody can both be rc 1 with nothing said."""
+        """The pids holding `port`, by `sudo -n fuser`, or None unless sudo's list allows it (a refusal and nobody found
+        can both be rc 1, silent)."""
         try:
             if subprocess.run(['sudo', '-n', '-l', 'fuser', port], capture_output=True, timeout=10).returncode:
                 return None
@@ -1035,8 +1035,7 @@ def alarms(lines, start, end):
 
 
 async def judge_alarms(usb, ran):
-    """Fail each scenario during which the watch raised an alarm: its time runs to the next scenario's start, as the
-    alarm may come after the work that caused it. Over the air the last lines are read first."""
+    """Fail each scenario during which the watch raised an alarm, its time running to the next one's start."""
     if isinstance(usb, Air):
         try:
             await usb.settle()
@@ -1194,7 +1193,6 @@ CRITERIA = {
     'update': 'an application update over the air reaches `state boot`, no revert, the same build after it, '
               'radio back on',
 }
-# Every scenario's, judged once all have run.
 NO_ALARM = '; and no `[ble] alarm:` from the watch while it ran'
 CRITERIA = {k: v + NO_ALARM for k, v in CRITERIA.items()}
 
