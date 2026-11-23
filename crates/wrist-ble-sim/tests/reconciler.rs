@@ -1090,6 +1090,13 @@ fn a_refusal_after_a_fit_waits_the_settle() {
     assert!(settled(reasked_after_move(&mut b)));
 
     let mut b = asked_on_battery();
+    b.params(1_350, BATTERY);
+    b.refuse(FailureKind::Busy);
+    b.at(2_100, Input::Radio(RadioEvent::ParamsAnswered { link: link(), accepted: true }));
+    let at = reasked_after_move(&mut b);
+    assert!(at.is_some() && settled(at), "{at:?}");
+
+    let mut b = asked_on_battery();
     b.refuse(FailureKind::Busy);
     b.params(2_000, BATTERY);
     b.at(2_100, Input::Radio(RadioEvent::ParamsAnswered { link: link(), accepted: true }));
