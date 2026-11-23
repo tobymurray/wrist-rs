@@ -2,6 +2,54 @@
 
 use bluenrg2::{bonded_devices, static_random, Address, AuthenticationRequirement, FixedPin, IdentityAddress, KeySizes, SecureConnections};
 
+/// The most bonds the chip keeps safely: past them, a disconnect can drop the earliest-bonded
+/// without a word (HARDWARE.md), so a pairing that would add a fifth is refused.
+pub const MOST: u8 = 4;
+
+/// The bonds a `GET_BONDED_DEVICES` reply listed, kept to compare the next reply with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Listing {
+    bytes: [u8; 1 + 7 * Listing::CAPACITY],
+}
+
+impl Listing {
+    /// Entries kept; a reply listing more keeps its first this many.
+    pub const CAPACITY: usize = 12;
+    pub const EMPTY: Self = Listing { bytes: [0; 1 + 7 * Listing::CAPACITY] };
+
+    #[must_use]
+    pub fn new(params: &[u8]) -> Self {
+        let mut l = Self::EMPTY;
+        let entries = params.get(1..).unwrap_or(&[]);
+        let count = usize::from(params.first().copied().unwrap_or(0)).min(entries.len() / 7).min(Self::CAPACITY);
+        l.bytes[0] = u8::try_from(count).unwrap_or(0);
+        l.bytes[1..=7 * count].copy_from_slice(&entries[..7 * count]);
+        l
+    }
+
+    #[must_use]
+    pub fn params(&self) -> &[u8] {
+        &self.bytes[..=7 * usize::from(self.bytes[0])]
+    }
+
+    #[must_use]
+    pub fn count(&self) -> u8 {
+        self.bytes[0]
+    }
+
+    /// Whether a pairing with `peer` keeps the bonds at [`MOST`] or fewer: fewer are listed, or
+    /// `peer` is one of them and only replaces its own.
+    #[must_use]
+    pub fn room_for(&self, peer: Option<Address>) -> bool {
+        self.count() < MOST || peer.is_some_and(|peer| listed(self.params(), peer))
+    }
+
+    /// The bonds listed here that `after` no longer lists.
+    pub fn dropped<'a>(&'a self, after: &'a Listing) -> impl Iterator<Item = Address> + 'a {
+        bonded_devices(self.params()).filter(move |&bond| !listed(after.params(), bond))
+    }
+}
+
 /// The watch's pairing.
 pub const PAIRING: AuthenticationRequirement = AuthenticationRequirement {
     bonding: true,

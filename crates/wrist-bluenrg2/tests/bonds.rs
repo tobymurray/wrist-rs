@@ -1,7 +1,7 @@
 //! The watch's pairing and address, and the bond list read for `ble forget` and after a pairing.
 
 use bluenrg2::{AddrKind, Address, BdAddr};
-use wrist_bluenrg2::bonds::{another_bond, bond_kept, forget, static_random_address, Forget, PAIRING};
+use wrist_bluenrg2::bonds::{another_bond, bond_kept, forget, static_random_address, Forget, Listing, MOST, PAIRING};
 use wrist_bluenrg2::console::{address, parse_address};
 
 #[test]
@@ -84,4 +84,63 @@ fn a_pairing_is_bonded_only_when_the_bond_list_shows_it() {
     assert!(!bond_kept(&two, None, rpa));
     assert!(bond_kept(&two, Some(2), Address { kind: AddrKind::PUBLIC, addr: BdAddr::new([0x5F, 0x4E, 0x3D, 0x2C, 0x1B, 0x0A]) }));
     assert!(!bond_kept(&one, Some(2), rpa), "one forgotten since");
+}
+
+/// A `GET_BONDED_DEVICES` reply of test centrals `C0:B0:4D:00:00:nn` (random), `nn` each of `ids`.
+fn reply(ids: &[u8]) -> Vec<u8> {
+    let mut r = vec![u8::try_from(ids.len()).unwrap()];
+    for &id in ids {
+        r.extend([1, id, 0, 0, 0x4D, 0xB0, 0xC0]);
+    }
+    r
+}
+
+fn central(id: u8) -> Address {
+    Address { kind: AddrKind::RANDOM, addr: BdAddr::new([id, 0, 0, 0x4D, 0xB0, 0xC0]) }
+}
+
+#[test]
+fn a_pairing_that_would_make_a_fifth_bond_is_refused() {
+    assert_eq!(MOST, 4);
+    for n in 0..MOST {
+        let ids: Vec<u8> = (1..=n).collect();
+        assert!(Listing::new(&reply(&ids)).room_for(Some(central(9))), "{n} bonds");
+        assert!(Listing::new(&reply(&ids)).room_for(None), "{n} bonds, the peer unknown");
+    }
+    let four = Listing::new(&reply(&[1, 2, 3, 4]));
+    assert!(!four.room_for(Some(central(5))));
+    assert!(!four.room_for(None));
+    // One of the four pairing again replaces its own bond.
+    assert!(four.room_for(Some(central(3))));
+    assert!(!four.room_for(Some(Address { kind: AddrKind::PUBLIC, ..central(3) })), "the same bytes, another type");
+    let six = Listing::new(&reply(&[1, 2, 3, 4, 5, 6]));
+    assert!(!six.room_for(Some(central(7))));
+    assert!(six.room_for(Some(central(6))));
+}
+
+#[test]
+fn a_listing_names_the_bonds_the_next_one_dropped() {
+    let before = Listing::new(&reply(&[1, 2, 3, 4, 5, 6]));
+    let after = Listing::new(&reply(&[3, 4, 5, 6]));
+    assert_eq!(before.dropped(&after).collect::<Vec<_>>(), [central(1), central(2)]);
+    assert_eq!(after.dropped(&before).count(), 0, "a bond added drops nothing");
+    assert_eq!(before.dropped(&before).count(), 0);
+    assert_eq!(before.dropped(&Listing::EMPTY).count(), 6);
+    assert_eq!(Listing::EMPTY.dropped(&before).count(), 0);
+}
+
+#[test]
+fn a_listing_keeps_what_the_reply_holds_and_no_more() {
+    let ids: Vec<u8> = (1..=14).collect();
+    let long = Listing::new(&reply(&ids));
+    assert_eq!(usize::from(long.count()), Listing::CAPACITY);
+    assert_eq!(long.params(), &reply(&ids[..Listing::CAPACITY])[..]);
+    // A count past the entries the reply carries.
+    let mut short = reply(&[1, 2]);
+    short[0] = 5;
+    assert_eq!(Listing::new(&short).count(), 2);
+    assert_eq!(Listing::new(&short).params(), &reply(&[1, 2])[..]);
+    assert_eq!(Listing::new(&[]), Listing::EMPTY);
+    assert_eq!(Listing::new(&[3, 1, 2]).count(), 0);
+    assert_eq!(Listing::EMPTY.params(), [0]);
 }
