@@ -1069,8 +1069,8 @@ static BESIDE: [wrist_ble::policy::plan::Choice<wrist_ble::AdvParams>; 2] = [
 static ADVERTISING: wrist_ble::policy::plan::Menu = wrist_ble::policy::plan::Menu { advertising: &BESIDE, connecting: &[], live: &[], phone: &[] };
 
 fn plan(state: &wrist_ble::policy::State, goals: &wrist_ble::policy::goals::Goals) -> wrist_ble::policy::plan::Target {
-    use wrist_ble::policy::plan::{MenuPlanner, PlanInput, Planner};
-    MenuPlanner.plan(&PlanInput { goals, state, caps: CAPS, schedule: &Careless, menu: &ADVERTISING, refused: &Refused::EMPTY, now: t(0) })
+    use wrist_ble::policy::plan::{PlanInput, Planner, TransitionPlanner};
+    TransitionPlanner.plan(&PlanInput { goals, state, caps: CAPS, schedule: &Careless, menu: &ADVERTISING, refused: &Refused::EMPTY, now: t(0) })
 }
 
 /// Beside a central link the planner leaves out the options for advertising alone.

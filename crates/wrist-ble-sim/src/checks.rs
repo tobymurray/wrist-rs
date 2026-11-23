@@ -96,10 +96,8 @@ impl Checks {
             (None, Some(_)) => self.phone_up = None,
             _ => {}
         }
-        if let Some(p) = core.pending() {
-            if now > p.deadline + Millis(1_000) {
-                return Err(format!("nothing silent: {:?} past its deadline", p.op));
-            }
+        if let Some(p) = core.pending().into_iter().chain(core.passed()).find(|p| now > p.deadline + Millis(1_000)) {
+            return Err(format!("nothing silent: {:?} past its deadline", p.op));
         }
         self.reachable(core, fake, now)?;
         self.converges(core, fake, now)?;

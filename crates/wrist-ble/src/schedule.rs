@@ -71,8 +71,8 @@ pub enum Exclusion {
 }
 
 /// A pure model of the chip's scheduler, shared by the planner, the fake chip and the probe
-/// fixture's check.
-pub trait Schedule {
+/// fixture's check, from any thread.
+pub trait Schedule: Sync {
     /// Whether the chip would accept `change` beside `current`, and what it would then set.
     ///
     /// # Errors

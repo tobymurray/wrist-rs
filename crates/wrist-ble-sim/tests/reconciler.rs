@@ -106,6 +106,14 @@ impl Bench {
         ops
     }
 
+    /// Ticks at the times the core asks to run until it asks for something, or `until`.
+    fn tick_until_asked(&mut self, until: u64) {
+        while self.asked.is_none() && self.now.0 < until {
+            let next = self.core.step(self.now, Input::Tick).next.map_or(until, |t| t.0.clamp(self.now.0 + 1, until));
+            self.at(next, Input::Tick);
+        }
+    }
+
     fn phone_up(&mut self, ms: u64) {
         self.phone_up_at(ms, OPENED);
     }
@@ -899,4 +907,96 @@ fn no_wake_is_named_for_an_ask_that_cannot_go() {
     b.granted(at, BATTERY);
     b.params(at + 2_000, OWN);
     assert_eq!(tick(&mut b, at + 2_001).next, None);
+}
+
+/// A security request on air with a rebond's answer gone out past it (F57 R5).
+fn answer_passed() -> (Bench, OpId) {
+    let mut b = Bench::new(battery());
+    b.phone_up(1_000);
+    assert_eq!(b.at(6_000, Input::Tick).op, Some(Op::RequestSecurity(link())));
+    b.accept();
+    let out = b.at(6_100, Input::Radio(RadioEvent::BondLost(link())));
+    assert_eq!(out.op, Some(Op::AllowRebond(link())), "{out:?}");
+    let id = b.accept();
+    assert_eq!(b.core.passed().map(|p| p.op).collect::<Vec<_>>(), [Op::AllowRebond(link())]);
+    assert_eq!(b.core.pending().map(|p| p.op), Some(Op::RequestSecurity(link())));
+    (b, id)
+}
+
+/// An answer that passed the operation on air is followed to its outcome: its failure counts.
+#[test]
+fn an_answer_that_passed_is_followed_to_its_outcome() {
+    let (mut b, id) = answer_passed();
+    let failed = b.core.counters.failed;
+    b.at(6_200, Input::Radio(RadioEvent::Done(id, Err(Failure { kind: FailureKind::Security, native: 0x5A }))));
+    assert_eq!(b.core.counters.failed, failed + 1);
+    assert_eq!(b.core.passed().count(), 0);
+    assert_eq!(b.core.pending().map(|p| p.op), Some(Op::RequestSecurity(link())), "the request on air is not its outcome's");
+    let (mut b, id) = answer_passed();
+    b.at(6_200, Input::Radio(RadioEvent::Done(id, Ok(Outcome::Done))));
+    assert_eq!((b.core.counters.failed, b.core.passed().count()), (failed, 0));
+}
+
+/// One that never ends is ended at its deadline and a second's grace, which the core wakes for.
+#[test]
+fn an_answer_that_passed_and_never_ends_times_out() {
+    let (mut b, _) = answer_passed();
+    let due = Instant(6_100) + (CAPABILITIES.op_deadline)(wrist_ble::OpKind::AllowRebond) + wrist_ble::Millis(1_000);
+    let next = b.core.step(b.now, Input::Tick).next.expect("a wake");
+    assert!(next <= due, "{next:?} after {due:?}");
+    b.at(due.0 - 1, Input::Tick);
+    assert_eq!((b.core.passed().count(), b.core.counters.timed_out), (1, 0));
+    b.at(due.0, Input::Tick);
+    assert_eq!((b.core.passed().count(), b.core.counters.timed_out), (0, 1));
+}
+
+/// Its link going ends it, as the link's end and not a failure.
+#[test]
+fn an_answer_that_passed_ends_with_its_link() {
+    let (mut b, id) = answer_passed();
+    b.at(6_200, Input::Radio(RadioEvent::LinkDown { link: link(), reason: Status::CONN_TIMEOUT }));
+    assert_eq!(b.core.passed().count(), 0);
+    let failed = b.core.counters.failed;
+    b.at(6_300, Input::Radio(RadioEvent::Done(id, Err(Failure { kind: FailureKind::NotConnected, native: 0x02 }))));
+    assert_eq!(b.core.counters.failed, failed, "ended already");
+}
+
+/// A phone link whose parameters a resync let go, asked again after each refusal within the
+/// want's budget (F189); one whose parameters are known is not.
+#[test]
+fn a_refusal_while_the_parameters_are_unknown_is_asked_again() {
+    let refuse = |b: &mut Bench| {
+        let t = b.now.0 + 100;
+        b.at(t, Input::Radio(RadioEvent::ParamsAnswered { link: link(), accepted: false }))
+    };
+    let mut b = Bench::new(cable());
+    b.phone_up(1_000);
+    assert_eq!(b.encrypted(1_300).op, None, "30 ms fits the cable's ask");
+    assert!(b.at(2_000, Input::Radio(RadioEvent::EventsLost)).snapshot);
+    let mut links = [None; MAX_LINKS];
+    links[0] = Some(wrist_ble::LinkStatus { link: link(), role: LeConnRole::Peripheral, peer: phone(), encrypted: Some(true) });
+    let out = b.at(2_001, Input::Snapshot(Ok(Snapshot { at: Instant(2_001), links, advertising: false, scanning: false, initiating: false, anchor: None })));
+    assert!(matches!(out.op, Some(Op::UpdateParams(..))), "{out:?}");
+    let mut asked = 0;
+    for _ in 0..10 {
+        if b.asked.is_none() {
+            let to = b.now.0 + 40_000;
+            b.tick_until_asked(to);
+        }
+        if b.asked.is_none() {
+            break;
+        }
+        asked += 1;
+        b.accept();
+        refuse(&mut b);
+    }
+    assert_eq!(asked, usize::from(ASKS_PER_WANT));
+    assert_eq!(b.core.counters.reasks, u32::from(ASKS_PER_WANT) - 1);
+    assert_eq!(b.core.phone_params(), None);
+
+    let mut b = asked_on_battery();
+    b.accept();
+    refuse(&mut b);
+    let to = b.now.0 + 60_000;
+    assert_eq!(asks(&b.run_to(to)), 0, "the phone said no to what it has");
 }

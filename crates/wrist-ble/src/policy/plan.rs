@@ -5,6 +5,8 @@ use core::hash::{Hash, Hasher};
 
 use crate::{Activities, AdvParams, Capabilities, Change, ConnParams, Instant, Op, OpId, Schedule};
 
+use crate::policy::transition::{transition, Path, Placed, Plan, Rules};
+
 use crate::policy::chip::Chip;
 use crate::policy::phone::Phone;
 
@@ -39,7 +41,10 @@ pub enum PlanHealth {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Target {
+    /// What runs once [`Self::path`] has been taken.
     pub activities: Activities,
+    /// The steps to the target from what runs now, each admitted beside the one before.
+    pub path: Path,
     pub phone: Verdict,
     pub peripherals: [Verdict; MAX_PERIPHERALS],
 }
@@ -97,15 +102,16 @@ pub trait Planner {
     fn plan(&self, input: &PlanInput<'_>) -> Target;
 }
 
-/// Plans the phone's advertising from the menu, the first option the schedule admits and the chip
-/// has not refused, and tells every wanted peripheral it fits without planning a link to it.
+/// Plans the phone's advertising from the menu: the first option reached by a transition checked
+/// a step at a time ([`transition`]) that runs no start the chip has refused. Every wanted
+/// peripheral is told it fits, with no link planned to it.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct MenuPlanner;
+pub struct TransitionPlanner;
 
-impl Planner for MenuPlanner {
+impl Planner for TransitionPlanner {
     fn plan(&self, i: &PlanInput<'_>) -> Target {
         let (g, s) = (i.goals, i.state);
-        let mut t = Target { activities: s.radio, phone: Verdict::NotWanted, peripherals: [Verdict::NotWanted; MAX_PERIPHERALS] };
+        let mut t = Target { activities: s.radio, path: Path::EMPTY, phone: Verdict::NotWanted, peripherals: [Verdict::NotWanted; MAX_PERIPHERALS] };
         for (v, w) in t.peripherals.iter_mut().zip(&g.peripherals) {
             if w.is_some() {
                 *v = Verdict::Fits;
@@ -114,22 +120,30 @@ impl Planner for MenuPlanner {
         if !g.radio_on || !matches!(s.chip.state, Chip::Ready(_)) {
             return t;
         }
-        if let Phone::Up(_) = s.phone {
-            t.activities.advertising = None;
-            t.phone = Verdict::Fits;
-            return t;
-        }
-        if !g.phone.discoverable {
-            t.activities.advertising = None;
+        let from = Placed::unlinked(s.radio);
+        let phone = matches!(s.phone, Phone::Up(_));
+        let rules = Rules { schedule: i.schedule, refused: i.refused, deadline: i.caps.op_deadline, reachable: !phone, settling: false };
+        let to = |advertising| Plan { advertising, ..from.plan() };
+        let set = |t: &mut Target, (path, end): (Path, Placed)| {
+            t.path = path;
+            t.activities = end.activities;
+        };
+        if phone || !g.phone.discoverable {
+            // Stopping is the safe baseline, which is never quarantined.
+            match transition(&from, &to(None), &Rules { reachable: false, ..rules }) {
+                Some(found) => set(&mut t, found),
+                None => t.activities.advertising = None,
+            }
+            t.phone = if phone { Verdict::Fits } else { Verdict::NotWanted };
             return t;
         }
         let beside_central = s.radio.centrals() > 0;
-        let choice = i.menu.advertising.iter().filter(|c| c.when.matches(g.power, beside_central, false)).map(|c| c.params).find(|&p| {
-            let change = Change::Advertise(Some(p));
-            s.radio.advertising == Some(p) || (i.schedule.admit(&s.radio, &change).is_ok() && !i.refused.contains(fingerprint(&s.radio, &change)))
-        });
-        t.activities.advertising = choice;
-        t.phone = if choice.is_some() { Verdict::Fits } else { Verdict::Busy(Conflict::Refused) };
+        let found = i.menu.advertising.iter().filter(|c| c.when.matches(g.power, beside_central, false)).find_map(|c| transition(&from, &to(Some(c.params)), &rules));
+        t.phone = if found.is_some() { Verdict::Fits } else { Verdict::Busy(Conflict::Refused) };
+        match found {
+            Some(found) => set(&mut t, found),
+            None => t.activities.advertising = None,
+        }
         t
     }
 }
@@ -140,11 +154,6 @@ pub struct Pending {
     pub id: OpId,
     pub op: Op,
     pub deadline: Instant,
-}
-
-/// Issues at most one operation at a time towards the target.
-pub trait Reconciler {
-    fn next(&mut self, target: &Target, state: &State, pending: Option<&Pending>, now: Instant) -> Option<Op>;
 }
 
 /// A refused configuration: the activities and the change the chip would not take.

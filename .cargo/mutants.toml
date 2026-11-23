@@ -3,7 +3,7 @@ test_package = ["bluenrg2", "wrist-ble", "wrist-bluenrg2", "wrist-ble-sim", "wri
 examine_globs = ["crates/bluenrg2/**", "crates/wrist-ble/**", "crates/wrist-bluenrg2/**", "crates/wrist-ble-sim/**", "crates/wrist-logic/src/console.rs"]
 # The slow stateright models are left out; the core's other tests and the simulator's judge
 # its mutants.
-additional_cargo_test_args = ["--", "--skip", "every_peripheral", "--skip", "the_phone_machine", "--skip", "the_chip_is_reset"]
+additional_cargo_test_args = ["--", "--skip", "every_peripheral", "--skip", "the_phone_machine", "--skip", "the_chip_is_reset", "--skip", "the_reconciler_keeps"]
 # The replay's reading of a capture is a diagnostic: its fixtures check the core through it.
 exclude_globs = ["crates/wrist-ble-sim/src/replay.rs", "crates/wrist-ble-sim/src/bin/replay.rs"]
 # A put that claims to have gone without emptying the line leaves `feed` no room: it spins.
