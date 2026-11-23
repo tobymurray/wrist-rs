@@ -23,6 +23,7 @@ const DIRECT_DONE: &[u8] = &[0x04, 0xFF, 0x04, 0x07, 0x04, 0x40, 0x00];
 const LINK_UP: &[u8] = &[0x04, 0x3E, 0x13, 0x01, 0x00, 0x01, 0x08, 0x01, 0x00, 0, 0, 0, 0, 0, 0, 0x24, 0x00, 0x00, 0x00, 0xF4, 0x01, 0x00];
 
 /// The chip as the driver's model has it, but for the fault each test sets.
+#[allow(clippy::struct_excessive_bools, reason = "each is one fault or fact of the chip played")]
 struct Chip {
     handles: Option<Handles>,
     central: bool,
@@ -36,6 +37,8 @@ struct Chip {
     /// A central connects at this step.
     link_at: Option<usize>,
     linked: bool,
+    /// The initiation ends only at the second cancel.
+    slow_cancel: bool,
     /// Its packets still to hand out.
     packets: Vec<&'static [u8]>,
     steps: Vec<Step>,
@@ -53,6 +56,7 @@ impl Default for Chip {
             anchor_off: 0,
             link_at: None,
             linked: false,
+            slow_cancel: false,
             packets: Vec::new(),
             steps: Vec::new(),
         }
@@ -89,6 +93,10 @@ impl Chip {
                     self.initiating = true;
                     reply(0, &[])
                 }
+                ACI_GAP_TERMINATE_GAP_PROC if self.initiating && self.slow_cancel => {
+                    self.slow_cancel = false;
+                    reply(0, &[])
+                }
                 ACI_GAP_TERMINATE_GAP_PROC if self.initiating => {
                     self.initiating = false;
                     self.packets.push(DIRECT_DONE);
@@ -122,7 +130,7 @@ impl Chip {
                 for p in self.packets.drain(..) {
                     t.saw(p);
                 }
-                assert!(!t.waiting(), "the initiation's end was handed out");
+                assert!(!t.waiting() || self.initiating, "the initiation's end was handed out");
                 Answer::Waited
             }
             Step::Over(o) => return Some(o),
@@ -200,6 +208,19 @@ fn a_chip_that_advertises_while_initiating_fails_the_refusal_and_is_put_back() {
     assert_eq!(o, Outcome::Fail(Case::Refusal, Why::Model(Classified::Missed(SchedKind::Excluded(Exclusion::NoAdvertiseWhileInitiating)))));
     assert!(!chip.initiating, "the initiation cancelled");
     assert_eq!(chip.advertising, Some(RESTORE));
+    let cancel = chip.steps.iter().rposition(|s| matches!(s, Step::Command(c) if c.opcode == ACI_GAP_TERMINATE_GAP_PROC)).unwrap();
+    assert!(matches!(chip.steps[cancel + 1], Step::Wait(_)), "its end waited for before advertising: {:?}", &chip.steps[cancel..]);
+}
+
+#[test]
+fn an_initiation_still_ending_when_the_selftest_fails_is_cancelled_and_waited_for() {
+    let mut chip = Chip { slow_cancel: true, ..Chip::default() };
+    let o = run(&mut chip);
+    let read = wrist_bluenrg2::selftest::Running { advertising: false, scanning: true, initiating: false };
+    let idle = wrist_bluenrg2::selftest::Running { advertising: false, scanning: false, initiating: false };
+    assert_eq!(o, Outcome::Fail(Case::Refusal, Why::Running { read, model: idle }));
+    assert!(!chip.initiating);
+    assert_eq!(chip.advertising, Some(RESTORE), "put back once the initiation ended");
 }
 
 #[test]

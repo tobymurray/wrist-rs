@@ -382,7 +382,10 @@ impl Replay {
         let at = Instant(self.base.unwrap_or_default() + ms);
         self.shadow.advance(at);
         match dir {
-            "r" => self.push(Who::Driver, "reset the chip".into()),
+            "r" => {
+                self.shadow.resetting();
+                self.push(Who::Driver, "reset the chip".into());
+            }
             "c" => {
                 if let Some(&[lo, hi]) = bytes.get(1..3) {
                     self.shadow.command(at, u16::from_le_bytes([lo, hi]), bytes.get(4..).unwrap_or_default());

@@ -58,8 +58,9 @@ impl Link<'_> {
         self.test = None;
         trace::packet(trace::Dir::Selftest, &[0]);
         self.shadow.testing(now_ms(), false);
-        // The core restarts a chip whose start stopped short, as after its own.
-        if matches!(outcome, Some(Outcome::Fail(_, Why::StartStopped))) {
+        // The core restarts a chip whose start stopped short, as after its own; `recover` tells it
+        // of one that restarted meanwhile.
+        if matches!(outcome, Some(Outcome::Fail(_, Why::StartStopped))) && !self.chip.restarted() {
             trace::packet(trace::Dir::StartFailed, &[]);
             self.shadow.start_failed(now_ms());
         }

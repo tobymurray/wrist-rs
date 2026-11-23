@@ -1339,6 +1339,7 @@ impl Link<'_> {
         {
             trace::packet(trace::Dir::Reset, &[]);
             trace::packet(trace::Dir::Mode, &[1]);
+            self.shadow.resetting();
         }
         self.boot = None;
         CONN_HANDLE.store(0, Ordering::Relaxed);

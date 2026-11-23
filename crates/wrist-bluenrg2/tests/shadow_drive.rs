@@ -500,6 +500,7 @@ fn a_selftest_holding_the_chip_is_not_the_cores_and_ends_in_a_snapshot() {
     s.reported(Instant(1_020), RadioEvent::Done(OpId(7), Ok(Outcome::Done)));
     s.reported(Instant(1_020), RadioEvent::EventsLost);
     // The selftest's own start, and its initiation ended with Unknown Connection Identifier.
+    s.resetting();
     s.event(Instant(1_500), BOOTED);
     s.event(Instant(1_600), &[0x04, 0x3E, 0x13, 0x01, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     s.advance(Instant(3_000));
@@ -526,4 +527,40 @@ fn a_link_reaches_the_core_while_a_selftest_has_the_chip() {
     s.testing(Instant(1_000), true);
     s.event(Instant(1_100), PHONE);
     assert_eq!(s.state().phone.link(), Some(link()));
+}
+
+/// The chip restarting by itself while a selftest has it is the core's to answer with a start.
+#[test]
+fn a_chip_restart_of_its_own_reaches_the_core_while_a_selftest_has_the_chip() {
+    let mut s = driving();
+    carry_out(&mut s, 100, Ok(OpId(1)));
+    s.testing(Instant(1_000), true);
+    s.event(Instant(1_100), &[0x04, 0xFF, 0x03, 0x01, 0x00, 0x05]);
+    assert!(matches!(s.chip_action(), Some(Action::Start(_))));
+    s.testing(Instant(2_000), false);
+    assert_eq!(s.chip_action(), None, "given back, the start under way is not failed by a lost read");
+    assert!(!s.snapshot_wanted());
+}
+
+/// The selftest's own reset hides its boot whatever reason the chip gives, and a boot without
+/// one reaches the core whatever its reason.
+#[test]
+fn only_the_boot_of_the_selftests_own_reset_is_kept_from_the_core() {
+    let mut s = driving();
+    carry_out(&mut s, 100, Ok(OpId(1)));
+    s.testing(Instant(1_000), true);
+    s.resetting();
+    s.event(Instant(1_100), &[0x04, 0xFF, 0x03, 0x01, 0x00, 0x07]);
+    assert_eq!(s.chip_action(), None, "a brownout reported by its own start");
+    s.event(Instant(1_200), BOOTED);
+    assert!(matches!(s.chip_action(), Some(Action::Start(_))), "a restart reported as started");
+}
+
+/// Given back after a record that lost the selftest's start, the core still takes a snapshot.
+#[test]
+fn the_chip_given_back_is_a_lost_read_whatever_came_before() {
+    let mut s = driving();
+    carry_out(&mut s, 100, Ok(OpId(1)));
+    s.testing(Instant(1_000), false);
+    assert!(s.snapshot_wanted());
 }

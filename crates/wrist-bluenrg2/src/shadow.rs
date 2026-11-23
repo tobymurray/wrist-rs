@@ -183,6 +183,8 @@ pub struct Shadow<O> {
     driver_snapshots: bool,
     /// The driver's selftest has the chip ([`Self::testing`]).
     testing: bool,
+    /// The selftest reset the chip, and its boot is the selftest's own.
+    boot_owed: bool,
     verdict: Verdict,
     pub observer: O,
 }
@@ -213,6 +215,7 @@ impl<O: Observer> Shadow<O> {
             snapshot_wanted: false,
             driver_snapshots: false,
             testing: false,
+            boot_owed: false,
             verdict: Verdict::new(),
             observer,
         }
@@ -482,18 +485,23 @@ impl<O: Observer> Shadow<O> {
         self.snapshot_wanted = false;
         self.driver_snapshots = false;
         self.testing = false;
+        self.boot_owed = false;
+    }
+
+    /// The driver reset the chip: while a selftest has it, the boot that follows is the selftest's.
+    pub fn resetting(&mut self) {
+        self.boot_owed = self.testing;
     }
 
     /// The driver's selftest takes the chip at `at`, its commands then compared with nothing and
     /// only links told to the core, or gives it back with a lost read.
     pub fn testing(&mut self, at: Instant, on: bool) {
         self.advance(at);
-        if self.testing == on {
-            return;
-        }
         self.testing = on;
+        self.boot_owed = false;
         self.sent = None;
-        if !on {
+        // A chip restarting by itself meanwhile is being started again, which a snapshot would only fail.
+        if !on && self.core.state.chip.starting().is_none() {
             self.lost_read(at);
         }
     }
@@ -579,7 +587,10 @@ impl<O: Observer> Shadow<O> {
             }
         }
         let Some(e) = self.translator.event(packet) else { return };
-        if self.testing && matches!(e, RadioEvent::Ready(_) | RadioEvent::ChipReset(_) | RadioEvent::Unknown { .. } | RadioEvent::EventsLost) {
+        if matches!(e, RadioEvent::Ready(_) | RadioEvent::ChipReset(_)) && core::mem::take(&mut self.boot_owed) {
+            return;
+        }
+        if self.testing && matches!(e, RadioEvent::Unknown { .. } | RadioEvent::EventsLost) {
             return;
         }
         match e {

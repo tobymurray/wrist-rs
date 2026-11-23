@@ -219,6 +219,7 @@ enum Stage {
     /// After a failure: the initiation ended, then advertising stopped and put back, every answer
     /// taken as it comes.
     UndoCancel,
+    UndoCancelled,
     UndoStop,
     UndoRestore,
     Over,
@@ -236,7 +237,7 @@ pub struct Selftest<'a> {
     failed: Option<(Case, Why)>,
     /// A central connected since the selftest began.
     linked: bool,
-    /// The initiation may still run.
+    /// The initiation was asked for.
     initiated: bool,
     /// The chip reported the initiation over.
     cancelled: bool,
@@ -316,7 +317,7 @@ impl<'a> Selftest<'a> {
             Stage::Initiate => Step::Command(initiation(&connecting())),
             Stage::Refuse | Stage::Restart | Stage::UndoRestore => advertise(Some(self.restore)),
             Stage::Cancel | Stage::UndoCancel => Step::Command(cancel()),
-            Stage::Cancelled => Step::Wait(CANCEL_WITHIN),
+            Stage::Cancelled | Stage::UndoCancelled => Step::Wait(CANCEL_WITHIN),
             Stage::Idle | Stage::Read(_) | Stage::Stopped | Stage::Initiating | Stage::Ended | Stage::Restarted => Step::Snapshot,
             Stage::Over => Step::Over(self.failed.map_or(Outcome::Pass(Self::cases()), |(c, w)| Outcome::Fail(c, w))),
         }
@@ -325,7 +326,7 @@ impl<'a> Selftest<'a> {
     /// Whether a [`Step::Wait`] still waits for the chip.
     #[must_use]
     pub fn waiting(&self) -> bool {
-        self.stage == Stage::Cancelled && !self.cancelled
+        matches!(self.stage, Stage::Cancelled | Stage::UndoCancelled) && !self.cancelled
     }
 
     /// A packet from the chip, whatever step is under way.
@@ -360,7 +361,7 @@ impl<'a> Selftest<'a> {
             Stage::Advertise(i) | Stage::Read(i) | Stage::Stop(i) => Case::Advertising(MENU.advertising[i].params),
             Stage::Stopped => Case::Stop,
             Stage::Initiate | Stage::Initiating | Stage::Refuse | Stage::Cancel | Stage::Cancelled | Stage::Ended => Case::Refusal,
-            Stage::Restart | Stage::Restarted | Stage::UndoCancel | Stage::UndoStop | Stage::UndoRestore | Stage::Over => Case::Restart,
+            Stage::Restart | Stage::Restarted | Stage::UndoCancel | Stage::UndoCancelled | Stage::UndoStop | Stage::UndoRestore | Stage::Over => Case::Restart,
         }
     }
 
@@ -381,9 +382,10 @@ impl<'a> Selftest<'a> {
             Stage::Cancelled => Stage::Ended,
             Stage::Ended => Stage::Restart,
             Stage::Restart => Stage::Restarted,
-            Stage::UndoCancel if !self.linked => Stage::UndoStop,
+            Stage::UndoCancel => Stage::UndoCancelled,
+            Stage::UndoCancelled if !self.linked => Stage::UndoStop,
             Stage::UndoStop => Stage::UndoRestore,
-            Stage::Restarted | Stage::UndoCancel | Stage::UndoRestore | Stage::Over => Stage::Over,
+            Stage::Restarted | Stage::UndoCancelled | Stage::UndoRestore | Stage::Over => Stage::Over,
         }
     }
 
@@ -393,7 +395,7 @@ impl<'a> Selftest<'a> {
         self.failed = Some((case, why));
         self.stage = match why {
             Why::StartStopped => Stage::Over,
-            _ if self.initiated => Stage::UndoCancel,
+            _ if self.initiated && !self.cancelled => Stage::UndoCancel,
             _ if self.linked => Stage::Over,
             _ => Stage::UndoStop,
         };
@@ -447,11 +449,7 @@ impl<'a> Selftest<'a> {
                 },
                 c => Err(Why::Model(c)),
             },
-            (Stage::Cancel, Answer::Replied(r)) => {
-                taken(&r)?;
-                self.initiated = false;
-                Ok(())
-            }
+            (Stage::Cancel, Answer::Replied(r)) => taken(&r).map(|_| ()),
             (Stage::Cancelled, Answer::Waited) => Ok(()),
             (Stage::Restart, Answer::Settled(r)) => model(&Activities::IDLE, &Change::Advertise(Some(self.restore)), r),
             (Stage::Restarted, Answer::Snapshot(s)) => read(s, &advertising(self.restore)),
