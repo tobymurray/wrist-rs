@@ -627,8 +627,10 @@ impl<'a> Core<'a> {
         match result {
             Ok(p) if phone => {
                 self.phone_params = Some(p);
+                // A fit ends any refusal before it: moving off is then judged after the settle.
                 if self.phone_asked.is_some_and(|w| self.phone_fits(&w)) {
                     self.phone_held = true;
+                    self.phone_refused = false;
                 }
                 self.phone(now, phone::Event::ParamsChanged(link), out);
             }
@@ -1152,11 +1154,10 @@ fn change_of(op: &Op) -> Option<Change> {
     }
 }
 
-/// The operation that takes a step of the plan; `None` for the central role's, not planned yet.
+/// The operation that takes a step of the plan; the core plans only advertising.
 fn op_of(c: &Change) -> Option<Op> {
     match *c {
         Change::Advertise(p) => Some(Op::Advertise(p)),
-        Change::Scan(p) => Some(Op::Scan(p)),
         _ => None,
     }
 }

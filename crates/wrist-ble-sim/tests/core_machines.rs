@@ -1083,6 +1083,21 @@ fn the_planner_advertises_beside_a_central_with_the_options_for_it() {
     assert_eq!(plan(&state, &goals).activities.advertising, Some(BESIDE[1].params));
 }
 
+/// An option whose start would leave the watch unreachable longer than I1 allows is not planned.
+#[test]
+fn the_planner_holds_its_starts_to_the_reachable_gap() {
+    use wrist_ble::policy::plan::{Conflict, PlanInput, Planner, TransitionPlanner, Verdict};
+    fn slow(k: wrist_ble::OpKind) -> Millis {
+        Millis(wrist_ble::policy::invariants::REACHABLE_GAP.0 + 1).max((CAPS.op_deadline)(k))
+    }
+    let caps = wrist_ble::Capabilities { op_deadline: slow, ..*CAPS };
+    let goals = wrist_ble::policy::goals::Goals { radio_on: true, ..wrist_ble::policy::goals::Goals::OFF };
+    let state = ready(t(0));
+    let target = TransitionPlanner.plan(&PlanInput { goals: &goals, state: &state, caps: &caps, schedule: &Careless, menu: &ADVERTISING, refused: &Refused::EMPTY, now: t(0) });
+    assert_eq!((target.phone, target.activities.advertising), (Verdict::Busy(Conflict::Refused), None));
+    assert_eq!(plan(&state, &goals).phone, Verdict::Fits);
+}
+
 /// Until the chip is up the plan is what runs, so nothing drifts from it.
 #[test]
 fn the_planner_plans_nothing_until_the_chip_is_up() {

@@ -79,6 +79,10 @@ fn a_scan_is_stopped_before_it_starts_again() {
     let (path, end) = transition(&from, &plan, &rules(&Refused::EMPTY, false)).unwrap();
     assert_eq!(steps(&path), [Change::Scan(None), Change::Scan(Some(scan(320)))]);
     assert_eq!(end.activities.scanning, Some(scan(320)));
+    let both = Placed::unlinked(Activities { advertising: Some(adv(FAST)), ..from.activities });
+    let (path, end) = transition(&both, &Plan { advertising: Some(adv(SLOW)), ..both.plan() }, &rules(&Refused::EMPTY, false)).unwrap();
+    assert_eq!(steps(&path), [Change::Advertise(None), Change::Advertise(Some(adv(SLOW)))], "the scan left alone");
+    assert_eq!(end.activities.scanning, Some(scan(160)));
 }
 
 /// A link cannot join 100 ms advertising, and advertising cannot start while the chip initiates:
@@ -147,12 +151,38 @@ fn each_link_keeps_to_its_own_slot() {
     let (_, two) = transition(&one, &both, &r).unwrap();
     assert_eq!(two.links[0].map(|l| l.slot), Some(1));
     assert_eq!(two.plan(), both);
+    let (path, _) = transition(&two, &Plan { advertising: Some(adv(SLOW)), ..both }, &r).unwrap();
+    assert_eq!(steps(&path), [Change::Advertise(Some(adv(SLOW)))], "links that fit are not re-timed");
     let swapped = Plan { links: [Some(live()), None, None], ..to(None) };
     let (path, end) = transition(&two, &swapped, &r).unwrap();
     assert_eq!(steps(&path), [Change::Close { slot: 0 }, Change::Retime { slot: 1, params: live() }]);
     assert_eq!(end.links, [Some(Link { slot: 1, params: live() }), None, None]);
     assert_eq!(end.activities.central[0], None);
     assert_eq!(end.plan(), swapped);
+}
+
+/// Refuses a scan beside advertising.
+struct ScanAlone;
+
+impl Schedule for ScanAlone {
+    fn admit(&self, a: &Activities, change: &Change) -> Result<Admitted, SchedKind> {
+        if matches!(change, Change::Scan(Some(_))) && a.advertising.is_some() {
+            return Err(SchedKind::NoSlot);
+        }
+        Ok(Admitted::AS_ASKED)
+    }
+}
+
+/// An ordering that meets a refusal is backed out of step by step, and the next one tried.
+#[test]
+fn a_refused_ordering_is_backed_out_of() {
+    let scan = |w: u16| ScanParams { interval: Duration::from_u16(160), window: Duration::from_u16(w), active: false, duration: wrist_ble::Millis::secs(5) };
+    let from = Placed::unlinked(Activities { advertising: Some(adv(FAST)), scanning: Some(scan(80)), ..Activities::IDLE });
+    let plan = Plan { advertising: Some(adv(SLOW)), scanning: Some(scan(40)), ..from.plan() };
+    let r = Rules { schedule: &ScanAlone, ..rules(&Refused::EMPTY, false) };
+    let (path, end) = transition(&from, &plan, &r).unwrap();
+    assert_eq!(steps(&path), [Change::Advertise(None), Change::Scan(None), Change::Scan(Some(scan(40))), Change::Advertise(Some(adv(SLOW)))]);
+    assert_eq!(end.plan(), plan);
 }
 
 /// Admits everything but a scan's start, counting what it was asked.

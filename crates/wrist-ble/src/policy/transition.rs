@@ -118,7 +118,7 @@ pub fn transition(from: &Placed, to: &Plan, rules: &Rules<'_>) -> Option<(Path, 
         return None;
     }
     let mut search = Search { rules, steps, path: Path::EMPTY, budget: SEARCH_BUDGET };
-    let end = search.from(0, from, 0)?;
+    let end = search.from([false; MAX_STEPS], from, 0)?;
     Some((search.path, end))
 }
 
@@ -202,13 +202,13 @@ struct Search<'a, 'r> {
 
 impl Search<'_, '_> {
     /// Depth first from `at`, with `done` the steps taken and `gap` the time unreachable so far.
-    fn from(&mut self, done: u16, at: &Placed, gap: u32) -> Option<Placed> {
-        if usize::try_from(done.count_ones()).ok() == Some(self.steps.len()) {
+    fn from(&mut self, done: [bool; MAX_STEPS], at: &Placed, gap: u32) -> Option<Placed> {
+        if done[..self.steps.len()].iter().all(|&d| d) {
             return Some(*at);
         }
         for (k, step) in self.steps.iter().enumerate() {
             let Some(step) = step else { continue };
-            if done & (1 << k) != 0 || step.after.is_some_and(|a| done & (1 << a) == 0) {
+            if done[k] || step.after.is_some_and(|a| !done[a]) {
                 continue;
             }
             if self.budget == 0 {
@@ -217,7 +217,9 @@ impl Search<'_, '_> {
             self.budget -= 1;
             let Some((next, gap)) = self.take(at, step, gap) else { continue };
             self.path.push(step.change);
-            if let Some(end) = self.from(done | (1 << k), &next, gap) {
+            let mut then = done;
+            then[k] = true;
+            if let Some(end) = self.from(then, &next, gap) {
                 return Some(end);
             }
             self.path.pop();

@@ -177,6 +177,8 @@ enum Act {
     Refuse(FailureKind),
     /// The outcome of the operation on air in this slot, as the chip would give it.
     Complete(usize),
+    /// The central's refusal of the parameter ask in this slot.
+    Turned(usize),
     /// A failure of it, or no outcome ever.
     Fail(usize),
     Lose(usize),
@@ -184,6 +186,8 @@ enum Act {
     PhoneDown,
     Encrypted,
     PhoneMoves,
+    /// The phone has lost its bond: the chip waits for leave to pair again.
+    BondLost,
     EventsLost,
     Reset,
     Power,
@@ -266,6 +270,9 @@ impl Model for Reconciler {
         let on_air = s.radio.on_air.iter().enumerate().filter_map(|(i, o)| o.map(|_| i));
         for i in on_air {
             out.push(Act::Complete(i));
+            if matches!(s.radio.on_air[i], Some((_, Op::UpdateParams(..)))) {
+                out.push(Act::Turned(i));
+            }
             if s.may_fault(*self) {
                 out.extend([Act::Fail(i), Act::Lose(i)]);
             }
@@ -290,7 +297,7 @@ impl Model for Reconciler {
         if s.acts < self.acts {
             out.extend([Act::Power, Act::Hide]);
             if s.radio.phone {
-                out.push(Act::PhoneMoves);
+                out.extend([Act::PhoneMoves, Act::BondLost]);
             }
         }
     }
@@ -299,7 +306,7 @@ impl Model for Reconciler {
         let mut n = s.clone();
         let fault = matches!(act, Act::Refuse(FailureKind::Busy | FailureKind::Timeout | FailureKind::Schedule(_)) | Act::Fail(_) | Act::Lose(_) | Act::PhoneDown | Act::EventsLost | Act::Reset);
         n.faults += u8::from(fault);
-        n.acts += u8::from(matches!(act, Act::PhoneMoves | Act::Power | Act::Hide));
+        n.acts += u8::from(matches!(act, Act::PhoneMoves | Act::BondLost | Act::Power | Act::Hide));
         match act {
             Act::Started => {
                 let id = n.start.take()?;
@@ -334,6 +341,11 @@ impl Model for Reconciler {
                 n.feed(Input::Submitted(Err(Failure { kind, native: 0x0C })));
             }
             Act::Complete(i) => n.complete(i)?,
+            Act::Turned(i) => {
+                n.radio.on_air[i] = None;
+                n.feed(Input::Radio(RadioEvent::ParamsAnswered { link: phone(), accepted: false }));
+            }
+            Act::BondLost => n.feed(Input::Radio(RadioEvent::BondLost(phone()))),
             Act::Fail(i) => {
                 let (id, op) = n.radio.on_air[i].take()?;
                 // A start that failed leaves nothing advertising, unless something replaced it.
@@ -396,6 +408,8 @@ impl Model for Reconciler {
             Property::always("the core keeps its promises at every step", |_, s: &S| s.broke.is_none()),
             Property::always("converged by the horizon, once the radio behaves (I3)", |_, s: &S| s.now < HORIZON || s.converged()),
             Property::sometimes("a phone link asked for its parameters", |_, s: &S| s.radio.phone && s.core.phone_params().is_some()),
+            Property::sometimes("an answer followed past the operation on air", |_, s: &S| s.core.passed().next().is_some()),
+            Property::sometimes("a refusal with the parameters unknown asked again", |_, s: &S| s.core.counters.update_failures > 0 && s.core.counters.reasks > 0),
             Property::sometimes("every fault allowed", |m: &Reconciler, s: &S| s.faults == m.faults),
         ]
     }

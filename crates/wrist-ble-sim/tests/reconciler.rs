@@ -920,7 +920,29 @@ fn answer_passed() -> (Bench, OpId) {
     let id = b.accept();
     assert_eq!(b.core.passed().map(|p| p.op).collect::<Vec<_>>(), [Op::AllowRebond(link())]);
     assert_eq!(b.core.pending().map(|p| p.op), Some(Op::RequestSecurity(link())));
+    let kept = format!("{:?}", b.core);
+    assert!(kept.contains("passed: [Some((Pending") && kept.contains("RequestSecurity"), "{kept}");
     (b, id)
+}
+
+/// Answers go out past the operation on air only while there is room to follow them; the rest
+/// wait for one to end.
+#[test]
+fn answers_past_an_operation_wait_for_room_to_follow_them() {
+    let (mut b, _) = answer_passed();
+    let mut ids = Vec::new();
+    for h in 2..20u16 {
+        let out = b.at(6_200, Input::Radio(RadioEvent::PeerParamRequest { link: ConnHandle::new(h), range: wrist_ble::ParamRange { interval_min: Duration::from_u16(6), interval_max: Duration::from_u16(6), latency: 0, timeout: Duration::from_u16(500) } }));
+        if out.op.is_none() {
+            break;
+        }
+        ids.push(b.accept());
+    }
+    let room = ids.len() + 1;
+    assert_eq!(b.core.passed().count(), room);
+    assert_eq!(b.at(6_300, Input::Tick).op, None, "no room");
+    let out = b.at(6_400, Input::Radio(RadioEvent::Done(ids[0], Ok(Outcome::Done))));
+    assert!(matches!(out.op, Some(Op::AnswerParamRequest(..))), "{out:?}");
 }
 
 /// An answer that passed the operation on air is followed to its outcome: its failure counts.
@@ -999,4 +1021,25 @@ fn a_refusal_while_the_parameters_are_unknown_is_asked_again() {
     refuse(&mut b);
     let to = b.now.0 + 60_000;
     assert_eq!(asks(&b.run_to(to)), 0, "the phone said no to what it has");
+}
+
+/// A refusal the phone's own fitting update then answers is over: when the phone moves off, it is
+/// asked again only after the settle.
+#[test]
+fn a_fit_after_a_refusal_waits_the_settle_when_the_phone_moves_off() {
+    let mut b = Bench::new(cable());
+    b.phone_up(1_000);
+    assert_eq!(b.encrypted(1_300).op, None);
+    assert!(b.at(2_000, Input::Radio(RadioEvent::EventsLost)).snapshot);
+    let mut links = [None; MAX_LINKS];
+    links[0] = Some(wrist_ble::LinkStatus { link: link(), role: LeConnRole::Peripheral, peer: phone(), encrypted: Some(true) });
+    let out = b.at(2_001, Input::Snapshot(Ok(Snapshot { at: Instant(2_001), links, advertising: false, scanning: false, initiating: false, anchor: None })));
+    assert!(matches!(out.op, Some(Op::UpdateParams(..))), "{out:?}");
+    b.accept();
+    b.at(2_100, Input::Radio(RadioEvent::ParamsAnswered { link: link(), accepted: false }));
+    b.params(2_200, OPENED);
+    b.params(2_500, OWN);
+    b.tick_until_asked(20_000);
+    assert!(matches!(b.asked, Some(Op::UpdateParams(..))), "never asked again");
+    assert!(b.now.0 >= 2_500 + u64::from(SETTLE.0), "asked at {} before the phone settled", b.now.0);
 }
