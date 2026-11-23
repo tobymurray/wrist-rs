@@ -69,8 +69,7 @@ wrist_update = load('wrist-update')
 SCENARIOS = ['console', 'reconnect', 'lateness', 'soak', 'update']
 FORBIDDEN = re.compile(r'^\s*ble\s+forget\b')
 OTHER_TOOLS = re.compile(r'(wrist-(ble|cmd|update|time|frame|crash|session)|ble-(suite|probe-host)|hr-sim(-bumble)?|gate)\.py')
-TERMINALS = ('picocom', 'minicom', 'screen')
-PYTHON = re.compile(r'python[\d.]*|pypy[\d.]*')
+PYTHON = re.compile(r'(python|pypy)[\d.]*[dt]?', re.I)
 LATENESS = re.compile(r'executor late by at most ([0-9.]+) ms at \d+ ms, over 5 ms (\d+) times')
 PROBED = re.compile(r'latency probe ran (\d+) s since the last')
 BUILD_CHAR = rb'[0-9A-Za-z._-]'
@@ -83,6 +82,9 @@ STILL_COUNTS = ('failures', 'pairings failed', 'hung up within', 'chip restarts'
 EARLY_END_S = 12
 CONNECTED = re.compile(r'\[ble\] connected\s*$')
 ALARM = re.compile(r'\[ble\] alarm: ')
+# wrist-ble's `REACHABLE_ALARM`, the soonest an alarm comes after its cause, and a margin for the watch's next step.
+LATE_ALARM_S = 10
+LATE_ALARM_MARGIN_S = 3
 
 
 def stamp(t=None):
@@ -126,7 +128,9 @@ def tool_of(args):
     if not words:
         return False
     exe = os.path.basename(words[0])
-    if exe in TERMINALS:
+    if exe in ('picocom', 'minicom'):
+        return True
+    if exe.lower() in ('screen', 'tio', 'cu'):
         return any(w.startswith('/dev/') for w in words[1:])
     if PYTHON.fullmatch(exe):
         rest = iter(words[1:])
@@ -1034,19 +1038,30 @@ def alarms(lines, start, end):
     return [l for t, l in lines if t >= start and (end is None or t < end) and ALARM.search(l)]
 
 
-async def judge_alarms(usb, ran):
-    """Fail each scenario during which the watch raised an alarm, its time running to the next one's start."""
+async def judge_alarms(usb, ran, grace):
+    """Fail each scenario during which the watch raised an alarm, its time running to the next one's start and the
+    last one's `grace` seconds past its end."""
+    if not ran:
+        return
+    await asyncio.sleep(max(0, ran[-1].ended + grace - time.time()))
+    read = True
     if isinstance(usb, Air):
         try:
-            await usb.settle()
+            # A link of its own: one still held from the last scenario has read nothing since.
+            await usb.detach()
+            usb.link = await usb.phone.connect()
+            read = bool(usb.link) and await usb.sync()
+            await usb.detach()
         except Exception as e:
             print(f'-- the last log read: {e!r}', flush=True)
-    if ran:
-        print('\n== alarms', flush=True)
+            read = False
+    print('\n== alarms', flush=True)
     for s, nxt in zip(ran, ran[1:] + [None]):
         raised = alarms(usb.lines, s.started, nxt.started if nxt else None)
         if raised or s.checks:
             s.check(not raised, f'{s.name}: the watch raised no alarm ({"; ".join(raised) or "none"})')
+    if not read:
+        ran[-1].check(False, f'{ran[-1].name}: the watch\'s last lines were read (no link for `log since`)')
 
 
 def on_sigterm(result):
@@ -1126,7 +1141,7 @@ async def run(a, out, result):
             for p in problems:
                 print(f'  pre-flight: {p}', flush=True)
             return False
-        ran = []
+        ran, interrupted = [], False
         try:
             for name in a.scenarios:
                 s = Scenario(name, CRITERIA[name].format(a=a))
@@ -1135,14 +1150,18 @@ async def run(a, out, result):
                     await globals()[name](s, usb, phone, build, a)
                 except asyncio.CancelledError:
                     s.check(False, 'stopped before its end')
+                    interrupted = True
                     raise
                 except Exception as e:
                     s.check(False, f'stopped by {e!r}')
                 finally:
                     s.ended = time.time()
         finally:
-            await judge_alarms(usb, ran)
+            # Written first, so a stop during the judging keeps them.
+            first = len(result['scenarios'])
             result['scenarios'] += [s.result() for s in ran]
+            await judge_alarms(usb, ran, 0 if interrupted else LATE_ALARM_S + LATE_ALARM_MARGIN_S)
+            result['scenarios'][first:] = [s.result() for s in ran]
         return all(s['passed'] for s in result['scenarios'])
     finally:
         asyncio.get_running_loop().add_signal_handler(
