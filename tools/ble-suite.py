@@ -749,7 +749,7 @@ async def reasons(usb, marks):
 
 # -- scenarios --
 
-SEEN = re.compile(r'\[ble\] seen ([0-9A-F]{2}(?::[0-9A-F]{2}){5}) (-?\d+) dBm(?: \(scan response\))?(?: "([^"]*)")?(.*)$')
+SEEN = re.compile(r'\[ble\] seen ([0-9A-F]{2}(?::[0-9A-F]{2}){5})(?: \(random\))? (-?\d+) dBm(?: \(scan response\))?(?: "([^"]*)")?(.*)$')
 
 
 def heard(lines, name='HR-SIM', service='180D'):

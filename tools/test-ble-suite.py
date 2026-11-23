@@ -1176,8 +1176,8 @@ class Straps(unittest.TestCase):
         lines = ['[ble] seen 11:22:33:44:55:66 -60 dBm 180D', '[ble] seen 11:22:33:44:55:66 -58 dBm (scan response) "HR-SIM"',
                  '[ble] seen AA:BB:CC:DD:EE:FF -70 dBm "HR-SIM"', '[ble] seen 01:02:03:04:05:06 -40 dBm "Polar H10" 180D 180F',
                  '[ble] seen 0A:0B:0C:0D:0E:0F -41 dBm "HR-SIM" 180F 0000180D-0000-1000-8000-00805F9B34FB',
-                 '>> usb ble scan 5']
-        self.assertEqual(suite.heard(lines), {'11:22:33:44:55:66': -60})
+                 '[ble] seen C2:48:52:53:49:4D (random) -52 dBm "HR-SIM" 180D', '>> usb ble scan 5']
+        self.assertEqual(suite.heard(lines), {'11:22:33:44:55:66': -60, 'C2:48:52:53:49:4D': -52})
         self.assertEqual(suite.heard(lines, 'Polar H10'), {'01:02:03:04:05:06': -40})
         self.assertEqual(suite.heard(lines[2:3]), {})
 
