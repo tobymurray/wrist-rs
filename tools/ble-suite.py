@@ -9,7 +9,8 @@
 
 The watch needs a `ble` image with the radio on (`ble on`), bonded to this computer
 (`wrist-ble.py --pair`), and its USB console free. The suite holds that console for the whole
-run and judges every scenario from its lines and the answers over the air. Each run writes
+run and judges every scenario from its lines and the answers over the air; a scenario during which the
+watch raised an alarm (`[ble] alarm:`) fails. Each run writes
 suite.log, console.log and result.json under target/ble-suite/ (or --out), and exits non-zero
 if any check fails. It never runs `ble forget`. console.log's times are seconds since the run
 started; with --restart-radio it holds the chip's bring-up, so `cargo run -p wrist-ble-sim --bin
@@ -18,7 +19,7 @@ replay -- console.log` replays a `ble-trace` image's run.
 --image is the running image's app.bin, which the update scenario sends again. With --install,
 --restore must be the running image's app.bin, and the update scenario sends --image (which must
 then be the installed build) or, without it, the installed image. SIGTERM ends a run as Ctrl-C does:
-result.json is written and --restore put back.
+result.json is written, the interrupted scenario in it with its checks so far, and --restore put back.
 
 --air needs no cable, so the watch sleeps as it does on battery: commands go over a link, and the
 watch's own lines come from its log (`log since`), read whenever a link attaches. A hang-up's
@@ -67,7 +68,9 @@ wrist_update = load('wrist-update')
 
 SCENARIOS = ['console', 'reconnect', 'lateness', 'soak', 'update']
 FORBIDDEN = re.compile(r'^\s*ble\s+forget\b')
-OTHER_TOOLS = re.compile(r'(wrist-(ble|cmd|update|time|frame|crash)|ble-suite|hr-sim(-bumble)?|gate)\.py|picocom|minicom|screen /dev/')
+OTHER_TOOLS = re.compile(r'(wrist-(ble|cmd|update|time|frame|crash|session)|ble-(suite|probe-host)|hr-sim(-bumble)?|gate)\.py')
+TERMINALS = ('picocom', 'minicom', 'screen')
+PYTHON = re.compile(r'python[\d.]*|pypy[\d.]*')
 LATENESS = re.compile(r'executor late by at most ([0-9.]+) ms at \d+ ms, over 5 ms (\d+) times')
 PROBED = re.compile(r'latency probe ran (\d+) s since the last')
 BUILD_CHAR = rb'[0-9A-Za-z._-]'
@@ -79,6 +82,7 @@ COUNTS = r'\[ble\] counts: '
 STILL_COUNTS = ('failures', 'pairings failed', 'hung up within', 'chip restarts', 'alarms', 'phone links found gone')
 EARLY_END_S = 12
 CONNECTED = re.compile(r'\[ble\] connected\s*$')
+ALARM = re.compile(r'\[ble\] alarm: ')
 
 
 def stamp(t=None):
@@ -115,6 +119,28 @@ class Tee:
 
 # -- hosts --
 
+def tool_of(args):
+    """Whether a command line runs one of the tools that use the watch: its executable, or the script its Python
+    runs, never a word elsewhere in it (an editor's file, a `grep`, a waiting shell's command)."""
+    words = args.split()
+    if not words:
+        return False
+    exe = os.path.basename(words[0])
+    if exe in TERMINALS:
+        return any(w.startswith('/dev/') for w in words[1:])
+    if PYTHON.fullmatch(exe):
+        rest = iter(words[1:])
+        for w in rest:
+            if w in ('-c', '-m'):
+                return False
+            if w in ('-W', '-X'):
+                next(rest, None)
+            elif not w.startswith('-'):
+                return bool(OTHER_TOOLS.fullmatch(os.path.basename(w)))
+        return False
+    return bool(OTHER_TOOLS.fullmatch(exe))
+
+
 class Host:
     name = platform.system()
 
@@ -136,7 +162,7 @@ class Host:
         def ours(pid):
             up = parent.get(pid)
             return pid in mine or (up in mine and args.get(pid) == args.get(up))
-        return [p for p in self.ps() if OTHER_TOOLS.search(p) and not ours(int(p.split()[0]))]
+        return [p for p in self.ps() if tool_of(p.split(None, 1)[1] if ' ' in p else '') and not ours(int(p.split()[0]))]
 
     def holders(self, port):
         twin = re.sub(r'/(cu|tty)\.', lambda m: '/tty.' if m[1] == 'cu' else '/cu.', port, count=1)
@@ -176,8 +202,11 @@ class Linux(Host):
         return [p for p in self.ps() if p.split()[0] in found]
 
     def fuser(self, port):
-        """The pids holding `port`, by `sudo -n fuser`, or None when that can't be asked."""
+        """The pids holding `port`, by `sudo -n fuser`, or None when that can't be asked: sudo is asked first
+        whether it allows it, since a refusal and `fuser` finding nobody can both be rc 1 with nothing said."""
         try:
+            if subprocess.run(['sudo', '-n', '-l', 'fuser', port], capture_output=True, timeout=10).returncode:
+                return None
             p = subprocess.run(['sudo', '-n', 'fuser', port], capture_output=True, text=True, timeout=10)
         except (OSError, subprocess.TimeoutExpired):
             return None
@@ -541,7 +570,7 @@ class Scenario:
     def __init__(self, name, criteria):
         self.name, self.criteria = name, criteria
         self.checks, self.data = [], {}
-        self.started = time.time()
+        self.started = self.ended = time.time()
         print(f'\n== {name}: {criteria}', flush=True)
 
     def check(self, ok, what):
@@ -555,7 +584,7 @@ class Scenario:
 
     def result(self):
         return {'name': self.name, 'criteria': self.criteria, 'passed': self.passed,
-                'seconds': round(time.time() - self.started, 1), 'measurements': self.data, 'checks': self.checks}
+                'seconds': round(self.ended - self.started, 1), 'measurements': self.data, 'checks': self.checks}
 
 
 def counters(status):
@@ -1000,6 +1029,27 @@ def ready(snap):
     return problems
 
 
+def alarms(lines, start, end):
+    """The watch's alarm lines timed from `start` up to `end` (None: the end of the run)."""
+    return [l for t, l in lines if t >= start and (end is None or t < end) and ALARM.search(l)]
+
+
+async def judge_alarms(usb, ran):
+    """Fail each scenario during which the watch raised an alarm: its time runs to the next scenario's start, as the
+    alarm may come after the work that caused it. Over the air the last lines are read first."""
+    if isinstance(usb, Air):
+        try:
+            await usb.settle()
+        except Exception as e:
+            print(f'-- the last log read: {e!r}', flush=True)
+    if ran:
+        print('\n== alarms', flush=True)
+    for s, nxt in zip(ran, ran[1:] + [None]):
+        raised = alarms(usb.lines, s.started, nxt.started if nxt else None)
+        if raised or s.checks:
+            s.check(not raised, f'{s.name}: the watch raised no alarm ({"; ".join(raised) or "none"})')
+
+
 def on_sigterm(result):
     task = asyncio.current_task()
 
@@ -1077,13 +1127,23 @@ async def run(a, out, result):
             for p in problems:
                 print(f'  pre-flight: {p}', flush=True)
             return False
-        for name in a.scenarios:
-            s = Scenario(name, CRITERIA[name].format(a=a))
-            try:
-                await globals()[name](s, usb, phone, build, a)
-            except Exception as e:
-                s.check(False, f'stopped by {e!r}')
-            result['scenarios'].append(s.result())
+        ran = []
+        try:
+            for name in a.scenarios:
+                s = Scenario(name, CRITERIA[name].format(a=a))
+                ran.append(s)
+                try:
+                    await globals()[name](s, usb, phone, build, a)
+                except asyncio.CancelledError:
+                    s.check(False, 'stopped before its end')
+                    raise
+                except Exception as e:
+                    s.check(False, f'stopped by {e!r}')
+                finally:
+                    s.ended = time.time()
+        finally:
+            await judge_alarms(usb, ran)
+            result['scenarios'] += [s.result() for s in ran]
         return all(s['passed'] for s in result['scenarios'])
     finally:
         asyncio.get_running_loop().add_signal_handler(
@@ -1096,11 +1156,12 @@ async def run(a, out, result):
             except subprocess.TimeoutExpired:
                 pass
             path = out / 'btmon.btsnoop'
-            count = failed_to_establish(path) if path.is_file() and path.stat().st_size else None
+            lived = died is None
+            count = failed_to_establish(path) if lived and path.is_file() and path.stat().st_size else None
             result['failed_to_establish'] = count
-            result['capture'] = 'failed' if died is not None or count is None else 'ok'
+            result['capture'] = 'ok' if lived and count is not None else 'failed'
             if result['capture'] == 'failed':
-                print(f'-- btmon capture failed{f" (btmon exited {died} during the run)" if died is not None else ""}; '
+                print(f'-- btmon capture failed{"" if lived else f" (btmon exited {died} during the run)"}; '
                       'no count of connections that failed to establish', flush=True)
         if result.pop('radio_off', False):
             await say(usb, 'ble on', r'\[ble\]')
@@ -1133,6 +1194,9 @@ CRITERIA = {
     'update': 'an application update over the air reaches `state boot`, no revert, the same build after it, '
               'radio back on',
 }
+# Every scenario's, judged once all have run.
+NO_ALARM = '; and no `[ble] alarm:` from the watch while it ran'
+CRITERIA = {k: v + NO_ALARM for k, v in CRITERIA.items()}
 
 
 def main():
