@@ -143,7 +143,7 @@ impl Chip {
         }
         let a = Activities { advertising: self.advertising, ..Activities::IDLE };
         let anchor = anchor_reading(&a).map(|r| Anchor { period: Micros(r.period.0 + self.anchor_off), ..r });
-        Snapshot { at: wrist_ble::Instant(0), links, advertising: self.advertising.is_some(), scanning: false, initiating: self.initiating, anchor }
+        Snapshot { at: wrist_ble::Instant(0), links, advertising: self.advertising.is_some(), scanning: self.initiating, initiating: false, anchor }
     }
 }
 

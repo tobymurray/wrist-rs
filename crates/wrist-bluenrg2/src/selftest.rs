@@ -124,9 +124,8 @@ pub enum Why {
     Snapshot(Fault),
     /// A central connected: the selftest needs none.
     Linked,
-    Advertising { read: bool, model: bool },
-    Scanning,
-    Initiating { read: bool, model: bool },
+    /// What runs, as the snapshot read it and as the model has it.
+    Running { read: Running, model: Running },
     Anchor { read: Option<Anchor>, model: Option<Anchor> },
     /// An answer to another step than the one handed out.
     OutOfStep,
@@ -165,9 +164,7 @@ impl fmt::Display for Why {
             Self::Code { chip, model } => write!(f, "refused {chip:02X}, the model's code {model:02X}"),
             Self::Snapshot(fault) => write!(f, "no snapshot ({fault:?})"),
             Self::Linked => f.write_str("a central connected; run it with none near"),
-            Self::Advertising { read, model } => write!(f, "advertising read {read}, the model {model}"),
-            Self::Scanning => f.write_str("scanning, which nothing asked for"),
-            Self::Initiating { read, model } => write!(f, "initiating read {read}, the model {model}"),
+            Self::Running { read, model } => write!(f, "the snapshot read {read}, the model {model}"),
             Self::Anchor { read, model } => {
                 f.write_str("the anchor read ")?;
                 write_anchor(f, read)?;
@@ -176,6 +173,30 @@ impl fmt::Display for Why {
             }
             Self::OutOfStep => f.write_str("answered out of step"),
         }
+    }
+}
+
+/// Advertising, scanning and initiating, each on or off.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Running {
+    pub advertising: bool,
+    pub scanning: bool,
+    pub initiating: bool,
+}
+
+impl fmt::Display for Running {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let on = [(self.advertising, "advertising"), (self.scanning, "scanning"), (self.initiating, "initiating")];
+        let mut any = false;
+        for (_, name) in on.iter().filter(|(on, _)| *on) {
+            f.write_str(if any { " and " } else { "" })?;
+            f.write_str(name)?;
+            any = true;
+        }
+        if !any {
+            f.write_str("idle")?;
+        }
+        Ok(())
     }
 }
 
@@ -482,18 +503,16 @@ fn read(s: Result<Snapshot, Fault>, model: &Activities) -> Result<(), Why> {
     if s.links.iter().any(Option::is_some) {
         return Err(Why::Linked);
     }
-    if s.advertising != model.advertising.is_some() {
-        return Err(Why::Advertising { read: s.advertising, model: model.advertising.is_some() });
+    let read = Running { advertising: s.advertising, scanning: s.scanning, initiating: s.initiating };
+    // The chip reads an initiation as scanning: its link states have none for it (HARDWARE.md).
+    let initiating = model.initiating.is_some();
+    let want = Running { advertising: model.advertising.is_some(), scanning: model.scanning.is_some() || initiating, initiating: false };
+    if read != want {
+        return Err(Why::Running { read, model: want });
     }
-    if s.scanning {
-        return Err(Why::Scanning);
-    }
-    if s.initiating != model.initiating.is_some() {
-        return Err(Why::Initiating { read: s.initiating, model: model.initiating.is_some() });
-    }
-    let want = anchor_reading(model);
-    if model.initiating.is_none() && s.anchor != want {
-        return Err(Why::Anchor { read: s.anchor, model: want });
+    let anchor = anchor_reading(model);
+    if model.initiating.is_none() && s.anchor != anchor {
+        return Err(Why::Anchor { read: s.anchor, model: anchor });
     }
     Ok(())
 }
