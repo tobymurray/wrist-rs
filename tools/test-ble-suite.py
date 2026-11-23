@@ -1201,6 +1201,34 @@ class Straps(unittest.TestCase):
         self.assertEqual(strap.last(), '!! no adapter hci0')
         self.assertIsNone(asyncio.run(suite.Strap('hci0').stop()))
 
+    def test_a_strap_that_advertises_only_after_its_time_is_not_started(self):
+        strap = suite.Strap('hci0')
+        late = 'import time; time.sleep(0.6); print("-- advertising HR-SIM (0x180D)", flush=True); time.sleep(30)'
+        with mock.patch.object(strap, 'argv', lambda: [sys.executable, '-c', late]):
+            self.assertFalse(asyncio.run(strap.start(timeout=0.3)))
+        self.assertIsNotNone(strap.p.poll())
+
+    def test_a_scan_cancelled_while_its_strap_starts_stops_the_strap(self):
+        stopped = []
+
+        class Strap(suite.Strap):
+            async def start(self):
+                await asyncio.sleep(30)
+
+            async def stop(self):
+                stopped.append(1)
+
+        async def cancelled():
+            s = suite.Scenario('scan', '')
+            a = argparse.Namespace(strap='hci0', strap_flags=[], strap_log=None, scan_seconds=5)
+            task = asyncio.ensure_future(suite.scan(s, Console({}), None, 'b', a))
+            await asyncio.sleep(0.05)
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        with mock.patch.object(suite, 'Strap', Strap), mock.patch('sys.stdout', io.StringIO()):
+            asyncio.run(cancelled())
+        self.assertEqual(stopped, [1])
+
     def test_the_scan_scenario_hears_the_strap_and_the_radio_back(self):
         found = ['[ble] scanning for 5 s, listening 50% of the time (50 ms in every 100 ms)',
                  '[ble] seen 11:22:33:44:55:66 -60 dBm "HR-SIM" 180D', '[ble] scan done: 9 reports, 1 advertisers printed']
@@ -1244,7 +1272,7 @@ class Straps(unittest.TestCase):
             self.assertIsNone(asyncio.run(phone.connect()))
             self.assertTrue(asyncio.run(phone.update('app.bin')))
             asyncio.run(suite.BleakPhone('UNA').connect())
-        self.assertEqual(asked, [('find', 'hci1'), ('client', {'adapter': 'hci1'}), ('update', 'hci1'), ('find', None), ('client', {})])
+        self.assertEqual(asked, [('find', 'hci1'), ('client', {'bluez': {'adapter': 'hci1'}}), ('update', 'hci1'), ('find', None), ('client', {})])
 
     def test_strap_flags_need_bumble_and_the_scan_is_not_run_by_default(self):
         with mock.patch.object(sys, 'argv', ['ble-suite.py', '--strap-flags', '--att-delay 3']), \

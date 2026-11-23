@@ -96,6 +96,21 @@ class PairingAnswers(unittest.TestCase):
         self.assertEqual(answers('cancel', 'yes', 1, None), ('ble yes', 'cancel'))
 
 
+@unittest.skipUnless(importlib.util.find_spec('dbus_fast'), '--pair on BlueZ needs dbus-fast (Linux)')
+class PairOnAdapter(unittest.TestCase):
+    def test_pairing_looks_for_the_watch_on_the_adapter_named(self):
+        from unittest import mock
+        import io
+        asked = []
+
+        async def find(_name, timeout=15, adapter=None):
+            asked.append(adapter)
+            return None
+        with mock.patch.object(wrist_ble, 'find', find), mock.patch('sys.stdout', io.StringIO()):
+            code = asyncio.run(wrist_ble.pair('UNA', None, 'yes', 'none', commands='/dev/null', adapter='hci1'))
+        self.assertEqual((code, asked), (1, ['hci1']))
+
+
 class Revert(unittest.TestCase):
     """A watch that answers before the write's own response returns."""
 

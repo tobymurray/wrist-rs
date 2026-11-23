@@ -629,7 +629,7 @@ class Strap:
                 return True
             await asyncio.sleep(0.1)
         await self.stop()
-        return bool(self.said(r'^advertising HR-SIM'))
+        return False
 
     async def stop(self, timeout=10):
         """Stop it as Ctrl-C does; the notifications it says it sent, or None."""
@@ -1033,9 +1033,9 @@ async def update(s, usb, phone, build, a):
 
 async def scan(s, usb, phone, build, a):
     strap = Strap(a.strap, a.strap_flags, a.strap_log)
-    if not s.check(await strap.start(), f'the strap advertises HR-SIM ({" ".join(strap.argv()[1:])}: {strap.last()})'):
-        return
     try:
+        if not s.check(await strap.start(), f'the strap advertises HR-SIM ({" ".join(strap.argv()[1:])}: {strap.last()})'):
+            return
         mark = usb.mark()
         started = await usb.ask(f'ble scan {a.scan_seconds}', r'\[ble\] (scanning for|scan refused|scan:|the central role|a scan)', 5)
         s.check(started and 'scanning for' in started, f'`ble scan {a.scan_seconds}` started ({started})')

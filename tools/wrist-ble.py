@@ -123,7 +123,7 @@ async def transfer(client, con, path, chunk_pace, chunk_max=VALUE_LEN):
 
 def on(adapter):
     """bleak's argument for a named adapter (BlueZ's `hci1`); none for the default."""
-    return {"adapter": adapter} if adapter else {}
+    return {"bluez": {"adapter": adapter}} if adapter else {}
 
 
 async def find(name, timeout=15, adapter=None):
@@ -192,7 +192,7 @@ def pairing_answers(host_answer, watch_answer, shown, theirs):
     return (f"ble {watch}" if watch else None), host
 
 
-async def pair(name, port, host_answer="match", watch_answer="match", commands=None, hold=0.0):
+async def pair(name, port, host_answer="match", watch_answer="match", commands=None, hold=0.0, adapter=None):
     """Pair through BlueZ with an agent of our own. The watch's half goes over USB or, with
     `commands`, into a logger's command file, where every step is also written as a `== host` mark."""
     from dbus_fast import BusType, DBusError, Message, Variant
@@ -288,7 +288,7 @@ async def pair(name, port, host_answer="match", watch_answer="match", commands=N
         if "advertising" not in status and "connected" not in status:
             print(f"-- the watch's radio is not advertising: {status.strip()}", flush=True)
             return 1
-    device = await find(name)
+    device = await find(name, adapter=adapter)
     if device is None:
         return 1
     path = device.details["path"]
@@ -373,7 +373,8 @@ async def main():
     if args.pair:
         if args.command_file and "match" in (args.host_answer, args.watch_answer):
             ap.error("--command-file can't read the watch's number: give --host-answer and --watch-answer")
-        return await pair(args.name, args.port, args.host_answer, args.watch_answer, args.command_file, args.hold)
+        return await pair(args.name, args.port, args.host_answer, args.watch_answer, args.command_file, args.hold,
+                          args.adapter)
     if args.revert and args.update:
         ap.error("--revert and --update are two different updates: give one")
     return await run(args.name, args.commands, args.update, args.listen, not args.no_reset,
