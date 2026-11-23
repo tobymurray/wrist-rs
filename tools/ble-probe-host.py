@@ -27,8 +27,10 @@
             offon                    `ble off`, then `ble on`
             list | wait <s>
         Options: dist=default|none|noid|sign (the keys the central offers and asks for), subscribe
-        (to every notification and indication after encrypting), hold=<s> (the link kept, listed
-        every 5 s), hangup=central|watch|restart. `--scenario` names a list (SCENARIOS). The
+        (to every notification and indication after encrypting), rpa (connect from a resolvable
+        private address made with the central's key; the bond is still its static address),
+        io=none (the central has no display or input: Just Works),
+        hold=<s> (the link kept, listed every 5 s), hangup=central|watch|restart. `--scenario` names a list (SCENARIOS). The
         throwaway bonds are forgotten at the end unless `--keep`. Runs on Bumble, which takes the
         adapter from BlueZ: as root (the step does `btmgmt power off` first and `power on` after). A
         chip the firmware holds after a fault stops the run (exit 3).
@@ -275,7 +277,8 @@ SCENARIOS = {
 }
 DISTRIBUTIONS = ('default', 'none', 'noid', 'sign')
 HANGUPS = ('central', 'watch', 'restart')
-OPTIONS = {'dist', 'subscribe', 'hold', 'hangup', 'max', 'losses'}
+IOS = ('yesno', 'none')
+OPTIONS = {'dist', 'subscribe', 'rpa', 'io', 'hold', 'hangup', 'max', 'losses'}
 
 
 def listed(text):
@@ -317,8 +320,9 @@ def parse_steps(text):
             if k not in OPTIONS:
                 raise ValueError(f'{part.strip()!r}: unknown option {k}')
             options[k] = v if eq else 'yes'
-        if options.get('dist', 'default') not in DISTRIBUTIONS or options.get('hangup', 'central') not in HANGUPS:
-            raise ValueError(f'{part.strip()!r}: dist is one of {DISTRIBUTIONS}, hangup one of {HANGUPS}')
+        if options.get('dist', 'default') not in DISTRIBUTIONS or options.get('hangup', 'central') not in HANGUPS \
+                or options.get('io', 'yesno') not in IOS:
+            raise ValueError(f'{part.strip()!r}: dist is one of {DISTRIBUTIONS}, hangup one of {HANGUPS}, io one of {IOS}')
         steps.append((word, arg, options))
     return steps
 
@@ -403,16 +407,18 @@ class BondRun:
             self.expected += extra
         return now
 
-    def device(self, n, dist):
+    def device(self, n, dist, rpa, io):
         from bumble import hci
         from bumble.device import Device, DeviceConfiguration
         from bumble.pairing import PairingDelegate
 
         offered = key_distribution(dist)
+        io = {'yesno': PairingDelegate.IoCapability.DISPLAY_OUTPUT_AND_YES_NO_INPUT,
+              'none': PairingDelegate.IoCapability.NO_OUTPUT_NO_INPUT}[io]
 
         class Yes(PairingDelegate):
             def __init__(self):
-                super().__init__(io_capability=PairingDelegate.IoCapability.DISPLAY_OUTPUT_AND_YES_NO_INPUT,
+                super().__init__(io_capability=io,
                                  local_initiator_key_distribution=offered,
                                  local_responder_key_distribution=offered)
 
@@ -423,7 +429,7 @@ class BondRun:
                 return True
 
         address = hci.Address(f'{TEST}{n:02X}', hci.Address.RANDOM_DEVICE_ADDRESS)
-        config = DeviceConfiguration(name='bond-probe', address=address, irk=bytes([n]) * 16)
+        config = DeviceConfiguration(name='bond-probe', address=address, irk=bytes([n]) * 16, le_privacy_enabled=rpa)
         device = Device.from_config_with_hci(config, self.source, self.sink)
         device.keystore = self.stores.setdefault(n, self.new_store())
         device.pairing_config_factory = lambda _c: pairing_config(Yes())
@@ -436,7 +442,7 @@ class BondRun:
         name = f'{TEST}{n:02X}'
         what = 'bond' if new else 'reconnect'
         log(f'STEP {what} {name} {" ".join(f"{k}={v}" for k, v in options.items())}')
-        device = self.device(n, options.get('dist', 'default'))
+        device = self.device(n, options.get('dist', 'default'), 'rpa' in options, options.get('io', 'yesno'))
         await device.power_on()
         # Holding the watch's IRK, Bumble would scan for an address that resolves to it before
         # connecting; the watch advertises its identity address, so that scan never ends.

@@ -181,7 +181,8 @@ as an update over USB is once the computer connects; a restart before then bring
 previous version back. The loader is updated only over USB.
 
 `ble bonds`, on the console, lists the bonded computers; `ble forget <address>` removes one.
-Forget the watch on that computer too. If the face shows `see Bluetooth`, a computer has a
+Forget the watch on that computer too. The watch keeps 4 bonds: a fifth computer's pairing
+fails until one is forgotten. If the face shows `see Bluetooth`, a computer has a
 key the watch no longer has: forget the watch in its Bluetooth settings
 (`bluetoothctl remove <address>` on Linux) and pair again. The tools say what to do, in one
 line, when they can't reach the watch.

@@ -14,6 +14,9 @@
 //! over a link that is not encrypted is acted on, and the console's output is mirrored only to
 //! an encrypted link. The loader is never accepted over the air.
 //!
+//! Bonds stay within [`bonds::MOST`]: a pairing past it is refused, a bond the chip drops anyway
+//! is named, and a central on a resolvable private address is matched to its bond.
+//!
 //! The loop has no tick: it waits for the chip's IRQ, a request, a signal, a power change or its
 //! earliest deadline (`wrist_bluenrg2::wake::ble::due`).
 //!
@@ -77,6 +80,7 @@ use wrist_ble::policy::status::{next_change, status, Status as CoreStatus, Statu
 use wrist_ble::policy::tally::Tally;
 use wrist_bluenrg2::shadow::verdict::Disagreement;
 use wrist_bluenrg2::shadow::{Mode, Observer, Shadow};
+use wrist_bluenrg2::bonds::{self, Listing};
 use wrist_bluenrg2::commands;
 use wrist_bluenrg2::driver::{self, Driver, Got, Reply, Unanswered};
 use wrist_bluenrg2::snapshot::{Snap, Snapping};
@@ -856,6 +860,14 @@ struct Link<'d> {
     /// Deferred work raised by events, done from the main loop.
     passkey_for: Option<u16>,
     recount_bonds: bool,
+    /// The bonds read last, to name any the chip drops at a disconnect.
+    bonds: Option<Listing>,
+    /// A disconnect since the bonds were read last.
+    check_bonds: bool,
+    /// The linked central's private address is yet to be resolved.
+    resolve_peer: bool,
+    /// The bond whose key resolved the linked central's private address.
+    identity: Option<bluenrg2::Address>,
     line: Line,
     /// The negotiated ATT MTU; notifications carry `mtu - 3`.
     mtu: usize,
@@ -910,6 +922,10 @@ impl<'d> Link<'d> {
             writes: Writes::default(),
             passkey_for: None,
             recount_bonds: false,
+            bonds: None,
+            check_bonds: false,
+            resolve_peer: false,
+            identity: None,
             line: ([0; 192], 0),
             mtu: DEFAULT_MTU,
             subscribed: false,
@@ -1038,7 +1054,7 @@ impl Link<'_> {
         let one = Duration::from_ticks(1);
         let state = State {
             now: tick(Instant::now()),
-            work: self.shadow.issuing() || self.shadow.snapshot_wanted() || self.finish_transfer || self.recount_bonds || self.passkey_for.is_some() || self.storming() || self.shadow.chip_acting(),
+            work: self.shadow.issuing() || self.shadow.snapshot_wanted() || self.finish_transfer || self.recount_bonds || self.check_bonds || self.resolve_peer || self.passkey_for.is_some() || self.storming() || self.shadow.chip_acting(),
             confirm_by: PROMPT.lock(Cell::get).owed().map(|(at, _)| tick(Instant::from_millis(at))),
             transfer: match &self.transfer {
                 None => Transfer::None,
@@ -1067,11 +1083,12 @@ impl Link<'_> {
                     self.uart.write_line("[ble] no comparison is waiting");
                 }
             }
-            Request::Bonds => self.list_bonds(false).await,
+            Request::Bonds => self.list_bonds(Listed::Asked).await,
             Request::Status => write_status_line(self.uart, &status(self.shadow.state(), self.shadow.now())),
             Request::Forget => {
                 if self.command(ACI_GAP_CLEAR_SECURITY_DB, &[]).await.is_ok() {
                     BONDED.store(0, Ordering::Relaxed);
+                    self.bonds = Some(Listing::EMPTY);
                     redraw();
                     self.uart.write_line("[ble] bond database cleared; forget the watch on the central too");
                     self.end_forgotten_link().await;
@@ -1179,8 +1196,14 @@ impl Link<'_> {
             }
             self.uart.write_line("[update] error: no data for 5 s; transfer abandoned");
         }
+        if core::mem::take(&mut self.resolve_peer) {
+            self.resolve_peer().await;
+        }
         if core::mem::take(&mut self.recount_bonds) {
-            self.list_bonds(true).await;
+            self.list_bonds(Listed::Paired).await;
+        }
+        if core::mem::take(&mut self.check_bonds) {
+            self.list_bonds(Listed::Disconnected).await;
         }
         if let Some(h) = self.passkey_for.take() {
             self.answer_passkey(h).await;
@@ -1319,7 +1342,7 @@ impl Link<'_> {
             name_room: GAP_NAME_LEN,
             // The console shows the number; `ble yes` answers.
             io_capability: io_capability::DISPLAY_YES_NO,
-            pairing: wrist_bluenrg2::bonds::PAIRING,
+            pairing: bonds::PAIRING,
         };
         let mut start = Start::new(&SERVER, setup);
         let mut packet = [0u8; transport::MAX_READ];
@@ -1372,7 +1395,7 @@ impl Link<'_> {
         self.uart.write_str("[ble] up: ST stack, address ");
         write_address(self.uart, bluenrg2::Address { kind: AddrKind::RANDOM, addr: BdAddr(addr) });
         self.uart.write_line(if central { ", peripheral and central" } else { ", peripheral only" });
-        self.list_bonds(false).await;
+        self.list_bonds(Listed::Asked).await;
         self.shown = None;
         self.show();
     }
@@ -1522,27 +1545,95 @@ impl Link<'_> {
         self.uart.write_line("");
     }
 
-    async fn list_bonds(&mut self, after_pairing: bool) {
-        if let Ok(r) = self.command(ACI_GAP_GET_BONDED_DEVICES, &[]).await {
-            if r.len >= 1 {
-                let params = &r.params[..r.len.min(r.params.len())];
-                let before = BONDED_READ.load(Ordering::Relaxed).then(|| BONDED.load(Ordering::Relaxed));
-                BONDED.store(params[0], Ordering::Relaxed);
-                BONDED_READ.store(true, Ordering::Relaxed);
-                redraw();
-                let mut line = self.uart.lines();
-                line.write_str("[ble] bonded devices: ");
-                line.write_u32(u32::from(params[0]));
-                for bond in bluenrg2::bonded_devices(params) {
-                    line.write_str(" ");
-                    line.write_str(wrist_bluenrg2::console::address(bond).as_str());
-                }
-                line.write_line("");
-                if after_pairing && self.peer.is_some_and(|peer| wrist_bluenrg2::bonds::bond_kept(params, before, peer)) {
-                    self.uart.write_line("[ble] bonded");
-                }
-            }
+    /// The bonds as the chip lists them now, printed unless a disconnect changed nothing; any the
+    /// chip dropped since the last read is named.
+    async fn list_bonds(&mut self, why: Listed) {
+        let Ok(r) = self.command(ACI_GAP_GET_BONDED_DEVICES, &[]).await else { return };
+        if r.status != 0 || r.len < 1 {
+            return;
         }
+        let params = &r.params[..r.len.min(r.params.len())];
+        let now = Listing::new(params);
+        let listed_before = self.bonds.replace(now);
+        let before = BONDED_READ.load(Ordering::Relaxed).then(|| BONDED.load(Ordering::Relaxed));
+        BONDED.store(params[0], Ordering::Relaxed);
+        BONDED_READ.store(true, Ordering::Relaxed);
+        redraw();
+        for bond in listed_before.iter().flat_map(|b| b.dropped(&now)) {
+            self.uart.write_str("[ble] the chip dropped the bond of ");
+            write_address(self.uart, bond);
+            self.uart.write_line(", its store full; pair it again");
+        }
+        if why == Listed::Disconnected && listed_before == Some(now) {
+            return;
+        }
+        let mut line = self.uart.lines();
+        line.write_str("[ble] bonded devices: ");
+        line.write_u32(u32::from(params[0]));
+        for bond in bluenrg2::bonded_devices(params) {
+            line.write_str(" ");
+            line.write_str(wrist_bluenrg2::console::address(bond).as_str());
+        }
+        line.write_line("");
+        if params[0] > bonds::MOST {
+            self.uart.write_str("[ble] more bonds than the ");
+            self.uart.write_u32(u32::from(bonds::MOST));
+            self.uart.write_line(" the chip keeps safely: a disconnect may drop the earliest; `ble forget <address>` some");
+        }
+        if why == Listed::Paired && self.peer.is_some_and(|peer| bonds::bond_kept(params, before, peer, self.identity)) {
+            self.uart.write_line("[ble] bonded");
+        }
+    }
+
+    /// Whether a pairing with the central linked now keeps the bonds within [`bonds::MOST`]; no
+    /// while they are unread.
+    fn room_for_bond(&self) -> bool {
+        self.bonds.is_some_and(|b| b.room_for(self.peer) || self.identity.is_some_and(|i| b.room_for(Some(i))))
+    }
+
+    /// The bond whose key resolves the linked central's private address, if any, so that its
+    /// pairing again is not taken for a new central's.
+    async fn resolve_peer(&mut self) {
+        let Some(peer) = self.peer else { return };
+        let r = match self.command(bonds::RESOLVE_PRIVATE_ADDR, peer.addr.raw()).await {
+            Ok(r) => r,
+            Err(why) => {
+                self.uart.write_str("[ble] the central's private address: ");
+                return self.uart.write_line(why);
+            }
+        };
+        if r.status != 0 || r.len < 6 {
+            self.uart.write_str("[ble] the central's private address resolves to no bond, status ");
+            self.uart.write_hex8(r.status);
+            return self.uart.write_line("");
+        }
+        let mut addr = [0u8; 6];
+        addr.copy_from_slice(&r.params[..6]);
+        // Still the same link: a disconnect clears `peer`.
+        if self.peer != Some(peer) {
+            return;
+        }
+        self.identity = self.bonds.and_then(|b| b.bond_at(BdAddr(addr)));
+        self.uart.write_str("[ble] the central's private address resolves to ");
+        if let Some(bond) = self.identity {
+            self.uart.write_str("the bond of ");
+            write_address(self.uart, bond);
+            self.uart.write_line("");
+        } else {
+            write_address(self.uart, bluenrg2::Address { kind: AddrKind::PUBLIC, addr: BdAddr(addr) });
+            self.uart.write_line(", not listed");
+        }
+    }
+
+    fn refuse_pairing(&mut self) {
+        if self.bonds.is_none() {
+            // Read again, for the next try.
+            self.check_bonds = true;
+            return self.uart.write_line("[ble] pairing refused: the bonds could not be read; pair again");
+        }
+        self.uart.write_str("[ble] pairing refused: ");
+        self.uart.write_u32(u32::from(bonds::MOST));
+        self.uart.write_line(" bonds already, the most the chip keeps safely; `ble forget <address>` one (`ble bonds` lists them), then pair again");
     }
 
     /// `ble forget <address>`, then the bonds left.
@@ -1551,17 +1642,17 @@ impl Link<'_> {
             return self.uart.write_line("[ble] forget: the bonded devices could not be read");
         };
         let params = &r.params[..r.len.min(r.params.len())];
-        let found = wrist_bluenrg2::bonds::forget(params, addr);
-        if found != wrist_bluenrg2::bonds::Forget::Bond {
+        let found = bonds::forget(params, addr);
+        if found != bonds::Forget::Bond {
             self.uart.write_str("[ble] forget: not bonded: ");
             write_address(self.uart, addr);
-            if let wrist_bluenrg2::bonds::Forget::OtherType(bond) = found {
+            if let bonds::Forget::OtherType(bond) = found {
                 self.uart.write_str("; bonded as ");
                 write_address(self.uart, bond);
             }
             return self.uart.write_line("");
         }
-        let keep = self.peer.is_some_and(|peer| wrist_bluenrg2::bonds::another_bond(params, addr, peer));
+        let keep = self.peer.into_iter().chain(self.identity).any(|peer| bonds::another_bond(params, addr, peer));
         let mut p = [0u8; 7];
         p[0] = addr.kind.as_raw();
         p[1..].copy_from_slice(addr.addr.raw());
@@ -1570,10 +1661,11 @@ impl Link<'_> {
                 self.uart.write_str("[ble] forgot ");
                 write_address(self.uart, addr);
                 self.uart.write_line("; forget the watch on that central too");
+                self.bonds = self.bonds.map(|b| b.without(addr));
                 if !keep {
                     self.end_forgotten_link().await;
                 }
-                self.list_bonds(false).await;
+                self.list_bonds(Listed::Asked).await;
             }
             Ok(r) => {
                 self.uart.write_str("[ble] forget: the chip refused, status ");
@@ -1605,6 +1697,11 @@ impl Link<'_> {
     /// A random six-digit passkey from the controller's own generator, shown on the console
     /// for the central to type, and given to the stack.
     async fn answer_passkey(&mut self, handle: u16) {
+        if !self.room_for_bond() {
+            // Unanswered, the pairing times out.
+            self.refuse_pairing();
+            return clear_prompt();
+        }
         let key = match self.command(HCI_LE_RAND, &[]).await {
             Ok(r) if r.len >= 4 => u32::from_le_bytes([r.params[0], r.params[1], r.params[2], r.params[3]]) % 1_000_000,
             _ => {
@@ -1919,6 +2016,9 @@ impl Link<'_> {
             }
             Got::Event(RadioEvent::EventsLost) => {
                 self.uart.write_line("[ble] the driver lost events");
+                // A link may have ended or begun unseen: its identity no longer admits a pairing.
+                self.identity = None;
+                self.check_bonds = true;
                 self.lost_read();
             }
             Got::Event(e) => self.shadow.reported(now_ms(), e),
@@ -1977,6 +2077,7 @@ impl Link<'_> {
                     DISCONNECT_FAILURES.fetch_add(1, Ordering::Relaxed);
                 }
                 self.link_gone();
+                self.check_bonds = true;
                 self.uart.write_str("[ble] disconnected, reason ");
                 self.uart.write_hex8(reason.into_inner());
                 self.uart.write_line(" (13 = the central hung up)");
@@ -2008,6 +2109,8 @@ impl Link<'_> {
     fn connected(&mut self, link: ConnHandle, peer: wrist_ble::PeerAddr) {
         CONN_HANDLE.store(link.raw(), Ordering::Relaxed);
         self.peer = Some(bluenrg2::Address { kind: peer.kind, addr: peer.addr });
+        self.identity = None;
+        self.resolve_peer = self.peer.is_some_and(bonds::resolvable);
         set_encrypted(false);
         self.subscribed = false;
         self.set_mirror();
@@ -2036,6 +2139,8 @@ impl Link<'_> {
         set_encrypted(false);
         self.subscribed = false;
         self.peer = None;
+        self.identity = None;
+        self.resolve_peer = false;
         self.set_mirror();
         clear_prompt();
         if let Some(session) = self.transfer.take() {
@@ -2122,6 +2227,10 @@ impl Link<'_> {
                 self.passkey_for = Some(handle.raw());
                 PROMPT.lock(|p| p.set(Prompt::Asked));
             }
+            VendorEvent::NumericComparison { .. } if !self.room_for_bond() => {
+                self.refuse_pairing();
+                PROMPT.lock(|p| p.set(Prompt::Answered(false)));
+            }
             VendorEvent::NumericComparison { value, .. } => {
                 PROMPT.lock(|p| p.set(Prompt::Waiting(Pairing::Compare, value, Instant::now().as_millis())));
                 crate::wake_display();
@@ -2207,6 +2316,17 @@ fn clear_prompt() {
     crate::wake_display();
 }
 
+/// Why the bonds are read.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Listed {
+    /// Asked for, or after a bring-up or a forget.
+    Asked,
+    /// After a pairing, to say whether it bonded; a disconnect may come before.
+    Paired,
+    /// After a disconnect, at which the chip may drop bonds.
+    Disconnected,
+}
+
 /// A connection interval in 1.25 ms units as milliseconds, `48.75 ms`.
 fn write_interval(uart: Uart, units: u16) {
     let hundredths = u32::from(units) * 125;
@@ -2219,7 +2339,7 @@ fn write_interval(uart: Uart, units: u16) {
 fn address_from_uid() -> [u8; 6] {
     let uid = embassy_stm32::uid::uid();
     let w = |i: usize| u32::from_le_bytes([uid[4 * i], uid[4 * i + 1], uid[4 * i + 2], uid[4 * i + 3]]);
-    wrist_bluenrg2::bonds::static_random_address([w(0), w(1), w(2)])
+    bonds::static_random_address([w(0), w(1), w(2)])
 }
 
 fn write_six_digits(uart: Uart, v: u32) {
