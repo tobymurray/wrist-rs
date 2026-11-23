@@ -1096,6 +1096,11 @@ fn the_planner_holds_its_starts_to_the_reachable_gap() {
     let target = TransitionPlanner.plan(&PlanInput { goals: &goals, state: &state, caps: &caps, schedule: &Careless, menu: &ADVERTISING, refused: &Refused::EMPTY, now: t(0) });
     assert_eq!((target.phone, target.activities.advertising), (Verdict::Busy(Conflict::Refused), None));
     assert_eq!(plan(&state, &goals).phone, Verdict::Fits);
+    let hidden = wrist_ble::policy::goals::Goals { phone: wrist_ble::policy::goals::PhoneGoal { discoverable: false, pairing_open: false }, ..goals };
+    let mut quiet = state;
+    quiet.radio.advertising = Some(wrist_ble::AdvParams { connectable: false, ..ADV_995 });
+    let target = TransitionPlanner.plan(&PlanInput { goals: &hidden, state: &quiet, caps: &caps, schedule: &Careless, menu: &ADVERTISING, refused: &Refused::EMPTY, now: t(0) });
+    assert_eq!(target.path.first(), Some(wrist_ble::Change::Advertise(None)), "a stop is never held to it");
 }
 
 /// Until the chip is up the plan is what runs, so nothing drifts from it.

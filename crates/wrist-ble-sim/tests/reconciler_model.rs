@@ -56,13 +56,15 @@ struct S {
     acts: u8,
     /// An event the core never saw, and no resync since.
     unsynced: bool,
+    /// The re-asks counted when the central last refused an ask with the parameters unknown.
+    turned_unknown: Option<u32>,
     /// The first promise the core broke, if any.
     broke: Option<&'static str>,
 }
 
 impl S {
     fn key(&self) -> String {
-        format!("{:?}", (&self.core, self.now, self.radio, self.asked, self.snapshot, self.start, self.next, self.faults, self.acts, self.unsynced, self.broke))
+        format!("{:?}", (&self.core, self.now, self.radio, self.asked, self.snapshot, self.start, self.next, self.faults, self.acts, self.unsynced, self.turned_unknown, self.broke))
     }
 
     fn may_fault(&self, m: Reconciler) -> bool {
@@ -234,6 +236,7 @@ impl Model for Reconciler {
             faults: 0,
             acts: 0,
             unsynced: false,
+            turned_unknown: None,
             broke: None,
         };
         s.feed(Input::Goals(goals(Power::Cable, true)));
@@ -343,6 +346,9 @@ impl Model for Reconciler {
             Act::Complete(i) => n.complete(i)?,
             Act::Turned(i) => {
                 n.radio.on_air[i] = None;
+                if n.core.phone_params().is_none() {
+                    n.turned_unknown = Some(n.core.counters.reasks);
+                }
                 n.feed(Input::Radio(RadioEvent::ParamsAnswered { link: phone(), accepted: false }));
             }
             Act::BondLost => n.feed(Input::Radio(RadioEvent::BondLost(phone()))),
@@ -409,7 +415,7 @@ impl Model for Reconciler {
             Property::always("converged by the horizon, once the radio behaves (I3)", |_, s: &S| s.now < HORIZON || s.converged()),
             Property::sometimes("a phone link asked for its parameters", |_, s: &S| s.radio.phone && s.core.phone_params().is_some()),
             Property::sometimes("an answer followed past the operation on air", |_, s: &S| s.core.passed().next().is_some()),
-            Property::sometimes("a refusal with the parameters unknown asked again", |_, s: &S| s.core.counters.update_failures > 0 && s.core.counters.reasks > 0),
+            Property::sometimes("a refusal with the parameters unknown asked again", |_, s: &S| s.turned_unknown.is_some_and(|r| s.core.counters.reasks > r)),
             Property::sometimes("every fault allowed", |m: &Reconciler, s: &S| s.faults == m.faults),
         ]
     }

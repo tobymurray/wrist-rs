@@ -121,7 +121,7 @@ impl Planner for TransitionPlanner {
         }
         let from = Placed::unlinked(s.radio);
         let phone = matches!(s.phone, Phone::Up(_));
-        // A stop leaves nothing to be reachable by, so only a start with no phone link is held to I1.
+        // Advertising is planned only with no phone link.
         let rules = Rules { schedule: i.schedule, refused: i.refused, deadline: i.caps.op_deadline, reachable: true, settling: false };
         let to = |advertising| Plan { advertising, ..from.plan() };
         let set = |t: &mut Target, (path, end): (Path, Placed)| {
@@ -130,7 +130,7 @@ impl Planner for TransitionPlanner {
         };
         if phone || !g.phone.discoverable {
             // Stopping is the safe baseline, which is never quarantined.
-            match transition(&from, &to(None), &rules) {
+            match transition(&from, &to(None), &Rules { reachable: false, ..rules }) {
                 Some(found) => set(&mut t, found),
                 None => t.activities.advertising = None,
             }

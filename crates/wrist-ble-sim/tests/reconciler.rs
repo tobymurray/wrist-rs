@@ -1043,3 +1043,56 @@ fn a_fit_after_a_refusal_waits_the_settle_when_the_phone_moves_off() {
     assert!(matches!(b.asked, Some(Op::UpdateParams(..))), "never asked again");
     assert!(b.now.0 >= 2_500 + u64::from(SETTLE.0), "asked at {} before the phone settled", b.now.0);
 }
+
+/// The first ask after the phone moves off at 5 s, by 60 s.
+fn reasked_after_move(b: &mut Bench) -> Option<u64> {
+    b.params(5_000, OWN);
+    b.tick_until_asked(60_000);
+    b.asked.map(|_| b.now.0)
+}
+
+fn settled(at: Option<u64>) -> bool {
+    at.is_none_or(|t| t >= 5_000 + u64::from(SETTLE.0))
+}
+
+/// A refusal belongs to the want it answered: a new want the link already fits starts clear, by
+/// either way a refusal comes.
+#[test]
+fn a_refusal_ends_with_its_want() {
+    let mut b = asked_on_battery();
+    b.refuse(FailureKind::NoResources);
+    b.at(1_400, Input::Goals(cable()));
+    assert_eq!(b.at(2_400, Input::Tick).op, None, "the cable's want fits");
+    assert!(settled(reasked_after_move(&mut b)));
+
+    let mut b = Bench::new(battery());
+    b.phone_up_at(1_000, BATTERY);
+    assert_eq!(b.encrypted(1_300).op, None);
+    assert!(b.at(2_000, Input::Radio(RadioEvent::EventsLost)).snapshot);
+    let mut links = [None; MAX_LINKS];
+    links[0] = Some(wrist_ble::LinkStatus { link: link(), role: LeConnRole::Peripheral, peer: phone(), encrypted: Some(true) });
+    b.at(2_001, Input::Snapshot(Ok(Snapshot { at: Instant(2_001), links, advertising: false, scanning: false, initiating: false, anchor: None })));
+    b.accept();
+    b.at(2_100, Input::Radio(RadioEvent::ParamsAnswered { link: link(), accepted: false }));
+    b.params(2_200, OPENED);
+    b.at(2_300, Input::Goals(cable()));
+    assert_eq!(b.at(3_200, Input::Tick).op, None, "the cable's want fits");
+    assert!(settled(reasked_after_move(&mut b)));
+}
+
+/// A refusal that comes once the link fits the ask leaves a move off to the settle; one before the
+/// fit, held busy, is asked again then too.
+#[test]
+fn a_refusal_after_a_fit_waits_the_settle() {
+    let mut b = asked_on_battery();
+    b.params(1_350, BATTERY);
+    b.refuse(FailureKind::NoResources);
+    assert!(settled(reasked_after_move(&mut b)));
+
+    let mut b = asked_on_battery();
+    b.refuse(FailureKind::Busy);
+    b.params(2_000, BATTERY);
+    b.at(2_100, Input::Radio(RadioEvent::ParamsAnswered { link: link(), accepted: true }));
+    let at = reasked_after_move(&mut b);
+    assert!(at.is_some() && settled(at), "{at:?}");
+}

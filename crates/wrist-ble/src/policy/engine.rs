@@ -613,7 +613,7 @@ impl<'a> Core<'a> {
         if !accepted {
             self.counters.update_failures += 1;
             if phone && self.phone_params.is_none() {
-                self.phone_refused = true;
+                self.refuse_ask();
                 self.back_off(now, OpKind::UpdateParams);
             }
         }
@@ -730,7 +730,7 @@ impl<'a> Core<'a> {
                     // An ask refused before it reached the air is asked again after the backoff,
                     // within the want's budget.
                     if op.kind() == OpKind::UpdateParams {
-                        self.phone_refused = true;
+                        self.refuse_ask();
                     }
                     self.security_refused(now, &op, f, out);
                     if !self.hold_busy_ask(now, &op, f) {
@@ -756,10 +756,16 @@ impl<'a> Core<'a> {
     fn hold_busy_ask(&mut self, now: Instant, op: &Op, f: Failure) -> bool {
         let held = op.kind() == OpKind::UpdateParams && f.kind == FailureKind::Busy;
         if held {
-            self.phone_refused = true;
+            self.refuse_ask();
             self.phone_busy_until = Some(now + (self.caps.op_deadline)(OpKind::UpdateParams));
         }
         held
+    }
+
+    /// The phone's ask is asked again after the backoff, unless the link already fits it: then a
+    /// move off waits for the settle.
+    fn refuse_ask(&mut self) {
+        self.phone_refused |= !self.phone_asked.is_some_and(|w| self.phone_fits(&w));
     }
 
     fn back_off(&mut self, now: Instant, kind: OpKind) {
@@ -993,6 +999,7 @@ impl<'a> Core<'a> {
             self.phone_asked = Some(want);
             self.phone_asked_at = Some(now);
             self.phone_asks = 0;
+            self.phone_refused = false;
             if self.phone_fits(&want) {
                 self.phone_held = true;
                 return None;
