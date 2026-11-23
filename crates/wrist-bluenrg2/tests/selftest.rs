@@ -340,12 +340,16 @@ fn advertising_refused_where_the_model_admits_it_fails_the_interval() {
 fn only_the_initiations_cancel_is_waited_on_until_its_end() {
     let mut t = Selftest::new(&SERVER, RESTORE);
     let mut chip = Chip::default();
-    while !matches!(t.next(), Step::Wait(_)) {
+    for _ in 0..100 {
+        if matches!(t.next(), Step::Wait(_)) {
+            break;
+        }
         assert!(!t.waiting());
         let step = t.next();
         chip.packets.clear();
         assert_eq!(chip.answer(&step, &mut t), None);
     }
+    assert!(matches!(t.next(), Step::Wait(_)), "no wait within 100 steps: {:?}", chip.steps);
     assert!(t.waiting(), "the cancel taken, its end not yet seen");
     t.saw(DIRECT_DONE);
     assert!(!t.waiting());
