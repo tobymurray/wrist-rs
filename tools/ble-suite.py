@@ -771,11 +771,17 @@ def capture_counts(path, watch=None):
             code = p[0]
             if code == 0x3E and len(p) >= 14 and p[2] in (0x01, 0x0A) and p[3] == 0:
                 peers[(index, int.from_bytes(p[4:6], 'little') & 0x0FFF)] = address(p[8:14])
+            elif code == 0x03 and len(p) >= 11 and p[2] == 0:
+                # BR/EDR shares the handles.
+                peers[(index, int.from_bytes(p[3:5], 'little') & 0x0FFF)] = address(p[5:11])
             elif code == 0x3E and len(p) >= 6 and p[2] == 0x03 and p[3] != 0 \
                     and ours(index, int.from_bytes(p[4:6], 'little') & 0x0FFF):
                 bump(index, 'connection updates failed', f'{p[3]:02X}')
-            elif code == 0x05 and len(p) >= 6 and p[2] == 0 and ours(index, int.from_bytes(p[3:5], 'little') & 0x0FFF):
-                bump(index, 'hang-ups', f'{p[5]:02X}')
+            elif code == 0x05 and len(p) >= 6 and p[2] == 0:
+                handle = int.from_bytes(p[3:5], 'little') & 0x0FFF
+                if ours(index, handle):
+                    bump(index, 'hang-ups', f'{p[5]:02X}')
+                peers.pop((index, handle), None)
             elif code in (0x08, 0x30, 0x59) and len(p) >= 5 and p[2] != 0 \
                     and ours(index, int.from_bytes(p[3:5], 'little') & 0x0FFF):
                 bump(index, 'encryption failed', f'{p[2]:02X}')
@@ -1141,6 +1147,11 @@ def address_of(text):
     return m[1] if m else None
 
 
+def watch_address(result):
+    """The address of the image under test: the installed one's, with --install."""
+    return address_of((result.get('installed') or result.get('before') or {}).get('ble'))
+
+
 def build_of(text):
     m = re.search(r'standalone-boot \S+ build (\S+)', text or '')
     return m[1] if m else None
@@ -1376,7 +1387,7 @@ async def run(a, out, result):
             count = failed_to_establish(path) if lived and path.is_file() and path.stat().st_size else None
             result['failed_to_establish'] = count
             if count is not None:
-                result['capture_counts'] = capture_counts(path, address_of((result.get('before') or {}).get('ble')))
+                result['capture_counts'] = capture_counts(path, watch_address(result))
             result['capture'] = 'ok' if lived and count is not None else 'failed'
             if result['capture'] == 'failed':
                 print(f'-- btmon capture failed{"" if lived else f" (btmon exited {died} during the run)"}; '

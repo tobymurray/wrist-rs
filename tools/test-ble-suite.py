@@ -336,7 +336,10 @@ class Judgements(unittest.TestCase):
             record(3, bytes([0x3E, 10, 0x03, 0x3B, 0x40, 0]) + bytes(6)),
             record(3, bytes([0x08, 4, 0x06, 0x40, 0, 0])), record(3, bytes([0x08, 4, 0x00, 0x40, 0, 1])),
             record(3, bytes([0x05, 4, 0, 0x40, 0, 0x13])), record(3, bytes([0x05, 4, 0, 0x41, 0, 0x08])),
-            record(3, bytes([0x05, 4, 0, 0x40, 0, 0x3E]), index=1)])
+            record(3, bytes([0x05, 4, 0, 0x40, 0, 0x3E]), index=1),
+            # A headset's BR/EDR link on the watch's old handle.
+            record(3, bytes([0x03, 11, 0, 0x40, 0]) + other + bytes([1, 0])), record(3, bytes([0x08, 4, 0x06, 0x40, 0, 0])),
+            record(3, bytes([0x05, 4, 0, 0x40, 0, 0x08]))])
         with tempfile.NamedTemporaryFile() as f:
             f.write(capture)
             f.flush()
@@ -346,11 +349,13 @@ class Judgements(unittest.TestCase):
             'hci0': {'parameter requests': {'from the peer': 1, 'rejected by the host': 1},
                      'connection updates failed': {'3B': 1}, 'encryption failed': {'06': 1}, 'hang-ups': {'13': 1}},
             'hci1': {'hang-ups': {'3E': 1}}})
-        self.assertEqual(everyone['hci0']['hang-ups'], {'13': 1, '08': 1})
+        self.assertEqual(everyone['hci0']['hang-ups'], {'13': 1, '08': 2})
         self.assertEqual(everyone['hci0']['parameter requests']['accepted by the host'], 1)
         self.assertIn('hci1: hang-ups 3E x1', suite.said_counts(found))
         self.assertEqual(suite.address_of('[ble] advertising as UNA, timing cable, address D9:5B:7A:EB:29:82 (random)'),
                          'D9:5B:7A:EB:29:82')
+        installed = {'before': {'ble': 'unknown command'}, 'installed': {'ble': '[ble] advertising, address 11:22:33:44:55:66'}}
+        self.assertEqual(suite.watch_address(installed), '11:22:33:44:55:66')
 
     def test_a_capture_that_died_counts_nothing(self):
         def record(packet):
