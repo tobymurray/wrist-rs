@@ -39,6 +39,8 @@ struct Chip {
     linked: bool,
     /// The initiation ends only at the second cancel.
     slow_cancel: bool,
+    /// Its answer to the next advertising asked for.
+    refuse_advertising: Option<u8>,
     /// Its packets still to hand out.
     packets: Vec<&'static [u8]>,
     steps: Vec<Step>,
@@ -57,6 +59,7 @@ impl Default for Chip {
             link_at: None,
             linked: false,
             slow_cancel: false,
+            refuse_advertising: None,
             packets: Vec::new(),
             steps: Vec::new(),
         }
@@ -107,6 +110,7 @@ impl Chip {
             })),
             Step::Op(op) => {
                 let status = match op {
+                    Op::Advertise(Some(_)) if self.refuse_advertising.is_some() => self.refuse_advertising.take().unwrap_or(0),
                     Op::Advertise(Some(_)) if self.initiating => self.while_initiating.unwrap_or(0),
                     Op::Advertise(Some(_)) if self.advertising.is_some() || self.linked => 0x46,
                     Op::Advertise(Some(p)) => {
@@ -198,7 +202,8 @@ fn an_anchor_off_the_models_fails_the_first_interval_and_the_advertising_is_put_
         "fail: advertising every 100 ms: the anchor read 105625 us with 86875 us free, the model 105000 us with 86875 us free"
     );
     assert_eq!(chip.advertising, Some(RESTORE), "stopped and put back");
-    assert_eq!(chip.steps.iter().filter(|s| matches!(s, Step::Command(c) if c.opcode == ACI_GAP_CREATE_CONNECTION)).count(), 0);
+    let commands = |op| chip.steps.iter().filter(|s| matches!(s, Step::Command(c) if c.opcode == op)).count();
+    assert_eq!((commands(ACI_GAP_CREATE_CONNECTION), commands(ACI_GAP_TERMINATE_GAP_PROC)), (0, 0), "nothing to cancel");
 }
 
 #[test]
@@ -287,7 +292,8 @@ fn a_central_connecting_during_the_initiation_still_has_it_cancelled() {
     assert_eq!(o, Outcome::Fail(Case::Refusal, Why::Linked));
     assert!(matches!(chip.steps[initiate - 1], Step::Command(c) if c.opcode == ACI_GAP_CREATE_CONNECTION), "{:?}", chip.steps);
     assert!(!chip.initiating);
-    assert_eq!(chip.steps.last(), Some(&Step::Over(o)), "advertising left to the link");
+    let cancel = chip.steps.iter().rposition(|s| matches!(s, Step::Command(c) if c.opcode == ACI_GAP_TERMINATE_GAP_PROC)).unwrap();
+    assert!(!chip.steps[cancel..].iter().any(|s| matches!(s, Step::Op(_))), "advertising left to the link: {:?}", &chip.steps[cancel..]);
 }
 
 #[test]
@@ -319,4 +325,49 @@ fn the_tables_handles_are_those_measured_on_the_watch() {
 fn a_fractional_interval_is_named_to_the_tenth() {
     let p = AdvParams { interval_min: Slots::from_u16(1636), interval_max: Slots::from_u16(1636), connectable: true };
     assert_eq!(Case::Advertising(p).to_string(), "advertising every 1022.5 ms");
+}
+
+#[test]
+fn advertising_refused_where_the_model_admits_it_fails_the_interval() {
+    let mut chip = Chip { refuse_advertising: Some(0x46), ..Chip::default() };
+    let o = run(&mut chip);
+    let Outcome::Fail(Case::Advertising(p), Why::Model(Classified::Unpredicted(f))) = o else { panic!("{o:?}") };
+    assert_eq!((p, f.native), (MENU.advertising[0].params, 0x46));
+    assert_eq!(o.to_string(), "fail: advertising every 100 ms: refused 46, which the model admits");
+}
+
+#[test]
+fn only_the_initiations_cancel_is_waited_on_until_its_end() {
+    let mut t = Selftest::new(&SERVER, RESTORE);
+    let mut chip = Chip::default();
+    while !matches!(t.next(), Step::Wait(_)) {
+        assert!(!t.waiting());
+        let step = t.next();
+        chip.packets.clear();
+        assert_eq!(chip.answer(&step, &mut t), None);
+    }
+    assert!(t.waiting(), "the cancel taken, its end not yet seen");
+    t.saw(DIRECT_DONE);
+    assert!(!t.waiting());
+}
+
+#[test]
+fn what_runs_is_named() {
+    use wrist_bluenrg2::selftest::Running;
+    let r = |advertising, scanning, initiating| Running { advertising, scanning, initiating }.to_string();
+    assert_eq!(r(false, false, false), "idle");
+    assert_eq!(r(true, false, false), "advertising");
+    assert_eq!(r(true, true, true), "advertising and scanning and initiating");
+    assert_eq!(r(false, false, true), "initiating");
+}
+
+static TX_FIRST: [CharDecl; 2] = [wrist_bluenrg2::wake::ble::server::CONSOLE.chars[1], wrist_bluenrg2::wake::ble::server::CONSOLE.chars[0]];
+static TX_FIRST_SERVICES: [ServiceDecl; 1] = [ServiceDecl { chars: &TX_FIRST, ..wrist_bluenrg2::wake::ble::server::CONSOLE }];
+
+#[test]
+fn a_characteristic_that_notifies_takes_a_third_handle() {
+    let table = ServerTable { services: &TX_FIRST_SERVICES };
+    let h = Handles::expected(&table, FIRST_HANDLE).unwrap();
+    assert_eq!(h.get(wrist_ble::ServerAttr(0)), Some((12, 13)));
+    assert_eq!(h.get(wrist_ble::ServerAttr(1)), Some((12, 16)), "after the declaration, the value and the configuration");
 }
