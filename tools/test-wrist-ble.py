@@ -4,6 +4,7 @@ import asyncio
 import importlib.util
 from pathlib import Path
 import unittest
+import unittest.mock
 
 spec = importlib.util.spec_from_file_location('wrist_ble', Path(__file__).with_name('wrist-ble.py'))
 wrist_ble = importlib.util.module_from_spec(spec)
@@ -254,6 +255,19 @@ class ByHand(unittest.TestCase):
             return 'y'
         self.assertEqual(asyncio.run(wrist_ble.asked(ask, 'same? ')), 'y')
         self.assertEqual(seen, [('same? ', True)])
+
+    def test_no_number_after_a_failed_first_write_ends_soon(self):
+        import time
+        port = Port({'ble': ['[ble] advertising as UNA, timing cable']})
+
+        async def write(notify, data):
+            raise RuntimeError('the link dropped')
+        with unittest.mock.patch.object(wrist_ble, 'NUMBER_AFTER_S', 0.3):
+            t0 = time.time()
+            code, out = self.pair_for_real(port, write)
+        self.assertEqual(code, 1)
+        self.assertLess(time.time() - t0, 3)
+        self.assertIn('never showed a number', out)
 
     def test_already_bonded_needs_no_number(self):
         port = Port({'ble': ['[ble] advertising as UNA, timing cable'], 'ble bonds': ['[ble] bonded devices: 1']})

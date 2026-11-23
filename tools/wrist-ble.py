@@ -282,7 +282,17 @@ NUMBER = r"\[ble\] pairing: the central shows a number; if it is (\d{6})|COMPARE
 OUTCOME = r"^\[ble\] (paired|pairing failed.*)$"
 
 
-async def pair_by_hand(name, port, watch_answer="ask", ask=input, adapter=None, timeout=60):
+def read_answer(prompt):
+    """The operator's line; `input` would hold the interpreter's exit on a terminal until Enter."""
+    print(prompt, end="", flush=True)
+    return sys.stdin.readline()
+
+
+# Seconds a number may follow a first write that failed.
+NUMBER_AFTER_S = 5
+
+
+async def pair_by_hand(name, port, watch_answer="ask", ask=read_answer, adapter=None, timeout=60):
     """Pair where the host's number can't be read (macOS): connect so that the host asks to pair, show the
     watch's number as the watch says it, and send the watch the operator's answer (`watch_answer` "ask"), or
     `yes`, `no`, or nothing ("none")."""
@@ -307,6 +317,8 @@ async def pair_by_hand(name, port, watch_answer="ask", ask=input, adapter=None, 
             # A first write that failed may still have started the pairing: its number can come after.
             while number is None and not (attached.done() and not attached.exception() and attached.result()) \
                     and time.time() < end:
+                if attached.done():
+                    end = min(end, time.time() + NUMBER_AFTER_S)
                 found = await usb.wait(NUMBER, since, 0.2)
                 number = next(filter(None, re.search(NUMBER, found).groups())) if found else None
             if number is None:
