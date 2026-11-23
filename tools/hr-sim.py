@@ -240,8 +240,8 @@ async def consume(bus, adapter, address, connect, stop, link):
 
 
 async def disconnect(bus, adapter, address, what="the link it opened"):
-    """Hang up the link this tool opened, or cancel its connect still in flight, which BlueZ would
-    otherwise carry on past our exit (the next run's connect then fails `In Progress`)."""
+    """Hang up the link this tool opened, or cancel its connect still in flight, which BlueZ carries
+    on past our exit."""
     dev_path = f"/org/bluez/{adapter}/dev_{address.upper().replace(':', '_')}"
     try:
         obj = bus.get_proxy_object("org.bluez", dev_path, await bus.introspect("org.bluez", dev_path))

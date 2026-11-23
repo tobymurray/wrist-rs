@@ -585,8 +585,8 @@ STOPPED = re.compile(r'stopped after (\d+) notifications')
 
 
 class Strap:
-    """A heart-rate strap the suite runs and stops: `hr-sim.py` on a BlueZ adapter (`hci0`), or `hr-sim-bumble.py` on
-    a Bumble transport (`bumble:usb:0`) with its misbehaviour flags. Its lines, with this run's times, go to `log`."""
+    """A heart-rate strap the suite runs and stops, `hr-sim.py` on a BlueZ adapter (`hci0`) or `hr-sim-bumble.py` on
+    a Bumble transport (`bumble:usb:0`), its lines logged to `log`."""
 
     def __init__(self, spec, flags=(), log=None):
         self.spec, self.flags, self.log = spec, list(flags), log
