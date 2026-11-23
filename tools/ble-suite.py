@@ -771,9 +771,6 @@ def capture_counts(path, watch=None):
             code = p[0]
             if code == 0x3E and len(p) >= 14 and p[2] in (0x01, 0x0A) and p[3] == 0:
                 peers[(index, int.from_bytes(p[4:6], 'little') & 0x0FFF)] = address(p[8:14])
-            elif code == 0x03 and len(p) >= 11 and p[2] == 0:
-                # BR/EDR shares the handles.
-                peers[(index, int.from_bytes(p[3:5], 'little') & 0x0FFF)] = address(p[5:11])
             elif code == 0x3E and len(p) >= 6 and p[2] == 0x03 and p[3] != 0 \
                     and ours(index, int.from_bytes(p[4:6], 'little') & 0x0FFF):
                 bump(index, 'connection updates failed', f'{p[3]:02X}')
