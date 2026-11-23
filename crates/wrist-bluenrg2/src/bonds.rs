@@ -2,8 +2,7 @@
 
 use bluenrg2::{bonded_devices, static_random, AddrKind, Address, AuthenticationRequirement, BdAddr, FixedPin, IdentityAddress, KeySizes, SecureConnections};
 
-/// The most bonds the chip keeps safely: past them, a disconnect can drop the earliest-bonded
-/// without a word (HARDWARE.md), so a pairing that would add a fifth is refused.
+/// The most bonds the chip keeps safely (HARDWARE.md, the bond store).
 pub const MOST: u8 = 4;
 
 /// The bonds a `GET_BONDED_DEVICES` reply listed, kept to compare the next reply with.
@@ -38,7 +37,7 @@ impl Listing {
     }
 
     /// Whether a pairing with `peer` keeps the bonds at [`MOST`] or fewer: fewer are listed, or
-    /// `peer` is one of them and only replaces its own.
+    /// `peer` is one of them, whose pairing again replaces its bond (HARDWARE.md).
     #[must_use]
     pub fn room_for(&self, peer: Option<Address>) -> bool {
         self.count() < MOST || peer.is_some_and(|peer| listed(self.params(), peer))
@@ -56,13 +55,11 @@ impl Listing {
     }
 }
 
-/// `ACI_GAP_RESOLVE_PRIVATE_ADDR`: a resolvable private address in, the identity address of the
-/// bond whose key resolves it out (6 bytes, no type), or a nonzero status (ST's
-/// `bluenrg1_gap_aci.h`).
+/// `ACI_GAP_RESOLVE_PRIVATE_ADDR`: the identity address, without its type, of the bond whose key
+/// resolves the address given (ST's `bluenrg1_gap_aci.h`).
 pub const RESOLVE_PRIVATE_ADDR: u16 = 0xFCA0;
 
-/// Whether `peer` is a resolvable private address: random, its two top bits `01`. With privacy
-/// off the chip reports such a central by it, not by its bond's identity.
+/// Whether `peer` is a resolvable private address: random, its two top bits `01`.
 #[must_use]
 pub fn resolvable(peer: Address) -> bool {
     peer.kind == AddrKind::RANDOM && peer.addr.raw()[5] >> 6 == 0b01

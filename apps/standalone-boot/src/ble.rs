@@ -14,10 +14,8 @@
 //! over a link that is not encrypted is acted on, and the console's output is mirrored only to
 //! an encrypted link. The loader is never accepted over the air.
 //!
-//! Bonds. Past 4 the chip drops its earliest-bonded at a disconnect without a word (HARDWARE.md),
-//! so a pairing that would add a fifth is refused, and a bond the chip drops anyway is named. A
-//! central linked from a resolvable private address is matched to its bond through the chip's
-//! keys, so a bonded phone pairing again replaces its own.
+//! Bonds stay within [`bonds::MOST`]: a pairing past it is refused, a bond the chip drops anyway
+//! is named, and a central on a resolvable private address is matched to its bond.
 //!
 //! The loop has no tick: it waits for the chip's IRQ, a request, a signal, a power change or its
 //! earliest deadline (`wrist_bluenrg2::wake::ble::due`).
