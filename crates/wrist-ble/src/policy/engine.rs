@@ -10,7 +10,8 @@ use crate::policy::goals::{Goals, Power, MAX_PERIPHERALS};
 use crate::policy::invariants::{self, Invariant, REACHABLE_GAP};
 use crate::policy::peripheral::{self, Ctx, Peripheral, Stage, StopReason, Then};
 use crate::policy::phone::{self, Phone, Security, ASK_TO_PAIR_AFTER};
-use crate::policy::plan::{fingerprint, Fingerprint, Menu, MenuPlanner, Pending, PlanHealth, PlanInput, Planner, Refused, Target, Verdict};
+use crate::policy::plan::{fingerprint, Fingerprint, Menu, Pending, PlanHealth, PlanInput, Planner, Refused, Target, TransitionPlanner, Verdict};
+use crate::policy::transition::Path;
 use crate::policy::tally::{Restart, Tally};
 use crate::policy::{Peer, State};
 
@@ -135,6 +136,7 @@ fn kind_index(k: OpKind) -> usize {
 const QUEUE: usize = MAX_PERIPHERALS + 4;
 
 #[allow(clippy::struct_excessive_bools, reason = "each is one thing the core keeps between steps")]
+#[derive(Clone)]
 pub struct Core<'a> {
     pub state: State,
     pub counters: Counters,
@@ -152,7 +154,10 @@ pub struct Core<'a> {
     /// by its end or as a resync found it: its failure is the link's end, not a failure.
     asked_link_went: bool,
     pending_link_went: bool,
+    /// The operation in flight that holds the radio; only what [`may_pass`] goes out beside it.
     pending: Option<Pending>,
+    /// Operations that went out past [`Self::pending`], with whether their link went first.
+    passed: [Option<(Pending, bool)>; QUEUE],
     queue: [Option<Op>; QUEUE],
     backoff: [Backoff; KINDS],
     /// The phone link's parameters, and what this device last asked of it.
@@ -188,6 +193,45 @@ pub struct Core<'a> {
     alarms: [bool; invariants::WATCHED.len()],
 }
 
+/// Everything the core keeps between steps, without what it was made with.
+impl core::fmt::Debug for Core<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Core")
+            .field("state", &self.state)
+            .field("counters", &self.counters)
+            .field("tally", &self.tally)
+            .field("goals", &self.goals)
+            .field("refused", &self.refused)
+            .field("last_refused", &self.last_refused)
+            .field("target", &self.target)
+            .field("asked", &self.asked)
+            .field("asked_link_went", &self.asked_link_went)
+            .field("pending_link_went", &self.pending_link_went)
+            .field("pending", &self.pending)
+            .field("passed", &self.passed)
+            .field("queue", &self.queue)
+            .field("backoff", &self.backoff)
+            .field("phone_params", &self.phone_params)
+            .field("phone_asked", &self.phone_asked)
+            .field("phone_asked_at", &self.phone_asked_at)
+            .field("phone_asks", &self.phone_asks)
+            .field("phone_held", &self.phone_held)
+            .field("phone_refused", &self.phone_refused)
+            .field("phone_busy_until", &self.phone_busy_until)
+            .field("console", &self.console)
+            .field("busy", &self.busy)
+            .field("retry", &self.retry)
+            .field("snapshot", &self.snapshot)
+            .field("snapshot_retry", &self.snapshot_retry)
+            .field("snapshot_failures", &self.snapshot_failures)
+            .field("advertising_unknown", &self.advertising_unknown)
+            .field("asked_unknown", &self.asked_unknown)
+            .field("settled_since", &self.settled_since)
+            .field("alarms", &self.alarms)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<'a> Core<'a> {
     #[must_use]
     pub fn new(caps: &'a Capabilities, schedule: &'a dyn Schedule, menu: &'a Menu) -> Self {
@@ -201,9 +245,10 @@ impl<'a> Core<'a> {
             menu,
             refused: Refused::EMPTY,
             last_refused: None,
-            target: Target { activities: Activities::IDLE, phone: Verdict::NotWanted, peripherals: [Verdict::NotWanted; MAX_PERIPHERALS] },
+            target: Target { activities: Activities::IDLE, path: Path::EMPTY, phone: Verdict::NotWanted, peripherals: [Verdict::NotWanted; MAX_PERIPHERALS] },
             asked: None,
             pending: None,
+            passed: [None; QUEUE],
             queue: [None; QUEUE],
             backoff: [Backoff::default(); KINDS],
             phone_params: None,
@@ -244,10 +289,15 @@ impl<'a> Core<'a> {
         self.refused.clear();
     }
 
-    /// The operation in flight.
+    /// The operation in flight that holds the radio.
     #[must_use]
     pub fn pending(&self) -> Option<&Pending> {
         self.pending.as_ref()
+    }
+
+    /// The operations in flight that went out past [`Self::pending`].
+    pub fn passed(&self) -> impl Iterator<Item = &Pending> {
+        self.passed.iter().flatten().map(|(p, _)| p)
     }
 
     pub fn step(&mut self, now: Instant, input: Input) -> Outputs {
@@ -425,6 +475,7 @@ impl<'a> Core<'a> {
         self.last_refused = None;
         self.asked = None;
         self.pending = None;
+        self.passed = [None; QUEUE];
         self.queue = [None; QUEUE];
         self.backoff = [Backoff::default(); KINDS];
         self.busy = Bucket::FULL;
@@ -510,7 +561,7 @@ impl<'a> Core<'a> {
                     }
                 }
             }
-            RadioEvent::ParamsAnswered { link, accepted } => self.answered(link, accepted),
+            RadioEvent::ParamsAnswered { link, accepted } => self.answered(now, link, accepted),
             RadioEvent::Params { link, result } => self.params(now, link, result, out),
             RadioEvent::Encryption { link, on } => {
                 self.end_pending(|op| op.kind() == OpKind::RequestSecurity && op.link() == Some(link));
@@ -547,8 +598,11 @@ impl<'a> Core<'a> {
 
     /// The chip takes another request once the central answers, and only then (HARDWARE.md): the
     /// answer ends the ask, and the chip having taken it clears its backoff.
-    fn answered(&mut self, link: ConnHandle, accepted: bool) {
-        if self.state.phone.link() == Some(link) {
+    /// A refusal while the link's parameters are unknown, as a resync leaves them, is asked again
+    /// within the want's budget.
+    fn answered(&mut self, now: Instant, link: ConnHandle, accepted: bool) {
+        let phone = self.state.phone.link() == Some(link);
+        if phone {
             self.phone_busy_until = None;
         }
         let ask = |op: &Op| op.kind() == OpKind::UpdateParams && op.link() == Some(link);
@@ -558,6 +612,10 @@ impl<'a> Core<'a> {
         self.end_pending(ask);
         if !accepted {
             self.counters.update_failures += 1;
+            if phone && self.phone_params.is_none() {
+                self.refuse_ask();
+                self.back_off(now, OpKind::UpdateParams);
+            }
         }
     }
 
@@ -569,8 +627,10 @@ impl<'a> Core<'a> {
         match result {
             Ok(p) if phone => {
                 self.phone_params = Some(p);
+                // A fit ends any refusal before it: moving off is then judged after the settle.
                 if self.phone_asked.is_some_and(|w| self.phone_fits(&w)) {
                     self.phone_held = true;
+                    self.phone_refused = false;
                 }
                 self.phone(now, phone::Event::ParamsChanged(link), out);
             }
@@ -579,16 +639,26 @@ impl<'a> Core<'a> {
         }
     }
 
-    /// The pending operation, if `ends` says this event is its outcome.
+    /// Each operation in flight, if `ends` says this event is its outcome.
     fn end_pending(&mut self, ends: impl Fn(&Op) -> bool) {
         if self.pending.is_some_and(|p| ends(&p.op)) {
             self.pending = None;
         }
+        for s in &mut self.passed {
+            if s.is_some_and(|(p, _)| ends(&p.op)) {
+                *s = None;
+            }
+        }
     }
 
     fn done(&mut self, now: Instant, id: OpId, r: Result<crate::Outcome, Failure>, out: &mut Outputs) {
-        let Some(p) = self.pending.filter(|p| p.id == id) else { return };
-        self.pending = None;
+        let (p, link_went) = if let Some(p) = self.pending.filter(|p| p.id == id) {
+            self.pending = None;
+            (p, self.pending_link_went)
+        } else {
+            let Some(found) = self.passed.iter_mut().find(|s| s.is_some_and(|(p, _)| p.id == id)).and_then(Option::take) else { return };
+            found
+        };
         match r {
             Ok(_) => {
                 self.backoff[kind_index(p.op.kind())] = Backoff::default();
@@ -604,7 +674,7 @@ impl<'a> Core<'a> {
                 }
                 self.security_refused(now, &p.op, f, out);
                 if !self.hold_busy_ask(now, &p.op, f) {
-                    if !self.pending_link_went {
+                    if !link_went {
                         self.tally.failure(f);
                     }
                     self.back_off(now, p.op.kind());
@@ -626,10 +696,12 @@ impl<'a> Core<'a> {
         match r {
             Ok(id) => {
                 self.last_refused = None;
+                let p = Pending { id, op, deadline: now + (self.caps.op_deadline)(op.kind()) };
                 if self.pending.is_none() {
-                    let deadline = now + (self.caps.op_deadline)(op.kind());
-                    self.pending = Some(Pending { id, op, deadline });
+                    self.pending = Some(p);
                     self.pending_link_went = self.asked_link_went;
+                } else if let Some(slot) = self.passed.iter_mut().find(|s| s.is_none()) {
+                    *slot = Some((p, self.asked_link_went));
                 }
             }
             Err(f) => {
@@ -658,7 +730,7 @@ impl<'a> Core<'a> {
                     // An ask refused before it reached the air is asked again after the backoff,
                     // within the want's budget.
                     if op.kind() == OpKind::UpdateParams {
-                        self.phone_refused = true;
+                        self.refuse_ask();
                     }
                     self.security_refused(now, &op, f, out);
                     if !self.hold_busy_ask(now, &op, f) {
@@ -684,10 +756,16 @@ impl<'a> Core<'a> {
     fn hold_busy_ask(&mut self, now: Instant, op: &Op, f: Failure) -> bool {
         let held = op.kind() == OpKind::UpdateParams && f.kind == FailureKind::Busy;
         if held {
-            self.phone_refused = true;
+            self.refuse_ask();
             self.phone_busy_until = Some(now + (self.caps.op_deadline)(OpKind::UpdateParams));
         }
         held
+    }
+
+    /// The phone's ask is asked again after the backoff, unless the link already fits it: then a
+    /// move off waits for the settle.
+    fn refuse_ask(&mut self) {
+        self.phone_refused |= !self.phone_asked.is_some_and(|w| self.phone_fits(&w));
     }
 
     fn back_off(&mut self, now: Instant, kind: OpKind) {
@@ -765,13 +843,23 @@ impl<'a> Core<'a> {
     fn expire(&mut self, now: Instant) {
         if let Some(p) = self.pending.filter(|p| now >= p.deadline + GRACE) {
             self.pending = None;
-            self.counters.timed_out += 1;
-            if !self.pending_link_went {
-                self.tally.failure(Failure { kind: FailureKind::Timeout, native: 0 });
-            }
             self.advertising_unknown |= p.op.kind() == OpKind::Advertise;
-            self.back_off(now, p.op.kind());
+            self.timed_out(now, &p, self.pending_link_went);
         }
+        for i in 0..QUEUE {
+            if let Some((p, link_went)) = self.passed[i].filter(|(p, _)| now >= p.deadline + GRACE) {
+                self.passed[i] = None;
+                self.timed_out(now, &p, link_went);
+            }
+        }
+    }
+
+    fn timed_out(&mut self, now: Instant, p: &Pending, link_went: bool) {
+        self.counters.timed_out += 1;
+        if !link_went {
+            self.tally.failure(Failure { kind: FailureKind::Timeout, native: 0 });
+        }
+        self.back_off(now, p.op.kind());
     }
 
     fn peers(&mut self, now: Instant, e: peripheral::Event) {
@@ -796,7 +884,7 @@ impl<'a> Core<'a> {
 
     fn plan(&mut self, now: Instant) {
         let input = PlanInput { goals: &self.goals, state: &self.state, caps: self.caps, schedule: self.schedule, menu: self.menu, refused: &self.refused, now };
-        self.target = MenuPlanner.plan(&input);
+        self.target = TransitionPlanner.plan(&input);
         self.state.phone_verdict = self.target.phone;
         self.state.plan = match self.target.phone {
             Verdict::Busy(c) => PlanHealth::Infeasible(c),
@@ -848,7 +936,8 @@ impl<'a> Core<'a> {
         // waiting for (a security request waits on the rebond a lost bond needs), and a security
         // request on another link; the first queued that may.
         let op = match self.pending {
-            Some(p) => self.take_queued(|op| may_pass(op, &p.op)),
+            Some(p) if self.passed.contains(&None) => self.take_queued(|op| may_pass(op, &p.op)),
+            Some(_) => None,
             None => self.next_op(now),
         };
         if let Some(op) = op {
@@ -888,12 +977,9 @@ impl<'a> Core<'a> {
         if self.advertising_unknown && self.ready_for(now, OpKind::Advertise) {
             return Some(Op::Advertise(None));
         }
-        let want = self.target.activities.advertising;
-        if want != self.state.radio.advertising && self.ready_for(now, OpKind::Advertise) {
-            // The chip refuses advertising over advertising, at any interval (HARDWARE.md): a new
-            // interval is a stop, then a start, each its own operation with its own outcome.
-            let op = if want.is_some() && self.state.radio.advertising.is_some() { None } else { want };
-            return Some(Op::Advertise(op));
+        // One step of the plan at a time, the plan made again from what each leaves running.
+        if let Some(op) = self.target.path.first().and_then(|c| op_of(&c)).filter(|op| self.ready_for(now, op.kind())) {
+            return Some(op);
         }
         self.phone_ask(now)
     }
@@ -913,6 +999,7 @@ impl<'a> Core<'a> {
             self.phone_asked = Some(want);
             self.phone_asked_at = Some(now);
             self.phone_asks = 0;
+            self.phone_refused = false;
             if self.phone_fits(&want) {
                 self.phone_held = true;
                 return None;
@@ -989,7 +1076,7 @@ impl<'a> Core<'a> {
             p.machine.deadline(&ctx, now)
         });
         let backoff = self.backoff.iter().filter_map(|b| b.until).filter(|&t| t > now);
-        let pending = self.pending.map(|p| p.deadline + GRACE);
+        let pending = self.pending.iter().chain(self.passed()).map(|p| p.deadline + GRACE).min();
         let reask = self.reask_at().filter(|&t| t > now);
         let busy = self.phone_busy_until.filter(|&t| t > now);
         let marks = [self.state.chip.deadline(self.caps), self.state.phone.deadline(), pending, self.phone_mark(now), reask, busy, self.snapshot_retry];
@@ -1070,6 +1157,14 @@ fn change_of(op: &Op) -> Option<Change> {
         Op::Advertise(p) => Some(Change::Advertise(p)),
         Op::Scan(p) => Some(Change::Scan(p)),
         Op::Connect(_, p) => Some(Change::Initiate(Some(p))),
+        _ => None,
+    }
+}
+
+/// The operation that takes a step of the plan; the core plans only advertising.
+fn op_of(c: &Change) -> Option<Op> {
+    match *c {
+        Change::Advertise(p) => Some(Op::Advertise(p)),
         _ => None,
     }
 }

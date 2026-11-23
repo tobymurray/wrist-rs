@@ -1069,8 +1069,8 @@ static BESIDE: [wrist_ble::policy::plan::Choice<wrist_ble::AdvParams>; 2] = [
 static ADVERTISING: wrist_ble::policy::plan::Menu = wrist_ble::policy::plan::Menu { advertising: &BESIDE, connecting: &[], live: &[], phone: &[] };
 
 fn plan(state: &wrist_ble::policy::State, goals: &wrist_ble::policy::goals::Goals) -> wrist_ble::policy::plan::Target {
-    use wrist_ble::policy::plan::{MenuPlanner, PlanInput, Planner};
-    MenuPlanner.plan(&PlanInput { goals, state, caps: CAPS, schedule: &Careless, menu: &ADVERTISING, refused: &Refused::EMPTY, now: t(0) })
+    use wrist_ble::policy::plan::{PlanInput, Planner, TransitionPlanner};
+    TransitionPlanner.plan(&PlanInput { goals, state, caps: CAPS, schedule: &Careless, menu: &ADVERTISING, refused: &Refused::EMPTY, now: t(0) })
 }
 
 /// Beside a central link the planner leaves out the options for advertising alone.
@@ -1081,6 +1081,26 @@ fn the_planner_advertises_beside_a_central_with_the_options_for_it() {
     assert_eq!(plan(&state, &goals).activities.advertising, Some(ADV_995));
     state.radio.central[0] = Some(SLOT);
     assert_eq!(plan(&state, &goals).activities.advertising, Some(BESIDE[1].params));
+}
+
+/// An option whose start would leave the watch unreachable longer than I1 allows is not planned.
+#[test]
+fn the_planner_holds_its_starts_to_the_reachable_gap() {
+    use wrist_ble::policy::plan::{Conflict, PlanInput, Planner, TransitionPlanner, Verdict};
+    fn slow(k: wrist_ble::OpKind) -> Millis {
+        Millis(wrist_ble::policy::invariants::REACHABLE_GAP.0 + 1).max((CAPS.op_deadline)(k))
+    }
+    let caps = wrist_ble::Capabilities { op_deadline: slow, ..*CAPS };
+    let goals = wrist_ble::policy::goals::Goals { radio_on: true, ..wrist_ble::policy::goals::Goals::OFF };
+    let state = ready(t(0));
+    let target = TransitionPlanner.plan(&PlanInput { goals: &goals, state: &state, caps: &caps, schedule: &Careless, menu: &ADVERTISING, refused: &Refused::EMPTY, now: t(0) });
+    assert_eq!((target.phone, target.activities.advertising), (Verdict::Busy(Conflict::Refused), None));
+    assert_eq!(plan(&state, &goals).phone, Verdict::Fits);
+    let hidden = wrist_ble::policy::goals::Goals { phone: wrist_ble::policy::goals::PhoneGoal { discoverable: false, pairing_open: false }, ..goals };
+    let mut quiet = state;
+    quiet.radio.advertising = Some(wrist_ble::AdvParams { connectable: false, ..ADV_995 });
+    let target = TransitionPlanner.plan(&PlanInput { goals: &hidden, state: &quiet, caps: &caps, schedule: &Careless, menu: &ADVERTISING, refused: &Refused::EMPTY, now: t(0) });
+    assert_eq!(target.path.first(), Some(wrist_ble::Change::Advertise(None)), "a stop is never held to it");
 }
 
 /// Until the chip is up the plan is what runs, so nothing drifts from it.

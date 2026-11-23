@@ -11,6 +11,7 @@ pub mod plan;
 pub mod profile;
 pub mod status;
 pub mod tally;
+pub mod transition;
 
 use crate::{Activities, Instant};
 
