@@ -24,6 +24,8 @@ import zlib
 spec = importlib.util.spec_from_file_location('ble_suite', Path(__file__).with_name('ble-suite.py'))
 suite = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(suite)
+# No wait for a late alarm in the tests that run scenarios; `Alarms` tests the wait itself.
+suite.LATE_ALARM_S = 0
 
 
 class Usb:
@@ -165,10 +167,24 @@ class Judgements(unittest.TestCase):
                       f'{sys.executable} -c {shlex.quote(apart)}; : ble-suite.py #me{os.getpid()}']:
             out = subprocess.run(['sh', '-c', shell], capture_output=True, text=True).stdout
             self.assertNotIn(f'#me{os.getpid()}', out)
-        them = f'{sys.executable} -c "import time; time.sleep(3)" tools/wrist-cmd.py them'
-        out = subprocess.run(['sh', '-c', f'{them} & {inner}; wait'], capture_output=True, text=True).stdout
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, 'wrist-cmd.py').write_text('import time; time.sleep(3)\n')
+            them = subprocess.list2cmdline([sys.executable, str(Path(d, 'wrist-cmd.py')), 'them'])
+            out = subprocess.run(['sh', '-c', f'{them} & {inner}; wait'], capture_output=True, text=True).stdout
         self.assertIn('wrist-cmd.py them', out)
-        self.assertTrue(suite.OTHER_TOOLS.search('python3 tools/hr-sim-bumble.py hci-socket:0'))
+
+    def test_a_tool_is_its_executable_or_its_script_never_a_mention(self):
+        for args in ['python3 tools/hr-sim-bumble.py hci-socket:0', '/usr/bin/python3.12 -u ./tools/ble-suite.py --air',
+                     'python3 -X dev tools/wrist-cmd.py ble', '/home/t/tools/wrist-session.py log cmds',
+                     'picocom -b 115200 /dev/ttyACM0', 'screen /dev/ttyACM0 115200', 'minicom', 'SCREEN /dev/ttyACM0',
+                     '/Library/Frameworks/Python.framework/Versions/3.13/Resources/Python.app/Contents/MacOS/Python '
+                     'tools/wrist-ble.py --pair', 'python3.14t tools/wrist-cmd.py ble',
+                     'tio /dev/ttyACM0', 'cu -l /dev/cu.usbmodem1101', 'python3.14d tools/wrist-cmd.py']:
+            self.assertTrue(suite.tool_of(args), args)
+        for args in ['vim tools/ble-suite.py', 'grep -n alarm tools/ble-suite.py', 'sh -c sleep 5; tools/ble-suite.py',
+                     'python3 -c import time tools/wrist-cmd.py', 'python3 -m pytest tools/test-ble-suite.py',
+                     'python3 tools/test-ble-suite.py', 'less hr-sim.py', 'screen -r', '', 'bash tools/wrist-cmd.py']:
+            self.assertFalse(suite.tool_of(args), args)
 
     def test_the_radio_is_judged_from_the_status_line(self):
         status = '[ble] up, not advertising, timing cable, address 0'
@@ -298,6 +314,29 @@ class Judgements(unittest.TestCase):
             f.write(b'not a capture')
             f.flush()
             self.assertIsNone(suite.failed_to_establish(f.name))
+
+    def test_a_capture_that_died_counts_nothing(self):
+        def record(packet):
+            return struct.pack('>IIIIq', len(packet), len(packet), 3, 0, 0) + packet
+
+        class Dying(Quiet):
+            def capture(self, path):
+                path.write_bytes(b'btsnoop\0' + struct.pack('>II', 1, 2001) + record(bytes([0x05, 4, 0, 0x40, 0, 0x3E])))
+                return subprocess.Popen(['true'])
+
+        async def console(s, usb, phone, build, a):
+            await asyncio.sleep(0.5)
+            s.check(True, 'ran')
+        result = {'scenarios': []}
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(suite, 'host', Dying), \
+                mock.patch.object(suite.wrist_port, 'find', return_value='/dev/watch'), \
+                mock.patch.object(suite, 'Usb', lambda port, path: Console({})), \
+                mock.patch.object(suite, 'snapshot', lambda usb: asyncio.sleep(0, snap('b'))), \
+                mock.patch.object(suite, 'console', console), mock.patch('sys.stdout', io.StringIO()) as shown:
+            asyncio.run(suite.run(suite_args(btmon=True), Path(d), result))
+        self.assertEqual(result['capture'], 'failed')
+        self.assertIsNone(result['failed_to_establish'])
+        self.assertIn('btmon exited 0 during the run', shown.getvalue())
 
     def test_the_build_is_matched_exactly(self):
         with mock.patch.object(suite.wrist_update, 'mismatch', return_value=None):
@@ -459,6 +498,11 @@ class Judgements(unittest.TestCase):
                 self.assertEqual(suite.Linux().fuser('/dev/ttyACM0'), ['4242'])
             with fake_sudo(d, 'echo "sudo: fuser: command not found" >&2; exit 1\n'):
                 self.assertIsNone(suite.Linux().fuser('/dev/ttyACM0'))
+            # A refusal that says nothing, as `fuser` finding nobody does: sudo's list says no.
+            with fake_sudo(d, '[ "$2" = -l ] && exit 1; exit 1\n'):
+                self.assertIsNone(suite.Linux().fuser('/dev/ttyACM0'))
+            with fake_sudo(d, '[ "$2" = -l ] && exit 0; exit 1\n'):
+                self.assertEqual(suite.Linux().fuser('/dev/ttyACM0'), [])
 
     def test_macos_holders_include_the_tty_twin(self):
         asked = []
@@ -553,6 +597,8 @@ class Judgements(unittest.TestCase):
         self.assertEqual(result['stopped'], 'terminated')
         self.assertTrue(result['restored'])
         self.assertFalse(result['passed'])
+        self.assertEqual([(s['name'], s['passed'], [c['what'] for c in s['checks']]) for s in result['scenarios']],
+                         [('console', False, ['stopped before its end', 'console: the watch raised no alarm (none)'])])
         self.assertEqual([l.split()[1] for l in lines if l.startswith('installed')], [result['argv'][1], result['argv'][3]])
 
     def test_an_existing_out_is_one_line(self):
@@ -644,6 +690,114 @@ class Judgements(unittest.TestCase):
             raise RuntimeError('No powered Bluetooth adapters found')
         with mock.patch.object(suite.wrist_ble, 'find', gone), mock.patch('builtins.print'):
             self.assertIsNone(asyncio.run(suite.BleakPhone('UNA').connect()))
+
+
+class Alarms(unittest.TestCase):
+    def test_an_alarm_is_its_scenario_s_up_to_the_next_one(self):
+        lines = [(1.0, '[ble] alarm: reachable, no phone can find the watch'), (5.0, '[ble] connected'),
+                 (7.0, '[ble] alarm: bounded-effort, too many operations in a minute'), (9.0, '>> usb ble alarm: no')]
+        self.assertEqual(suite.alarms(lines, 2.0, 7.0), [])
+        self.assertEqual(suite.alarms(lines, 2.0, None), [lines[2][1]])
+        self.assertEqual(len(suite.alarms(lines, 0.0, None)), 2)
+
+    def test_a_scenario_during_which_the_watch_raised_an_alarm_fails_and_the_others_pass(self):
+        async def console(s, usb, phone, build, a):
+            s.check(True, 'sessions answered')
+
+        async def reconnect(s, usb, phone, build, a):
+            usb.lines.append((time.time(), '[ble] alarm: bounded-effort, too many operations in a minute'))
+            s.check(True, 'reconnects answered')
+        result = {'scenarios': []}
+        usb = Console({})
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(suite, 'host', Quiet), \
+                mock.patch.object(suite.wrist_port, 'find', return_value='/dev/watch'), \
+                mock.patch.object(suite, 'Usb', lambda port, path: usb), \
+                mock.patch.object(suite, 'snapshot', lambda usb: asyncio.sleep(0, snap('b'))), \
+                mock.patch.object(suite, 'console', console), mock.patch.object(suite, 'reconnect', reconnect), \
+                mock.patch('sys.stdout', io.StringIO()) as shown:
+            ok = asyncio.run(suite.run(suite_args(scenarios=['console', 'reconnect', 'console'], reconnects=1, encrypt_limit=2.0), Path(d), result))
+        self.assertFalse(ok)
+        self.assertEqual([s['passed'] for s in result['scenarios']], [True, False, True])
+        self.assertIn('[FAIL] reconnect: the watch raised no alarm ([ble] alarm: bounded-effort', shown.getvalue())
+        self.assertIn('no `[ble] alarm:`', result['scenarios'][0]['criteria'])
+
+    def test_over_the_air_the_last_lines_are_read_before_judging(self):
+        class Air(suite.Air):
+            def __init__(self):
+                self.lines, self.settled = [], 0
+                self.link, self.phone = 'held', self
+
+            async def connect(self):
+                return 'own'
+
+            async def sync(self):
+                self.settled += 1
+                self.lines.append((time.time(), '[ble] alarm: reachable, no phone can find the watch'))
+                return True
+
+            async def detach(self):
+                self.link = None
+        s = suite.Scenario('soak', '')
+        s.check(True, 'cycles answered')
+        air = Air()
+        with mock.patch('sys.stdout', io.StringIO()):
+            asyncio.run(suite.judge_alarms(air, [s], 0))
+        self.assertEqual(air.settled, 1)
+        self.assertIsNone(air.link)
+        self.assertFalse(s.passed)
+
+    def test_over_the_air_a_last_read_that_found_no_link_fails_the_last_scenario(self):
+        class Phone:
+            async def connect(self):
+                return None
+        air = suite.Air(Phone(), os.devnull)
+        first, last = suite.Scenario('console', ''), suite.Scenario('soak', '')
+        first.check(True, 'ran')
+        last.check(True, 'ran')
+        with mock.patch('sys.stdout', io.StringIO()):
+            asyncio.run(suite.judge_alarms(air, [first, last], 0))
+        self.assertTrue(first.passed)
+        self.assertFalse(last.passed)
+        self.assertIn('last lines were read', last.checks[-1]['what'])
+
+    def test_an_alarm_told_after_the_last_scenario_is_waited_for(self):
+        usb = Console({})
+        s = suite.Scenario('update', '')
+        s.check(True, 'ran')
+
+        async def judged():
+            async def late():
+                await asyncio.sleep(0.2)
+                usb.lines.append((time.time(), '[ble] alarm: reachable, no phone can find the watch'))
+            asyncio.ensure_future(late())
+            await suite.judge_alarms(usb, [s], 0.5)
+        with mock.patch('sys.stdout', io.StringIO()):
+            asyncio.run(judged())
+        self.assertFalse(s.passed)
+
+    def test_a_stop_while_judging_keeps_the_scenarios_run(self):
+        async def console(s, usb, phone, build, a):
+            s.check(True, 'sessions answered')
+
+        async def stopped(usb, ran, grace):
+            raise asyncio.CancelledError()
+        result = {'scenarios': []}
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(suite, 'host', Quiet), \
+                mock.patch.object(suite.wrist_port, 'find', return_value='/dev/watch'), \
+                mock.patch.object(suite, 'Usb', lambda port, path: Console({})), \
+                mock.patch.object(suite, 'snapshot', lambda usb: asyncio.sleep(0, snap('b'))), \
+                mock.patch.object(suite, 'console', console), mock.patch.object(suite, 'judge_alarms', stopped), \
+                mock.patch('sys.stdout', io.StringIO()):
+            with self.assertRaises(asyncio.CancelledError):
+                asyncio.run(suite.run(suite_args(), Path(d), result))
+        self.assertEqual([(r['name'], r['passed']) for r in result['scenarios']], [('console', True)])
+
+    def test_a_scenario_with_no_checks_gains_none(self):
+        s = suite.Scenario('console', '')
+        with mock.patch('sys.stdout', io.StringIO()):
+            asyncio.run(suite.judge_alarms(Console({}), [s], 0))
+        self.assertFalse(s.passed)
+        self.assertEqual(s.checks, [])
 
 
 class Watch:
