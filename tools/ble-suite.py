@@ -6,6 +6,7 @@
     tools/ble-suite.py --scenarios console,reconnect --soak-minutes 5
     tools/ble-suite.py --restart-radio --profile battery --scenarios soak    a soak the replay can read
     tools/ble-suite.py --air --scenarios console,soak --gap 120    off the cable, over the air alone
+    tools/ble-suite.py --scenarios scan --strap hci0       the watch's scan hears a strap that hr-sim.py simulates
 
 The watch needs a `ble` image with the radio on (`ble on`), bonded to this computer
 (`wrist-ble.py --pair`), and its USB console free. The suite holds that console for the whole
@@ -21,6 +22,11 @@ replay -- console.log` replays a `ble-trace` image's run.
 then be the installed build) or, without it, the installed image. SIGTERM ends a run as Ctrl-C does:
 result.json is written, the interrupted scenario in it with its checks so far, and --restore put back.
 
+A strap (`--strap`) is `hr-sim.py` on a BlueZ adapter, or `bumble:TRANSPORT` for `hr-sim-bumble.py` with
+`--strap-flags`; the suite starts it for a scenario that needs one and stops it after, its lines in strap.log. BlueZ
+refuses a second link between the same two devices, so a scenario with both a strap and a phone needs them on two
+adapters (`--phone-adapter`).
+
 --air needs no cable, so the watch sleeps as it does on battery: commands go over a link, and the
 watch's own lines come from its log (`log since`), read whenever a link attaches. A hang-up's
 reason is read on the next link, a last one closing each scenario. The soak runs no latency probe
@@ -34,6 +40,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import shlex
 import signal
 import statistics
 import subprocess
@@ -66,7 +73,9 @@ def load(tool):
 wrist_ble = load('wrist-ble')
 wrist_update = load('wrist-update')
 
-SCENARIOS = ['console', 'reconnect', 'lateness', 'soak', 'update']
+# The phone's, run by default; `scan` needs a strap (`--strap`).
+PHONE_SCENARIOS = ['console', 'reconnect', 'lateness', 'soak', 'update']
+SCENARIOS = PHONE_SCENARIOS + ['scan']
 FORBIDDEN = re.compile(r'^\s*ble\s+forget\b')
 OTHER_TOOLS = re.compile(r'(wrist-(ble|cmd|update|time|frame|crash|session)|ble-(suite|probe-host)|hr-sim(-bumble)?|gate)\.py')
 PYTHON = re.compile(r'(python|pypy)[\d.]*[dt]?', re.I)
@@ -535,22 +544,23 @@ def quiet(text):
 
 
 class BleakPhone:
-    """This computer's own adapter as a bonded phone: BlueZ on Linux, CoreBluetooth on macOS."""
+    """This computer's own adapter as a bonded phone: BlueZ on Linux (`adapter`, or the default), CoreBluetooth
+    on macOS."""
 
-    def __init__(self, name):
-        self.name = name
+    def __init__(self, name, adapter=None):
+        self.name, self.adapter = name, adapter
         self.device = None
 
     async def connect(self):
         if self.device is None:
             try:
-                self.device = await wrist_ble.find(self.name)
+                self.device = await wrist_ble.find(self.name, adapter=self.adapter)
             except Exception as e:  # the adapter itself gone (its Bluetooth off): a failed cycle, not the run's end
                 print(f'-- find: {e!r}', flush=True)
             if self.device is None:
                 return None
         con = wrist_ble.Console(echo=lambda text: None if quiet(text) else print(f'   air: {text}', flush=True))
-        client = wrist_ble.BleakClient(self.device, timeout=20)
+        client = wrist_ble.BleakClient(self.device, timeout=20, **wrist_ble.on(self.adapter))
         try:
             await client.connect()
             if await wrist_ble.attach(client, con):
@@ -565,7 +575,81 @@ class BleakPhone:
         return None
 
     async def update(self, image):
-        return await wrist_ble.run(self.name, update=str(image)) == 0
+        return await wrist_ble.run(self.name, update=str(image), adapter=self.adapter) == 0
+
+
+# -- the strap --
+
+STRAP_LINE = re.compile(r'^-- (?:\d\d:\d\d:\d\d )?(.*)$')
+STOPPED = re.compile(r'stopped after (\d+) notifications')
+
+
+class Strap:
+    """A heart-rate strap the suite runs and stops, `hr-sim.py` on a BlueZ adapter (`hci0`) or `hr-sim-bumble.py` on
+    a Bumble transport (`bumble:usb:0`), its lines logged to `log`."""
+
+    def __init__(self, spec, flags=(), log=None):
+        self.spec, self.flags, self.log = spec, list(flags), log
+        self.lines, self.p, self.reader = [], None, None
+
+    def argv(self):
+        if self.spec.startswith('bumble:'):
+            return [sys.executable, str(ROOT / 'tools/hr-sim-bumble.py'), self.spec.partition(':')[2]] + self.flags
+        return [sys.executable, str(ROOT / 'tools/hr-sim.py'), '--adapter', self.spec] + self.flags
+
+    def _read(self):
+        out = open(self.log, 'a') if self.log else None
+        for line in self.p.stdout:
+            line = line.rstrip('\n')
+            self.lines.append((time.time(), line))
+            if out:
+                out.write(f'{seconds(time.time())} {line}\n')
+                out.flush()
+        if out:
+            out.close()
+
+    def said(self, pattern):
+        """(time, what) of each of its lines matching `pattern`, its own clock time left out."""
+        found = [(t, m[1]) for t, l in self.lines if (m := STRAP_LINE.match(l))]
+        return [(t, w) for t, w in found if re.search(pattern, w)]
+
+    async def start(self, timeout=15):
+        """Whether it advertises within `timeout`; if not, it is stopped."""
+        try:
+            self.p = subprocess.Popen(self.argv(), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                      stderr=subprocess.STDOUT, text=True)
+        except OSError as e:
+            self.lines.append((time.time(), f'!! not started: {e}'))
+            return False
+        self.reader = threading.Thread(target=self._read, daemon=True)
+        self.reader.start()
+        end = time.time() + timeout
+        while time.time() < end and self.p.poll() is None:
+            if self.said(r'^advertising HR-SIM'):
+                return True
+            await asyncio.sleep(0.1)
+        await self.stop()
+        return False
+
+    async def stop(self, timeout=10):
+        """Stop it as Ctrl-C does; the notifications it says it sent, or None."""
+        if self.p is None:
+            return None
+        if self.p.poll() is None:
+            self.p.send_signal(signal.SIGINT)
+            end = time.time() + timeout
+            while self.p.poll() is None and time.time() < end:
+                await asyncio.sleep(0.1)
+            if self.p.poll() is None:
+                self.p.kill()
+                self.p.wait()
+        if self.reader:
+            self.reader.join(5)
+        sent = [int(m[1]) for _, l in self.lines if (m := STOPPED.search(l))]
+        return sent[-1] if sent else None
+
+    def last(self):
+        return self.lines[-1][1] if self.lines else 'nothing said'
 
 
 # -- results --
@@ -664,6 +748,23 @@ async def reasons(usb, marks):
 
 
 # -- scenarios --
+
+SEEN = re.compile(r'\[ble\] seen ([0-9A-F]{2}(?::[0-9A-F]{2}){5})(?: \(random\))? (-?\d+) dBm(?: \(scan response\))?(?: "([^"]*)")?(.*)$')
+
+
+def heard(lines, name='HR-SIM', service='180D'):
+    """The advertisers that a scan's `[ble] seen` lines give both `name` and `service`, by address, with the first
+    signal strength: an advertiser may give them in its advertisement and its scan response, two lines."""
+    names, services, rssi = set(), set(), {}
+    for line in lines:
+        if not (m := SEEN.search(line)):
+            continue
+        rssi.setdefault(m[1], int(m[2]))
+        if m[3] == name:
+            names.add(m[1])
+        if service in m[4].split():
+            services.add(m[1])
+    return {a: rssi[a] for a in sorted(names & services)}
 
 async def console(s, usb, phone, build, a):
     marks = []
@@ -930,6 +1031,24 @@ async def update(s, usb, phone, build, a):
         s.check(await usb.ask(f'ble profile {a.profile}', r'\[ble\] timing', 5), f'`ble profile {a.profile}` held again')
 
 
+async def scan(s, usb, phone, build, a):
+    strap = Strap(a.strap, a.strap_flags, a.strap_log)
+    try:
+        if not s.check(await strap.start(), f'the strap advertises HR-SIM ({" ".join(strap.argv()[1:])}: {strap.last()})'):
+            return
+        mark = usb.mark()
+        started = await usb.ask(f'ble scan {a.scan_seconds}', r'\[ble\] (scanning for|scan refused|scan:|the central role|a scan)', 5)
+        s.check(started and 'scanning for' in started, f'`ble scan {a.scan_seconds}` started ({started})')
+        _, done = await usb.wait(r'\[ble\] scan done', mark, a.scan_seconds + 5)
+        s.check(done, f'the scan ended ({done})')
+        found = heard([l for _, l in usb.since(mark)])
+        s.data['heard'] = found
+        s.check(found, f'the watch heard HR-SIM advertising the Heart Rate Service, 0x180D ({found or "not heard"})')
+        s.check(await radio_back(usb, 10), 'the watch advertises again after the scan')
+    finally:
+        s.data['strap_notifications'] = await strap.stop()
+
+
 # -- pre-flight and install --
 
 async def install(usb, a, image, out):
@@ -1093,7 +1212,8 @@ async def run(a, out, result):
             result['capture'] = 'failed'
             result['preflight'] = ['--btmon: no capture']
             return False
-    phone = BleakPhone(a.name)
+    phone = BleakPhone(a.name, a.phone_adapter)
+    a.strap_log = out / 'strap.log'
     if a.air:
         usb = Air(phone, out / 'console.log')
         phone = AirPhone(usb, phone)
@@ -1211,6 +1331,8 @@ CRITERIA = {
             'or a gauge reading every minute (off it), no reset; the gauge\'s figures recorded',
     'update': 'an application update over the air reaches `state boot`, no revert, the same build after it, '
               'radio back on',
+    'scan': 'a strap simulated on {a.strap} advertising: `ble scan {a.scan_seconds}` hears HR-SIM with 0x180D, '
+            'the scan ends, and the watch advertises again',
 }
 NO_ALARM = '; and no `[ble] alarm:` from the watch while it ran'
 CRITERIA = {k: v + NO_ALARM for k, v in CRITERIA.items()}
@@ -1218,7 +1340,7 @@ CRITERIA = {k: v + NO_ALARM for k, v in CRITERIA.items()}
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--scenarios', default=','.join(SCENARIOS), help=f'comma-separated, from {",".join(SCENARIOS)}')
+    ap.add_argument('--scenarios', default=','.join(PHONE_SCENARIOS), help=f'comma-separated, from {",".join(SCENARIOS)}')
     ap.add_argument('--image', type=Path, help='the running image\'s app.bin, for the update scenario')
     ap.add_argument('--install', type=Path, help='an app.bin to install over USB before the scenarios')
     ap.add_argument('--restore', type=Path, help='with --install: the running image\'s app.bin, put back after')
@@ -1237,9 +1359,19 @@ def main():
     ap.add_argument('--profile', choices=['cable', 'battery'], help='hold this Bluetooth timing for the run (`ble profile`)')
     ap.add_argument('--air', action='store_true',
                     help='over the air alone, with no USB console: the watch\'s own lines come from its log (`log since`)')
+    ap.add_argument('--phone-adapter', help='the adapter the phone uses (BlueZ, `hci1`); the default one otherwise')
+    ap.add_argument('--strap', default='hci0',
+                    help='where the strap runs: a BlueZ adapter for hr-sim.py, or `bumble:TRANSPORT` for hr-sim-bumble.py')
+    ap.add_argument('--strap-flags', default='', help='hr-sim-bumble.py\'s misbehaviour, as one string ("--att-delay 3")')
+    ap.add_argument('--scan-seconds', type=int, default=5, choices=range(1, 11), metavar='1..10')
     ap.add_argument('--out', type=Path)
     a = ap.parse_args()
     a.scenarios = [s.strip() for s in a.scenarios.split(',') if s.strip()]
+    a.strap_flags = shlex.split(a.strap_flags)
+    if a.strap_flags and not a.strap.startswith('bumble:'):
+        ap.error('--strap-flags are hr-sim-bumble.py\'s: give --strap bumble:TRANSPORT')
+    if a.phone_adapter and not sys.platform.startswith('linux'):
+        ap.error('--phone-adapter needs Linux (BlueZ)')
     unknown = set(a.scenarios) - set(SCENARIOS)
     if unknown:
         ap.error(f'unknown scenarios: {", ".join(sorted(unknown))}')

@@ -121,9 +121,14 @@ async def transfer(client, con, path, chunk_pace, chunk_max=VALUE_LEN):
     return False
 
 
-async def find(name, timeout=15):
+def on(adapter):
+    """bleak's argument for a named adapter (BlueZ's `hci1`); none for the default."""
+    return {"bluez": {"adapter": adapter}} if adapter else {}
+
+
+async def find(name, timeout=15, adapter=None):
     print(f"-- looking for {name}", flush=True)
-    device = await BleakScanner.find_device_by_name(name, timeout=timeout)
+    device = await BleakScanner.find_device_by_name(name, timeout=timeout, **on(adapter))
     if device is None:
         print("-- not found (`ble` over USB says whether it advertises; a stale link needs `ble disconnect`)",
               flush=True)
@@ -140,17 +145,17 @@ async def attach(client, con):
     return why is None
 
 
-async def wait_kept(name, timeout):
+async def wait_kept(name, timeout, adapter=None):
     """After the reset: connect again and wait for the loader's state to read `boot`."""
     end = time.time() + timeout
     await asyncio.sleep(5)
     while time.time() < end:
-        device = await find(name, timeout=10)
+        device = await find(name, timeout=10, adapter=adapter)
         if device is None:
             continue
         con = Console()
         try:
-            async with BleakClient(device, timeout=20) as client:
+            async with BleakClient(device, timeout=20, **on(adapter)) as client:
                 if not await attach(client, con):
                     continue
                 while time.time() < end:
@@ -187,7 +192,7 @@ def pairing_answers(host_answer, watch_answer, shown, theirs):
     return (f"ble {watch}" if watch else None), host
 
 
-async def pair(name, port, host_answer="match", watch_answer="match", commands=None, hold=0.0):
+async def pair(name, port, host_answer="match", watch_answer="match", commands=None, hold=0.0, adapter=None):
     """Pair through BlueZ with an agent of our own. The watch's half goes over USB or, with
     `commands`, into a logger's command file, where every step is also written as a `== host` mark."""
     from dbus_fast import BusType, DBusError, Message, Variant
@@ -283,7 +288,7 @@ async def pair(name, port, host_answer="match", watch_answer="match", commands=N
         if "advertising" not in status and "connected" not in status:
             print(f"-- the watch's radio is not advertising: {status.strip()}", flush=True)
             return 1
-    device = await find(name)
+    device = await find(name, adapter=adapter)
     if device is None:
         return 1
     path = device.details["path"]
@@ -345,6 +350,7 @@ async def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("commands", nargs="?", default="", help="commands separated by ;")
     ap.add_argument("--name", default=wrist_port.NAME)
+    ap.add_argument("--adapter", help="the host's adapter to use (BlueZ: hci1); the default one otherwise")
     ap.add_argument("--pair", action="store_true", help="pair and bond (BlueZ), confirmed over USB")
     ap.add_argument("--port", help="the watch's USB console, for --pair")
     ap.add_argument("--host-answer", choices=["match", "yes", "no", "never", "cancel"], default="match",
@@ -367,11 +373,12 @@ async def main():
     if args.pair:
         if args.command_file and "match" in (args.host_answer, args.watch_answer):
             ap.error("--command-file can't read the watch's number: give --host-answer and --watch-answer")
-        return await pair(args.name, args.port, args.host_answer, args.watch_answer, args.command_file, args.hold)
+        return await pair(args.name, args.port, args.host_answer, args.watch_answer, args.command_file, args.hold,
+                          args.adapter)
     if args.revert and args.update:
         ap.error("--revert and --update are two different updates: give one")
     return await run(args.name, args.commands, args.update, args.listen, not args.no_reset,
-                     args.keep_interval, args.chunk, args.pace, args.revert)
+                     args.keep_interval, args.chunk, args.pace, args.revert, args.adapter)
 
 
 async def revert(client, con):
@@ -394,14 +401,14 @@ async def revert(client, con):
 
 
 async def run(name, commands="", update=None, listen=2.0, reset=True, keep_interval=False, chunk=VALUE_LEN, pace=0.0,
-              go_back=False):
+              go_back=False, adapter=None):
     """Commands, then an update or a revert if one is asked for; 0 once it is done (with
     `reset`, once kept)."""
-    device = await find(name)
+    device = await find(name, adapter=adapter)
     if device is None:
         return 1
     con = Console()
-    async with BleakClient(device, timeout=20) as client:
+    async with BleakClient(device, timeout=20, **on(adapter)) as client:
         if not await attach(client, con):
             return 1
         await acquire_mtu(client)
@@ -425,7 +432,7 @@ async def run(name, commands="", update=None, listen=2.0, reset=True, keep_inter
         else:
             await asyncio.sleep(listen)
     if ok and update and reset:
-        return 0 if await wait_kept(name, 120) else 1
+        return 0 if await wait_kept(name, 120, adapter) else 1
     return 0 if ok else 1
 
 

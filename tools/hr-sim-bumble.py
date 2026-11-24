@@ -265,16 +265,18 @@ async def serve(hci_source, hci_sink, args):
 
     start = time.time()
     sent = 0
-    while not done.done() and (not args.seconds or time.time() - start < args.seconds):
-        value, bpm = measurement(time.time() - start)
-        hrm.value = value
-        if subscribed:
-            await device.notify_subscribers(hrm, value)
-            sent += 1
-            if sent == 1 or sent % 10 == 0:
-                log(f"notified {bpm} bpm ({sent} so far)")
-        await asyncio.sleep(1)
-    log(f"stopped after {sent} notifications")
+    try:
+        while not done.done() and (not args.seconds or time.time() - start < args.seconds):
+            value, bpm = measurement(time.time() - start)
+            hrm.value = value
+            if subscribed:
+                await device.notify_subscribers(hrm, value)
+                sent += 1
+                if sent == 1 or sent % 10 == 0:
+                    log(f"notified {bpm} bpm ({sent} so far)")
+            await asyncio.sleep(1)
+    finally:
+        log(f"stopped after {sent} notifications")
 
 
 def interval_pair(text):
