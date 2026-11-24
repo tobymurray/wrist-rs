@@ -32,7 +32,7 @@ jobs:
       - name: Test the tools
         run: |
           failed=()
-          for t in wrist-ble wrist-update wrist-session wrist-time ble-drop ble-suite btsnoop-fixture ble-probe-host; do
+          for t in wrist-ble wrist-cmd wrist-update wrist-session wrist-time ble-drop ble-suite btsnoop-fixture ble-probe-host; do
             echo "::group::test-$t.py"
             python "tools/test-$t.py" || failed+=("$t")
             echo "::endgroup::"

@@ -4,6 +4,7 @@ import asyncio
 import importlib.util
 from pathlib import Path
 import unittest
+import unittest.mock
 
 spec = importlib.util.spec_from_file_location('wrist_ble', Path(__file__).with_name('wrist-ble.py'))
 wrist_ble = importlib.util.module_from_spec(spec)
@@ -94,6 +95,197 @@ class PairingAnswers(unittest.TestCase):
     def test_the_watch_can_be_told_nothing_and_the_host_can_stall_or_cancel(self):
         self.assertEqual(answers('never', 'none', 1, 1), (None, 'never'))
         self.assertEqual(answers('cancel', 'yes', 1, None), ('ble yes', 'cancel'))
+
+
+class Port:
+    """A watch's USB console: each command's answer, and after `connect()` the pairing as the watch says it."""
+
+    def __init__(self, answers):
+        import threading
+        self.answers, self.sent, self.out = answers, [], b''
+        self.lock = threading.Lock()
+
+    def say(self, text):
+        with self.lock:
+            self.out += (text + '\r\n').encode()
+
+    def write(self, data):
+        command = data.decode().strip()
+        if command:
+            self.sent.append(command)
+            for line in self.answers.get(command, []):
+                self.say(line)
+
+    def flush(self):
+        pass
+
+    def read(self, _n):
+        import time
+        with self.lock:
+            data, self.out = self.out, b''
+        if not data:
+            time.sleep(0.01)
+        return data
+
+
+class ByHand(unittest.TestCase):
+    """macOS: the operator compares the numbers; the tool answers the watch."""
+
+    def pair(self, port, attach, answer='ask', reply='y'):
+        from unittest import mock
+        import io
+        asked = []
+
+        class Client:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_exc):
+                return False
+
+        async def find(_name, timeout=15, adapter=None):
+            return object()
+
+        def ask(prompt):
+            asked.append(prompt)
+            return reply
+        with mock.patch.object(wrist_ble.wrist_port, 'open_console', lambda _port: port), \
+                mock.patch.object(wrist_ble, 'find', find), mock.patch.object(wrist_ble, 'BleakClient', Client), \
+                mock.patch.object(wrist_ble, 'attach', attach), mock.patch('sys.stdout', io.StringIO()) as out:
+            code = asyncio.run(asyncio.wait_for(wrist_ble.pair_by_hand('UNA', None, answer, ask, timeout=5), 10))
+        return code, asked, out.getvalue()
+
+    def test_the_watch_s_number_is_shown_and_the_operator_s_answer_sent(self):
+        port = Port({'ble': ['[ble] advertising as UNA, timing cable'], 'ble yes': ['[ble] paired'],
+                     'ble bonds': ['[ble] bonded devices: 1 80:D1:CE:10:81:FD']})
+
+        async def attach(_client, _con):
+            port.say("[ble] pairing: the central shows a number; if it is 012345, `ble yes` on the USB console")
+            while 'ble yes' not in port.sent:
+                await asyncio.sleep(0.01)
+            return True
+        code, asked, out = self.pair(port, attach)
+        self.assertEqual(code, 0)
+        self.assertEqual(asked, ['   Does the host show 012345? [y/n] '])
+        self.assertEqual(port.sent, ['ble', 'ble yes', 'ble bonds'])
+        self.assertIn("The watch's number is 012345", out)
+        self.assertIn('bonded devices: 1', out)
+
+    def test_no_from_the_operator_is_no_to_the_watch(self):
+        port = Port({'ble': ['[ble] advertising as UNA, timing cable'],
+                     'ble no': ['[ble] pairing failed: status 02 (1 timeout, 2 failed, 3/4 LTK missing), reason 0C']})
+
+        async def attach(_client, _con):
+            port.say("[ble] pairing: the central shows a number; if it is 999999, `ble yes` on the USB console")
+            while 'ble no' not in port.sent:
+                await asyncio.sleep(0.01)
+            return False
+        code, _, out = self.pair(port, attach, reply='n')
+        self.assertEqual(code, 1)
+        self.assertIn('pairing failed', out)
+
+    def pair_for_real(self, port, write):
+        """With the real `attach`, a client that notifies as bleak's CoreBluetooth backend does."""
+        from unittest import mock
+        import io
+        started = []
+
+        class Client:
+            def __init__(self, *_args, **_kwargs):
+                self.con = None
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_exc):
+                return False
+
+            async def start_notify(self, _uuid, callback):
+                if started:
+                    raise ValueError('Characteristic notifications already started')
+                started.append(callback)
+
+            async def write_gatt_char(self, _uuid, data, response):
+                await write(started[0], data)
+
+        async def find(_name, timeout=15, adapter=None):
+            return object()
+        with mock.patch.object(wrist_ble.wrist_port, 'open_console', lambda _port: port), \
+                mock.patch.object(wrist_ble, 'find', find), mock.patch.object(wrist_ble, 'BleakClient', Client), \
+                mock.patch('sys.stdout', io.StringIO()) as out:
+            code = asyncio.run(asyncio.wait_for(wrist_ble.pair_by_hand('UNA', None, 'yes', timeout=5), 15))
+        return code, out.getvalue()
+
+    def test_a_write_that_waited_out_the_pairing_is_tried_again_on_the_same_link(self):
+        port = Port({'ble': ['[ble] advertising as UNA, timing cable'], 'ble yes': ['[ble] paired'],
+                     'ble bonds': ['[ble] bonded devices: 1 80:D1:CE:10:81:FD']})
+
+        async def write(notify, data):
+            if 'ble yes' not in port.sent:
+                port.say("[ble] pairing: the central shows a number; if it is 012345, `ble yes` on the USB console")
+                raise asyncio.TimeoutError()
+            notify(None, b'[usb] pong\n')
+        code, out = self.pair_for_real(port, write)
+        self.assertEqual(code, 0, out)
+
+    def test_a_number_after_a_failed_first_write_is_still_answered(self):
+        port = Port({'ble': ['[ble] advertising as UNA, timing cable'], 'ble yes': ['[ble] paired'],
+                     'ble bonds': ['[ble] bonded devices: 1']})
+
+        async def write(notify, data):
+            if 'ble yes' not in port.sent:
+                async def later():
+                    await asyncio.sleep(0.5)
+                    port.say("[ble] pairing: the central shows a number; if it is 012345, `ble yes` on the USB console")
+                asyncio.ensure_future(later())
+                raise RuntimeError('Insufficient authentication')
+            notify(None, b'[usb] pong\n')
+        code, out = self.pair_for_real(port, write)
+        self.assertEqual(code, 0, out)
+
+    def test_the_operator_is_asked_in_a_thread_of_its_own(self):
+        import threading
+        seen = []
+
+        def ask(prompt):
+            seen.append((prompt, threading.current_thread().daemon))
+            return 'y'
+        self.assertEqual(asyncio.run(wrist_ble.asked(ask, 'same? ')), 'y')
+        self.assertEqual(seen, [('same? ', True)])
+
+    def test_no_number_after_a_failed_first_write_ends_soon(self):
+        import time
+        port = Port({'ble': ['[ble] advertising as UNA, timing cable']})
+
+        async def write(notify, data):
+            raise RuntimeError('the link dropped')
+        with unittest.mock.patch.object(wrist_ble, 'NUMBER_AFTER_S', 0.3):
+            t0 = time.time()
+            code, out = self.pair_for_real(port, write)
+        self.assertEqual(code, 1)
+        self.assertLess(time.time() - t0, 3)
+        self.assertIn('never showed a number', out)
+
+    def test_already_bonded_needs_no_number(self):
+        port = Port({'ble': ['[ble] advertising as UNA, timing cable'], 'ble bonds': ['[ble] bonded devices: 1']})
+
+        async def attach(_client, _con):
+            return True
+        code, asked, out = self.pair(port, attach)
+        self.assertEqual((code, asked), (0, []))
+        self.assertIn('already bonded', out)
+
+    def test_a_radio_that_is_off_is_said_and_nothing_connects(self):
+        port = Port({'ble': ['[ble] off']})
+
+        async def attach(_client, _con):
+            raise AssertionError('connected')
+        code, _, out = self.pair(port, attach)
+        self.assertEqual(code, 1)
+        self.assertIn('not advertising: [ble] off', out)
 
 
 @unittest.skipUnless(importlib.util.find_spec('dbus_fast'), '--pair on BlueZ needs dbus-fast (Linux)')
