@@ -1,6 +1,6 @@
 //! Each check fails when the truth is broken behind the core's back.
 
-use wrist_ble::{AdvParams, Duration, Instant, Millis, Op, OpId, ScanParams, Status};
+use wrist_ble::{AdvParams, ConnParams, Duration, Instant, Millis, Op, OpId, ScanParams, Status};
 use wrist_ble::policy::chip::Chip;
 use wrist_ble::policy::engine::{Core, Input};
 use wrist_ble::policy::goals::Power;
@@ -257,6 +257,91 @@ fn the_commands_a_minute_may_reach_the_limit() {
 fn the_commands_a_minute_may_not_pass_the_limit() {
     let e = commands(COMMANDS_PER_MINUTE + 1).unwrap_err();
     assert_eq!(e, format!("bounded effort: {} commands in a minute", COMMANDS_PER_MINUTE + 1));
+}
+
+/// Advertising started with no phone link ending before it is the minute's.
+#[test]
+fn advertising_started_with_no_link_ended_counts() {
+    let mut b = Bench::new();
+    let t = b.at(0) + Millis::mins(1);
+    b.check(t).unwrap();
+    let adv = b.air;
+    for _ in 0..=COMMANDS_PER_MINUTE {
+        b.s.fake.notes.push((t, Note::Submitted { op: Op::Advertise(Some(adv)), accepted: true }));
+    }
+    let e = b.check(t).unwrap_err();
+    assert_eq!(e, format!("bounded effort: {} commands in a minute", COMMANDS_PER_MINUTE + 1));
+}
+
+/// Checks at `t`, once every note so far is a minute old, after a phone link comes up and
+/// asks `params` parameter requests; then checks again after `then` other commands.
+fn commands_on_a_new_link(params: u32, then: u32) -> Result<(), String> {
+    let mut b = Bench::new();
+    let t = b.at(0) + Millis::mins(1);
+    b.check(t)?;
+    b.s.fake.phone_arrives(Phone::new(Os::Mac, 1));
+    while b.s.fake.phone_link().is_none() {
+        let next = b.s.fake.next_at().expect("the phone connects");
+        b.s.fake.advance(next);
+    }
+    let link = b.s.fake.phone_link().unwrap().0;
+    let t = t.max(b.s.fake.now());
+    b.c.disturbed(t);
+    let units = Duration::from_u16(24);
+    let ask = ConnParams { interval_min: units, interval_max: units, latency: 0, timeout: Duration::from_u16(400), ce_len: Duration::from_u16(0) };
+    for (n, op) in [(params, Op::UpdateParams(link, ask)), (then, Op::Advertise(None))] {
+        for _ in 0..n {
+            b.s.fake.notes.push((t, Note::Submitted { op, accepted: true }));
+        }
+        b.check(t)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn a_phone_links_own_commands_are_not_the_minutes() {
+    commands_on_a_new_link(1, COMMANDS_PER_MINUTE).unwrap();
+}
+
+#[test]
+fn commands_past_a_phone_links_own_count() {
+    let e = commands_on_a_new_link(1, COMMANDS_PER_MINUTE + 1).unwrap_err();
+    assert_eq!(e, format!("bounded effort: {} commands in a minute", COMMANDS_PER_MINUTE + 1));
+}
+
+#[test]
+fn a_phone_links_own_commands_are_given_once() {
+    let e = commands_on_a_new_link(2, COMMANDS_PER_MINUTE).unwrap_err();
+    assert_eq!(e, format!("bounded effort: {} commands in a minute", COMMANDS_PER_MINUTE + 1));
+}
+
+#[test]
+fn the_advertising_after_a_phone_links_end_is_its_own() {
+    let mut b = Bench::new();
+    let t = b.at(0) + Millis::mins(1);
+    b.check(t).unwrap();
+    let i = b.s.fake.phone_arrives(Phone::new(Os::Mac, 1));
+    while b.s.fake.phone_link().is_none() {
+        let next = b.s.fake.next_at().expect("the phone connects");
+        b.s.fake.advance(next);
+    }
+    let t = t.max(b.s.fake.now());
+    b.c.disturbed(t);
+    b.check(t).unwrap();
+    b.s.fake.phone_leaves(i);
+    while b.s.fake.phone_link().is_some() {
+        let next = b.s.fake.next_at().expect("the phone leaves");
+        b.s.fake.advance(next);
+    }
+    let t = t.max(b.s.fake.now());
+    b.c.disturbed(t);
+    for op in [Op::Advertise(Some(AdvParams { interval_min: Duration::from_u16(1592), interval_max: Duration::from_u16(1592), connectable: true }))]
+        .into_iter()
+        .chain([Op::Advertise(None); COMMANDS_PER_MINUTE as usize])
+    {
+        b.s.fake.notes.push((t, Note::Submitted { op, accepted: true }));
+    }
+    b.check(t).unwrap();
 }
 
 #[test]

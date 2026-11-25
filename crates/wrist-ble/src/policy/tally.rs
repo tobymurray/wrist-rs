@@ -8,7 +8,9 @@ use crate::policy::invariants::Invariant;
 use crate::policy::phone::{Phone, Security};
 use crate::policy::status::{status, PhoneStatus, Unreachable};
 use crate::policy::State;
-use crate::{ConnHandle, Failure, FailureKind, Instant, LeConnRole, Millis, PairingEvent, PairingStep, PeerAddr, RadioEvent, ResetCause, SchedKind};
+use crate::{
+    ConnHandle, Failure, FailureKind, Instant, LeConnRole, Millis, Op, PairingEvent, PairingStep, PeerAddr, RadioEvent, ResetCause, SchedKind,
+};
 
 /// A phone link that ends this soon after encrypting is counted as ending early.
 pub const EARLY_END: Millis = Millis::secs(10);
@@ -138,10 +140,15 @@ pub struct Tally {
     pub restarts: Counts<Restart, 4>,
     /// Alarms raised, by the invariant broken.
     pub alarms: Counts<Invariant, 3>,
-    /// The most operations the core asked for in any [`COMMAND_WINDOW`], up to [`PEAK_KEPT`].
+    /// The most operations the core asked for in any [`COMMAND_WINDOW`], up to [`PEAK_KEPT`],
+    /// past each phone link's own.
     pub commands_peak: u32,
     asked: [Option<Instant>; PEAK_KEPT],
     asked_next: usize,
+    /// The phone link whose parameter request is still its own, and whether the advertising
+    /// after the last one's end is.
+    own_params: Option<ConnHandle>,
+    own_advertise: bool,
     /// The phone unreachable for a reason other than being hidden.
     pub unreachable: Spell,
     pub drift: Spell,
@@ -167,6 +174,8 @@ impl Tally {
         commands_peak: 0,
         asked: [None; PEAK_KEPT],
         asked_next: 0,
+        own_params: None,
+        own_advertise: false,
         unreachable: Spell { from: None, worst: Millis(0) },
         drift: Spell { from: None, worst: Millis(0) },
         hidden: false,
@@ -190,23 +199,28 @@ impl Tally {
         self.alarms.add(broken);
     }
 
-    /// The operations asked within the [`COMMAND_WINDOW`] ending at `now`.
+    /// The operations asked within the [`COMMAND_WINDOW`] ending at `now`, past each phone link's
+    /// own.
     #[must_use]
     #[allow(clippy::cast_possible_truncation)]
     pub fn commands_within(&self, now: Instant) -> u32 {
         self.asked.iter().flatten().filter(|&&t| now.since(t) < COMMAND_WINDOW).count() as u32
     }
 
-    /// The end of one of the core's steps: what it was told, the state it reached, and whether it
-    /// asked for an operation.
-    pub fn step(&mut self, now: Instant, input: &Input, state: &State, asked: bool) {
+    /// The end of one of the core's steps: what it was told, the state it reached, and the
+    /// operation it asked for.
+    pub fn step(&mut self, now: Instant, input: &Input, state: &State, asked: Option<Op>) {
         if let Input::Radio(e) = *input {
             self.event(now, e);
         }
-        if asked {
-            self.ask(now);
-        }
         let link = state.phone.link();
+        if link != self.phone && matches!(input, Input::Radio(_)) {
+            self.own_params = link;
+            self.own_advertise = self.phone.is_some();
+        }
+        if let Some(op) = asked {
+            self.ask(now, op);
+        }
         if matches!(input, Input::Snapshot(_)) && self.phone.is_some() && link != self.phone {
             self.vanished += 1;
         }
@@ -256,7 +270,18 @@ impl Tally {
 
     /// One operation asked at `now`; the peak is the most within any window ending at an ask.
     #[allow(clippy::cast_possible_truncation)]
-    fn ask(&mut self, now: Instant) {
+    fn ask(&mut self, now: Instant, op: Op) {
+        match op {
+            Op::UpdateParams(l, _) if self.own_params == Some(l) => {
+                self.own_params = None;
+                return;
+            }
+            Op::Advertise(Some(_)) if self.own_advertise => {
+                self.own_advertise = false;
+                return;
+            }
+            _ => {}
+        }
         self.asked[self.asked_next] = Some(now);
         self.asked_next = (self.asked_next + 1) % PEAK_KEPT;
         let within = self.asked.iter().flatten().filter(|&&t| now.since(t) < COMMAND_WINDOW).count();

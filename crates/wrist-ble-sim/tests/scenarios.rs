@@ -386,3 +386,24 @@ fn update_complete_with_error() {
     assert!(s.core.counters.update_failures >= 1);
     assert!(s.fake.advertising().is_some(), "{}", s.line());
 }
+
+/// A phone's own pace, not the core retrying.
+#[test]
+fn bonded_reconnects_back_to_back() {
+    let mut s = Sim::started(1, on(Power::Battery));
+    let mac = Phone { console: false, ..Phone::new(Os::Mac, 1) };
+    for _ in 0..30 {
+        let i = s.fake.phone_arrives(mac);
+        while s.fake.phone_link().is_none() {
+            s.run_for(Millis(10));
+        }
+        s.run_for(Millis(700));
+        s.fake.phone_leaves(i);
+        while s.fake.phone_link().is_some() {
+            s.run_for(Millis(10));
+        }
+    }
+    let asks = submitted(&s, |_| true);
+    assert!(asks.len() > 60 && asks[asks.len() - 1].since(asks[0]) < Millis::mins(1), "{asks:?}");
+    assert!(!s.tells.iter().any(|(_, t)| matches!(t, Tell::Alarm(_))), "{:?}", s.tells);
+}
