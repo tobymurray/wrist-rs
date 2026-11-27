@@ -3,7 +3,7 @@
 use std::collections::VecDeque;
 use std::mem::{discriminant, Discriminant};
 
-use wrist_ble::{Instant, Millis, Op, OpKind, Status};
+use wrist_ble::{ConnHandle, Instant, Millis, Op, OpKind, Status};
 use wrist_ble::policy::chip::Chip;
 use wrist_ble::policy::engine::Core;
 use wrist_ble::policy::invariants::{COMMANDS_PER_MINUTE, CONVERGE_AFTER, REACHABLE_GAP, REACHABLE_SHARE_PERCENT, REACHABLE_WINDOW, STATUS_WITHIN};
@@ -23,6 +23,12 @@ pub struct Checks {
     /// Planned gaps in advertising: when each began and ended.
     gaps: VecDeque<(Instant, Option<Instant>)>,
     commands: VecDeque<Instant>,
+    /// The phone link on air at the last check.
+    link: Option<ConnHandle>,
+    /// The phone link whose first parameter request is still to come, uncounted.
+    own_params: Option<ConnHandle>,
+    /// A phone link has ended and the advertising after it is still to come, uncounted.
+    own_advertise: bool,
     /// Since when the status has contradicted the truth, by what it claims.
     wrong_since: Option<(Instant, &'static str)>,
     disturbed: Instant,
@@ -65,11 +71,21 @@ impl Checks {
     /// The invariant broken.
     pub fn after(&mut self, core: &Core<'_>, fake: &Fake, now: Instant) -> Result<(), String> {
         self.before = Some((core.state, now));
+        let link = fake.phone_link().map(|(l, _)| l);
+        if link != self.link {
+            self.own_params = link;
+            self.own_advertise = self.link.is_some();
+        }
+        self.link = link;
         for &(at, note) in &fake.notes[self.notes..] {
             match note {
                 Note::Submitted { op, .. } => {
                     if !matches!(op.kind(), OpKind::Notify | OpKind::Read | OpKind::Write) {
-                        self.commands.push_back(at);
+                        match op {
+                            Op::UpdateParams(l, _) if self.own_params == Some(l) => self.own_params = None,
+                            Op::Advertise(Some(_)) if self.own_advertise => self.own_advertise = false,
+                            _ => self.commands.push_back(at),
+                        }
                     }
                     let central = matches!(op, Op::Connect(..) | Op::Scan(Some(_)));
                     if central && self.phone_up.is_some_and(|up| at.since(up) < SETTLE) {

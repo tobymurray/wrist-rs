@@ -7,7 +7,10 @@ use wrist_ble::policy::chip::Action;
 use wrist_ble::policy::engine::{Core, Input, Outputs, Tell};
 use wrist_ble::policy::goals::{Goals, PhoneGoal, Power};
 use wrist_ble::policy::invariants::{Invariant, Record, COMMANDS_PER_MINUTE, REACHABLE_ALARM};
-use wrist_ble::{AdvParams, Millis, OpId, Outcome, RadioEvent};
+use wrist_ble::{
+    AdvParams, ConnHandle, Duration, LeConnRole, LinkParams, LinkStatus, Millis, Op, OpId, OpKind, Outcome, PairingEvent, PairingStep, RadioEvent,
+    Snapshot, Status, MAX_LINKS,
+};
 use wrist_bluenrg2::shadow::menu::MENU;
 use wrist_bluenrg2::{Scheduler, CAPABILITIES};
 
@@ -168,7 +171,7 @@ fn the_record_is_the_cores() {
 #[test]
 fn an_operation_a_whole_minute_old_is_out_of_the_window() {
     let mut tally = wrist_ble::policy::tally::Tally::NEW;
-    tally.step(t(0), &Input::Tick, &ready(t(0)), true);
+    tally.step(t(0), &Input::Tick, &ready(t(0)), Some(Op::CancelConnect));
     assert_eq!(tally.commands_within(t(59_999)), 1);
     assert_eq!(tally.commands_within(t(60_000)), 0);
 }
@@ -190,13 +193,13 @@ fn too_many_operations_ends_only_well_under_the_limit() {
     use wrist_ble::policy::invariants::ALARM_HYSTERESIS;
     let mut b = Bench::new();
     for _ in 0..=COMMANDS_PER_MINUTE {
-        b.core.tally.step(t(1_000), &Input::Tick, &b.core.state, true);
+        b.core.tally.step(t(1_000), &Input::Tick, &b.core.state, Some(Op::CancelConnect));
     }
     assert_eq!(alarms(&b.step(1_000, Input::Tick)), [Invariant::BoundedEffort]);
     // At the limit, then just under the end mark: the same alarm, not told again.
     for ms in [61_000, 61_500] {
         for _ in 0..COMMANDS_PER_MINUTE - ALARM_HYSTERESIS {
-            b.core.tally.step(t(ms), &Input::Tick, &b.core.state, true);
+            b.core.tally.step(t(ms), &Input::Tick, &b.core.state, Some(Op::CancelConnect));
         }
     }
     assert_eq!(alarms(&b.step(62_000, Input::Tick)), []);
@@ -204,7 +207,7 @@ fn too_many_operations_ends_only_well_under_the_limit() {
     // Well under it for a whole minute: over, and a new burst is a new alarm.
     assert_eq!(alarms(&b.step(200_000, Input::Tick)), []);
     for _ in 0..=COMMANDS_PER_MINUTE {
-        b.core.tally.step(t(201_000), &Input::Tick, &b.core.state, true);
+        b.core.tally.step(t(201_000), &Input::Tick, &b.core.state, Some(Op::CancelConnect));
     }
     assert_eq!(alarms(&b.step(201_000, Input::Tick)), [Invariant::BoundedEffort]);
 }
@@ -214,7 +217,7 @@ fn too_many_operations_ends_only_well_under_the_limit() {
 fn a_second_invariant_is_told_while_the_first_lasts() {
     let mut b = Bench::new();
     for _ in 0..=COMMANDS_PER_MINUTE {
-        b.core.tally.step(t(20_000), &Input::Tick, &b.core.state, true);
+        b.core.tally.step(t(20_000), &Input::Tick, &b.core.state, Some(Op::CancelConnect));
     }
     // The record loses the advertising the plan still wants, long enough ago for I1.
     b.core.state.radio.advertising = None;
@@ -241,7 +244,7 @@ fn too_many_operations_ends_at_its_mark() {
 fn an_alarm_crowded_out_of_its_step_is_told_at_the_next() {
     let mut b = Bench::new();
     for _ in 0..=COMMANDS_PER_MINUTE {
-        b.core.tally.step(t(20_000), &Input::Tick, &b.core.state, true);
+        b.core.tally.step(t(20_000), &Input::Tick, &b.core.state, Some(Op::CancelConnect));
     }
     b.core.state.radio.advertising = None;
     b.core.state.silent_since = t(5_000);
@@ -260,9 +263,80 @@ fn an_alarm_crowded_out_of_its_step_is_told_at_the_next() {
 fn the_operation_over_the_limit_alarms_in_its_own_step() {
     let mut b = Bench::new();
     for _ in 0..COMMANDS_PER_MINUTE {
-        b.core.tally.step(t(1_000), &Input::Tick, &b.core.state, true);
+        b.core.tally.step(t(1_000), &Input::Tick, &b.core.state, Some(Op::CancelConnect));
     }
     let out = b.core.step(t(60_999), Input::Goals(goals(false)));
     assert!(out.op.is_some());
     assert_eq!(alarms(&[out]), [Invariant::BoundedEffort]);
+}
+
+/// One bonded Mac link, from coming up at `ms` to going down.
+fn reconnect(b: &mut Bench, ms: u64, n: u16) -> Vec<Outputs> {
+    let link = ConnHandle::new(0x800 + n);
+    let params = LinkParams { interval: Duration::from_u16(24), latency: 0, timeout: Duration::from_u16(72) };
+    let mut outs = b.step(ms, Input::Radio(RadioEvent::LinkUp { link, role: LeConnRole::Peripheral, peer: peer(), params: Some(params) }));
+    outs.extend(b.step(ms + 200, Input::Radio(RadioEvent::Pairing(PairingEvent { link, step: PairingStep::Complete }))));
+    outs.extend(b.step(ms + 200, Input::Radio(RadioEvent::Encryption { link, on: true })));
+    outs.extend(b.step(ms + 900, Input::Radio(RadioEvent::LinkDown { link, reason: Status::new(0x13) })));
+    outs
+}
+
+fn asked(outs: &[Outputs]) -> Vec<OpKind> {
+    outs.iter().filter_map(|o| o.op.map(|op| op.kind())).collect()
+}
+
+#[test]
+fn bonded_reconnects_back_to_back_raise_no_alarm() {
+    let mut b = Bench::new();
+    let mut total = 0;
+    for n in 0..30 {
+        let outs = reconnect(&mut b, 1_000 + u64::from(n) * 1_200, n);
+        assert_eq!(asked(&outs), [OpKind::UpdateParams, OpKind::Advertise], "{n}");
+        assert_eq!(alarms(&outs), [], "{n}");
+        total += 2;
+    }
+    assert!(total + 1 > COMMANDS_PER_MINUTE, "the asks of the minute pass the bound with the first advertising");
+    assert_eq!(b.core.tally.alarms.total(), 0);
+    assert_eq!(b.core.tally.commands_peak, 1);
+}
+
+#[test]
+fn a_storm_on_one_link_still_alarms() {
+    let mut b = Bench::new();
+    let link = ConnHandle::new(0x800);
+    b.step(1_000, Input::Radio(RadioEvent::LinkUp { link, role: LeConnRole::Peripheral, peer: peer(), params: None }));
+    b.step(1_200, Input::Radio(RadioEvent::Encryption { link, on: true }));
+    let mut told = Vec::new();
+    let mut ms = 2_000;
+    while b.core.tally.alarms.total() == 0 && ms < 60_000 {
+        let power = if ms % 1_000 == 0 { Power::Battery } else { Power::Cable };
+        let outs = b.step(ms, Input::Goals(Goals { power, ..goals(true) }));
+        assert_eq!(asked(&outs), [OpKind::UpdateParams], "{ms}");
+        told.extend(alarms(&outs));
+        ms += 500;
+    }
+    assert_eq!(b.core.state.phone.link(), Some(link));
+    assert_eq!(told, [Invariant::BoundedEffort], "peak {} at {ms}", b.core.tally.commands_peak);
+}
+
+#[test]
+fn a_resync_flapping_the_link_still_alarms() {
+    let mut b = Bench::new();
+    let link = ConnHandle::new(0x801);
+    b.step(1_000, Input::Radio(RadioEvent::LinkUp { link, role: LeConnRole::Peripheral, peer: peer(), params: None }));
+    b.step(1_100, Input::Radio(RadioEvent::Encryption { link, on: true }));
+    let mut told = Vec::new();
+    for i in 0..120 {
+        let ms = 2_000 + i * 500;
+        let mut outs = b.step(ms, Input::Radio(RadioEvent::EventsLost));
+        let mut links = [None; MAX_LINKS];
+        if i % 2 == 1 {
+            links[0] = Some(LinkStatus { link, role: LeConnRole::Peripheral, peer: peer(), encrypted: Some(true) });
+        }
+        let snapshot = Snapshot { at: t(ms + 1), links, advertising: false, scanning: false, initiating: false, anchor: None };
+        outs.extend(b.step(ms + 1, Input::Snapshot(Ok(snapshot))));
+        outs.extend(b.step(ms + 50, Input::Tick));
+        told.extend(alarms(&outs));
+    }
+    assert_eq!(told, [Invariant::BoundedEffort]);
 }

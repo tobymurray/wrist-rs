@@ -12,7 +12,7 @@ pub const REACHABLE_WINDOW: Millis = Millis::secs(60);
 /// I1: a gap this long raises the alarm and recovers to the safe baseline.
 pub const REACHABLE_ALARM: Millis = Millis::secs(10);
 
-/// I2: chip commands a minute, outside GATT traffic and transfers.
+/// I2: chip commands a minute, outside GATT traffic, transfers and each phone link's own asks.
 pub const COMMANDS_PER_MINUTE: u32 = 60;
 
 /// The invariants watched on the device, each with an alarm of its own. I3 is not: after the
@@ -55,7 +55,7 @@ pub struct Record {
     /// When connectable advertising last stopped, and when goals or power last changed.
     pub silent_since: Instant,
     pub settled_since: Instant,
-    /// Operations asked in the minute to now.
+    /// Operations asked in the minute to now, past each phone link's own.
     pub commands: u32,
 }
 

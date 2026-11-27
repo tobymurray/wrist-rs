@@ -355,7 +355,7 @@ impl<'a> Core<'a> {
         self.spend(now, &mut out);
         self.reconcile(now, &mut out);
         out.next = self.deadline(now);
-        self.tally.step(now, &input, &self.state, out.op.is_some());
+        self.tally.step(now, &input, &self.state, out.op);
         // Judged after the reconciler, against the plan for this step's state, and with this
         // step's operation counted.
         self.watch(now, &mut out);

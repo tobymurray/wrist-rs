@@ -10,7 +10,7 @@ use wrist_ble::policy::plan::{Conflict, Verdict};
 use wrist_ble::policy::tally::{Counts, Restart, Tally, COMMAND_WINDOW, EARLY_END, PEAK_KEPT};
 use wrist_ble::policy::State;
 use wrist_ble::{
-    AddrKind, BdAddr, Duration, Failure, FailureKind, LeConnRole, LinkParams, Op, OpId, Outcome, PairingEvent, PairingStep, PeerAddr,
+    AddrKind, BdAddr, ConnParams, Duration, Failure, FailureKind, LeConnRole, LinkParams, Op, OpId, Outcome, PairingEvent, PairingStep, PeerAddr,
     RadioEvent, ResetCause, Status,
 };
 use wrist_bluenrg2::shadow::menu::MENU;
@@ -78,10 +78,10 @@ fn counts_past_their_rows_go_to_other() {
 #[test]
 fn the_phones_hang_ups_follow_the_cores_link() {
     let mut tally = Tally::NEW;
-    tally.step(t(0), &Input::Tick, &with_phone(false), false);
-    tally.step(t(100), &down(0x13), &quiet(), false);
-    tally.step(t(200), &down(0x13), &quiet(), false);
-    tally.step(t(300), &Input::Radio(RadioEvent::LinkDown { link: sensor(), reason: Status::new(0x08) }), &quiet(), false);
+    tally.step(t(0), &Input::Tick, &with_phone(false), None);
+    tally.step(t(100), &down(0x13), &quiet(), None);
+    tally.step(t(200), &down(0x13), &quiet(), None);
+    tally.step(t(300), &Input::Radio(RadioEvent::LinkDown { link: sensor(), reason: Status::new(0x08) }), &quiet(), None);
     assert_eq!(tally.hang_ups.rows[0], Some((0x13, 1)));
     assert_eq!(tally.hang_ups.total(), 1);
 }
@@ -91,12 +91,12 @@ fn a_hang_up_soon_after_encrypting_is_early() {
     let mut tally = Tally::NEW;
     let edge = u64::from(EARLY_END.0);
     for (start, after, reason) in [(0, edge, 0x08), (100_000, edge + 1, 0x16)] {
-        tally.step(t(start), &Input::Tick, &with_phone(false), false);
-        tally.step(t(start + 100), &Input::Tick, &with_phone(true), false);
-        tally.step(t(start + 100 + after), &down(reason), &quiet(), false);
+        tally.step(t(start), &Input::Tick, &with_phone(false), None);
+        tally.step(t(start + 100), &Input::Tick, &with_phone(true), None);
+        tally.step(t(start + 100 + after), &down(reason), &quiet(), None);
     }
-    tally.step(t(200_000), &Input::Tick, &with_phone(false), false);
-    tally.step(t(200_100), &down(0x3E), &quiet(), false);
+    tally.step(t(200_000), &Input::Tick, &with_phone(false), None);
+    tally.step(t(200_100), &down(0x3E), &quiet(), None);
     assert_eq!(tally.early_ends.rows, [Some((0x08, 1)), None, None, None]);
     assert_eq!(tally.hang_ups.total(), 3);
 }
@@ -104,10 +104,10 @@ fn a_hang_up_soon_after_encrypting_is_early() {
 #[test]
 fn a_new_link_on_the_same_handle_is_not_the_old_ones_encryption() {
     let mut tally = Tally::NEW;
-    tally.step(t(0), &Input::Tick, &with_phone(true), false);
-    tally.step(t(100), &Input::Tick, &quiet(), false);
-    tally.step(t(200), &Input::Tick, &with_phone(false), false);
-    tally.step(t(300), &down(0x08), &quiet(), false);
+    tally.step(t(0), &Input::Tick, &with_phone(true), None);
+    tally.step(t(100), &Input::Tick, &quiet(), None);
+    tally.step(t(200), &Input::Tick, &with_phone(false), None);
+    tally.step(t(300), &down(0x08), &quiet(), None);
     assert_eq!(tally.early_ends.total(), 0);
 }
 
@@ -115,14 +115,14 @@ fn a_new_link_on_the_same_handle_is_not_the_old_ones_encryption() {
 fn pairings_on_the_phones_link_are_counted_with_the_last_failure() {
     let mut tally = Tally::NEW;
     let pair = |step| Input::Radio(RadioEvent::Pairing(PairingEvent { link: phone(), step }));
-    tally.step(t(0), &pair(PairingStep::Complete), &quiet(), false);
+    tally.step(t(0), &pair(PairingStep::Complete), &quiet(), None);
     let up = Input::Radio(RadioEvent::LinkUp { link: phone(), role: LeConnRole::Peripheral, peer: peer(), params: None });
-    tally.step(t(0), &up, &with_phone(false), false);
+    tally.step(t(0), &up, &with_phone(false), None);
     for (i, step) in [PairingStep::Numeric(1), PairingStep::Complete, PairingStep::Failed, PairingStep::LocalKeyMissing, PairingStep::PeerKeyMissing]
         .into_iter()
         .enumerate()
     {
-        tally.step(t(i as u64 + 1), &pair(step), &with_phone(false), false);
+        tally.step(t(i as u64 + 1), &pair(step), &with_phone(false), None);
     }
     assert_eq!(tally.pairings_ok, 1);
     assert!(line(&tally, 10).contains(
@@ -134,8 +134,8 @@ fn pairings_on_the_phones_link_are_counted_with_the_last_failure() {
 fn a_failure_on_a_link_whose_start_went_unseen_has_no_peer() {
     let mut tally = Tally::NEW;
     let failed = Input::Radio(RadioEvent::Pairing(PairingEvent { link: phone(), step: PairingStep::Failed }));
-    tally.step(t(0), &Input::Tick, &with_phone(false), false);
-    tally.step(t(1), &failed, &with_phone(false), false);
+    tally.step(t(0), &Input::Tick, &with_phone(false), None);
+    tally.step(t(1), &failed, &with_phone(false), None);
     assert!(line(&tally, 2).contains("failed failed x1 (last failed); "));
 }
 
@@ -152,14 +152,14 @@ fn the_peak_is_the_most_operations_in_any_window() {
     let mut tally = Tally::NEW;
     let window = u64::from(COMMAND_WINDOW.0);
     for i in 0..20 {
-        tally.step(t(30_000 + i * 1_000), &Input::Tick, &quiet(), true);
+        tally.step(t(30_000 + i * 1_000), &Input::Tick, &quiet(), Some(Op::CancelConnect));
     }
     for i in 0..20 {
-        tally.step(t(window + i * 1_000), &Input::Tick, &quiet(), true);
+        tally.step(t(window + i * 1_000), &Input::Tick, &quiet(), Some(Op::CancelConnect));
     }
     assert_eq!(tally.commands_peak, 40);
     for i in 0..PEAK_KEPT as u64 + 5 {
-        tally.step(t(10 * window + i), &Input::Tick, &quiet(), true);
+        tally.step(t(10 * window + i), &Input::Tick, &quiet(), Some(Op::CancelConnect));
     }
     assert_eq!(tally.commands_peak as usize, PEAK_KEPT);
     assert!(line(&tally, 0).contains(&format!("at most at least {PEAK_KEPT};")));
@@ -170,12 +170,12 @@ fn an_unreachable_spell_is_measured_to_now_and_kept_at_its_worst() {
     let mut tally = Tally::NEW;
     let mut gap = ready(t(0));
     gap.phone_verdict = Verdict::Busy(Conflict::Scan);
-    tally.step(t(4_000), &Input::Tick, &gap, false);
+    tally.step(t(4_000), &Input::Tick, &gap, None);
     assert!(line(&tally, 60_000).contains("unreachable now 60 s, worst 60 s"));
-    tally.step(t(9_000), &Input::Tick, &quiet(), false);
+    tally.step(t(9_000), &Input::Tick, &quiet(), None);
     assert!(line(&tally, 60_000).contains("unreachable now 0 s, worst 9 s"));
     gap.phone_verdict = Verdict::NotWanted;
-    tally.step(t(100_000), &Input::Tick, &gap, false);
+    tally.step(t(100_000), &Input::Tick, &gap, None);
     assert!(line(&tally, 200_000).contains("unreachable now 0 s, worst 9 s"));
 }
 
@@ -184,9 +184,9 @@ fn drift_is_measured_to_now_and_kept_at_its_worst() {
     let mut tally = Tally::NEW;
     let mut drifting = quiet();
     drifting.drift_since = Some(t(1_000));
-    tally.step(t(2_000), &Input::Tick, &drifting, false);
+    tally.step(t(2_000), &Input::Tick, &drifting, None);
     assert!(line(&tally, 30_000).ends_with("plan drift now 29 s, worst 29 s"));
-    tally.step(t(6_000), &Input::Tick, &quiet(), false);
+    tally.step(t(6_000), &Input::Tick, &quiet(), None);
     assert!(line(&tally, 30_000).ends_with("plan drift now 0 s, worst 5 s"));
 }
 
@@ -259,7 +259,7 @@ fn the_peak_tells_a_breach_of_i2_apart() {
     assert!(PEAK_KEPT > COMMANDS_PER_MINUTE as usize);
     let mut tally = Tally::NEW;
     for i in 0..=u64::from(COMMANDS_PER_MINUTE) {
-        tally.step(t(i * 100), &Input::Tick, &quiet(), true);
+        tally.step(t(i * 100), &Input::Tick, &quiet(), Some(Op::CancelConnect));
     }
     assert_eq!(tally.commands_peak, COMMANDS_PER_MINUTE + 1);
 }
@@ -267,8 +267,8 @@ fn the_peak_tells_a_breach_of_i2_apart() {
 #[test]
 fn operations_a_whole_window_apart_are_not_in_one_window() {
     let mut tally = Tally::NEW;
-    tally.step(t(0), &Input::Tick, &quiet(), true);
-    tally.step(t(u64::from(COMMAND_WINDOW.0)), &Input::Tick, &quiet(), true);
+    tally.step(t(0), &Input::Tick, &quiet(), Some(Op::CancelConnect));
+    tally.step(t(u64::from(COMMAND_WINDOW.0)), &Input::Tick, &quiet(), Some(Op::CancelConnect));
     assert_eq!(tally.commands_peak, 1);
 }
 
@@ -279,9 +279,9 @@ fn another_links_start_is_not_the_phones_peer() {
         let peer = PeerAddr { kind: AddrKind::PUBLIC, addr: BdAddr::new([last, 0, 0, 0, 0, 0]) };
         Input::Radio(RadioEvent::LinkUp { link, role: LeConnRole::Peripheral, peer, params: None })
     };
-    tally.step(t(0), &up(phone(), 0xAA), &with_phone(false), false);
-    tally.step(t(1), &up(sensor(), 0xBB), &with_phone(false), false);
-    tally.step(t(2), &Input::Radio(RadioEvent::Pairing(PairingEvent { link: phone(), step: PairingStep::Failed })), &with_phone(false), false);
+    tally.step(t(0), &up(phone(), 0xAA), &with_phone(false), None);
+    tally.step(t(1), &up(sensor(), 0xBB), &with_phone(false), None);
+    tally.step(t(2), &Input::Radio(RadioEvent::Pairing(PairingEvent { link: phone(), step: PairingStep::Failed })), &with_phone(false), None);
     assert!(line(&tally, 3).contains("(last failed from 00:00:00:00:00:AA)"));
 }
 
@@ -312,9 +312,9 @@ fn a_spell_after_hiding_starts_where_hiding_ended() {
     let mut tally = Tally::NEW;
     let mut gap = ready(t(0));
     gap.phone_verdict = Verdict::NotWanted;
-    tally.step(t(3_600_000), &Input::Tick, &gap, false);
+    tally.step(t(3_600_000), &Input::Tick, &gap, None);
     gap.phone_verdict = Verdict::Fits;
-    tally.step(t(3_601_000), &Input::Tick, &gap, false);
+    tally.step(t(3_601_000), &Input::Tick, &gap, None);
     assert!(line(&tally, 3_602_000).contains("unreachable now 1 s, worst 1 s"));
 }
 
@@ -323,10 +323,10 @@ fn a_spell_after_hiding_starts_where_hiding_ended() {
 fn asks_days_apart_are_not_in_one_window() {
     let mut tally = Tally::NEW;
     for i in 0..30 {
-        tally.step(t(i), &Input::Tick, &quiet(), true);
+        tally.step(t(i), &Input::Tick, &quiet(), Some(Op::CancelConnect));
     }
     for i in 0..30 {
-        tally.step(t((1 << 32) + i), &Input::Tick, &quiet(), true);
+        tally.step(t((1 << 32) + i), &Input::Tick, &quiet(), Some(Op::CancelConnect));
     }
     assert_eq!(tally.commands_peak, 30);
 }
@@ -336,14 +336,14 @@ fn asks_days_apart_are_not_in_one_window() {
 fn a_link_swapped_by_a_resync_starts_afresh() {
     let mut tally = Tally::NEW;
     let up = Input::Radio(RadioEvent::LinkUp { link: phone(), role: LeConnRole::Peripheral, peer: peer(), params: None });
-    tally.step(t(0), &up, &with_phone(false), false);
-    tally.step(t(100), &Input::Tick, &with_phone(true), false);
+    tally.step(t(0), &up, &with_phone(false), None);
+    tally.step(t(100), &Input::Tick, &with_phone(true), None);
     let mut swapped = quiet();
     swapped.phone = swapped.phone.step(t(200), phone::Event::LinkUp(sensor())).0;
-    tally.step(t(200), &Input::Tick, &swapped, false);
+    tally.step(t(200), &Input::Tick, &swapped, None);
     let failed = Input::Radio(RadioEvent::Pairing(PairingEvent { link: sensor(), step: PairingStep::Failed }));
-    tally.step(t(300), &failed, &swapped, false);
-    tally.step(t(400), &Input::Radio(RadioEvent::LinkDown { link: sensor(), reason: Status::new(0x08) }), &quiet(), false);
+    tally.step(t(300), &failed, &swapped, None);
+    tally.step(t(400), &Input::Radio(RadioEvent::LinkDown { link: sensor(), reason: Status::new(0x08) }), &quiet(), None);
     assert!(line(&tally, 500).contains("(last failed); "));
     assert_eq!((tally.hang_ups.total(), tally.early_ends.total()), (1, 0));
 }
@@ -414,12 +414,12 @@ fn a_refused_answer_to_an_unadopted_central_is_a_failure() {
 #[test]
 fn a_phone_link_a_resync_finds_gone_is_counted() {
     let mut tally = Tally::NEW;
-    tally.step(t(0), &Input::Tick, &with_phone(true), false);
-    tally.step(t(100), &Input::Snapshot(Err(wrist_ble::Fault::Silent)), &quiet(), false);
+    tally.step(t(0), &Input::Tick, &with_phone(true), None);
+    tally.step(t(100), &Input::Snapshot(Err(wrist_ble::Fault::Silent)), &quiet(), None);
     assert_eq!(tally.vanished, 1);
     assert!(line(&tally, 200).contains("; phone hang-ups none; phone links found gone by a resync 1; "));
-    tally.step(t(300), &Input::Tick, &with_phone(false), false);
-    tally.step(t(400), &down(0x13), &quiet(), false);
+    tally.step(t(300), &Input::Tick, &with_phone(false), None);
+    tally.step(t(400), &down(0x13), &quiet(), None);
     assert_eq!(tally.vanished, 1);
 }
 
@@ -504,4 +504,38 @@ fn an_asked_operations_link_that_went_is_remembered_however_many_follow() {
     }
     core.step(t(10_100), Input::Submitted(Err(Failure { kind: FailureKind::NotConnected, native: 0x02 })));
     assert_eq!(core.tally.failures.total(), 0);
+}
+
+fn params() -> ConnParams {
+    let units = Duration::from_u16(24);
+    ConnParams { interval_min: units, interval_max: units, latency: 0, timeout: Duration::from_u16(400), ce_len: Duration::from_u16(0) }
+}
+
+/// A phone link's first parameter request and the advertising after its end are its own; any
+/// other ask, or a second of either, is the minute's.
+#[test]
+fn a_phone_links_own_asks_are_not_the_minutes() {
+    let up = Input::Radio(RadioEvent::LinkUp { link: phone(), role: LeConnRole::Peripheral, peer: peer(), params: None });
+    let mut tally = Tally::NEW;
+    tally.step(t(0), &up, &with_phone(true), Some(Op::UpdateParams(phone(), params())));
+    tally.step(t(1), &down(0x13), &quiet(), Some(Op::Advertise(Some(ADV_995))));
+    assert_eq!(tally.commands_within(t(10)), 0);
+    tally.step(t(2), &Input::Tick, &quiet(), Some(Op::Advertise(Some(ADV_995))));
+    assert_eq!(tally.commands_within(t(10)), 1);
+    let mut tally = Tally::NEW;
+    tally.step(t(0), &up, &with_phone(true), Some(Op::UpdateParams(phone(), params())));
+    tally.step(t(1), &Input::Tick, &with_phone(true), Some(Op::UpdateParams(phone(), params())));
+    tally.step(t(2), &Input::Tick, &with_phone(true), Some(Op::CancelConnect));
+    assert_eq!(tally.commands_within(t(10)), 2);
+}
+
+/// Asks beside a phone that links once a second and asks nothing of its own are the minute's.
+#[test]
+fn asks_beside_a_flapping_phone_are_the_minutes() {
+    let mut tally = Tally::NEW;
+    for s in 0..60 {
+        tally.step(t(s * 1_000), &Input::Tick, &with_phone(true), Some(Op::CancelConnect));
+        tally.step(t(s * 1_000 + 100), &down(0x13), &quiet(), Some(Op::CancelConnect));
+    }
+    assert!(tally.commands_within(t(59_999)) > wrist_ble::policy::invariants::COMMANDS_PER_MINUTE);
 }
