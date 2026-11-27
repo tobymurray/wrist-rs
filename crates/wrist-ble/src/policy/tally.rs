@@ -145,9 +145,9 @@ pub struct Tally {
     pub commands_peak: u32,
     asked: [Option<Instant>; PEAK_KEPT],
     asked_next: usize,
-    /// The phone link whose parameter request is still its own, and whether the advertising
-    /// after the last one's end is.
+    /// The phone link whose first parameter request is still to come, uncounted.
     own_params: Option<ConnHandle>,
+    /// A phone link has ended and the advertising after it is still to come, uncounted.
     own_advertise: bool,
     /// The phone unreachable for a reason other than being hidden.
     pub unreachable: Spell,
